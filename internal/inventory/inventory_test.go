@@ -518,3 +518,26 @@ func TestExpiry(t *testing.T) {
 		t.Errorf("Fresh boundaries wrong: %+v", st)
 	}
 }
+
+func TestReplaceScopedClearsIndexRowsOfThatScope(t *testing.T) {
+	db, _ := openDB(t)
+	// Zones indexed under a parent (any indexed type with a scope).
+	parented := func(id, name, parent string) platform.Resource {
+		r := zoneRes(id, name)
+		r.ParentID = parent
+		return r
+	}
+	mustReplace(t, db, scoped("a", platform.ResZone, "acct1"), time.Hour, parented("z1", "old.com", "acct1"))
+	mustReplace(t, db, scoped("a", platform.ResZone, "acct2"), time.Hour, parented("z2", "other.com", "acct2"))
+	mustReplace(t, db, scoped("a", platform.ResZone, "acct1"), time.Hour, parented("z3", "new.com", "acct1"))
+
+	if entries, _ := db.LookupDomain(ctx, []string{"old.com"}, platform.ResZone); len(entries) != 0 {
+		t.Errorf("stale index row survived the scoped replace: %+v", entries)
+	}
+	if entries, _ := db.LookupDomain(ctx, []string{"new.com"}, platform.ResZone); len(entries) != 1 {
+		t.Errorf("new index row missing: %+v", entries)
+	}
+	if entries, _ := db.LookupDomain(ctx, []string{"other.com"}, platform.ResZone); len(entries) != 1 {
+		t.Errorf("another scope's index row was removed: %+v", entries)
+	}
+}

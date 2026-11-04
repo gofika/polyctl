@@ -153,11 +153,13 @@ func (d *DB) Replace(ctx context.Context, s Set, resources []platform.Resource, 
 			return err
 		}
 	} else {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM resources WHERE platform=? AND profile=? AND resource_type=? AND parent_id=?`, string(s.Platform), s.Profile, string(s.Type), s.Scope); err != nil {
-			return err
-		}
+		// The index rows are found through the resources they belong to, so
+		// they must go before the resources themselves.
 		if _, err := tx.ExecContext(ctx, `DELETE FROM domain_index WHERE platform=? AND profile=? AND resource_type=? AND resource_id IN (SELECT resource_id FROM resources WHERE platform=? AND profile=? AND resource_type=? AND parent_id=?)`,
 			string(s.Platform), s.Profile, string(s.Type), string(s.Platform), s.Profile, string(s.Type), s.Scope); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM resources WHERE platform=? AND profile=? AND resource_type=? AND parent_id=?`, string(s.Platform), s.Profile, string(s.Type), s.Scope); err != nil {
 			return err
 		}
 	}
@@ -346,7 +348,7 @@ func (d *DB) LookupDomain(ctx context.Context, domains []string, rt platform.Res
 		q += ` AND resource_type=?`
 		args = append(args, string(rt))
 	}
-	q += ` ORDER BY length(domain) DESC, platform, profile`
+	q += ` ORDER BY length(domain) DESC, platform, profile, resource_type, resource_id`
 	rows, err := d.sql.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err

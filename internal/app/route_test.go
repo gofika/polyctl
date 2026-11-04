@@ -152,7 +152,7 @@ func TestResolveDomainAmbiguous(t *testing.T) {
 	if !errors.As(err, &amb) {
 		t.Fatalf("ResolveDomain(shared.com) = %v, want *app.AmbiguousError", err)
 	}
-	if len(amb.Candidates) != 2 || !strings.Contains(amb.Candidates[0], "a (namecom)") || !strings.Contains(amb.Candidates[1], "b (namecom)") {
+	if len(amb.Candidates) != 2 || !strings.Contains(amb.Candidates[0], "a (namecom, zone z-shared-a)") || !strings.Contains(amb.Candidates[1], "b (namecom, zone z-shared-b)") {
 		t.Errorf("candidates = %v", amb.Candidates)
 	}
 	if !strings.Contains(err.Error(), "--profile") {
@@ -681,5 +681,50 @@ func TestInitRejectsRefreshWithOffline(t *testing.T) {
 	rt = app.New(app.Flags{ConfigPath: filepath.Join(dir, "config.yaml"), Output: "xml"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	if err := rt.Init(); err == nil || !strings.Contains(err.Error(), "unknown output format") {
 		t.Fatalf("Init with bad output = %v", err)
+	}
+}
+
+func TestResolveDomainDoesNotReindexWhenSomeProfilesAreIndexed(t *testing.T) {
+	h := newHarness(t, app.Flags{}, nil)
+	h.seedZones("a", zone("z1", "example.com"))
+	// b and c have no zone state (e.g. their sync keeps failing); a miss
+	// must not scan every profile again, but name the unindexed ones.
+	_, err := h.rt.ResolveDomain(ctx, "nope.org", platform.ResZone)
+	if !errors.Is(err, app.ErrDomainUnknown) {
+		t.Fatalf("err = %v, want ErrDomainUnknown", err)
+	}
+	if !strings.Contains(err.Error(), "b, c") || !strings.Contains(err.Error(), "--refresh") {
+		t.Errorf("error should name the unindexed profiles and suggest --refresh: %v", err)
+	}
+	for _, p := range []string{"a", "b", "c"} {
+		if n := client(p).count("Sync"); n != 0 {
+			t.Errorf("profile %s synced %d times, want none", p, n)
+		}
+	}
+	if strings.Contains(h.stderr.String(), "indexing") {
+		t.Errorf("stderr = %q", h.stderr.String())
+	}
+}
+
+func TestResolveDomainProfileFlagWrongPlatform(t *testing.T) {
+	h := newHarness(t, app.Flags{Profile: "a"}, func(c *config.Config) {
+		c.Profiles["a"] = &config.Profile{Platform: platform.Cloudflare} // not registered here: manages nothing
+	})
+	_, err := h.rt.ResolveDomain(ctx, "example.com", platform.ResDomain)
+	if !errors.Is(err, app.ErrDomainUnknown) || !strings.Contains(err.Error(), `profile "a" cannot manage domains`) || strings.Contains(err.Error(), "auth login") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestResolveDomainSameProfileDuplicateZonesAmbiguous(t *testing.T) {
+	h := newHarness(t, app.Flags{}, nil)
+	h.seedZones("a", zone("z-dup-1", "dup.com"), zone("z-dup-2", "dup.com"))
+	_, err := h.rt.ResolveDomain(ctx, "www.dup.com", platform.ResZone)
+	var amb *app.AmbiguousError
+	if !errors.As(err, &amb) {
+		t.Fatalf("two zones of one profile must be ambiguous, got %v", err)
+	}
+	if len(amb.Candidates) != 2 || !strings.Contains(amb.Candidates[0], "z-dup-1") || !strings.Contains(amb.Candidates[1], "z-dup-2") {
+		t.Errorf("candidates = %v", amb.Candidates)
 	}
 }

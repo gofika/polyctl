@@ -33,9 +33,10 @@ var ErrDomainUnknown = errors.New("domain not found in local index")
 // kind (ResZone for DNS operations, ResDomain for registrar operations).
 //
 // Precedence: --profile restricts the search to that profile; otherwise the
-// longest matching domain in the index wins. If several profiles own the same
-// best match, an AmbiguousError is returned. When nothing is found and
-// --refresh was given (or the index is empty), the relevant profiles are
+// longest matching domain in the index wins. If several profiles (or several
+// resources of one profile) own the same best match, an AmbiguousError is
+// returned. When nothing is found and --refresh was given (or none of the
+// candidate profiles has ever been indexed), the relevant profiles are
 // indexed first and the lookup retried.
 func (rt *Runtime) ResolveDomain(ctx context.Context, domain string, kind platform.ResourceType) (*Target, error) {
 	domain = platform.NormalizeDomain(domain)
@@ -71,7 +72,9 @@ func (rt *Runtime) ResolveDomain(ctx context.Context, domain string, kind platfo
 			if e.Domain != best {
 				break
 			}
-			k := string(e.Platform) + "/" + e.Profile
+			// Two resources of the same profile (e.g. two Route 53 hosted
+			// zones with one name) are as ambiguous as two profiles.
+			k := string(e.Platform) + "/" + e.Profile + "/" + e.ResourceID
 			if !seen[k] {
 				seen[k] = true
 				owners = append(owners, e)
@@ -80,7 +83,7 @@ func (rt *Runtime) ResolveDomain(ctx context.Context, domain string, kind platfo
 		if len(owners) > 1 {
 			var names []string
 			for _, o := range owners {
-				names = append(names, fmt.Sprintf("%s (%s)", o.Profile, o.Platform))
+				names = append(names, fmt.Sprintf("%s (%s, %s %s)", o.Profile, o.Platform, o.Type, o.ResourceID))
 			}
 			return nil, &AmbiguousError{What: fmt.Sprintf("owner of %s %q", kind, best), Candidates: names}
 		}
@@ -96,25 +99,37 @@ func (rt *Runtime) ResolveDomain(ctx context.Context, domain string, kind platfo
 		return nil, fmt.Errorf("%w: %q (%s); run `polyctl domain index` when online", ErrDomainUnknown, domain, kind)
 	}
 	// Decide whether to (re)index automatically: always when --refresh, or
-	// when the index has never been built for the candidate profiles.
+	// when the index has never been built for any of the candidate profiles.
+	// Once at least one profile is indexed, a miss no longer triggers a
+	// network scan: a profile whose sync keeps failing never gets a state,
+	// and re-indexing everything on every miss would hammer the platforms.
 	profiles, err := rt.indexCandidates(ctx, kind)
 	if err != nil {
 		return nil, err
 	}
 	if len(profiles) == 0 {
+		if rt.Flags.Profile != "" {
+			return nil, fmt.Errorf("%w: profile %q cannot manage %ss; drop --profile or pick a %s-capable profile", ErrDomainUnknown, rt.Flags.Profile, kind, kind)
+		}
 		return nil, fmt.Errorf("%w: %q, and no profile is able to manage %ss (run `polyctl auth login`)", ErrDomainUnknown, domain, kind)
 	}
 	needIndex := rt.Flags.Refresh
 	if !needIndex {
+		var unindexed []string
 		for _, p := range profiles {
 			st, err := db.GetState(ctx, inventory.Set{Platform: p.Platform, Profile: p.Name, Type: kind})
 			if err != nil {
 				return nil, err
 			}
 			if st == nil {
-				needIndex = true
-				break
+				unindexed = append(unindexed, p.Name)
 			}
+		}
+		switch {
+		case len(unindexed) == len(profiles):
+			needIndex = true
+		case len(unindexed) > 0:
+			return nil, fmt.Errorf("%w: %q (%s); profile(s) %s not indexed yet, run `polyctl domain index` or retry with --refresh", ErrDomainUnknown, domain, kind, strings.Join(unindexed, ", "))
 		}
 	}
 	if !needIndex {
