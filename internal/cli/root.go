@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/gofika/polyctl/internal/app"
+	"github.com/gofika/polyctl/internal/httpx"
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/platform"
 )
@@ -48,24 +49,21 @@ func ExitCodeFor(err error) int {
 		return ExitOffline
 	case errors.Is(err, platform.ErrNotSupported):
 		return ExitNotSupported
-	case errors.Is(err, errUsage):
+	case errors.Is(err, app.ErrUsage):
 		return ExitUsage
 	}
 	return ExitError
 }
 
-var errUsage = errors.New("usage error")
-
 // usageErr wraps an error so it maps to ExitUsage.
-func usageErr(format string, args ...any) error {
-	return fmt.Errorf("%w: %s", errUsage, fmt.Sprintf(format, args...))
-}
+func usageErr(format string, args ...any) error { return app.UsageErrf(format, args...) }
 
 // Main runs the CLI and returns the exit code.
 func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	httpx.UserAgent = "polyctl/" + Version
 	rt := app.New(app.Flags{}, stdin, stdout, stderr)
 	root := NewRoot(rt)
 	root.SetArgs(args)

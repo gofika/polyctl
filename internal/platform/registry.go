@@ -21,6 +21,24 @@ func Register(p Provider) {
 	providers[p.ID()] = p
 }
 
+// Override replaces (or adds) a provider and returns a function restoring
+// the previous state. Intended for tests.
+func Override(p Provider) (restore func()) {
+	regMu.Lock()
+	defer regMu.Unlock()
+	prev, had := providers[p.ID()]
+	providers[p.ID()] = p
+	return func() {
+		regMu.Lock()
+		defer regMu.Unlock()
+		if had {
+			providers[p.ID()] = prev
+		} else {
+			delete(providers, p.ID())
+		}
+	}
+}
+
 // Get returns the provider for a platform.
 func Get(id ID) (Provider, error) {
 	regMu.RLock()

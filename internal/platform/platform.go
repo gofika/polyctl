@@ -75,6 +75,9 @@ type Profile struct {
 	Platform ID
 	Metadata map[string]string
 	Secret   map[string]string
+	// UpdateSecret persists a replacement secret (e.g. refreshed tokens).
+	// It is nil when the profile was not loaded from a credential store.
+	UpdateSecret func(secret map[string]string) error
 }
 
 // Meta returns a metadata value or "".

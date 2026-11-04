@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"text/tabwriter"
 
@@ -44,6 +45,7 @@ type Grid struct {
 // Render writes value in the requested format. For Table, grid() is called
 // to build the rows; for json/yaml the value itself is encoded.
 func Render(w io.Writer, f Format, value any, grid func() Grid) error {
+	value = nonNilSlice(value)
 	switch f {
 	case JSON:
 		enc := json.NewEncoder(w)
@@ -57,6 +59,15 @@ func Render(w io.Writer, f Format, value any, grid func() Grid) error {
 	default:
 		return RenderGrid(w, grid())
 	}
+}
+
+// nonNilSlice turns a nil slice into an empty one so JSON prints [] not null.
+func nonNilSlice(v any) any {
+	rv := reflect.ValueOf(v)
+	if rv.Kind() == reflect.Slice && rv.IsNil() {
+		return reflect.MakeSlice(rv.Type(), 0, 0).Interface()
+	}
+	return v
 }
 
 // RenderGrid prints a grid with aligned columns.

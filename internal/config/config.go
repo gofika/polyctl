@@ -95,6 +95,16 @@ func Load(path string) (*Config, error) {
 	if c.Profiles == nil {
 		c.Profiles = map[string]*Profile{}
 	}
+	for name, p := range c.Profiles {
+		if p == nil {
+			return nil, fmt.Errorf("parse %s: profile %q is empty", path, name)
+		}
+		id, err := platform.Parse(string(p.Platform))
+		if err != nil {
+			return nil, fmt.Errorf("parse %s: profile %q: %w", path, name, err)
+		}
+		p.Platform = id
+	}
 	return c, nil
 }
 

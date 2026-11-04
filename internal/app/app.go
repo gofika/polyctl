@@ -229,7 +229,8 @@ func (rt *Runtime) LoadProfile(name string) (platform.Profile, error) {
 		}
 		return platform.Profile{}, err
 	}
-	return platform.Profile{Name: name, Platform: p.Platform, Metadata: p.Metadata, Secret: secret}, nil
+	return platform.Profile{Name: name, Platform: p.Platform, Metadata: p.Metadata, Secret: secret,
+		UpdateSecret: func(s map[string]string) error { return st.Set(name, s) }}, nil
 }
 
 // ProfileFor picks the profile to use for a platform:
@@ -306,6 +307,14 @@ func (rt *Runtime) OpenFor(ctx context.Context, id platform.ID) (platform.Client
 
 // ErrOffline is returned when a network operation is attempted with --offline.
 var ErrOffline = errors.New("network access disabled by --offline")
+
+// ErrUsage marks command-line usage errors (exit code 2).
+var ErrUsage = errors.New("usage error")
+
+// UsageErrf returns an error wrapping ErrUsage.
+func UsageErrf(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", ErrUsage, fmt.Sprintf(format, args...))
+}
 
 // SyncReport summarises one Replace.
 type SyncReport struct {
