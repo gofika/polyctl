@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -77,18 +78,18 @@ func newDomainInfoCmd(rt *app.Runtime) *cobra.Command {
 		ValidArgsFunction: completeDomains(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			info := domainInfo{Domain: platform.NormalizeDomain(args[0]), Cached: true}
-			var errs []string
+			var errs []error
 			if t, err := rt.ResolveDomain(cmd.Context(), args[0], platform.ResDomain); err == nil {
 				info.Registrar = t
 				d, cached, err := loadDomain(cmd, rt, t)
 				if err != nil {
-					errs = append(errs, "registrar: "+err.Error())
+					errs = append(errs, fmt.Errorf("registrar: %w", err))
 				} else {
 					info.Details = d
 					info.Cached = info.Cached && cached
 				}
 			} else {
-				errs = append(errs, "registrar: "+err.Error())
+				errs = append(errs, fmt.Errorf("registrar: %w", err))
 			}
 			if t, err := rt.ResolveDomain(cmd.Context(), args[0], platform.ResZone); err == nil {
 				info.Zone = t
@@ -101,13 +102,28 @@ func newDomainInfoCmd(rt *app.Runtime) *cobra.Command {
 					}
 				}
 			} else {
-				errs = append(errs, "zone: "+err.Error())
+				errs = append(errs, fmt.Errorf("zone: %w", err))
 			}
 			if info.Registrar == nil && info.Zone == nil {
-				return fmt.Errorf("%w: %s", app.ErrDomainUnknown, strings.Join(errs, "; "))
+				// Keep the original error chain so ambiguity, missing
+				// authorization and offline misses keep their exit codes;
+				// only a plain double miss collapses into one message.
+				allUnknown := true
+				for _, e := range errs {
+					if !errors.Is(e, app.ErrDomainUnknown) {
+						allUnknown = false
+					}
+				}
+				if allUnknown {
+					for _, e := range errs {
+						rt.Verbosef("%v", e)
+					}
+					return fmt.Errorf("%w: %q is neither a registered domain nor a DNS zone in any profile; run `polyctl domain index` when online", app.ErrDomainUnknown, info.Domain)
+				}
+				return errors.Join(errs...)
 			}
 			for _, e := range errs {
-				rt.Infof("note: %s", e)
+				rt.Infof("note: %s", e.Error())
 			}
 			return rt.Render(info, func() output.Grid {
 				pairs := []string{"DOMAIN", info.Domain}
@@ -292,10 +308,7 @@ func newDomainIndexCmd(rt *app.Runtime) *cobra.Command {
 					}
 				}
 			}
-			if err := renderSyncReports(rt, reports); err != nil {
-				return err
-			}
-			return firstErr
+			return renderSyncReports(rt, reports, firstErr)
 		},
 	}
 }

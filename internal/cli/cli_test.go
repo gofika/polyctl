@@ -11,6 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
+
 	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/config"
 	"github.com/gofika/polyctl/internal/creds"
@@ -474,5 +477,198 @@ func TestSyncCommand(t *testing.T) {
 	stdout, _, err = run(t, cfgPath, "inventory", "stats")
 	if err != nil || !strings.Contains(stdout, "cloudflare") {
 		t.Errorf("inventory stats = %q, %v", stdout, err)
+	}
+}
+
+func TestDNSUpdateDropsOldInventoryRowWhenIDChanges(t *testing.T) {
+	dir, cfgPath := setup(t, true)
+	existing := platform.Record{ID: "r7", ZoneID: "z1", Name: "www.example.com", Type: "A", Content: "9.9.9.9", TTL: 600}
+	seed(t, dir, []platform.Zone{{ID: "z1", Name: "example.com"}}, map[string][]platform.Record{"z1": {existing}})
+	fc := client("a")
+	fc.zones = []platform.Zone{{ID: "z1", Name: "example.com"}}
+	fc.records["z1"] = []platform.Record{existing}
+	fc.nextID = 7
+	fc.newIDOnUpdate = true
+
+	_, stderr, err := run(t, cfgPath, "dns", "update", "www.example.com", "--type", "A", "--value", "1.2.3.4")
+	if err != nil {
+		t.Fatalf("dns update: %v (stderr %q)", err, stderr)
+	}
+	if fc.count("UpdateRecord:r7") != 1 || fc.records["z1"][0].ID != "r8" {
+		t.Fatalf("calls = %v records = %+v", fc.calls, fc.records["z1"])
+	}
+	db := openInventory(t, dir)
+	defer db.Close()
+	rows, err := db.List(context.Background(), inventory.Query{Type: platform.ResDNSRecord})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].ID != "r8" {
+		t.Fatalf("inventory rows = %+v, want only the record under its new id", rows)
+	}
+	// The cached listing (zone state is fresh) must not show the old row.
+	stdout, _, err := run(t, cfgPath, "dns", "list", "example.com", "--offline", "-o", "json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res dnsResult
+	if err := json.Unmarshal([]byte(stdout), &res); err != nil || len(res.Records) != 1 || res.Records[0].ID != "r8" || res.Records[0].Content != "1.2.3.4" {
+		t.Errorf("cached list = %+v, %v", res.Records, err)
+	}
+}
+
+func TestCobraErrorsAreUsageErrors(t *testing.T) {
+	_, cfgPath := setup(t, true)
+	cases := [][]string{
+		{"dns", "list"},                       // missing argument
+		{"dns", "list", "a.com", "b.com"},     // too many arguments
+		{"auth", "use"},                       // missing argument
+		{"auth", "list", "--bogus"},           // unknown flag
+		{"nosuchcmd"},                         // unknown command
+		{"auth", "login", "cloudflare", "-x"}, // unknown shorthand
+	}
+	for _, args := range cases {
+		var out, errb bytes.Buffer
+		code := Main(append([]string{"--config", cfgPath}, args...), strings.NewReader(""), &out, &errb)
+		if code != ExitUsage {
+			t.Errorf("%v: exit %d, want %d (stderr %q)", args, code, ExitUsage, errb.String())
+		}
+		if !strings.HasPrefix(errb.String(), "error: usage error:") {
+			t.Errorf("%v: stderr = %q", args, errb.String())
+		}
+	}
+	// Platform-specific trees get the same treatment.
+	_, _, err := run(t, cfgPath, "cf", "dns", "list")
+	if ExitCodeFor(err) != ExitUsage {
+		t.Errorf("cf dns list without zone = %v (exit %d)", err, ExitCodeFor(err))
+	}
+	// The global -p shorthand works on auth login/logout.
+	if _, _, err := run(t, cfgPath, "auth", "logout", "-p", "nope"); ExitCodeFor(err) != ExitNotFound {
+		t.Errorf("auth logout -p nope = %v (exit %d)", err, ExitCodeFor(err))
+	}
+}
+
+func TestHelpGroupsAndFlagUsages(t *testing.T) {
+	_, cfgPath := setup(t, false)
+	stdout, _, err := run(t, cfgPath, "--help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stdout, "Additional Commands:") {
+		t.Errorf("core commands fell into cobra's fallback group:\n%s", stdout)
+	}
+	core := strings.Index(stdout, "Commands:")
+	plat := strings.Index(stdout, "Platform-specific Commands:")
+	if core < 0 || plat < 0 || core > plat {
+		t.Errorf("group order wrong (core %d, platform %d):\n%s", core, plat, stdout)
+	}
+	// pflag reads text between backticks as the value placeholder, so no
+	// flag usage anywhere in the tree may contain one.
+	rt := app.New(app.Flags{}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	var walk func(c *cobra.Command)
+	walk = func(c *cobra.Command) {
+		c.LocalFlags().VisitAll(func(f *pflag.Flag) {
+			if strings.Contains(f.Usage, "`") {
+				t.Errorf("%s --%s: usage contains backticks: %q", c.CommandPath(), f.Name, f.Usage)
+			}
+		})
+		for _, sub := range c.Commands() {
+			walk(sub)
+		}
+	}
+	walk(NewRoot(rt))
+}
+
+func TestSyncFailureExitsNonZero(t *testing.T) {
+	_, cfgPath := setup(t, true)
+	fc := client("a")
+	fc.zones = []platform.Zone{{ID: "z1", Name: "example.com"}}
+	fc.syncErrs = map[platform.ResourceType]error{platform.ResDomain: errors.New("registrar unavailable")}
+
+	stdout, _, err := run(t, cfgPath, "sync", "-o", "json")
+	if err == nil || !strings.Contains(err.Error(), "1 resource set(s) failed") {
+		t.Fatalf("sync with a failing set = %v, want an error", err)
+	}
+	var reports []app.SyncReport
+	if json.Unmarshal([]byte(stdout), &reports) != nil || len(reports) != 3 {
+		t.Fatalf("reports = %q", stdout)
+	}
+	if _, _, err := run(t, cfgPath, "domain", "index"); err == nil {
+		t.Error("domain index with a failing set must not exit 0")
+	}
+}
+
+func TestInventoryPathHonoursEnv(t *testing.T) {
+	dir, cfgPath := setup(t, false)
+	stdout, _, err := run(t, cfgPath, "inventory", "path")
+	if err != nil || strings.TrimSpace(stdout) != filepath.Join(dir, "inventory.db") {
+		t.Errorf("default path = %q, %v", stdout, err)
+	}
+	custom := filepath.Join(t.TempDir(), "x.db")
+	t.Setenv("POLYCTL_INVENTORY_DB", custom)
+	stdout, _, err = run(t, cfgPath, "inventory", "path")
+	if err != nil || strings.TrimSpace(stdout) != custom {
+		t.Errorf("env path = %q, %v", stdout, err)
+	}
+}
+
+func TestDomainInfoErrors(t *testing.T) {
+	dir, cfgPath := setup(t, true)
+	seed(t, dir, []platform.Zone{{ID: "z1", Name: "example.com"}}, nil)
+	// Both lookups miss: one message, exit 4.
+	_, _, err := run(t, cfgPath, "domain", "info", "nothere.org", "--offline")
+	if !errors.Is(err, app.ErrDomainUnknown) || ExitCodeFor(err) != ExitNotFound {
+		t.Fatalf("double miss = %v (exit %d)", err, ExitCodeFor(err))
+	}
+	if n := strings.Count(err.Error(), app.ErrDomainUnknown.Error()); n != 1 || !strings.Contains(err.Error(), "neither a registered domain nor a DNS zone") {
+		t.Errorf("double miss message = %q", err)
+	}
+	// An ambiguous zone keeps its own exit code even when the registrar misses.
+	db := openInventory(t, dir)
+	if err := db.Replace(context.Background(), inventory.Set{Platform: fakePlatform, Profile: "a", Type: platform.ResZone},
+		app.ZoneResources([]platform.Zone{{ID: "z1", Name: "example.com"}, {ID: "z2", Name: "example.com"}}), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	_, _, err = run(t, cfgPath, "domain", "info", "example.com", "--offline")
+	var amb *app.AmbiguousError
+	if !errors.As(err, &amb) || ExitCodeFor(err) != ExitAmbiguous {
+		t.Errorf("ambiguous zone = %v (exit %d)", err, ExitCodeFor(err))
+	}
+}
+
+func TestAuthStatusOfflineReportsUnverified(t *testing.T) {
+	_, cfgPath := setup(t, true)
+	stdout, _, err := run(t, cfgPath, "auth", "status", "--offline", "-o", "json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []statusRow
+	if err := json.Unmarshal([]byte(stdout), &rows); err != nil || len(rows) != 1 {
+		t.Fatalf("rows = %q, %v", stdout, err)
+	}
+	if !rows[0].OK || rows[0].Verified || rows[0].Identity != nil {
+		t.Errorf("row = %+v, want ok, unverified, no identity", rows[0])
+	}
+	stdout, _, err = run(t, cfgPath, "auth", "status", "--offline")
+	if err != nil || !strings.Contains(stdout, "present (not verified)") {
+		t.Errorf("table = %q, %v", stdout, err)
+	}
+}
+
+func TestAuthLoginSecretOptionFromStdin(t *testing.T) {
+	_, cfgPath := setup(t, false)
+	var out, errb bytes.Buffer
+	code := Main([]string{"--config", cfgPath, "auth", "login", string(fakePlatform), "--set", "token=-"}, strings.NewReader("from-stdin\n"), &out, &errb)
+	if code != ExitOK {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+	if strings.Contains(errb.String(), "process listings") {
+		t.Errorf("stdin value must not trigger the argv warning: %s", errb.String())
+	}
+	errb.Reset()
+	code = Main([]string{"--config", cfgPath, "auth", "login", string(fakePlatform), "--set", "token=plain"}, strings.NewReader(""), &out, &errb)
+	if code != ExitOK || !strings.Contains(errb.String(), "process listings") {
+		t.Errorf("exit %d, stderr %q: --set token=... must warn", code, errb.String())
 	}
 }

@@ -160,11 +160,13 @@ if none exists it is created; if several exist the command fails unless
 				return usageErr("--proxied must be true or false")
 			}
 			var out *platform.Record
+			oldID := ""
 			switch {
 			case create || len(matches) == 0:
 				out, err = dns.CreateRecord(cmd.Context(), t.ResourceID, rec)
 			case len(matches) == 1:
 				rec.ID = matches[0].ID
+				oldID = rec.ID
 				if rec.TTL == 0 {
 					rec.TTL = matches[0].TTL
 				}
@@ -182,11 +184,21 @@ if none exists it is created; if several exist the command fails unless
 			if err != nil {
 				return err
 			}
-			// Keep the local inventory in sync with the mutation.
+			// Keep the local inventory in sync with the mutation. Platforms
+			// whose record ids encode the value (Route 53, Cloud DNS,
+			// GoDaddy) hand back a new id after an update, so the row under
+			// the old id must go or the cache lists both.
 			if db, err := rt.DB(); err == nil {
 				cfg, _ := rt.Config()
-				_ = db.Upsert(cmd.Context(), inventory.Set{Platform: t.Platform, Profile: t.Profile, Type: platform.ResDNSRecord},
-					app.RecordResources(t.ResourceID, t.Domain, []platform.Record{*out})[0], cfg.TTLFor(platform.ResDNSRecord))
+				set := inventory.Set{Platform: t.Platform, Profile: t.Profile, Type: platform.ResDNSRecord}
+				if oldID != "" && out.ID != oldID {
+					if err := db.Delete(cmd.Context(), set, platform.ResDNSRecord, oldID); err != nil {
+						rt.Verbosef("inventory: %v", err)
+					}
+				}
+				if err := db.Upsert(cmd.Context(), set, app.RecordResources(t.ResourceID, t.Domain, []platform.Record{*out})[0], cfg.TTLFor(platform.ResDNSRecord)); err != nil {
+					rt.Verbosef("inventory: %v", err)
+				}
 			}
 			rt.Infof("%s %s %s -> %s via %s/%s", map[bool]string{true: "created", false: "updated"}[rec.ID == ""], out.Name, out.Type, out.Content, t.Platform, t.Profile)
 			return rt.Render(dnsResult{Target: t, Records: []platform.Record{*out}}, func() output.Grid {

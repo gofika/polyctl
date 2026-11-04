@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -70,10 +69,7 @@ everything the platform supports; narrow with --type.`,
 			if len(reports) == 0 && firstErr == nil {
 				return fmt.Errorf("nothing to sync (no matching profiles)")
 			}
-			if err := renderSyncReports(rt, reports); err != nil {
-				return err
-			}
-			return firstErr
+			return renderSyncReports(rt, reports, firstErr)
 		},
 	}
 	cmd.Flags().StringSliceVar(&platforms, "platform", nil, "only sync these platforms (comma-separated)")
@@ -83,8 +79,10 @@ everything the platform supports; narrow with --type.`,
 	return cmd
 }
 
-func renderSyncReports(rt *app.Runtime, reports []app.SyncReport) error {
-	return rt.Render(reports, func() output.Grid {
+// renderSyncReports prints the reports and returns firstErr, or an error
+// when any report failed, so a partially failed sync never exits 0.
+func renderSyncReports(rt *app.Runtime, reports []app.SyncReport, firstErr error) error {
+	err := rt.Render(reports, func() output.Grid {
 		g := output.Grid{Headers: []string{"PLATFORM", "PROFILE", "TYPE", "COUNT", "STATUS"}}
 		for _, r := range reports {
 			st := "ok"
@@ -97,6 +95,19 @@ func renderSyncReports(rt *app.Runtime, reports []app.SyncReport) error {
 		}
 		return g
 	})
+	if err != nil {
+		return err
+	}
+	failed := 0
+	for _, r := range reports {
+		if r.Error != "" {
+			failed++
+		}
+	}
+	if firstErr == nil && failed > 0 {
+		firstErr = fmt.Errorf("%d resource set(s) failed to sync", failed)
+	}
+	return firstErr
 }
 
 func newInventoryCmd(rt *app.Runtime) *cobra.Command {
@@ -173,11 +184,11 @@ func newInventoryCmd(rt *app.Runtime) *cobra.Command {
 		Short: "Print the inventory database path",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			dir, err := rt.ConfigDir()
+			path, err := rt.InventoryPath()
 			if err != nil {
 				return err
 			}
-			fmt.Fprintln(rt.Stdout, strings.TrimRight(dir, "/")+"/inventory.db")
+			fmt.Fprintln(rt.Stdout, path)
 			return nil
 		},
 	})

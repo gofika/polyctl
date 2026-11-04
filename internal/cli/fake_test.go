@@ -73,6 +73,11 @@ type fakeClient struct {
 	domains []platform.Domain
 	calls   []string
 	nextID  int
+	// newIDOnUpdate makes UpdateRecord hand back a fresh id, like platforms
+	// whose record ids encode the value (Route 53, Cloud DNS, GoDaddy).
+	newIDOnUpdate bool
+	// syncErrs fails Sync for the given resource types.
+	syncErrs map[platform.ResourceType]error
 }
 
 func (c *fakeClient) record(call string) {
@@ -102,6 +107,9 @@ func (c *fakeClient) Sync(ctx context.Context, rt platform.ResourceType) ([]plat
 	c.record("Sync:" + string(rt))
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := c.syncErrs[rt]; err != nil {
+		return nil, err
+	}
 	switch rt {
 	case platform.ResZone:
 		return app.ZoneResources(c.zones), nil
@@ -150,6 +158,10 @@ func (c *fakeClient) UpdateRecord(ctx context.Context, zoneID string, r platform
 	for i, x := range c.records[zoneID] {
 		if x.ID == r.ID {
 			r.ZoneID = zoneID
+			if c.newIDOnUpdate {
+				c.nextID++
+				r.ID = fmt.Sprintf("r%d", c.nextID)
+			}
 			c.records[zoneID][i] = r
 			out := r
 			return &out, nil

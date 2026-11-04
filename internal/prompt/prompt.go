@@ -13,7 +13,7 @@ import (
 )
 
 // ErrNotInteractive is returned when input is required but stdin is not a terminal.
-var ErrNotInteractive = errors.New("interactive input required but stdin is not a terminal")
+var ErrNotInteractive = errors.New("interactive input required (stdin closed or not a terminal); pass the value with --set or on stdin")
 
 // IO bundles the streams used by prompts.
 type IO struct {
@@ -53,6 +53,9 @@ func (p *IO) Line(label, def string) (string, error) {
 	}
 	s, err := p.reader.ReadString('\n')
 	if err != nil && (s == "" || !errors.Is(err, io.EOF)) {
+		// Terminate the label line so the caller's error message does not
+		// share it.
+		fmt.Fprintln(p.Err)
 		if errors.Is(err, io.EOF) {
 			return "", ErrNotInteractive
 		}

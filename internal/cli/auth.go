@@ -27,14 +27,26 @@ func newAuthCmd(rt *app.Runtime) *cobra.Command {
 
 func loginHelp() string {
 	var b strings.Builder
+	indent := "\n" + strings.Repeat(" ", 14)
 	for _, p := range platform.Providers() {
-		fmt.Fprintf(&b, "  %-11s %s\n", p.ID(), p.LoginHelp())
+		fmt.Fprintf(&b, "  %-11s %s\n", p.ID(), strings.ReplaceAll(strings.TrimSpace(p.LoginHelp()), "\n", indent))
 	}
 	return b.String()
 }
 
+// secretOptionKeys are --set keys whose value is a credential. Passing one
+// on the command line exposes it to process listings and shell history, so
+// the value may be given as "-" to read it from stdin instead.
+var secretOptionKeys = map[string]bool{
+	"token":             true,
+	"secret":            true,
+	"key":               true,
+	"client_secret":     true,
+	"access_key_secret": true,
+	"password":          true,
+}
+
 func newAuthLoginCmd(rt *app.Runtime) *cobra.Command {
-	var name string
 	var sets []string
 	cmd := &cobra.Command{
 		Use:   "login <platform>",
@@ -42,7 +54,8 @@ func newAuthLoginCmd(rt *app.Runtime) *cobra.Command {
 		Long: "Authenticate with a platform and save the credentials in the system keyring\n" +
 			"(or a 0600 file when no keyring is available).\n\nLogin flows:\n" + loginHelp() +
 			"\nPlatform-specific options are passed with --set key=value (see each platform's\n" +
-			"section in the README).",
+			"section in the README). A secret option (token, key, secret, client_secret, ...)\n" +
+			"may be given as --set key=- to read the value from stdin instead of argv.",
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: completePlatforms,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -54,9 +67,7 @@ func newAuthLoginCmd(rt *app.Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if name == "" {
-				name = rt.Flags.Profile
-			}
+			name := rt.Flags.Profile
 			if name == "" {
 				name = string(id)
 			}
@@ -68,6 +79,15 @@ func newAuthLoginCmd(rt *app.Runtime) *cobra.Command {
 				k, v, ok := strings.Cut(s, "=")
 				if !ok {
 					return usageErr("--set expects key=value, got %q", s)
+				}
+				if secretOptionKeys[k] && v != "" {
+					if v == "-" {
+						if v, err = rt.Prompt().RequiredSecret(k); err != nil {
+							return err
+						}
+					} else {
+						rt.Infof("warning: --set %s=... is visible in process listings and shell history; pass %s=- to read it from stdin", k, k)
+					}
 				}
 				opts[k] = v
 			}
@@ -96,7 +116,8 @@ func newAuthLoginCmd(rt *app.Runtime) *cobra.Command {
 			}
 			now := time.Now()
 			p := cfg.Profiles[name]
-			if p == nil {
+			isNew := p == nil
+			if isNew {
 				p = &config.Profile{Platform: id, CreatedAt: now}
 				cfg.Profiles[name] = p
 			}
@@ -107,7 +128,15 @@ func newAuthLoginCmd(rt *app.Runtime) *cobra.Command {
 				cfg.CurrentProfile = name
 			}
 			if err := cfg.Save(); err != nil {
-				return err
+				// A new profile that is not in the config cannot be removed
+				// with `auth logout`, so do not leave its secret behind.
+				kept := "kept"
+				if isNew {
+					if derr := store.Delete(name); derr == nil {
+						kept = "removed"
+					}
+				}
+				return fmt.Errorf("save config: %w (stored credentials for %q were %s)", err, name, kept)
 			}
 			label := res.Label
 			if label != "" {
@@ -117,9 +146,7 @@ func newAuthLoginCmd(rt *app.Runtime) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&name, "profile", "", "profile name (default: the platform name)")
-	cmd.Flags().StringArrayVar(&sets, "set", nil, "platform-specific login option key=value (repeatable)")
-	_ = cmd.RegisterFlagCompletionFunc("profile", completeProfiles(rt))
+	cmd.Flags().StringArrayVar(&sets, "set", nil, "platform-specific login option key=value (repeatable; value - reads a secret from stdin)")
 	return cmd
 }
 
@@ -205,10 +232,13 @@ func newAuthUseCmd(rt *app.Runtime) *cobra.Command {
 }
 
 type statusRow struct {
-	Name     string             `json:"name" yaml:"name"`
-	Platform platform.ID        `json:"platform" yaml:"platform"`
-	Current  bool               `json:"current" yaml:"current"`
-	OK       bool               `json:"ok" yaml:"ok"`
+	Name     string      `json:"name" yaml:"name"`
+	Platform platform.ID `json:"platform" yaml:"platform"`
+	Current  bool        `json:"current" yaml:"current"`
+	OK       bool        `json:"ok" yaml:"ok"`
+	// Verified is false under --offline: the credentials are present but
+	// were not checked against the platform, and Identity is empty.
+	Verified bool               `json:"verified" yaml:"verified"`
 	Identity *platform.Identity `json:"identity,omitempty" yaml:"identity,omitempty"`
 	Error    string             `json:"error,omitempty" yaml:"error,omitempty"`
 }
@@ -240,6 +270,7 @@ func newAuthStatusCmd(rt *app.Runtime) *cobra.Command {
 					failed = true
 				} else {
 					row.OK = true
+					row.Verified = !rt.Flags.Offline
 					row.Identity = id
 				}
 				rows = append(rows, row)
@@ -252,9 +283,12 @@ func newAuthStatusCmd(rt *app.Runtime) *cobra.Command {
 						cur = "*"
 					}
 					st, id := "ok", ""
-					if !r.OK {
+					switch {
+					case !r.OK:
 						st, id = "FAILED", r.Error
-					} else if r.Identity != nil {
+					case !r.Verified:
+						id = "present (not verified)"
+					case r.Identity != nil:
 						id = identitySummary(r.Identity)
 					}
 					g.Rows = append(g.Rows, []string{cur, r.Name, string(r.Platform), st, id})
@@ -292,7 +326,7 @@ func verifyProfile(ctx context.Context, rt *app.Runtime, name string) (*platform
 		if _, err := rt.LoadProfile(name); err != nil {
 			return nil, err
 		}
-		return &platform.Identity{Extra: map[string]string{"name": "credentials present (offline, not verified)"}}, nil
+		return nil, nil
 	}
 	c, _, err := rt.Open(ctx, name)
 	if err != nil {
@@ -302,16 +336,13 @@ func verifyProfile(ctx context.Context, rt *app.Runtime, name string) (*platform
 }
 
 func newAuthLogoutCmd(rt *app.Runtime) *cobra.Command {
-	var name string
 	var keepInventory bool
 	cmd := &cobra.Command{
-		Use:   "logout",
+		Use:   "logout --profile <name>",
 		Short: "Remove a profile and its stored credentials",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if name == "" {
-				name = rt.Flags.Profile
-			}
+			name := rt.Flags.Profile
 			if name == "" {
 				return usageErr("--profile <name> is required")
 			}
@@ -350,8 +381,6 @@ func newAuthLogoutCmd(rt *app.Runtime) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&name, "profile", "", "profile to remove")
 	cmd.Flags().BoolVar(&keepInventory, "keep-inventory", false, "keep cached resources of this profile in the local inventory")
-	_ = cmd.RegisterFlagCompletionFunc("profile", completeProfiles(rt))
 	return cmd
 }

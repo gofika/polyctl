@@ -58,6 +58,29 @@ func ExitCodeFor(err error) int {
 // usageErr wraps an error so it maps to ExitUsage.
 func usageErr(format string, args ...any) error { return app.UsageErrf(format, args...) }
 
+// usageArgs wraps a cobra positional-args validator so its error maps to
+// ExitUsage like every other command-line mistake.
+func usageArgs(v cobra.PositionalArgs) cobra.PositionalArgs {
+	return func(c *cobra.Command, a []string) error {
+		if err := v(c, a); err != nil {
+			return usageErr("%v", err)
+		}
+		return nil
+	}
+}
+
+// wrapArgs applies usageArgs to every command of the tree that validates
+// its positional arguments, so wrong argument counts exit with ExitUsage
+// regardless of which tree (core or platform-specific) defined the command.
+func wrapArgs(cmd *cobra.Command) {
+	if cmd.Args != nil {
+		cmd.Args = usageArgs(cmd.Args)
+	}
+	for _, c := range cmd.Commands() {
+		wrapArgs(c)
+	}
+}
+
 // Main runs the CLI and returns the exit code.
 func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -96,11 +119,19 @@ platform's native features.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			if !cmd.HasParent() {
+				return nil // bare `polyctl` only prints help
+			}
 			if err := rt.Init(); err != nil {
 				return usageErr("%v", err)
 			}
 			return nil
 		},
+		// A runnable root lets cobra validate its arguments, so a stray
+		// first argument is reported through Args (a usage error) instead
+		// of cobra's bare "unknown command" error.
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error { return cmd.Help() },
 	}
 	pf := root.PersistentFlags()
 	pf.StringVar(&rt.Flags.ConfigPath, "config", "", "config file (default ~/.config/polyctl/config.yaml)")
@@ -114,16 +145,27 @@ platform's native features.`,
 	_ = root.RegisterFlagCompletionFunc("output", cobra.FixedCompletions([]string{"table", "json", "yaml"}, cobra.ShellCompDirectiveNoFileComp))
 	_ = root.RegisterFlagCompletionFunc("profile", completeProfiles(rt))
 
-	root.AddCommand(
+	root.AddGroup(&cobra.Group{ID: "core", Title: "Commands:"})
+	for _, c := range []*cobra.Command{
 		newAuthCmd(rt),
 		newDNSCmd(rt),
 		newDomainCmd(rt),
 		newSyncCmd(rt),
 		newInventoryCmd(rt),
-	)
-	root.AddGroup(&cobra.Group{ID: "platforms", Title: "Platform-specific commands:"})
+	} {
+		c.GroupID = "core"
+		root.AddCommand(c)
+	}
+	root.AddGroup(&cobra.Group{ID: "platforms", Title: "Platform-specific Commands:"})
 	root.AddCommand(platformCommands(rt)...)
 	root.CompletionOptions.HiddenDefaultCmd = false
+	root.SetHelpCommandGroupID("core")
+	root.SetCompletionCommandGroupID("core")
+
+	// Mistakes caught by cobra/pflag (unknown flag or command, wrong number
+	// of arguments) are usage errors too and must exit with ExitUsage.
+	root.SetFlagErrorFunc(func(c *cobra.Command, err error) error { return usageErr("%v", err) })
+	wrapArgs(root)
 	return root
 }
 

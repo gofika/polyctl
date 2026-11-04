@@ -173,18 +173,27 @@ func (rt *Runtime) Creds() (*creds.Multi, error) {
 	return st, nil
 }
 
+// InventoryPath returns the inventory database path: POLYCTL_INVENTORY_DB
+// when set, otherwise inventory.db in the config directory.
+func (rt *Runtime) InventoryPath() (string, error) {
+	if p := os.Getenv("POLYCTL_INVENTORY_DB"); p != "" {
+		return p, nil
+	}
+	dir, err := rt.ConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "inventory.db"), nil
+}
+
 // DB opens (once) the inventory database.
 func (rt *Runtime) DB() (*inventory.DB, error) {
 	if rt.db != nil {
 		return rt.db, nil
 	}
-	dir, err := rt.ConfigDir()
+	path, err := rt.InventoryPath()
 	if err != nil {
 		return nil, err
-	}
-	path := os.Getenv("POLYCTL_INVENTORY_DB")
-	if path == "" {
-		path = filepath.Join(dir, "inventory.db")
 	}
 	db, err := inventory.Open(path)
 	if err != nil {
@@ -417,7 +426,11 @@ func (rt *Runtime) EnsureSet(ctx context.Context, s inventory.Set, fetch func(ct
 			return nil, false, err
 		}
 		if st == nil {
-			return nil, true, fmt.Errorf("%w: %s %s for %s/%s is not in the local inventory", inventory.ErrNeverSynced, s.Type, s.Scope, s.Platform, s.Profile)
+			what := string(s.Type)
+			if s.Scope != "" {
+				what += " " + s.Scope
+			}
+			return nil, true, fmt.Errorf("%w: %s for %s/%s is not in the local inventory", inventory.ErrNeverSynced, what, s.Platform, s.Profile)
 		}
 	}
 	rows, err := db.List(ctx, inventory.Query{Platform: s.Platform, Profile: s.Profile, Type: s.Type, ParentID: s.Scope})
