@@ -1,0 +1,346 @@
+package cli
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/spf13/cobra"
+
+	"github.com/gofika/polyctl/internal/app"
+	"github.com/gofika/polyctl/internal/inventory"
+	"github.com/gofika/polyctl/internal/output"
+	"github.com/gofika/polyctl/internal/platform"
+)
+
+func newDomainCmd(rt *app.Runtime) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "domain",
+		Short: "Platform-neutral domain management (auto-routed by domain)",
+	}
+	ns := &cobra.Command{Use: "ns", Short: "Manage nameservers at the registrar"}
+	ns.AddCommand(newDomainNSSetCmd(rt), newDomainNSGetCmd(rt))
+	cmd.AddCommand(newDomainInfoCmd(rt), ns, newDomainWhichCmd(rt), newDomainIndexCmd(rt), newDomainListCmd(rt))
+	return cmd
+}
+
+type domainInfo struct {
+	Domain    string           `json:"domain" yaml:"domain"`
+	Registrar *app.Target      `json:"registrar,omitempty" yaml:"registrar,omitempty"`
+	Details   *platform.Domain `json:"details,omitempty" yaml:"details,omitempty"`
+	Zone      *app.Target      `json:"zone,omitempty" yaml:"zone,omitempty"`
+	ZoneInfo  *platform.Zone   `json:"zone_info,omitempty" yaml:"zone_info,omitempty"`
+	Cached    bool             `json:"cached" yaml:"cached"`
+}
+
+// loadDomain returns the registrar view of a domain from cache or remote.
+func loadDomain(cmd *cobra.Command, rt *app.Runtime, t *app.Target) (*platform.Domain, bool, error) {
+	set := inventory.Set{Platform: t.Platform, Profile: t.Profile, Type: platform.ResDomain}
+	need, err := rt.NeedsRefresh(cmd.Context(), set)
+	if err != nil {
+		return nil, false, err
+	}
+	if need {
+		reg, err := rt.OpenRegistrar(cmd.Context(), t)
+		if err != nil {
+			return nil, false, err
+		}
+		d, err := reg.GetDomain(cmd.Context(), t.Domain)
+		if err != nil {
+			return nil, false, err
+		}
+		if db, err := rt.DB(); err == nil {
+			cfg, _ := rt.Config()
+			_ = db.Upsert(cmd.Context(), set, app.DomainResources([]platform.Domain{*d})[0], cfg.TTLFor(platform.ResDomain))
+		}
+		return d, false, nil
+	}
+	db, err := rt.DB()
+	if err != nil {
+		return nil, false, err
+	}
+	r, err := db.Get(cmd.Context(), set, platform.ResDomain, t.ResourceID)
+	if err != nil {
+		return nil, false, err
+	}
+	var d platform.Domain
+	if err := r.Decode(&d); err != nil {
+		return nil, false, err
+	}
+	return &d, true, nil
+}
+
+func newDomainInfoCmd(rt *app.Runtime) *cobra.Command {
+	return &cobra.Command{
+		Use:               "info <domain>",
+		Short:             "Show registrar details and the DNS zone of a domain",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeDomains(rt),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			info := domainInfo{Domain: platform.NormalizeDomain(args[0]), Cached: true}
+			var errs []string
+			if t, err := rt.ResolveDomain(cmd.Context(), args[0], platform.ResDomain); err == nil {
+				info.Registrar = t
+				d, cached, err := loadDomain(cmd, rt, t)
+				if err != nil {
+					errs = append(errs, "registrar: "+err.Error())
+				} else {
+					info.Details = d
+					info.Cached = info.Cached && cached
+				}
+			} else {
+				errs = append(errs, "registrar: "+err.Error())
+			}
+			if t, err := rt.ResolveDomain(cmd.Context(), args[0], platform.ResZone); err == nil {
+				info.Zone = t
+				if db, err := rt.DB(); err == nil {
+					if r, err := db.Get(cmd.Context(), inventory.Set{Platform: t.Platform, Profile: t.Profile}, platform.ResZone, t.ResourceID); err == nil {
+						var z platform.Zone
+						if r.Decode(&z) == nil {
+							info.ZoneInfo = &z
+						}
+					}
+				}
+			} else {
+				errs = append(errs, "zone: "+err.Error())
+			}
+			if info.Registrar == nil && info.Zone == nil {
+				return fmt.Errorf("%w: %s", app.ErrDomainUnknown, strings.Join(errs, "; "))
+			}
+			for _, e := range errs {
+				rt.Infof("note: %s", e)
+			}
+			return rt.Render(info, func() output.Grid {
+				pairs := []string{"DOMAIN", info.Domain}
+				if info.Registrar != nil {
+					pairs = append(pairs, "REGISTRAR", fmt.Sprintf("%s/%s", info.Registrar.Platform, info.Registrar.Profile))
+				}
+				if d := info.Details; d != nil {
+					pairs = append(pairs,
+						"STATUS", d.Status,
+						"EXPIRES", d.ExpiresAt,
+						"AUTO-RENEW", output.Str(d.AutoRenew),
+						"LOCKED", output.Str(d.Locked),
+						"PRIVACY", output.Str(d.Privacy),
+						"NAMESERVERS", strings.Join(d.Nameservers, " "))
+				}
+				if info.Zone != nil {
+					pairs = append(pairs, "DNS ZONE", fmt.Sprintf("%s via %s/%s (id %s)", info.Zone.Domain, info.Zone.Platform, info.Zone.Profile, info.Zone.ResourceID))
+					if z := info.ZoneInfo; z != nil && len(z.Nameservers) > 0 {
+						pairs = append(pairs, "ZONE NS", strings.Join(z.Nameservers, " "))
+					}
+				}
+				if info.Cached {
+					pairs = append(pairs, "SOURCE", "local inventory (use --refresh to re-fetch)")
+				}
+				return output.KV(pairs...)
+			})
+		},
+	}
+}
+
+func newDomainNSGetCmd(rt *app.Runtime) *cobra.Command {
+	return &cobra.Command{
+		Use:               "get <domain>",
+		Short:             "Show the nameservers set at the registrar",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeDomains(rt),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			t, err := rt.ResolveDomain(cmd.Context(), args[0], platform.ResDomain)
+			if err != nil {
+				return err
+			}
+			d, cached, err := loadDomain(cmd, rt, t)
+			if err != nil {
+				return err
+			}
+			rt.Infof("%s via %s/%s%s", d.Name, t.Platform, t.Profile, cacheNote(cached))
+			return rt.Render(map[string]any{"domain": d.Name, "nameservers": d.Nameservers, "target": t}, func() output.Grid {
+				g := output.Grid{Headers: []string{"NAMESERVER"}, Empty: "no nameservers"}
+				for _, ns := range d.Nameservers {
+					g.Rows = append(g.Rows, []string{ns})
+				}
+				return g
+			})
+		},
+	}
+}
+
+func newDomainNSSetCmd(rt *app.Runtime) *cobra.Command {
+	var ns []string
+	cmd := &cobra.Command{
+		Use:               "set <domain> --ns ns1.example.com,ns2.example.com",
+		Short:             "Set the nameservers at the registrar",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeDomains(rt),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(ns) == 0 {
+				return usageErr("--ns is required")
+			}
+			for i := range ns {
+				ns[i] = platform.NormalizeDomain(ns[i])
+				if ns[i] == "" {
+					return usageErr("empty nameserver in --ns")
+				}
+			}
+			t, err := rt.ResolveDomain(cmd.Context(), args[0], platform.ResDomain)
+			if err != nil {
+				return err
+			}
+			if rt.Flags.Offline {
+				return app.ErrOffline
+			}
+			reg, err := rt.OpenRegistrar(cmd.Context(), t)
+			if err != nil {
+				return err
+			}
+			if err := reg.SetNameservers(cmd.Context(), t.Domain, ns); err != nil {
+				return err
+			}
+			d, err := reg.GetDomain(cmd.Context(), t.Domain)
+			if err == nil {
+				if db, err := rt.DB(); err == nil {
+					cfg, _ := rt.Config()
+					_ = db.Upsert(cmd.Context(), inventory.Set{Platform: t.Platform, Profile: t.Profile, Type: platform.ResDomain}, app.DomainResources([]platform.Domain{*d})[0], cfg.TTLFor(platform.ResDomain))
+				}
+			} else {
+				d = &platform.Domain{Name: t.Domain, Nameservers: ns}
+			}
+			rt.Infof("nameservers of %s updated via %s/%s", t.Domain, t.Platform, t.Profile)
+			return rt.Render(map[string]any{"domain": d.Name, "nameservers": d.Nameservers, "target": t}, func() output.Grid {
+				g := output.Grid{Headers: []string{"NAMESERVER"}}
+				for _, n := range d.Nameservers {
+					g.Rows = append(g.Rows, []string{n})
+				}
+				return g
+			})
+		},
+	}
+	cmd.Flags().StringSliceVar(&ns, "ns", nil, "comma-separated nameservers")
+	return cmd
+}
+
+func newDomainWhichCmd(rt *app.Runtime) *cobra.Command {
+	return &cobra.Command{
+		Use:               "which <domain>",
+		Short:             "Show which profiles own a domain (registrar and DNS zone)",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeDomains(rt),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db, err := rt.DB()
+			if err != nil {
+				return err
+			}
+			cands := platform.Candidates(args[0])
+			if len(cands) == 0 {
+				return usageErr("invalid domain %q", args[0])
+			}
+			entries, err := db.LookupDomain(cmd.Context(), cands, "")
+			if err != nil {
+				return err
+			}
+			if len(entries) == 0 && !rt.Flags.Offline {
+				// Trigger auto-indexing through the resolver, then re-read.
+				_, _ = rt.ResolveDomain(cmd.Context(), args[0], platform.ResZone)
+				_, _ = rt.ResolveDomain(cmd.Context(), args[0], platform.ResDomain)
+				entries, err = db.LookupDomain(cmd.Context(), cands, "")
+				if err != nil {
+					return err
+				}
+			}
+			if len(entries) == 0 {
+				return fmt.Errorf("%w: %q", app.ErrDomainUnknown, args[0])
+			}
+			return rt.Render(entries, func() output.Grid {
+				g := output.Grid{Headers: []string{"DOMAIN", "KIND", "PLATFORM", "PROFILE", "RESOURCE ID", "INDEXED"}}
+				for _, e := range entries {
+					g.Rows = append(g.Rows, []string{e.Domain, string(e.Type), string(e.Platform), e.Profile, e.ResourceID, e.UpdatedAt.Format("2006-01-02 15:04")})
+				}
+				return g
+			})
+		},
+	}
+}
+
+func newDomainIndexCmd(rt *app.Runtime) *cobra.Command {
+	return &cobra.Command{
+		Use:   "index",
+		Short: "Scan every domain-capable profile and rebuild the domain index",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if rt.Flags.Offline {
+				return app.ErrOffline
+			}
+			names, err := rt.DomainProfiles()
+			if err != nil {
+				return err
+			}
+			if rt.Flags.Profile != "" {
+				names = []string{rt.Flags.Profile}
+			}
+			if len(names) == 0 {
+				return fmt.Errorf("no domain-capable profiles configured; run `polyctl auth login`")
+			}
+			var reports []app.SyncReport
+			var firstErr error
+			for _, n := range names {
+				reps, err := rt.SyncProfile(cmd.Context(), n, []platform.ResourceType{platform.ResZone, platform.ResDomain})
+				reports = append(reports, reps...)
+				if err != nil {
+					rt.Infof("warning: %s: %v", n, err)
+					if firstErr == nil {
+						firstErr = err
+					}
+				}
+			}
+			if err := renderSyncReports(rt, reports); err != nil {
+				return err
+			}
+			return firstErr
+		},
+	}
+}
+
+func newDomainListCmd(rt *app.Runtime) *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List every indexed domain and zone across all profiles",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db, err := rt.DB()
+			if err != nil {
+				return err
+			}
+			if rt.Flags.Refresh {
+				names, err := rt.DomainProfiles()
+				if err != nil {
+					return err
+				}
+				for _, n := range names {
+					if _, err := rt.SyncProfile(cmd.Context(), n, []platform.ResourceType{platform.ResZone, platform.ResDomain}); err != nil {
+						rt.Infof("warning: %s: %v", n, err)
+					}
+				}
+			}
+			entries, err := db.IndexEntries(cmd.Context())
+			if err != nil {
+				return err
+			}
+			if rt.Flags.Profile != "" {
+				var f []inventory.IndexEntry
+				for _, e := range entries {
+					if e.Profile == rt.Flags.Profile {
+						f = append(f, e)
+					}
+				}
+				entries = f
+			}
+			return rt.Render(entries, func() output.Grid {
+				g := output.Grid{Headers: []string{"DOMAIN", "KIND", "PLATFORM", "PROFILE", "RESOURCE ID"}, Empty: "index is empty; run `polyctl domain index`"}
+				for _, e := range entries {
+					g.Rows = append(g.Rows, []string{e.Domain, string(e.Type), string(e.Platform), e.Profile, e.ResourceID})
+				}
+				return g
+			})
+		},
+	}
+}

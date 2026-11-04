@@ -1,0 +1,7 @@
+/polyctl
+/dist/
+/bin/
+*.db
+*.test
+*.out
+.DS_Store
