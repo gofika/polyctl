@@ -33,8 +33,14 @@ type Client struct {
 // New returns a client with sane defaults.
 func New(baseURL string, prepare func(*http.Request)) *Client {
 	return &Client{
-		BaseURL:    strings.TrimRight(baseURL, "/"),
-		HTTP:       &http.Client{Timeout: 60 * time.Second},
+		BaseURL: strings.TrimRight(baseURL, "/"),
+		HTTP: &http.Client{
+			Timeout: 60 * time.Second,
+			// REST APIs do not redirect; following one would resend the
+			// Authorization header (possibly over plain http) and turn a
+			// POST into a bodiless GET. Surface 3xx as an error instead.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
 		Prepare:    prepare,
 		MaxRetries: 3,
 	}
@@ -67,8 +73,22 @@ func (e *Error) Unwrap() error {
 	return nil
 }
 
+// idempotentMethods may be retried after a transport error or a 5xx: the
+// server may have processed the first attempt, but repeating it is harmless.
+// POST/PATCH are not in the list, so a timed-out create is never duplicated.
+var idempotentMethods = map[string]bool{
+	http.MethodGet:     true,
+	http.MethodHead:    true,
+	http.MethodOptions: true,
+	http.MethodPut:     true,
+	http.MethodDelete:  true,
+}
+
 // Do performs a JSON request. in (if non-nil) is marshalled as the body; out
 // (if non-nil) receives the decoded response body. Query parameters are appended.
+//
+// 429 responses are retried for every method (the server did not process the
+// request); transport errors and 5xx responses only for idempotent methods.
 func (c *Client) Do(ctx context.Context, method, path string, query url.Values, in, out any) error {
 	var body []byte
 	if in != nil {
@@ -102,18 +122,25 @@ func (c *Client) Do(ctx context.Context, method, path string, query url.Values, 
 		if c.Prepare != nil {
 			c.Prepare(req)
 		}
+		idempotent := idempotentMethods[method]
 		resp, err := c.HTTP.Do(req)
 		if err != nil {
+			if !idempotent {
+				return err
+			}
 			lastErr = err
 			continue
 		}
 		rb, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 		resp.Body.Close()
 		if err != nil {
+			if !idempotent {
+				return err
+			}
 			lastErr = err
 			continue
 		}
-		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+		if resp.StatusCode == http.StatusTooManyRequests || (resp.StatusCode >= 500 && idempotent) {
 			lastErr = &Error{Status: resp.StatusCode, Method: method, URL: u, Body: string(rb)}
 			continue
 		}

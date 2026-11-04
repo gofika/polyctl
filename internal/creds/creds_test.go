@@ -198,3 +198,43 @@ func TestOpenFileMode(t *testing.T) {
 		t.Fatalf("Open(vault) = %v, want unknown mode error", err)
 	}
 }
+
+func TestMultiSetRemovesStaleCopies(t *testing.T) {
+	primary := creds.NewFile(t.TempDir())
+	other := creds.NewFile(t.TempDir())
+	m := &creds.Multi{Primary: primary, Others: []creds.Store{other}}
+	// A secret that once landed in the fallback (keyring unavailable then).
+	if err := other.Set("p", map[string]string{"token": "old"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Set("p", map[string]string{"token": "new"}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if got, _ := primary.Get("p"); got["token"] != "new" {
+		t.Errorf("primary = %v", got)
+	}
+	if _, err := other.Get("p"); !errors.Is(err, creds.ErrNotFound) {
+		t.Errorf("stale copy must be removed from the fallback store: %v", err)
+	}
+}
+
+func TestFileStoreLeavesNoTempFiles(t *testing.T) {
+	dir := t.TempDir()
+	f := creds.NewFile(dir)
+	for i := 0; i < 3; i++ {
+		if err := f.Set("p", map[string]string{"token": "t"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "credentials.json" {
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("directory contents = %v, want only credentials.json", names)
+	}
+}

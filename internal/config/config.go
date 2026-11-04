@@ -120,11 +120,27 @@ func (c *Config) Save() error {
 	if err != nil {
 		return err
 	}
-	tmp := c.path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(c.path), ".config.yaml.*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, c.path)
+	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), c.path)
 }
 
 // Profile returns a profile by name.

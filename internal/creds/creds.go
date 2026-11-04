@@ -99,22 +99,39 @@ func (f *File) load() (map[string]map[string]string, error) {
 	return out, nil
 }
 
+// save writes the file atomically: a fresh private temporary file (O_EXCL,
+// 0600 from creation, so no permission window, no symlink following and no
+// clash between concurrent writers), fsync, then rename over the target.
 func (f *File) save(all map[string]map[string]string) error {
-	if err := os.MkdirAll(filepath.Dir(f.Path), 0o700); err != nil {
+	dir := filepath.Dir(f.Path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	b, err := json.MarshalIndent(all, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := f.Path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	tmp, err := os.CreateTemp(dir, ".credentials.json.*")
+	if err != nil {
 		return err
 	}
-	if err := os.Chmod(tmp, 0o600); err != nil {
+	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
 		return err
 	}
-	return os.Rename(tmp, f.Path)
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), f.Path)
 }
 
 func (f *File) Get(profile string) (map[string]string, error) {
@@ -189,8 +206,19 @@ func (m *Multi) Get(profile string) (map[string]string, error) {
 	return nil, ErrNotFound
 }
 
+// Set writes to the primary backend and removes any stale copy of the
+// profile from the other backends, so a secret that once landed in the file
+// fallback does not linger in plain text after the keyring took over.
 func (m *Multi) Set(profile string, secret map[string]string) error {
-	return m.Primary.Set(profile, secret)
+	if err := m.Primary.Set(profile, secret); err != nil {
+		return err
+	}
+	for _, o := range m.Others {
+		if err := o.Delete(profile); err != nil && !errors.Is(err, ErrNotFound) {
+			return fmt.Errorf("remove stale copy from %s: %w", o.Name(), err)
+		}
+	}
+	return nil
 }
 
 func (m *Multi) Delete(profile string) error {
