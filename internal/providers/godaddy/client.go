@@ -42,7 +42,7 @@ func (c *client) Verify(ctx context.Context) (*platform.Identity, error) {
 		return nil, err
 	}
 	id := &platform.Identity{
-		Account: c.cred.describe() + " " + c.cred.prefix() + "...",
+		Account: c.cred.label(),
 		Extra:   map[string]string{"env": c.env, "method": c.cred.method()},
 	}
 	if len(page) > 0 {

@@ -54,10 +54,10 @@ func TestAuthorizationHeaders(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
-		if id.Extra["method"] != tc.method || !strings.Contains(id.Account, tc.cred.prefix()+"...") {
+		if id.Extra["method"] != tc.method || !strings.Contains(id.Account, tc.cred.prefix()) {
 			t.Errorf("%s identity: %+v", tc.name, id)
 		}
-		if strings.Contains(id.Account, testToken) || strings.Contains(id.Account, testSecret) {
+		if strings.Contains(id.Account, testToken) || strings.Contains(id.Account, testSecret) || strings.Contains(id.Account, testToken[:6]) {
 			t.Errorf("%s identity leaks the credential: %+v", tc.name, id)
 		}
 	}

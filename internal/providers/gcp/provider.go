@@ -47,9 +47,10 @@ func (*provider) ID() platform.ID     { return platform.GCP }
 func (*provider) DisplayName() string { return "Google Cloud" }
 func (*provider) LoginHelp() string {
 	return `Google Cloud: --set method=adc (default) uses Application Default Credentials
-from "gcloud auth application-default login"; method=service-account stores a JSON
-key file (--set key_file=PATH); method=oauth runs a browser OAuth flow with your own
-Desktop-app OAuth client (--set client_id=... --set client_secret=...).
+from "gcloud auth application-default login"; method=service_account (alias
+service-account) stores a JSON key file (--set key_file=PATH); method=oauth runs a
+browser OAuth flow with your own Desktop-app OAuth client (--set client_id=...
+--set client_secret=-, the secret read from stdin).
 Use --set project=ID to pick the project without prompting.`
 }
 

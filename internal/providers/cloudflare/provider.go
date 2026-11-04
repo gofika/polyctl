@@ -77,13 +77,10 @@ func (*provider) ResourceTypes() []platform.ResourceType {
 // flow for third-party CLIs, so the user creates a token in the dashboard
 // and pastes it here. Non-interactive callers export CLOUDFLARE_API_TOKEN or
 // pipe the token on stdin. `--set token=...` still works for compatibility
-// but is discouraged: argv is visible in process listings and shell history.
+// (the CLI warns about argv exposure and accepts `--set token=-` for stdin).
 func (p *provider) Login(ctx context.Context, in platform.LoginInput) (*platform.LoginResult, error) {
 	io := prompt.New(in.Stdin, in.Stdout, in.Stderr)
 	token := strings.TrimSpace(in.Opt("token", ""))
-	if token != "" {
-		fmt.Fprintln(io.Err, "warning: a token passed with --set token=... is exposed in process listings and shell history; prefer "+tokenEnv+" or stdin")
-	}
 	if token == "" {
 		if v := strings.TrimSpace(os.Getenv(tokenEnv)); v != "" {
 			token = v

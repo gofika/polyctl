@@ -432,8 +432,8 @@ inside the value ("10 mail.example.com"). Hostnames get the trailing dot
 Cloud DNS expects; TXT values are quoted automatically.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if typ == "" || name == "" || len(values) == 0 {
-				return app.UsageErrf("--type, --name and at least one --value are required")
+			if typ == "" || len(values) == 0 {
+				return app.UsageErrf("--type and at least one --value are required")
 			}
 			if rt.Flags.Offline {
 				return app.ErrOffline
@@ -479,7 +479,7 @@ Cloud DNS expects; TXT values are quoted automatically.`,
 		},
 	}
 	cmd.Flags().StringVar(&typ, "type", "", "record type (A, AAAA, CNAME, TXT, MX, ...)")
-	cmd.Flags().StringVar(&name, "name", "", "record name relative to the zone (www, @) or FQDN")
+	cmd.Flags().StringVar(&name, "name", "", "record name relative to the zone (www, @) or FQDN; default: the zone apex")
 	cmd.Flags().StringArrayVar(&values, "value", nil, "record value (repeat for multiple values)")
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 = keep existing, or 300 for a new set)")
 	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX/SRV records")
@@ -547,7 +547,7 @@ func newRecordDeleteCmd(rt *app.Runtime) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&typ, "type", "", "record type")
-	cmd.Flags().StringVar(&name, "name", "", "record name relative to the zone (www, @) or FQDN")
+	cmd.Flags().StringVar(&name, "name", "", "record name relative to the zone (www, @) or FQDN; default: the zone apex")
 	cmd.Flags().StringVar(&value, "value", "", "only remove this value from the set")
 	cmd.Flags().IntVar(&priority, "priority", 0, "priority of the MX/SRV value given with --value")
 	cmd.Flags().StringVar(&id, "id", "", "delete the record value with this id (zone|TYPE|name|value)")

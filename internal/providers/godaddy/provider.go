@@ -27,7 +27,7 @@ func init() { platform.Register(&provider{}) }
 //
 //	env        "production" or "ote"
 //	method     "pat" or "api_key"
-//	key_prefix first 6 characters of the token or API key (to tell them apart)
+//	key_prefix fingerprint of the token (sha256 prefix) or first characters of the API key id
 //	base_url   only when overridden with --set base_url=... (custom endpoint)
 const (
 	secretToken  = "token"
@@ -52,7 +52,7 @@ func (*provider) ID() platform.ID     { return platform.GoDaddy }
 func (*provider) DisplayName() string { return "GoDaddy" }
 
 func (*provider) LoginHelp() string {
-	return "Personal Access Token created at " + keysURL + " (" + accessRequirement + "; use --set env=ote for the test environment). Non-interactive: --set token=... (legacy API key pair: --set key=... --set secret=... or --set method=api_key)"
+	return "Personal Access Token created at " + keysURL + " (" + accessRequirement + "; use --set env=ote for the test environment). Non-interactive: --set token=- reads the token from stdin (legacy API key pair: --set key=... --set secret=- or --set method=api_key)"
 }
 
 func (*provider) ResourceTypes() []platform.ResourceType {
@@ -147,7 +147,7 @@ func (*provider) Login(ctx context.Context, in platform.LoginInput) (*platform.L
 	if baseURL != "" {
 		meta[metaBaseURL] = baseURL
 	}
-	label := fmt.Sprintf("GoDaddy %s, %s %s...", env, cred.describe(), cred.prefix())
+	label := fmt.Sprintf("GoDaddy %s, %s", env, cred.label())
 	if d := id.Extra["first_domain"]; d != "" {
 		label += " (domains include " + d + ")"
 	} else {
@@ -202,12 +202,23 @@ func (c credentials) describe() string {
 	return "API key"
 }
 
-// prefix returns the non-sensitive leading characters of the credential.
+// prefix returns a non-sensitive identifier of the credential: a one-way
+// fingerprint for a PAT (every character of it is secret) and the leading
+// characters of an API key id (which is not secret on its own).
 func (c credentials) prefix() string {
 	if c.token != "" {
-		return keyPrefix(c.token)
+		return fingerprint(c.token)
 	}
 	return keyPrefix(c.key)
+}
+
+// label is the human description of the credential used in labels and
+// identities, e.g. "personal access token fingerprint 1a2b3c4d".
+func (c credentials) label() string {
+	if c.token != "" {
+		return c.describe() + " fingerprint " + c.prefix()
+	}
+	return c.describe() + " " + c.prefix() + "..."
 }
 
 // authorization is the value of the Authorization header.

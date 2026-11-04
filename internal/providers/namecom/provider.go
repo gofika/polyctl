@@ -38,7 +38,7 @@ func (*provider) ID() platform.ID     { return platform.NameCom }
 func (*provider) DisplayName() string { return "name.com" }
 func (*provider) LoginHelp() string {
 	return "API token (HTTP Basic): create a token at " + apiTokenURL + ", then enter your username and token. " +
-		"Non-interactive: --set username=<user> --set token=<token>; use --set env=test for api.dev.name.com " +
+		"Non-interactive: --set username=<user> --set token=- (token read from stdin); use --set env=test for api.dev.name.com " +
 		"(the test environment needs your username with " + testUserSuffix + " appended, added automatically, and a token created for that environment)."
 }
 

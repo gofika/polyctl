@@ -375,8 +375,11 @@ func newDNSCreateCmd(rt *app.Runtime) *cobra.Command {
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: completeZones(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if typ == "" || name == "" || value == "" {
-				return app.UsageErrf("--type, --name and --value are required")
+			if typ == "" || value == "" {
+				return app.UsageErrf("--type and --value are required")
+			}
+			if rt.Flags.Offline {
+				return app.ErrOffline
 			}
 			px, err := parseBool("proxied", proxied)
 			if err != nil {
@@ -408,7 +411,7 @@ func newDNSCreateCmd(rt *app.Runtime) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&typ, "type", "", "record type (A, AAAA, CNAME, TXT, MX, ...)")
-	cmd.Flags().StringVar(&name, "name", "", "record name relative to the zone (www, @) or FQDN")
+	cmd.Flags().StringVar(&name, "name", "", "record name relative to the zone (www, @) or FQDN; default: the zone apex")
 	cmd.Flags().StringVar(&value, "value", "", "record content")
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 or 1 = automatic)")
 	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX/SRV/URI records")
@@ -428,6 +431,9 @@ func newDNSUpdateCmd(rt *app.Runtime) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if id == "" {
 				return app.UsageErrf("--id is required")
+			}
+			if rt.Flags.Offline {
+				return app.ErrOffline
 			}
 			px, err := parseBool("proxied", proxied)
 			if err != nil {
@@ -496,7 +502,7 @@ func newDNSUpdateCmd(rt *app.Runtime) *cobra.Command {
 			return rt.Render(recordsResult{Profile: profile, Zone: z, Records: []platform.Record{*out}}, func() output.Grid { return recordGrid([]platform.Record{*out}) })
 		},
 	}
-	cmd.Flags().StringVar(&id, "id", "", "record id (see `cf dns list`)")
+	cmd.Flags().StringVar(&id, "id", "", "record id (see 'cf dns list')")
 	cmd.Flags().StringVar(&typ, "type", "", "new record type")
 	cmd.Flags().StringVar(&name, "name", "", "new record name relative to the zone (www, @) or FQDN")
 	cmd.Flags().StringVar(&value, "value", "", "new record content")
@@ -518,6 +524,9 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 			if id == "" {
 				return app.UsageErrf("--id is required")
 			}
+			if rt.Flags.Offline {
+				return app.ErrOffline
+			}
 			z, profile, err := resolveZone(cmd.Context(), rt, args[0])
 			if err != nil {
 				return err
@@ -536,7 +545,7 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 			return rt.Render(map[string]string{"profile": profile, "zone_id": z.ID, "zone": z.Name, "deleted": id}, func() output.Grid { return output.Grid{} })
 		},
 	}
-	cmd.Flags().StringVar(&id, "id", "", "record id (see `cf dns list`)")
+	cmd.Flags().StringVar(&id, "id", "", "record id (see 'cf dns list')")
 	return cmd
 }
 
@@ -564,6 +573,9 @@ func newCacheCmd(rt *app.Runtime) *cobra.Command {
 			selective := len(urls)+len(hosts)+len(tags)+len(prefixes) > 0
 			if everything == selective {
 				return errors.New("pass exactly one of --everything or a selection (--url, --host, --tag, --prefix)")
+			}
+			if rt.Flags.Offline {
+				return app.ErrOffline
 			}
 			z, profile, err := resolveZone(cmd.Context(), rt, args[0])
 			if err != nil {
@@ -628,6 +640,9 @@ func settingCmd(rt *app.Runtime, use, short, setting string, allowed []string) *
 		Args:              cobra.RangeArgs(1, 2),
 		ValidArgsFunction: completeZones(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if rt.Flags.Offline {
+				return app.ErrOffline
+			}
 			var value string
 			if len(args) == 2 {
 				value = strings.ToLower(args[1])
@@ -646,9 +661,6 @@ func settingCmd(rt *app.Runtime, use, short, setting string, allowed []string) *
 			var s *session
 			var res *zoneSetting
 			if value == "" {
-				if rt.Flags.Offline {
-					return app.ErrOffline
-				}
 				if s, err = open(cmd.Context(), rt); err != nil {
 					return err
 				}

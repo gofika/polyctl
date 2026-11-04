@@ -52,16 +52,19 @@ func TestLoginNonInteractivePAT(t *testing.T) {
 	if res.Secret["token"] != testToken || len(res.Secret) != 1 {
 		t.Errorf("secret must hold only the token: %v", keysOf(res.Secret))
 	}
-	if res.Metadata["env"] != "ote" || res.Metadata["method"] != "pat" || res.Metadata["key_prefix"] != keyPrefix(testToken) || res.Metadata["base_url"] != srv.URL {
+	if res.Metadata["env"] != "ote" || res.Metadata["method"] != "pat" || res.Metadata["key_prefix"] != fingerprint(testToken) || res.Metadata["base_url"] != srv.URL {
 		t.Errorf("metadata: %+v", res.Metadata)
 	}
 	for k, v := range res.Metadata {
-		if v == testToken {
-			t.Errorf("metadata %s leaks the token", k)
+		if v == testToken || (len(v) >= 4 && strings.Contains(testToken, v)) {
+			t.Errorf("metadata %s leaks (part of) the token: %q", k, v)
 		}
 	}
-	if !strings.Contains(res.Label, "first.example") || !strings.Contains(res.Label, keyPrefix(testToken)+"...") || !strings.Contains(res.Label, "personal access token") {
+	if !strings.Contains(res.Label, "first.example") || !strings.Contains(res.Label, "fingerprint "+fingerprint(testToken)) || !strings.Contains(res.Label, "personal access token") {
 		t.Errorf("label: %q", res.Label)
+	}
+	if strings.Contains(res.Label, testToken[:6]) {
+		t.Errorf("label leaks the token prefix: %q", res.Label)
 	}
 	if strings.Contains(stderr.String(), testToken) {
 		t.Error("token printed to stderr")

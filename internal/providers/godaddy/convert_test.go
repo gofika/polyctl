@@ -2,6 +2,7 @@ package godaddy
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/gofika/polyctl/internal/platform"
@@ -100,5 +101,8 @@ func TestDomainConversion(t *testing.T) {
 func TestKeyPrefix(t *testing.T) {
 	if keyPrefix("abcdefghij") != "abcdef" || keyPrefix("abc") != "abc" || keyPrefix("") != "" {
 		t.Error("keyPrefix")
+	}
+	if fp := fingerprint("abcdefghij"); len(fp) != 8 || fp == fingerprint("abcdefghik") || strings.Contains("abcdefghij", fp) {
+		t.Errorf("fingerprint = %q", fp)
 	}
 }

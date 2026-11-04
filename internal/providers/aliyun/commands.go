@@ -374,7 +374,7 @@ func newDNSRecordUpdateCmd(rt *app.Runtime) *cobra.Command {
 			})
 		},
 	}
-	cmd.Flags().StringVar(&id, "id", "", "record id (see `aliyun dns record list`)")
+	cmd.Flags().StringVar(&id, "id", "", "record id (see 'aliyun dns record list')")
 	cmd.Flags().StringVar(&typ, "type", "", "new record type")
 	cmd.Flags().StringVar(&name, "name", "", "new record name relative to the domain (www, @)")
 	cmd.Flags().StringVar(&value, "value", "", "new record content")
@@ -409,7 +409,7 @@ func newDNSRecordDeleteCmd(rt *app.Runtime) *cobra.Command {
 			return rt.Render(map[string]string{"profile": p.Name, "zone": zone, "deleted": id}, func() output.Grid { return output.Grid{} })
 		},
 	}
-	cmd.Flags().StringVar(&id, "id", "", "record id (see `aliyun dns record list`)")
+	cmd.Flags().StringVar(&id, "id", "", "record id (see 'aliyun dns record list')")
 	return cmd
 }
 
@@ -424,9 +424,44 @@ type domainList struct {
 func newDomainCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{Use: "domain", Short: "Registered domains (Alibaba Cloud domain registrar)"}
 	ns := &cobra.Command{Use: "ns", Short: "Nameservers of a registered domain"}
-	ns.AddCommand(newDomainNSSetCmd(rt))
+	ns.AddCommand(newDomainNSGetCmd(rt), newDomainNSSetCmd(rt))
 	cmd.AddCommand(newDomainListCmd(rt), newDomainGetCmd(rt), ns)
 	return cmd
+}
+
+// nameserversResult is the output of `aliyun domain ns get`.
+type nameserversResult struct {
+	Profile     string   `json:"profile" yaml:"profile"`
+	Cached      bool     `json:"cached" yaml:"cached"`
+	Domain      string   `json:"domain" yaml:"domain"`
+	Nameservers []string `json:"nameservers" yaml:"nameservers"`
+}
+
+func newDomainNSGetCmd(rt *app.Runtime) *cobra.Command {
+	return &cobra.Command{
+		Use:   "get <domain>",
+		Short: "Show the nameservers of a registered domain (local inventory when fresh or --offline)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			prof, err := rt.ProfileFor(platform.Aliyun)
+			if err != nil {
+				return err
+			}
+			d, cached, err := loadDomain(rt, cmd.Context(), prof, platform.NormalizeDomain(args[0]))
+			if err != nil {
+				return err
+			}
+			rt.Infof("domain %s via aliyun/%s%s", d.Name, prof, cacheNote(cached))
+			res := nameserversResult{Profile: prof, Cached: cached, Domain: d.Name, Nameservers: d.Nameservers}
+			return rt.Render(res, func() output.Grid {
+				g := output.Grid{Headers: []string{"NAMESERVER"}, Empty: "no nameservers"}
+				for _, n := range d.Nameservers {
+					g.Rows = append(g.Rows, []string{n})
+				}
+				return g
+			})
+		},
+	}
 }
 
 func newDomainListCmd(rt *app.Runtime) *cobra.Command {

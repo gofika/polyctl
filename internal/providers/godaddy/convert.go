@@ -1,6 +1,8 @@
 package godaddy
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -233,10 +235,17 @@ func extraInt(m map[string]any, key string) *int {
 	return &n
 }
 
-// keyPrefix returns the non-sensitive leading characters of an API key.
+// keyPrefix returns the non-sensitive leading characters of an API key id.
 func keyPrefix(key string) string {
 	if len(key) > 6 {
 		return key[:6]
 	}
 	return key
+}
+
+// fingerprint returns a short one-way digest of a secret: enough to tell two
+// tokens apart without revealing any part of either.
+func fingerprint(secret string) string {
+	sum := sha256.Sum256([]byte(secret))
+	return hex.EncodeToString(sum[:4])
 }

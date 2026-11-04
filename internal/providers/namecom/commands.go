@@ -407,7 +407,6 @@ func newDomainNSSetCmd(rt *app.Runtime) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringSliceVar(&ns, "ns", nil, "nameservers (comma separated or repeated)")
-	_ = cmd.MarkFlagRequired("ns")
 	return cmd
 }
 
@@ -658,13 +657,12 @@ func newDNSUpdateCmd(rt *app.Runtime) *cobra.Command {
 			})
 		},
 	}
-	cmd.Flags().StringVar(&id, "id", "", "record id (see `namecom dns list`)")
+	cmd.Flags().StringVar(&id, "id", "", "record id (see 'namecom dns list')")
 	cmd.Flags().StringVar(&typ, "type", "", "new record type")
 	cmd.Flags().StringVar(&name, "name", "", "new record name relative to the domain (www, @)")
 	cmd.Flags().StringVar(&value, "value", "", "new record content")
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "new TTL in seconds (minimum 300)")
 	cmd.Flags().IntVar(&priority, "priority", 0, "new priority for MX/SRV records")
-	_ = cmd.MarkFlagRequired("id")
 	return cmd
 }
 
@@ -698,7 +696,6 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 			return rt.Render(map[string]string{"profile": p.Name, "domain": domain, "deleted_id": id}, func() output.Grid { return output.Grid{} })
 		},
 	}
-	cmd.Flags().StringVar(&id, "id", "", "record id (see `namecom dns list`)")
-	_ = cmd.MarkFlagRequired("id")
+	cmd.Flags().StringVar(&id, "id", "", "record id (see 'namecom dns list')")
 	return cmd
 }

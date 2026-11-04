@@ -297,6 +297,12 @@ func zoneGetCmd(rt *app.Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// resolveZone hands out an id-only stub offline for anything
+			// that looks like a hosted zone id (record listings are cached
+			// under that id); for `zone get` a stub means nothing is known.
+			if rt.Flags.Offline && z.Name == "" {
+				return fmt.Errorf("%w: hosted zone %q is not in the local inventory (run `polyctl sync --platform aws` when online)", platform.ErrNotFound, args[0])
+			}
 			if !rt.Flags.Offline {
 				c, _, err := openClient(cmd.Context(), rt)
 				if err != nil {
@@ -405,13 +411,14 @@ func syncRecordRows(ctx context.Context, rt *app.Runtime, prof string, z *platfo
 func recordUpsertCmd(rt *app.Runtime) *cobra.Command {
 	var typ, name string
 	var values []string
-	var ttl int
+	var ttl, priority int
 	cmd := &cobra.Command{
 		Use:   "upsert <zone>",
 		Short: "Create or replace a whole record set (name + type) with the given values",
 		Long: `Create or replace the record set identified by --name and --type. Every
 --value becomes one value of the set; existing values that are not repeated
-are removed. MX and SRV values include their priority ("10 mail.example.com").`,
+are removed. MX and SRV values take their priority from --priority, or as a
+leading number inside the value ("10 mail.example.com").`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if typ == "" || len(values) == 0 {
@@ -432,6 +439,14 @@ are removed. MX and SRV values include their priority ("10 mail.example.com").`,
 				return err
 			}
 			fqdn := platform.FQDN(name, z.Name)
+			if cmd.Flags().Changed("priority") && hasPriority(typ) {
+				// Prepend --priority to values that do not carry one already.
+				for i, v := range values {
+					if p, _ := splitPriority(typ, v); p == nil {
+						values[i] = fmt.Sprintf("%d %s", priority, strings.TrimSpace(v))
+					}
+				}
+			}
 			recs, err := c.ReplaceSet(cmd.Context(), z.ID, fqdn, typ, values, ttl)
 			if err != nil {
 				return err
@@ -445,6 +460,7 @@ are removed. MX and SRV values include their priority ("10 mail.example.com").`,
 	cmd.Flags().StringVar(&name, "name", "", "record name relative to the zone (www, @); default: the zone apex")
 	cmd.Flags().StringArrayVar(&values, "value", nil, "record value (repeatable; replaces the whole set)")
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 = keep existing, or 300 for a new set)")
+	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX/SRV values that do not start with one")
 	return cmd
 }
 
@@ -514,9 +530,55 @@ func route53domainsCmd(rt *app.Runtime) *cobra.Command {
 	domain := &cobra.Command{Use: "domain", Short: "Registered domains"}
 	domain.AddCommand(domainListCmd(rt), domainGetCmd(rt))
 	ns := &cobra.Command{Use: "ns", Short: "Nameservers of a registered domain"}
-	ns.AddCommand(nsSetCmd(rt))
+	ns.AddCommand(nsGetCmd(rt), nsSetCmd(rt))
 	cmd.AddCommand(domain, ns)
 	return cmd
+}
+
+// nameserversResult is the output of `aws route53domains ns get`.
+type nameserversResult struct {
+	Profile     string   `json:"profile" yaml:"profile"`
+	Cached      bool     `json:"cached" yaml:"cached"`
+	Domain      string   `json:"domain" yaml:"domain"`
+	Nameservers []string `json:"nameservers" yaml:"nameservers"`
+}
+
+func nsGetCmd(rt *app.Runtime) *cobra.Command {
+	return &cobra.Command{
+		Use:   "get <domain>",
+		Short: "Show the nameservers of a registered domain (local inventory with --offline)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			profName, err := rt.ProfileFor(platform.AWS)
+			if err != nil {
+				return err
+			}
+			var d *platform.Domain
+			cached := rt.Flags.Offline
+			if cached {
+				if d, err = cachedDomain(cmd.Context(), rt, profName, args[0]); err != nil {
+					return err
+				}
+			} else {
+				c, _, err := openClient(cmd.Context(), rt)
+				if err != nil {
+					return err
+				}
+				if d, err = c.GetDomain(cmd.Context(), args[0]); err != nil {
+					return err
+				}
+				storeDomain(cmd.Context(), rt, profName, d)
+			}
+			res := nameserversResult{Profile: profName, Cached: cached, Domain: d.Name, Nameservers: d.Nameservers}
+			return rt.Render(res, func() output.Grid {
+				g := output.Grid{Headers: []string{"NAMESERVER"}, Empty: "no nameservers"}
+				for _, n := range d.Nameservers {
+					g.Rows = append(g.Rows, []string{n})
+				}
+				return g
+			})
+		},
+	}
 }
 
 func domainListCmd(rt *app.Runtime) *cobra.Command {

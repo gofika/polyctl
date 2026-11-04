@@ -700,9 +700,6 @@ func TestLoginWithTokenOption(t *testing.T) {
 	if strings.Contains(stderr.String(), "good-token") {
 		t.Fatal("token printed to stderr")
 	}
-	if !strings.Contains(stderr.String(), "process listings") {
-		t.Fatalf("--set token must warn about exposure, got: %s", stderr.String())
-	}
 }
 
 func TestLoginReadsTokenFromEnv(t *testing.T) {
@@ -729,7 +726,7 @@ func TestLoginReadsTokenFromEnv(t *testing.T) {
 	if res.Secret[secretToken] != "good-token" || res.Metadata[metaAccountID] != "acc1" {
 		t.Fatalf("result: %v %v", res.Secret, res.Metadata)
 	}
-	if strings.Contains(stderr.String(), "good-token") || strings.Contains(stderr.String(), "process listings") {
+	if strings.Contains(stderr.String(), "good-token") {
 		t.Fatalf("stderr: %s", stderr.String())
 	}
 	if !strings.Contains(stderr.String(), tokenEnv) {
