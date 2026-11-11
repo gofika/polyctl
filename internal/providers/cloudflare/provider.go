@@ -42,7 +42,7 @@ var warnf = func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n
 //	account_id    the pinned account id (may be empty when the token cannot list accounts)
 //	account_name  the account's display name
 //	email         the user's email when the token has User:Read (optional)
-//	token_id      the public id of the token, as reported by /user/tokens/verify
+//	token_id      the public id of the token, as reported by the token verify endpoint
 const (
 	secretToken     = "api_token"
 	metaMethod      = "method"

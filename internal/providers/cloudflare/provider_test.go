@@ -32,6 +32,10 @@ type fakeCF struct {
 	maxPerPage int
 	// noTotalPages drops total_pages from result_info (as /accounts does).
 	noTotalPages bool
+	// accountOwned, when set, makes the token behave like an account-owned
+	// token of that account: the /user endpoints reject it and only the
+	// owning account is visible.
+	accountOwned string
 	// forbidRecords answers 403 for the record listing of these zone ids.
 	forbidRecords map[string]bool
 }
@@ -136,6 +140,22 @@ func (f *fakeCF) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.lastBody = body
 	p := r.URL.Path
 	switch {
+	case f.accountOwned != "" && (p == "/user/tokens/verify" || p == "/user"):
+		f.fail(w, 401, 1000, "Invalid API Token")
+	case f.accountOwned != "" && strings.HasPrefix(p, "/accounts/") && strings.HasSuffix(p, "/tokens/verify"):
+		if p != "/accounts/"+f.accountOwned+"/tokens/verify" {
+			f.fail(w, 401, 1000, "Invalid API Token")
+			return
+		}
+		f.ok(w, map[string]any{"id": "acctok1", "status": "active"})
+	case f.accountOwned != "" && p == "/accounts":
+		var own []map[string]any
+		for _, a := range f.accounts {
+			if a["id"] == f.accountOwned {
+				own = append(own, a)
+			}
+		}
+		f.page(w, r, own)
 	case p == "/user/tokens/verify":
 		f.ok(w, map[string]any{"id": "tok123", "status": "active"})
 	case p == "/user":
@@ -699,6 +719,50 @@ func TestLoginWithTokenOption(t *testing.T) {
 	}
 	if strings.Contains(stderr.String(), "good-token") {
 		t.Fatal("token printed to stderr")
+	}
+}
+
+func TestLoginAccountOwnedToken(t *testing.T) {
+	f, srv := newFake(t)
+	f.accountOwned = "acc2"
+	p := &provider{baseURL: srv.URL}
+	in := platform.LoginInput{
+		ProfileName: "cf",
+		Options:     map[string]string{"token": "good-token"},
+		Stdin:       strings.NewReader(""),
+		Stdout:      &bytes.Buffer{},
+		Stderr:      &bytes.Buffer{},
+	}
+	res, err := p.Login(context.Background(), in)
+	if err != nil {
+		t.Fatalf("account-owned token must log in: %v", err)
+	}
+	want := map[string]string{metaAccountID: "acc2", metaAccountName: "Beta", metaTokenID: "acctok1"}
+	for k, v := range want {
+		if res.Metadata[k] != v {
+			t.Fatalf("metadata[%s] = %q, want %q (all: %v)", k, res.Metadata[k], v, res.Metadata)
+		}
+	}
+	if res.Label != "Beta" {
+		t.Fatalf("label: %q", res.Label)
+	}
+
+	// A client with the account pinned verifies without listing accounts.
+	f.requests = nil
+	id, err := openClient(t, srv, "good-token", "acc2").Verify(context.Background())
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if id.Extra["token_id"] != "acctok1" || id.Extra["token_status"] != "active" {
+		t.Fatalf("identity: %+v", *id)
+	}
+	if n := f.count("GET /accounts?"); n != 0 {
+		t.Fatalf("pinned account must not list accounts, got %d requests", n)
+	}
+
+	// A wrong token still fails with ErrUnauthorized.
+	if _, err := openClient(t, srv, "bad-token", "acc2").Verify(context.Background()); !errors.Is(err, platform.ErrUnauthorized) {
+		t.Fatalf("bad token: want ErrUnauthorized, got %v", err)
 	}
 }
 

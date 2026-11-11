@@ -210,14 +210,41 @@ type tokenInfo struct {
 	Status    string `json:"status"`
 	ExpiresOn string `json:"expires_on,omitempty"`
 	NotBefore string `json:"not_before,omitempty"`
+	// AccountID is set for account-owned tokens: the account whose verify
+	// endpoint accepted the token. Empty for user-owned tokens.
+	AccountID string `json:"account_id,omitempty"`
 }
 
+// verifyToken checks the token against the endpoint that matches its owner.
+// User-owned tokens verify at /user/tokens/verify. Account-owned tokens are
+// rejected there ("Invalid API Token") and verify only at
+// /accounts/{id}/tokens/verify, so on an authentication failure the accounts
+// visible to the token are tried before the failure is reported.
 func (a *api) verifyToken(ctx context.Context) (*tokenInfo, error) {
 	var t tokenInfo
-	if _, err := a.do(ctx, http.MethodGet, "/user/tokens/verify", nil, nil, &t); err != nil {
-		return nil, err
+	_, userErr := a.do(ctx, http.MethodGet, "/user/tokens/verify", nil, nil, &t)
+	if userErr == nil {
+		return &t, nil
 	}
-	return &t, nil
+	if !errors.Is(userErr, platform.ErrUnauthorized) {
+		return nil, userErr
+	}
+	ids := []string{}
+	if a.accountID != "" {
+		ids = append(ids, a.accountID)
+	} else if accounts, err := a.listAccounts(ctx); err == nil {
+		for _, acc := range accounts {
+			ids = append(ids, acc.ID)
+		}
+	}
+	for _, id := range ids {
+		var at tokenInfo
+		if _, err := a.do(ctx, http.MethodGet, "/accounts/"+url.PathEscape(id)+"/tokens/verify", nil, nil, &at); err == nil {
+			at.AccountID = id
+			return &at, nil
+		}
+	}
+	return nil, userErr
 }
 
 type user struct {
