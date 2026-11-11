@@ -615,3 +615,7 @@ Adding a platform means implementing `platform.Provider` (and `DNSService` / `Re
 - GoDaddy and name.com registrar features beyond nameservers, lock, auto-renew and availability (transfers, contacts, purchases) are not planned for the first releases.
 - Cloudflare coverage is limited to zones, DNS, cache purge, development mode and SSL mode; Workers, Pages, R2 and Access are not exposed.
 - Planned: record import/export (zone-file and bulk JSON), `polyctl domain expiring` across registrars, encrypted file fallback for the credential store, and a `--watch` mode for `inventory stats`.
+
+## License
+
+[MIT](LICENSE)

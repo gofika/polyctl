@@ -40,6 +40,7 @@ archives:
           - zip
     files:
       - README.md
+      - LICENSE
       - completions/*
 
 checksum:
@@ -99,5 +100,6 @@ scoops:
     directory: bucket
     homepage: https://github.com/gofika/polyctl
     description: Manage domains, DNS and cloud resources across platforms
+    license: MIT
     skip_upload: '{{ if envOrDefault "SCOOP_BUCKET_GITHUB_TOKEN" "" }}auto{{ else }}true{{ end }}'
     commit_msg_template: "polyctl: bump to {{ .Version }}"
