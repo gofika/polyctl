@@ -181,7 +181,7 @@ func recordGrid(recs []platform.Record) output.Grid {
 		if r.Priority != nil {
 			content = fmt.Sprintf("%d %s", *r.Priority, r.Content)
 		}
-		g.Rows = append(g.Rows, []string{r.Name, r.Type, content, fmt.Sprint(r.TTL), output.Str(r.Extra["line"]), output.Str(r.Extra["status"]), r.ID})
+		g.Rows = append(g.Rows, []string{r.Name, r.Type, content, platform.TTLLabel(platform.Aliyun, r), output.Str(r.Extra["line"]), output.Str(r.Extra["status"]), r.ID})
 	}
 	return g
 }

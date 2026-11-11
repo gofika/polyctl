@@ -219,7 +219,7 @@ func recordGrid(recs []platform.Record) output.Grid {
 		if extraBool(r.Extra, "alias") {
 			content = "ALIAS " + content
 		}
-		g.Rows = append(g.Rows, []string{r.Name, r.Type, content, fmt.Sprint(r.TTL), extraString(r.Extra, "set_identifier"), r.ID})
+		g.Rows = append(g.Rows, []string{r.Name, r.Type, content, platform.TTLLabel(platform.AWS, r), extraString(r.Extra, "set_identifier"), r.ID})
 	}
 	return g
 }

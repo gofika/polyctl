@@ -128,3 +128,36 @@ func TestAllHaveDisplayOrder(t *testing.T) {
 		}
 	}
 }
+
+func TestTTLLabel(t *testing.T) {
+	alias := map[string]any{"alias": true}
+	cases := []struct {
+		p    platform.ID
+		r    platform.Record
+		want string
+	}{
+		{platform.Cloudflare, platform.Record{TTL: 1}, "auto"},
+		{platform.Cloudflare, platform.Record{TTL: 60}, "60"},
+		{platform.Cloudflare, platform.Record{TTL: 3600}, "3600"},
+		// 1 is only special on Cloudflare.
+		{platform.GCP, platform.Record{TTL: 1}, "1"},
+		{platform.AWS, platform.Record{TTL: 1}, "1"},
+		{platform.AWS, platform.Record{TTL: 0, Extra: alias}, "alias"},
+		{platform.AWS, platform.Record{TTL: 0, Extra: map[string]any{"alias": "true"}}, "alias"},
+		{platform.AWS, platform.Record{TTL: 300}, "300"},
+		{platform.AWS, platform.Record{TTL: 0}, "0"},
+		// The alias marker is only meaningful on Route 53.
+		{platform.Cloudflare, platform.Record{TTL: 0, Extra: alias}, "0"},
+		{platform.Aliyun, platform.Record{TTL: 600}, "600"},
+		{platform.NameCom, platform.Record{TTL: 300}, "300"},
+		{platform.GoDaddy, platform.Record{TTL: 600}, "600"},
+		// GoDaddy never serves 0; it marks "platform default" after a write.
+		{platform.GoDaddy, platform.Record{TTL: 0}, "default"},
+		{platform.NameCom, platform.Record{TTL: 0}, "0"},
+	}
+	for _, c := range cases {
+		if got := platform.TTLLabel(c.p, c.r); got != c.want {
+			t.Errorf("TTLLabel(%s, ttl=%d, extra=%v) = %q, want %q", c.p, c.r.TTL, c.r.Extra, got, c.want)
+		}
+	}
+}

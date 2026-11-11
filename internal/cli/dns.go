@@ -33,7 +33,9 @@ type dnsResult struct {
 	Records []platform.Record `json:"records" yaml:"records"`
 }
 
-func recordGrid(recs []platform.Record, showProxied bool) output.Grid {
+// recordGrid renders records of platform p; Cloudflare gets a PROXIED column.
+func recordGrid(recs []platform.Record, p platform.ID) output.Grid {
+	showProxied := p == platform.Cloudflare
 	headers := []string{"NAME", "TYPE", "CONTENT", "TTL"}
 	if showProxied {
 		headers = append(headers, "PROXIED")
@@ -45,7 +47,7 @@ func recordGrid(recs []platform.Record, showProxied bool) output.Grid {
 		if r.Priority != nil {
 			content = fmt.Sprintf("%d %s", *r.Priority, r.Content)
 		}
-		row := []string{r.Name, r.Type, content, fmt.Sprint(r.TTL)}
+		row := []string{r.Name, r.Type, content, platform.TTLLabel(p, r)}
 		if showProxied {
 			row = append(row, output.Str(r.Proxied))
 		}
@@ -90,7 +92,7 @@ func newDNSListCmd(rt *app.Runtime) *cobra.Command {
 			})
 			rt.Infof("zone %s via %s/%s%s", t.Domain, t.Platform, t.Profile, cacheNote(cached))
 			return rt.Render(dnsResult{Target: t, Cached: cached, Records: recs}, func() output.Grid {
-				return recordGrid(recs, t.Platform == platform.Cloudflare)
+				return recordGrid(recs, t.Platform)
 			})
 		},
 	}
@@ -202,7 +204,7 @@ if none exists it is created; if several exist the command fails unless
 			}
 			rt.Infof("%s %s %s -> %s via %s/%s", map[bool]string{true: "created", false: "updated"}[rec.ID == ""], out.Name, out.Type, out.Content, t.Platform, t.Profile)
 			return rt.Render(dnsResult{Target: t, Records: []platform.Record{*out}}, func() output.Grid {
-				return recordGrid([]platform.Record{*out}, t.Platform == platform.Cloudflare)
+				return recordGrid([]platform.Record{*out}, t.Platform)
 			})
 		},
 	}
@@ -260,7 +262,7 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 				return fmt.Errorf("%w: no matching record in zone %s", platform.ErrNotFound, t.Domain)
 			}
 			if len(matches) > 1 && !rt.Flags.Yes {
-				_ = output.RenderGrid(rt.Stderr, recordGrid(matches, false))
+				_ = output.RenderGrid(rt.Stderr, recordGrid(matches, t.Platform))
 				ok, err := rt.Prompt().Confirm(fmt.Sprintf("delete %d records", len(matches)), false)
 				if err != nil {
 					return err

@@ -382,6 +382,7 @@ polyctl dns delete <domain> (--type <T> [--name www|@] [--value <V>] | --id <rec
 
 - `<domain>` may be the zone apex or any name under it (`www.example.com` resolves to the `example.com` zone). `--name` is relative to the zone (`www`, `@`); when omitted, the record name is `<domain>` itself.
 - `dns update` is an upsert keyed on name + type: one existing record is updated (TTL, priority and proxy status are kept unless given), none means create, several means an error unless `--add` is passed, which always creates another record.
+- In tables, a TTL that is a platform marker rather than a number of seconds is shown by name: `auto` (Cloudflare automatic TTL, `1` in the API), `alias` (Route 53 alias records, which use the target's TTL) and `default` (a GoDaddy record just written without `--ttl`). `-o json` and `-o yaml` keep the raw value.
 - `dns delete` with a selector that matches several records shows them and asks for confirmation (skip with `-y`). `--value` narrows the match; `--id` deletes exactly one record by platform id.
 - `--proxied` applies to Cloudflare only; the `PROXIED` column appears for Cloudflare zones.
 - After a successful write the record is upserted into (or removed from) the inventory, so the next `dns list` shows it without a refresh.

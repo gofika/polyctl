@@ -204,11 +204,7 @@ func recordGrid(recs []platform.Record) output.Grid {
 		if r.Priority != nil {
 			content = fmt.Sprintf("%d %s", *r.Priority, r.Content)
 		}
-		ttl := fmt.Sprint(r.TTL)
-		if r.TTL == 1 {
-			ttl = "auto"
-		}
-		g.Rows = append(g.Rows, []string{r.Name, r.Type, content, ttl, output.Str(r.Proxied), r.ID})
+		g.Rows = append(g.Rows, []string{r.Name, r.Type, content, platform.TTLLabel(platform.Cloudflare, r), output.Str(r.Proxied), r.ID})
 	}
 	return g
 }

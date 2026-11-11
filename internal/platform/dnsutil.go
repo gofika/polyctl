@@ -1,6 +1,9 @@
 package platform
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // NormalizeDomain lowercases and strips a trailing dot.
 func NormalizeDomain(s string) string {
@@ -44,4 +47,46 @@ func Candidates(domain string) []string {
 		out = append(out, strings.Join(parts[i:], "."))
 	}
 	return out
+}
+
+// TTLLabel renders a record's TTL for human-readable output. Values that a
+// platform uses as a marker rather than a number of seconds are shown by
+// name, so they cannot be mistaken for a real duration:
+//
+//   - Cloudflare: 1 means "automatic" and is shown as "auto".
+//   - Route 53: alias records carry no TTL of their own (the target's
+//     applies) and are shown as "alias".
+//   - GoDaddy: 0 is never a real TTL (the minimum is 600). It only appears
+//     on a record that polyctl just wrote without --ttl, where GoDaddy
+//     applied its own default, and is shown as "default".
+//
+// Every other value is a TTL in seconds on all supported platforms and is
+// shown as the number. Machine-readable output keeps the raw value.
+func TTLLabel(p ID, r Record) string {
+	switch p {
+	case Cloudflare:
+		if r.TTL == 1 {
+			return "auto"
+		}
+	case AWS:
+		if r.TTL == 0 && extraFlag(r.Extra, "alias") {
+			return "alias"
+		}
+	case GoDaddy:
+		if r.TTL == 0 {
+			return "default"
+		}
+	}
+	return strconv.Itoa(r.TTL)
+}
+
+// extraFlag reads a boolean from Extra, tolerating the string form.
+func extraFlag(extra map[string]any, key string) bool {
+	switch v := extra[key].(type) {
+	case bool:
+		return v
+	case string:
+		return v == "true"
+	}
+	return false
 }
