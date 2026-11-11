@@ -33,7 +33,7 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Cross-repository tokens. When one is missing the release still
-          # publishes; only that package manager is skipped.
-          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
-          SCOOP_BUCKET_GITHUB_TOKEN: ${{ secrets.SCOOP_BUCKET_GITHUB_TOKEN }}
+          # Cross-repository token for the Homebrew tap and the Scoop bucket.
+          # When it is missing the release still publishes; both package
+          # managers are skipped.
+          RELEASE_GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}

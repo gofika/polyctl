@@ -28,17 +28,13 @@ pre-releases and do not touch the tap or the bucket.
 ## One-time setup
 
 The default `GITHUB_TOKEN` can only write to `gofika/polyctl`. Pushing to the
-tap and the bucket needs tokens stored as Actions secrets (repository or
-organization level):
+tap and the bucket needs one token stored as the Actions secret
+`RELEASE_GITHUB_TOKEN` (repository or organization level): a fine-grained
+personal access token with Contents read and write on both
+`gofika/homebrew-tap` and `gofika/scoop-bucket`.
 
-| Secret | Needs |
-| --- | --- |
-| `HOMEBREW_TAP_GITHUB_TOKEN` | Contents: read and write on `gofika/homebrew-tap` |
-| `SCOOP_BUCKET_GITHUB_TOKEN` | Contents: read and write on `gofika/scoop-bucket` |
-
-One fine-grained personal access token covering both repositories can be
-stored under both names. When a secret is missing the release still
-publishes; only that package manager is skipped.
+When the secret is missing the release still publishes; the tap and the
+bucket are skipped.
 
 Both repositories must exist before the first tag, be public, and have at
 least one commit (a README is enough) so that the default branch exists.
