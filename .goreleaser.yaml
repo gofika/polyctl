@@ -1,0 +1,103 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+# Release configuration. A tag push (vX.Y.Z) builds every target, publishes a
+# GitHub Release, and updates the Homebrew tap and the Scoop bucket.
+version: 2
+
+project_name: polyctl
+
+before:
+  hooks:
+    - go mod download
+    - sh scripts/completions.sh
+
+builds:
+  - id: polyctl
+    main: ./cmd/polyctl
+    binary: polyctl
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X github.com/gofika/polyctl/internal/cli.Version={{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: polyctl
+    # polyctl_<version>_<os>_<arch>.tar.gz (zip on Windows). install.sh and
+    # install.ps1 depend on this exact name.
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - README.md
+      - completions/*
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+
+release:
+  github:
+    owner: gofika
+    name: polyctl
+  prerelease: auto
+
+homebrew_casks:
+  - name: polyctl
+    repository:
+      owner: gofika
+      name: homebrew-tap
+      # Must be exactly one {{ .Env.NAME }} reference; GoReleaser rejects any
+      # other template here. skip_upload below covers the unset case.
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: https://github.com/gofika/polyctl
+    description: Manage domains, DNS and cloud resources across platforms
+    binaries:
+      - polyctl
+    completions:
+      bash: completions/polyctl.bash
+      zsh: completions/polyctl.zsh
+      fish: completions/polyctl.fish
+    # Pre-releases and runs without a tap token never touch the tap.
+    skip_upload: '{{ if envOrDefault "HOMEBREW_TAP_GITHUB_TOKEN" "" }}auto{{ else }}true{{ end }}'
+    commit_msg_template: "polyctl: bump to {{ .Version }}"
+    hooks:
+      post:
+        # The binaries are not notarized; drop the quarantine flag so macOS
+        # Gatekeeper does not block the first run.
+        install_steps: |
+          on_macos do
+            run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}/polyctl"], must_succeed: false
+          end
+
+scoops:
+  - name: polyctl
+    repository:
+      owner: gofika
+      name: scoop-bucket
+      token: "{{ .Env.SCOOP_BUCKET_GITHUB_TOKEN }}"
+    directory: bucket
+    homepage: https://github.com/gofika/polyctl
+    description: Manage domains, DNS and cloud resources across platforms
+    skip_upload: '{{ if envOrDefault "SCOOP_BUCKET_GITHUB_TOKEN" "" }}auto{{ else }}true{{ end }}'
+    commit_msg_template: "polyctl: bump to {{ .Version }}"
