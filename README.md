@@ -22,26 +22,67 @@ Everything it learns about your accounts is cached in a local SQLite inventory, 
 
 ## Install
 
-### `go install`
+Prebuilt binaries are published for macOS, Linux and Windows (x86-64 and ARM64). No Go toolchain is needed.
+
+### Homebrew (macOS, Linux)
 
 ```sh
-go install github.com/gofika/polyctl/cmd/polyctl@latest
+brew install --cask gofika/tap/polyctl
 ```
 
-The binary lands in `$(go env GOPATH)/bin`; make sure that directory is on your `PATH`.
+Shell completions for bash, zsh and fish are installed with it. Upgrade with `brew upgrade --cask polyctl`.
+
+### Scoop (Windows)
+
+```powershell
+scoop bucket add gofika https://github.com/gofika/scoop-bucket
+scoop install polyctl
+```
+
+Upgrade with `scoop update polyctl`.
+
+### Install script
+
+macOS and Linux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/gofika/polyctl/main/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/gofika/polyctl/main/install.ps1 | iex
+```
+
+The scripts download the latest release for your platform, verify its SHA-256 checksum and install the binary into `~/.local/bin` (macOS, Linux) or `%LOCALAPPDATA%\polyctl\bin` (Windows, added to your user `PATH`). Run the same command again to upgrade.
+
+| Variable | Effect |
+| --- | --- |
+| `POLYCTL_VERSION` | Install a specific version (for example `0.3.0`) instead of the latest release. |
+| `POLYCTL_INSTALL_DIR` | Install the binary into this directory. |
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/gofika/polyctl/main/install.sh | POLYCTL_VERSION=0.3.0 POLYCTL_INSTALL_DIR="$HOME/bin" sh
+```
+
+### Manual download
+
+Download the archive for your platform from the [releases page](https://github.com/gofika/polyctl/releases), check it against `checksums.txt`, and put `polyctl` somewhere on your `PATH`.
 
 ### Build from source
+
+For contributors; requires Go.
 
 ```sh
 git clone https://github.com/gofika/polyctl.git
 cd polyctl
-go build -ldflags "-X github.com/gofika/polyctl/internal/cli.Version=$(git describe --tags --always)" -o polyctl ./cmd/polyctl
-./polyctl --version
+make build        # writes bin/polyctl
 ```
 
-polyctl is pure Go (the SQLite driver is `modernc.org/sqlite`), so cross-compiling is just `GOOS=linux GOARCH=arm64 go build ./cmd/polyctl`.
-
 ### Shell completion
+
+Homebrew installs completions automatically, and the release archives ship them under `completions/`. To generate them yourself:
 
 ```sh
 # bash
