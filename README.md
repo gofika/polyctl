@@ -330,12 +330,12 @@ On a terminal, `polyctl auth manage` opens a menu for everything above. It print
 | View account details | Pick an account and see its profile, platform, credential store, whether credentials are present, creation and update times, every metadata key, and how many resources of each type are cached. Nothing is fetched from the platform. |
 | Switch current profile | `auth use`, with the profile picked from a list. |
 | Add an account (log in) | Pick a platform, then an existing profile or "New profile..." (you type the name), then the login flow of `auth login` runs. The profile is chosen explicitly, as with `--profile`. |
-| Verify credentials | Tick the accounts to check (none ticked = all) and get the table of `auth status`. |
+| Verify credentials | Tick the accounts to check (Ctrl-A ticks all) and get the table of `auth status`. |
 | Rename a profile | `auth rename`, with the profile picked from a list. |
 | Remove accounts or profiles | Tick any number of accounts across profiles. polyctl lists what will be removed (a profile goes when its last account does), asks for confirmation (default No), asks whether to keep the cached inventory (default No), then removes them the way `auth logout` does. |
-| Quit | Leave the menu. |
+| Quit | Leave the menu (`q` does the same). |
 
-Arrow keys or `j` / `k` move, space ticks an entry of a multiple choice, `/` filters a list, enter confirms. Esc or Ctrl-C leaves the current question and returns to the menu; at the top level it leaves the menu, with exit code 0. A failing action is reported and the menu stays open.
+Arrow keys or `j` / `k` move, space ticks an entry of a multiple choice, `/` filters a list, enter confirms; the keys are shown under every question. A multiple choice needs at least one ticked entry: enter with nothing ticked keeps the question open and says so. Esc or Ctrl-C leaves the current question and returns to the menu; at the top level Esc, Ctrl-C or `q` leaves the menu, with exit code 0. While a `/` filter is in use Esc first closes the filter input, then clears the filter, and only then leaves the question. A failing action is reported and the menu stays open.
 
 Three commands ask for a missing argument the same way instead of failing:
 

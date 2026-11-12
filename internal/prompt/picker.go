@@ -15,8 +15,9 @@ import (
 var ErrAborted = errors.New("prompt aborted")
 
 // Option is one entry of a selection prompt: Label is shown, Value is
-// returned.
-type Option struct{ Label, Value string }
+// returned. Key, when set, is a shortcut: in a Select, pressing that key
+// picks the option at once.
+type Option struct{ Label, Value, Key string }
 
 // Picker asks questions on an interactive terminal. Commands depend on this
 // interface rather than on a terminal library, so tests can script the
@@ -62,14 +63,34 @@ type terminalPicker struct {
 // filterer is implemented by the fields that have a "/" filter.
 type filterer interface{ GetFiltering() bool }
 
-// run shows one field and maps an abort to ErrAborted.
-func (p *terminalPicker) run(field huh.Field) error {
-	// WithProgramOptions replaces the options set so far, so it comes first.
+// keyMap is the default key map with hints that say how to leave a prompt
+// and that name the toggle key people expect.
+func keyMap() *huh.KeyMap {
+	km := huh.NewDefaultKeyMap()
+	const leave = "confirm • esc cancel"
+	km.Select.Submit.SetHelp("enter", leave)
+	km.MultiSelect.Submit.SetHelp("enter", leave)
+	km.Confirm.Submit.SetHelp("enter", leave)
+	km.Input.Submit.SetHelp("enter", leave)
+	km.MultiSelect.Toggle.SetHelp("space", "toggle")
+	return km
+}
+
+// run shows one field and maps an abort to ErrAborted. shortcuts maps a key
+// to an option value: pressing the key outside the filter input answers the
+// prompt with that value, which is returned as the first result. mayConfirm,
+// when not nil, is asked before Enter confirms; when it returns false the
+// key is dropped and the prompt stays open.
+func (p *terminalPicker) run(field huh.Field, shortcuts map[string]string, mayConfirm func() bool) (string, error) {
 	// submitted is set when Enter reaches the field. The form handles the
 	// submission asynchronously, so keys still in the input buffer would
 	// otherwise change the answer after it was confirmed (a "y" typed right
 	// after Enter on a No). It is cleared when the field rejected the value.
 	submitted := false
+	// filtered is set while a "/" filter is applied: Esc then clears the
+	// filter first and only the next Esc leaves the prompt.
+	filtered := false
+	shortcut, viaShortcut := "", false
 	form := huh.NewForm(huh.NewGroup(field)).
 		WithProgramOptions(tea.WithFilter(func(_ tea.Model, msg tea.Msg) tea.Msg {
 			// Messages are filtered one at a time, after the previous one
@@ -81,25 +102,67 @@ func (p *terminalPicker) run(field huh.Field) error {
 			if !isKey {
 				return msg
 			}
-			if submitted {
+			if submitted || viaShortcut {
 				return nil
 			}
-			if f, ok := field.(filterer); k.String() == "enter" && !(ok && f.GetFiltering()) {
+			f, canFilter := field.(filterer)
+			filtering := canFilter && f.GetFiltering()
+			switch k.String() {
+			case "enter":
+				// Also while a filter is typed: there Enter applies the
+				// filter and submits the highlighted match.
+				if !filtering && mayConfirm != nil && !mayConfirm() {
+					// Enter is dropped; a size message makes the form lay
+					// itself out again, which shows the changed hint.
+					return p.sizeMsg()
+				}
 				submitted = true
+			case "esc":
+				if filtering {
+					// Leaves the filter input and keeps the filter applied.
+					filtered = true
+					return msg
+				}
+				if filtered {
+					filtered = false
+					return msg // clears the applied filter
+				}
+				return tea.InterruptMsg{}
+			default:
+				if v, ok := shortcuts[k.String()]; ok && !filtering {
+					shortcut, viaShortcut = v, true
+					return tea.InterruptMsg{}
+				}
 			}
-			return escAborts(field, msg)
+			return msg
 		})).
+		WithKeyMap(keyMap()).
 		WithInput(p.in).
 		WithOutput(p.out)
-	if err := mapAbort(form.Run()); err != nil {
-		return err
+	err := mapAbort(form.Run())
+	if viaShortcut {
+		return shortcut, nil
+	}
+	if err != nil {
+		return "", err
 	}
 	// A program ended from outside (SIGTERM, closed terminal) returns no
 	// error; only a submitted form carries an answer.
 	if form.State != huh.StateCompleted {
-		return ErrAborted
+		return "", ErrAborted
 	}
-	return nil
+	return "", nil
+}
+
+// sizeMsg reports the current terminal size (80x24 when unknown).
+func (p *terminalPicker) sizeMsg() tea.WindowSizeMsg {
+	m := tea.WindowSizeMsg{Width: 80, Height: 24}
+	if f, ok := p.out.(*os.File); ok {
+		if w, h, err := term.GetSize(int(f.Fd())); err == nil && w > 0 && h > 0 {
+			m.Width, m.Height = w, h
+		}
+	}
+	return m
 }
 
 // labelWidth is how many columns an option label may take so that every
@@ -125,20 +188,6 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string(r[:n-1]) + "…"
-}
-
-// escAborts turns Esc into an interrupt, which ends the prompt like Ctrl-C.
-// While the filter of a field is being typed Esc keeps its meaning there
-// (leave the filter input).
-func escAborts(field huh.Field, msg tea.Msg) tea.Msg {
-	k, ok := msg.(tea.KeyPressMsg)
-	if !ok || k.String() != "esc" {
-		return msg
-	}
-	if f, ok := field.(filterer); ok && f.GetFiltering() {
-		return msg
-	}
-	return tea.InterruptMsg{}
 }
 
 // mapAbort converts the library's abort error to ErrAborted.
@@ -205,8 +254,18 @@ func (p *terminalPicker) Select(title string, opts []Option, def string) (string
 	if h := listHeight(len(opts)); h > 0 {
 		field.Height(h)
 	}
-	if err := p.run(field); err != nil {
+	shortcuts := map[string]string{}
+	for _, o := range opts {
+		if o.Key != "" {
+			shortcuts[o.Key] = o.Value
+		}
+	}
+	picked, err := p.run(field, shortcuts, nil)
+	if err != nil {
 		return "", err
+	}
+	if picked != "" {
+		return picked, nil
 	}
 	return value, nil
 }
@@ -216,9 +275,19 @@ func (p *terminalPicker) MultiSelect(title string, opts []Option) ([]string, err
 		return nil, errors.New("nothing to choose from")
 	}
 	var values []string
-	field := huh.NewMultiSelect[string]().Title(title).
-		Description("space toggles, enter confirms, esc cancels").
+	const hint = "Tick with space, then press enter."
+	field := huh.NewMultiSelect[string]().Title(title).Description(hint).
 		Options(huhOptions(opts, p.labelWidth())...).Value(&values)
+	// Enter on an unticked list is nearly always a slip (the highlighted row
+	// is not selected): stay on the prompt and say what to do.
+	ticked := func() bool {
+		if v, ok := field.GetValue().([]string); ok && len(v) > 0 {
+			field.Description(hint)
+			return true
+		}
+		field.Description("Tick at least one row with space first, then press enter (esc cancels).")
+		return false
+	}
 	// The height counts the title and description rows too; without an
 	// explicit one short lists are cut off.
 	rows := len(opts)
@@ -226,7 +295,7 @@ func (p *terminalPicker) MultiSelect(title string, opts []Option) ([]string, err
 		rows = 12
 	}
 	field.Height(rows + 2)
-	if err := p.run(field); err != nil {
+	if _, err := p.run(field, nil, ticked); err != nil {
 		return nil, err
 	}
 	return orderValues(opts, values), nil
@@ -234,7 +303,7 @@ func (p *terminalPicker) MultiSelect(title string, opts []Option) ([]string, err
 
 func (p *terminalPicker) Confirm(title string, def bool) (bool, error) {
 	value := def
-	if err := p.run(huh.NewConfirm().Title(title).Value(&value)); err != nil {
+	if _, err := p.run(huh.NewConfirm().Title(title).Value(&value), nil, nil); err != nil {
 		return false, err
 	}
 	return value, nil
@@ -246,7 +315,7 @@ func (p *terminalPicker) Input(title, def string, validate func(string) error) (
 	if validate != nil {
 		field.Validate(validate)
 	}
-	if err := p.run(field); err != nil {
+	if _, err := p.run(field, nil, nil); err != nil {
 		return "", err
 	}
 	return value, nil

@@ -479,7 +479,7 @@ func runManage(ctx context.Context, rt *app.Runtime) error {
 				prompt.Option{Label: "Rename a profile", Value: actRename},
 				prompt.Option{Label: "Remove accounts or profiles", Value: actRemove})
 		}
-		opts = append(opts, prompt.Option{Label: "Quit", Value: actQuit})
+		opts = append(opts, prompt.Option{Label: "Quit  (q)", Value: actQuit, Key: "q"})
 
 		action, err := rt.Pick().Select("Profiles and accounts", opts, "")
 		if errors.Is(err, prompt.ErrAborted) || (err == nil && action == actQuit) {
@@ -654,7 +654,7 @@ func manageVerify(ctx context.Context, rt *app.Runtime) error {
 	refs := cfg.Accounts("")
 	if len(refs) > 1 {
 		opts, byValue := accountOptions(cfg, refs)
-		chosen, err := rt.Pick().MultiSelect("Verify which accounts? (none selected = all)", opts)
+		chosen, err := rt.Pick().MultiSelect("Verify which accounts? (ctrl+a ticks all)", opts)
 		if err != nil {
 			return err
 		}

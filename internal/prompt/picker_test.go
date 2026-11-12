@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 )
 
@@ -63,36 +62,6 @@ func TestMapAbort(t *testing.T) {
 	other := errors.New("boom")
 	if err := mapAbort(other); err != other {
 		t.Errorf("mapAbort must pass other errors through, got %v", err)
-	}
-}
-
-type fakeField struct {
-	huh.Field
-	filtering bool
-}
-
-func (f fakeField) GetFiltering() bool { return f.filtering }
-
-func TestEscAborts(t *testing.T) {
-	esc := tea.KeyPressMsg{Code: tea.KeyEscape}
-	if esc.String() != "esc" {
-		t.Fatalf("escape key renders as %q", esc.String())
-	}
-	if _, ok := escAborts(fakeField{}, esc).(tea.InterruptMsg); !ok {
-		t.Error("Esc outside a filter must interrupt the prompt")
-	}
-	if _, ok := escAborts(fakeField{filtering: true}, esc).(tea.KeyPressMsg); !ok {
-		t.Error("Esc while typing a filter must reach the field")
-	}
-	if _, ok := escAborts(huh.NewConfirm(), esc).(tea.InterruptMsg); !ok {
-		t.Error("Esc on a field without a filter must interrupt the prompt")
-	}
-	down := tea.KeyPressMsg{Code: tea.KeyDown}
-	if got := escAborts(fakeField{}, down); !reflect.DeepEqual(got, down) {
-		t.Errorf("other keys must pass through, got %#v", got)
-	}
-	if got := escAborts(fakeField{}, tea.QuitMsg{}); !reflect.DeepEqual(got, tea.QuitMsg{}) {
-		t.Errorf("other messages must pass through, got %#v", got)
 	}
 }
 
@@ -202,10 +171,6 @@ func TestPickerMultiSelect(t *testing.T) {
 	if want := []string{"a", "c"}; err != nil || !reflect.DeepEqual(got, want) {
 		t.Errorf("MultiSelect = %v, %v; want %v", got, err, want)
 	}
-	got, err = drive(t, []string{keyEnter}, func(p Picker) ([]string, error) { return p.MultiSelect("Pick", abc) })
-	if err != nil || len(got) != 0 {
-		t.Errorf("enter without a choice = %v, %v; want nothing", got, err)
-	}
 	_, err = drive(t, []string{keyCtrlC}, func(p Picker) ([]string, error) { return p.MultiSelect("Pick", abc) })
 	if !errors.Is(err, ErrAborted) {
 		t.Errorf("ctrl-c = %v, want ErrAborted", err)
@@ -274,5 +239,65 @@ func TestPickerEsc(t *testing.T) {
 	got, err := drive(t, []string{"/", "be", keyEsc, keyEnter}, func(p Picker) (string, error) { return p.Select("Pick", abc, "") })
 	if err != nil || got != "b" {
 		t.Errorf("filter, esc, enter = %q, %v; want b", got, err)
+	}
+}
+
+// The drive-based tests below cover what the key filter does end to end.
+
+func TestPickerShortcutKey(t *testing.T) {
+	opts := []Option{{Label: "Alpha", Value: "a"}, {Label: "Quit", Value: "quit", Key: "q"}}
+	got, err := drive(t, []string{"q"}, func(p Picker) (string, error) { return p.Select("Pick", opts, "") })
+	if err != nil || got != "quit" {
+		t.Errorf("shortcut key = %q, %v; want quit", got, err)
+	}
+	// While typing a filter the key is text, not a shortcut.
+	got, err = drive(t, []string{"/", "q", keyEnter, keyEnter}, func(p Picker) (string, error) { return p.Select("Pick", opts, "") })
+	if err != nil || got != "quit" {
+		t.Errorf("q typed into the filter then enter = %q, %v; want the filtered option", got, err)
+	}
+}
+
+func TestPickerEscClearsAppliedFilterFirst(t *testing.T) {
+	const keyEsc = "\x1b"
+	// "/be" then Esc leaves the filter input with the filter applied; the
+	// next Esc clears the filter and the prompt stays open, so Enter still
+	// answers it.
+	got, err := drive(t, []string{"/", "be", keyEsc, keyEsc, keyEnter}, func(p Picker) (string, error) { return p.Select("Pick", abc, "") })
+	if err != nil || got == "" {
+		t.Errorf("Esc on an applied filter ended the prompt: %q, %v", got, err)
+	}
+	// With the filter cleared, one more Esc leaves the prompt.
+	_, err = drive(t, []string{"/", "be", keyEsc, keyEsc, keyEsc}, func(p Picker) (string, error) { return p.Select("Pick", abc, "") })
+	if !errors.Is(err, ErrAborted) {
+		t.Errorf("third Esc = %v, want ErrAborted", err)
+	}
+}
+
+func TestPickerMultiSelectNeedsATick(t *testing.T) {
+	// Enter with nothing ticked keeps the prompt open; ticking then works.
+	got, err := drive(t, []string{keyEnter, " ", keyEnter}, func(p Picker) ([]string, error) { return p.MultiSelect("Pick", abc) })
+	if err != nil || !reflect.DeepEqual(got, []string{"a"}) {
+		t.Errorf("MultiSelect after an empty enter = %v, %v; want [a]", got, err)
+	}
+	_, err = drive(t, []string{keyEnter, "\x1b"}, func(p Picker) ([]string, error) { return p.MultiSelect("Pick", abc) })
+	if !errors.Is(err, ErrAborted) {
+		t.Errorf("Esc after an empty enter = %v, want ErrAborted", err)
+	}
+}
+
+func TestKeyMapHints(t *testing.T) {
+	km := keyMap()
+	for name, h := range map[string]string{
+		"select":      km.Select.Submit.Help().Desc,
+		"multiselect": km.MultiSelect.Submit.Help().Desc,
+		"confirm":     km.Confirm.Submit.Help().Desc,
+		"input":       km.Input.Submit.Help().Desc,
+	} {
+		if !strings.Contains(h, "esc cancel") {
+			t.Errorf("%s hint %q does not say how to leave", name, h)
+		}
+	}
+	if k := km.MultiSelect.Toggle.Help().Key; k != "space" {
+		t.Errorf("toggle hint key = %q, want space", k)
 	}
 }

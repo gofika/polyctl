@@ -18,7 +18,7 @@ func TestMultiSelectShowsEveryOption(t *testing.T) {
 		}
 		var values []string
 		field := huh.NewMultiSelect[string]().Title("Pick").
-			Description("space toggles, enter confirms, esc cancels").
+			Description("Tick with space, then press enter.").
 			Options(huhOptions(opts, 80)...).Value(&values)
 		field.Height(n + 2)
 		form := huh.NewForm(huh.NewGroup(field)).WithWidth(80)

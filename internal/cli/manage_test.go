@@ -616,7 +616,7 @@ func TestAuthManageMenu(t *testing.T) {
 	}
 
 	// Verification: first one account, then all of them.
-	if q := p.find("Verify which accounts? (none selected = all)"); q.Kind != "multi" || values(q.Options) != "a/"+p1+" a/"+p2+" b/"+p1+" b/"+p2+" c/"+p1 {
+	if q := p.find("Verify which accounts? (ctrl+a ticks all)"); q.Kind != "multi" || values(q.Options) != "a/"+p1+" a/"+p2+" b/"+p1+" b/"+p2+" c/"+p1 {
 		t.Errorf("verify prompt = %+v", q)
 	}
 	if n := strings.Count(stderr, "fake-account"); n != 6 {
