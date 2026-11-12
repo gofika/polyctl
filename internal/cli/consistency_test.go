@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,7 +17,9 @@ import (
 	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/config"
 	"github.com/gofika/polyctl/internal/creds"
+	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt"
 )
 
 // addHollow adds a profile without accounts, as a hand-edited config or a
@@ -431,8 +434,10 @@ func TestAuthLoginKeepsLegacyMarkWhileOldBackendIsAway(t *testing.T) {
 	}
 }
 
-// A --profile / --platform selection that names no account is an error of
-// the selection, online and offline, and not an empty or incomplete index.
+// An unknown --profile, and a --profile / --platform selection that names no
+// account able to hold the domain, are errors of the selection, online and
+// offline, and not a domain missing from the index. `domain list` with a
+// selection that names no account has nothing to list, which is no error.
 func TestDomainCommandsCheckTheSelection(t *testing.T) {
 	dir, cfgPath := setupMulti(t)
 	seedZone(t, dir, config.AccountRef{Profile: "a", Platform: fakePlatform}, "one.example")
@@ -450,8 +455,16 @@ func TestDomainCommandsCheckTheSelection(t *testing.T) {
 		}
 	}
 	// Profile b has no account on the first platform.
+	code, stdout, stderr := mainRun(cfgPath, "domain", "list", "--profile", "b", "--platform", p1)
+	if code != ExitOK || !strings.Contains(stdout, "no indexed domain or zone matches --profile / --platform") || strings.Contains(stdout, "one.example") || stderr != "" {
+		t.Errorf("domain list of a selection without accounts: exit %d (stdout %q, stderr %q), want nothing listed", code, stdout, stderr)
+	}
+	code, stdout, stderr = mainRun(cfgPath, "domain", "list", "--profile", "b", "--platform", p1, "-o", "json")
+	var listed []json.RawMessage
+	if err := json.Unmarshal([]byte(stdout), &listed); code != ExitOK || err != nil || len(listed) != 0 || strings.Contains(stderr, "error:") {
+		t.Errorf("domain list -o json of a selection without accounts: exit %d (stdout %q, stderr %q, %v), want an empty list", code, stdout, stderr, err)
+	}
 	for _, args := range [][]string{
-		{"domain", "list", "--profile", "b", "--platform", p1},
 		{"domain", "info", "one.example", "--profile", "b", "--platform", p1, "--offline"},
 		{"dns", "list", "one.example", "--profile", "b", "--platform", p1, "--offline"},
 	} {
@@ -587,15 +600,120 @@ func TestDomainWhichValidatesProfile(t *testing.T) {
 	}
 }
 
-// With nothing configured the two bulk commands give the same answer: not
-// found, like every other command that has no account to work on.
+// syncHeader is the table an empty sync report is rendered as.
+const syncHeader = "PLATFORM  PROFILE  TYPE  COUNT  STATUS\n"
+
+// wantNothingToDo checks a run that found nothing to act on: exit code 0 and
+// exactly one line on stderr, the note, which is not printed as an error.
+func wantNothingToDo(t *testing.T, what string, code int, stderr, note string) {
+	t.Helper()
+	if code != ExitOK {
+		t.Errorf("%s: exit %d, want 0 (stderr %q)", what, code, stderr)
+	}
+	if want := "nothing to do: " + note + "\n"; stderr != want {
+		t.Errorf("%s: stderr = %q, want %q", what, stderr, want)
+	}
+	if strings.Contains(stderr, "error:") {
+		t.Errorf("%s: the note is printed as an error: %q", what, stderr)
+	}
+}
+
+// wantEmptyJSONList checks that stdout holds a JSON list without elements,
+// and not null or nothing at all, so a script can always parse it.
+func wantEmptyJSONList(t *testing.T, what, stdout string) {
+	t.Helper()
+	var list []json.RawMessage
+	if err := json.Unmarshal([]byte(stdout), &list); err != nil || list == nil || len(list) != 0 {
+		t.Errorf("%s: stdout = %q (%v), want an empty JSON list", what, stdout, err)
+	}
+}
+
+// With nothing configured the two bulk commands give the same answer: there
+// is nothing to do, which is a note on stderr, an empty report on stdout and
+// exit code 0.
 func TestBulkCommandsWithoutAccounts(t *testing.T) {
 	_, cfgPath := setup(t, false)
+	notes := map[string]string{
+		"sync":  "no accounts configured (run `polyctl auth login <platform>`)",
+		"index": "no domain-capable accounts configured (run `polyctl auth login <platform>`)",
+	}
 	for _, args := range [][]string{{"sync"}, {"domain", "index"}} {
+		what := strings.Join(args, " ") + " without accounts"
+		note := notes[args[len(args)-1]]
 		code, stdout, stderr := mainRun(cfgPath, args...)
-		if code != ExitNotFound || stdout != "" || !strings.Contains(stderr, "accounts configured") || !strings.Contains(stderr, "polyctl auth login <platform>") {
-			t.Errorf("%v without accounts: exit %d, stdout %q, stderr %q", args, code, stdout, stderr)
+		wantNothingToDo(t, what, code, stderr, note)
+		if stdout != syncHeader {
+			t.Errorf("%s: stdout = %q, want the empty report %q", what, stdout, syncHeader)
 		}
+		code, stdout, stderr = mainRun(cfgPath, append(args, "-o", "json")...)
+		wantNothingToDo(t, what+" -o json", code, stderr, note)
+		wantEmptyJSONList(t, what+" -o json", stdout)
+	}
+}
+
+// A selection that names no account, or no account able to hold the
+// requested types, leaves the bulk commands nothing to do as well; a profile
+// that does not exist is still an error.
+func TestBulkCommandsWithoutSelectedAccounts(t *testing.T) {
+	_, cfgPath := setupMulti(t)
+	for _, c := range []struct {
+		args []string
+		note string
+	}{
+		{[]string{"sync", "--profile", "b", "--platform", p1}, `profile "b" has no account on ` + p1 + " (see `polyctl auth list`)"},
+		{[]string{"sync", "--platform", "aws"}, "no account on aws is configured (see `polyctl auth list`)"},
+		{[]string{"sync", "--profile", "b", "--type", "instance"}, "no selected account supports the requested resource types"},
+		{[]string{"domain", "index", "--platform", "aws"}, "no domain-capable account matches --profile / --platform"},
+		{[]string{"domain", "index", "--profile", "b", "--platform", p1}, "no domain-capable account matches --profile / --platform"},
+	} {
+		what := strings.Join(c.args, " ")
+		code, stdout, stderr := mainRun(cfgPath, c.args...)
+		wantNothingToDo(t, what, code, stderr, c.note)
+		if stdout != syncHeader {
+			t.Errorf("%s: stdout = %q, want the empty report %q", what, stdout, syncHeader)
+		}
+		code, stdout, stderr = mainRun(cfgPath, append(c.args, "-o", "json")...)
+		wantNothingToDo(t, what+" -o json", code, stderr, c.note)
+		wantEmptyJSONList(t, what+" -o json", stdout)
+	}
+	for _, id := range []platform.ID{fakePlatform, fakePlatform2} {
+		for _, profile := range []string{"a", "b"} {
+			if n := clientOn(profile, id).count("Sync:"); n != 0 {
+				t.Errorf("%s/%s was synced %d time(s) by commands with nothing to do", id, profile, n)
+			}
+		}
+	}
+	for _, args := range [][]string{
+		{"sync", "--profile", "nope"},
+		{"sync", "--profile", "nope", "-o", "json"},
+		{"domain", "index", "--profile", "nope"},
+	} {
+		code, stdout, stderr := mainRun(cfgPath, args...)
+		if code != ExitNotFound || stdout != "" || !strings.HasPrefix(stderr, "error: ") || !strings.Contains(stderr, `profile "nope" not found`) {
+			t.Errorf("%v: exit %d (stdout %q, stderr %q), want the unknown profile reported as an error", args, code, stdout, stderr)
+		}
+	}
+	for _, args := range [][]string{{"sync", "--platform", "bogus"}, {"sync", "--type", "bogus"}, {"domain", "index", "--platform", "bogus"}} {
+		if code, _, stderr := mainRun(cfgPath, args...); code != ExitUsage || !strings.HasPrefix(stderr, "error: ") {
+			t.Errorf("%v: exit %d (stderr %q), want a usage error", args, code, stderr)
+		}
+	}
+}
+
+// Main prints a nothing-to-do note as it is, and every other error with the
+// "error:" prefix.
+func TestMainPrintsNothingToDoAsNote(t *testing.T) {
+	if !errors.Is(nothingToDo("no %s", "accounts"), errNothingToDo) || nothingToDo("no %s", "accounts").Error() != "nothing to do: no accounts" {
+		t.Errorf("nothingToDo = %v", nothingToDo("no %s", "accounts"))
+	}
+	_, cfgPath := setup(t, false)
+	code, _, stderr := mainRun(cfgPath, "sync")
+	if code != ExitOK || !strings.HasPrefix(stderr, "nothing to do: ") || strings.Contains(stderr, "error") {
+		t.Errorf("sync with nothing to do: exit %d, stderr %q", code, stderr)
+	}
+	code, _, stderr = mainRun(cfgPath, "sync", "--profile", "nope")
+	if code != ExitNotFound || !strings.HasPrefix(stderr, "error: ") || strings.Contains(stderr, "nothing to do") {
+		t.Errorf("sync of an unknown profile: exit %d, stderr %q", code, stderr)
 	}
 }
 
@@ -755,5 +873,151 @@ func TestAuthRenameLegacyAccountWithoutSecret(t *testing.T) {
 	}
 	if token(t, dir, creds.Key("found", p1)) != "" || token(t, dir, "lost") != "" {
 		t.Error("a secret appeared")
+	}
+}
+
+// leavingReader is a stdin on which nothing is ever typed: the first read
+// calls leave, which is to end the prompt that reads, and then blocks until
+// the test is over.
+func leavingReader(t *testing.T, leave func()) io.Reader {
+	t.Helper()
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	return readerFunc(func([]byte) (int, error) {
+		leave()
+		<-release
+		return 0, io.EOF
+	})
+}
+
+type readerFunc func([]byte) (int, error)
+
+func (f readerFunc) Read(b []byte) (int, error) { return f(b) }
+
+// A declined or left confirmation of `dns delete` deletes nothing and is not
+// an error: the command exits 0 with a note.
+func TestDNSDeleteDeclinedIsNotAnError(t *testing.T) {
+	dir, cfgPath := setup(t, true)
+	recs := []platform.Record{
+		{ID: "r1", ZoneID: "z1", Name: "www.example.com", Type: "A", Content: "1.2.3.4"},
+		{ID: "r2", ZoneID: "z1", Name: "www.example.com", Type: "A", Content: "5.6.7.8"},
+	}
+	seed(t, dir, []platform.Zone{{ID: "z1", Name: "example.com"}}, map[string][]platform.Record{"z1": recs})
+	fc := client("a")
+	fc.zones = []platform.Zone{{ID: "z1", Name: "example.com"}}
+	fc.records["z1"] = append([]platform.Record(nil), recs...)
+	cached := func() int {
+		db := openInventory(t, dir)
+		defer db.Close()
+		rows, err := db.List(context.Background(), inventory.Query{Type: platform.ResDNSRecord})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(rows)
+	}
+	args := []string{"--config", cfgPath, "dns", "delete", "example.com", "--type", "A", "--name", "www"}
+
+	// "n", and an empty answer: the default is no.
+	for _, answer := range []string{"n\n", "no\n", "\n"} {
+		var out, errb bytes.Buffer
+		code := Main(args, strings.NewReader(answer), &out, &errb)
+		stderr := errb.String()
+		if code != ExitOK || !strings.HasSuffix(stderr, "nothing to do: no record was deleted\n") || strings.Contains(stderr, "error:") || strings.Contains(stderr, "deleted www") {
+			t.Errorf("answer %q: exit %d (stderr %q), want the note and exit code 0", answer, code, stderr)
+		}
+		if !strings.Contains(stderr, "delete 2 records") || !strings.Contains(stderr, "1.2.3.4") || !strings.Contains(stderr, "5.6.7.8") {
+			t.Errorf("answer %q: the records were not shown with the question: %q", answer, stderr)
+		}
+		if out.String() != "" {
+			t.Errorf("answer %q: stdout = %q, want nothing", answer, out.String())
+		}
+		if fc.count("DeleteRecord") != 0 || len(fc.records["z1"]) != 2 || cached() != 2 {
+			t.Errorf("answer %q: records were deleted: calls %v, records %+v, %d cached", answer, fc.calls, fc.records["z1"], cached())
+		}
+	}
+
+	// Leaving the question, here by interrupting the command while it
+	// waits for the answer, is a no as well.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var out, errb bytes.Buffer
+	rt := app.New(app.Flags{}, leavingReader(t, cancel), &out, &errb)
+	root := NewRoot(rt)
+	root.SetArgs(args)
+	root.SetOut(&out)
+	root.SetErr(&errb)
+	err := root.ExecuteContext(ctx)
+	_ = rt.Close()
+	if !errors.Is(err, errNothingToDo) || ExitCodeFor(err) != ExitOK || err.Error() != "nothing to do: no record was deleted" {
+		t.Errorf("left confirmation = %v (exit %d), want nothing to do", err, ExitCodeFor(err))
+	}
+	if out.String() != "" || strings.Contains(errb.String(), "deleted www") || fc.count("DeleteRecord") != 0 || len(fc.records["z1"]) != 2 || cached() != 2 {
+		t.Errorf("left confirmation: stdout %q, stderr %q, calls %v", out.String(), errb.String(), fc.calls)
+	}
+
+	// A stdin that ends without an answer cannot confirm anything: the
+	// request was not carried out, which stays an error.
+	code, _, stderr := mainRun(cfgPath, "dns", "delete", "example.com", "--type", "A", "--name", "www")
+	if code != ExitError || !strings.Contains(stderr, "error: "+prompt.ErrNotInteractive.Error()) || fc.count("DeleteRecord") != 0 {
+		t.Errorf("dns delete with a closed stdin: exit %d (stderr %q)", code, stderr)
+	}
+
+	// No matching record is still an error.
+	code, _, stderr = mainRun(cfgPath, "dns", "delete", "example.com", "--type", "A", "--name", "nope")
+	if code != ExitNotFound || !strings.HasPrefix(stderr, "error: ") || strings.Contains(stderr, "nothing to do") {
+		t.Errorf("dns delete without a match: exit %d (stderr %q)", code, stderr)
+	}
+
+	// Answering yes deletes both.
+	out.Reset()
+	errb.Reset()
+	if code := Main(args, strings.NewReader("y\n"), &out, &errb); code != ExitOK || strings.Contains(errb.String(), "nothing to do") {
+		t.Fatalf("confirmed dns delete: exit %d (stderr %q)", code, errb.String())
+	}
+	if fc.count("DeleteRecord") != 2 || len(fc.records["z1"]) != 0 || cached() != 0 {
+		t.Errorf("confirmed dns delete: calls %v, records %+v, %d cached", fc.calls, fc.records["z1"], cached())
+	}
+}
+
+// An action of `auth manage` that finds nothing to act on, because the
+// config changed while the menu was open, prints a note and not an error.
+func TestAuthManageNothingToDoIsANote(t *testing.T) {
+	_, cfgPath := setup(t, true)
+	hollow := func() {
+		otherProcessSaves(t, cfgPath, func(cfg *config.Config) {
+			cfg.Profiles["a"].Platforms = map[platform.ID]*config.Account{}
+		})
+	}
+	empty := func() {
+		otherProcessSaves(t, cfgPath, func(cfg *config.Config) {
+			cfg.Profiles = map[string]*config.Profile{}
+			cfg.CurrentProfile = ""
+		})
+	}
+	stdout, stderr, err, p := runPick(t, cfgPath, []any{
+		then{do: hollow, answer: actDetails},
+		then{do: empty, answer: actUse},
+		actQuit,
+	}, "auth", "manage")
+	if err != nil || stdout != "" {
+		t.Fatalf("auth manage: %v (stdout %q, stderr %q)", err, stdout, stderr)
+	}
+	for _, note := range []string{
+		"\nnothing to do: no accounts configured\n",
+		"\nnothing to do: no profiles configured (run `polyctl auth login <platform> [--profile <name>]`)\n",
+	} {
+		if strings.Count(stderr, note) != 1 {
+			t.Errorf("stderr lacks the note %q: %q", note, stderr)
+		}
+	}
+	if strings.Contains(stderr, "error:") {
+		t.Errorf("a note was reported as an error: %q", stderr)
+	}
+	// The menu went on after each note, and nothing else was asked.
+	if len(p.asked) != 3 || p.asked[0].Title != menuTitle || p.asked[1].Title != menuTitle || p.asked[2].Title != menuTitle {
+		t.Fatalf("prompts = %v, want the menu three times", p.titles())
+	}
+	if got := values(p.asked[2].Options); got != actLogin+" "+actQuit {
+		t.Errorf("menu after the config was emptied = %q", got)
 	}
 }

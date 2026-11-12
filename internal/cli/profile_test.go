@@ -628,20 +628,20 @@ func TestSyncSelectsAccounts(t *testing.T) {
 	if _, _, err := run(t, cfgPath, "sync", "--profile", "nope"); ExitCodeFor(err) != ExitNotFound {
 		t.Errorf("sync --profile nope = %v (exit %d)", err, ExitCodeFor(err))
 	}
-	// A selection that names no account is a not-found error, like every
-	// other command's answer to a profile without the requested account.
-	_, _, err := run(t, cfgPath, "sync", "--profile", "b", "--platform", p1)
-	if ExitCodeFor(err) != ExitNotFound || !strings.Contains(err.Error(), `profile "b" has no account on `+p1) || !strings.Contains(err.Error(), "nothing to sync") {
-		t.Errorf("sync of an account that does not exist = %v (exit %d)", err, ExitCodeFor(err))
+	// A selection that names no account leaves nothing to do, which is not
+	// an error: exit code 0 and an empty report.
+	stdout, _, err := run(t, cfgPath, "sync", "--profile", "b", "--platform", p1, "-o", "json")
+	if !errors.Is(err, errNothingToDo) || ExitCodeFor(err) != ExitOK || !strings.Contains(err.Error(), `profile "b" has no account on `+p1) || strings.TrimSpace(stdout) != "[]" {
+		t.Errorf("sync of an account that does not exist = %v (exit %d, stdout %q)", err, ExitCodeFor(err), stdout)
 	}
-	_, _, err = run(t, cfgPath, "sync", "--platform", "aws")
-	if ExitCodeFor(err) != ExitNotFound || !strings.Contains(err.Error(), "no account on aws is configured") {
-		t.Errorf("sync of a platform without accounts = %v (exit %d)", err, ExitCodeFor(err))
+	stdout, _, err = run(t, cfgPath, "sync", "--platform", "aws", "-o", "json")
+	if !errors.Is(err, errNothingToDo) || ExitCodeFor(err) != ExitOK || !strings.Contains(err.Error(), "no account on aws is configured") || strings.TrimSpace(stdout) != "[]" {
+		t.Errorf("sync of a platform without accounts = %v (exit %d, stdout %q)", err, ExitCodeFor(err), stdout)
 	}
-	// Accounts that exist but cannot hold the requested type are not that.
-	_, _, err = run(t, cfgPath, "sync", "--profile", "b", "--type", "instance")
-	if err == nil || ExitCodeFor(err) != ExitError || !strings.Contains(err.Error(), "nothing to sync") {
-		t.Errorf("sync of a type no selected account supports = %v (exit %d)", err, ExitCodeFor(err))
+	// So do accounts that exist but cannot hold the requested type.
+	stdout, _, err = run(t, cfgPath, "sync", "--profile", "b", "--type", "instance", "-o", "json")
+	if !errors.Is(err, errNothingToDo) || ExitCodeFor(err) != ExitOK || !strings.Contains(err.Error(), "no selected account supports the requested resource types") || strings.TrimSpace(stdout) != "[]" {
+		t.Errorf("sync of a type no selected account supports = %v (exit %d, stdout %q)", err, ExitCodeFor(err), stdout)
 	}
 
 	// domain index follows the same selection.
@@ -984,9 +984,10 @@ func TestDomainPlatformFlag(t *testing.T) {
 	if _, _, err := run(t, cfgPath, "domain", "index", "--platform", p2, "--profile", "b"); err != nil || clientOn("a", fakePlatform2).count("Sync:") != 2 || clientOn("b", fakePlatform2).count("Sync:") != 4 {
 		t.Errorf("domain index --platform %s --profile b: %v", p2, err)
 	}
-	code, _, stderr := mainRun(cfgPath, "domain", "index", "--platform", "aws")
-	if code != ExitNotFound || !strings.Contains(stderr, "no domain-capable account matches --profile / --platform") {
-		t.Errorf("domain index --platform aws: exit %d (stderr %q)", code, stderr)
+	// No account on the platform: nothing is indexed, which is not an error.
+	code, stdout, stderr := mainRun(cfgPath, "domain", "index", "--platform", "aws")
+	if code != ExitOK || stderr != "nothing to do: no domain-capable account matches --profile / --platform\n" || stdout != "PLATFORM  PROFILE  TYPE  COUNT  STATUS\n" {
+		t.Errorf("domain index --platform aws: exit %d (stdout %q, stderr %q)", code, stdout, stderr)
 	}
 	if _, _, err := run(t, cfgPath, "domain", "index"); err != nil {
 		t.Fatal(err)

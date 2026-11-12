@@ -302,9 +302,8 @@ func newDomainIndexCmd(rt *app.Runtime) *cobra.Command {
 		Use:   "index",
 		Short: "Scan every domain-capable account and rebuild the domain index",
 		Long: "Fetch zones and registered domains from every domain-capable account (or\n" +
-			"those selected with --profile / --platform) and rebuild the domain index. A\n" +
-			"selection that names no such account is a not-found error (exit code 4), and\n" +
-			"so is an index with no such account configured at all.",
+			"those selected with --profile / --platform) and rebuild the domain index.\n" +
+			"When there is no such account nothing is indexed, which is not an error.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if rt.Flags.Offline {
@@ -315,12 +314,15 @@ func newDomainIndexCmd(rt *app.Runtime) *cobra.Command {
 				return err
 			}
 			if len(names) == 0 {
-				if rt.Flags.Profile != "" || rt.Flags.Platform != "" {
-					return fmt.Errorf("%w: no domain-capable account matches --profile / --platform", platform.ErrNotFound)
+				// Nothing to index is not a failure; the empty result is
+				// still printed, so `-o json` gives a list to parse.
+				if err := renderSyncReports(rt, []app.SyncReport{}, nil); err != nil {
+					return err
 				}
-				// Not found, like every other answer to "nothing is
-				// configured" and like `sync` without accounts.
-				return fmt.Errorf("%w: no domain-capable accounts configured; run `polyctl auth login <platform>`", platform.ErrNotFound)
+				if rt.Flags.Profile != "" || rt.Flags.Platform != "" {
+					return nothingToDo("no domain-capable account matches --profile / --platform")
+				}
+				return nothingToDo("no domain-capable accounts configured (run `polyctl auth login <platform>`)")
 			}
 			var reports []app.SyncReport
 			var firstErr error
@@ -355,14 +357,11 @@ func newDomainListCmd(rt *app.Runtime) *cobra.Command {
 			}
 			filtered := rt.Flags.Profile != "" || only != ""
 			if filtered || rt.Flags.Refresh {
-				// A selection that names no account is an error, as it is
-				// for `domain index`, and not an empty index.
+				// Validates --profile; a selection that names no account
+				// simply lists nothing.
 				names, err := rt.DomainAccounts()
 				if err != nil {
 					return err
-				}
-				if filtered && len(names) == 0 {
-					return fmt.Errorf("%w: no domain-capable account matches --profile / --platform", platform.ErrNotFound)
 				}
 				if rt.Flags.Refresh {
 					for _, n := range names {

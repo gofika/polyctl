@@ -2,7 +2,6 @@ package aliyun
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -782,7 +781,9 @@ func newECSStopCmd(rt *app.Runtime) *cobra.Command {
 					return err
 				}
 				if !ok {
-					return errors.New("aborted")
+					// Declining is not a failure: exit code 0.
+					rt.Infof("nothing to do: instance %s was not stopped", args[0])
+					return nil
 				}
 			}
 			if err := c.StopInstance(cmd.Context(), region, args[0], force); err != nil {

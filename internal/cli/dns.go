@@ -269,7 +269,7 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 					return err
 				}
 				if !ok {
-					return fmt.Errorf("aborted")
+					return nothingToDo("no record was deleted")
 				}
 			}
 			db, _ := rt.DB()

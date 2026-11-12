@@ -378,6 +378,8 @@ func TestExitCodeFor(t *testing.T) {
 		want int
 	}{
 		{"nil", nil, ExitOK},
+		{"nothing to do", nothingToDo("no %s configured", "accounts"), ExitOK},
+		{"nothing to do wrapped", fmt.Errorf("ctx: %w", nothingToDo("x")), ExitOK},
 		{"plain", errors.New("boom"), ExitError},
 		{"usage", usageErr("bad flag"), ExitUsage},
 		{"usage wrapped", fmt.Errorf("ctx: %w", usageErr("bad")), ExitUsage},
@@ -473,8 +475,9 @@ func TestSyncCommand(t *testing.T) {
 	if _, _, err := run(t, cfgPath, "sync", "--platform", "nope"); ExitCodeFor(err) != ExitUsage {
 		t.Errorf("sync --platform nope = %v", err)
 	}
-	if _, _, err := run(t, cfgPath, "sync", "--platform", "aws"); err == nil || !strings.Contains(err.Error(), "nothing to sync") {
-		t.Errorf("sync with no matching profile = %v", err)
+	// A platform nobody is logged in to: nothing to do, which is not an error.
+	if _, _, err := run(t, cfgPath, "sync", "--platform", "aws"); !errors.Is(err, errNothingToDo) || ExitCodeFor(err) != ExitOK {
+		t.Errorf("sync with no matching account = %v (exit %d)", err, ExitCodeFor(err))
 	}
 	stdout, _, err = run(t, cfgPath, "inventory", "stats")
 	if err != nil || !strings.Contains(stdout, "cloudflare") {

@@ -38,7 +38,7 @@ var Version = "dev"
 func ExitCodeFor(err error) int {
 	var amb *app.AmbiguousError
 	switch {
-	case err == nil:
+	case err == nil, errors.Is(err, errNothingToDo):
 		return ExitOK
 	case errors.As(err, &amb):
 		return ExitAmbiguous
@@ -54,6 +54,18 @@ func ExitCodeFor(err error) int {
 		return ExitUsage
 	}
 	return ExitError
+}
+
+// errNothingToDo marks a command that found nothing to act on: no account to
+// sync, no profile to pick from, a confirmation answered with no. That is
+// not a failure. The message is printed as a note and the exit code is 0,
+// because callers judge a run by "exit code is zero"; non-zero codes are
+// kept for requests that could not be carried out.
+var errNothingToDo = errors.New("nothing to do")
+
+// nothingToDo returns a note error wrapping errNothingToDo.
+func nothingToDo(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", errNothingToDo, fmt.Sprintf(format, args...))
 }
 
 // usageErr wraps an error so it maps to ExitUsage.
@@ -100,6 +112,10 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return ExitOK
 	}
 	code := ExitCodeFor(err)
+	if errors.Is(err, errNothingToDo) {
+		fmt.Fprintf(stderr, "%v\n", err) // a note, not an error
+		return code
+	}
 	fmt.Fprintf(stderr, "error: %v\n", err)
 	return code
 }

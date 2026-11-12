@@ -19,9 +19,9 @@ func newSyncCmd(rt *app.Runtime) *cobra.Command {
 		Short: "Fetch resources from the platforms into the local inventory",
 		Long: `Fetch resources of every account of every profile (or those selected with
 --profile / --platform) and replace them in the local inventory. Resource types default to
-everything the platform supports; narrow with --type. A selection that names no
-account is a not-found error (exit code 4), and so is a sync with no account
-configured at all.`,
+everything the platform supports; narrow with --type. When the selection names
+no account, or no account is configured, nothing is synced, which is not an
+error.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if rt.Flags.Offline {
@@ -64,11 +64,16 @@ configured at all.`,
 					}
 				}
 			}
-			if matched == 0 {
-				return errNoSyncAccount(rt.Flags.Profile, platforms)
-			}
 			if len(reports) == 0 && firstErr == nil {
-				return fmt.Errorf("nothing to sync: no selected account supports the requested resource types")
+				// Nothing to sync is not a failure. The empty result is
+				// still printed, so `-o json` gives a list to parse.
+				if err := renderSyncReports(rt, []app.SyncReport{}, nil); err != nil {
+					return err
+				}
+				if matched == 0 {
+					return noSyncAccount(rt.Flags.Profile, platforms)
+				}
+				return nothingToDo("no selected account supports the requested resource types")
 			}
 			return renderSyncReports(rt, reports, firstErr)
 		},
@@ -80,22 +85,20 @@ configured at all.`,
 	return cmd
 }
 
-// errNoSyncAccount says that the selection of `sync` names no account, or
-// that there is none at all. It is a not-found error, like the other
-// commands' answer to a profile without an account on the requested platform
-// and like `domain index` without accounts.
-func errNoSyncAccount(profile string, platforms []string) error {
+// noSyncAccount is the note for a `sync` whose selection names no account,
+// or that has no account at all: nothing was synced, which is not a failure.
+func noSyncAccount(profile string, platforms []string) error {
 	on := ""
 	if len(platforms) > 0 {
 		on = " on " + strings.Join(platforms, ", ")
 	}
 	switch {
 	case profile != "":
-		return fmt.Errorf("%w: profile %q has no account%s; nothing to sync (run `polyctl auth list`)", platform.ErrNotFound, profile, on)
+		return nothingToDo("profile %q has no account%s (see `polyctl auth list`)", profile, on)
 	case on != "":
-		return fmt.Errorf("%w: no account%s is configured; nothing to sync (run `polyctl auth list`)", platform.ErrNotFound, on)
+		return nothingToDo("no account%s is configured (see `polyctl auth list`)", on)
 	}
-	return fmt.Errorf("%w: no accounts configured; nothing to sync (run `polyctl auth login <platform>`)", platform.ErrNotFound)
+	return nothingToDo("no accounts configured (run `polyctl auth login <platform>`)")
 }
 
 // renderSyncReports prints the reports and returns firstErr, or an error

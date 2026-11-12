@@ -325,9 +325,10 @@ func TestAuthUsePicksProfile(t *testing.T) {
 
 func TestAuthUsePickWithoutProfiles(t *testing.T) {
 	_, cfgPath := setup(t, false)
-	_, _, err, p := runPick(t, cfgPath, nil, "auth", "use")
-	if ExitCodeFor(err) != ExitNotFound || !strings.Contains(err.Error(), "no profiles configured") {
-		t.Errorf("auth use without profiles = %v, want not found", err)
+	stdout, _, err, p := runPick(t, cfgPath, nil, "auth", "use")
+	if !errors.Is(err, errNothingToDo) || ExitCodeFor(err) != ExitOK || stdout != "" ||
+		err.Error() != "nothing to do: no profiles configured (run `polyctl auth login <platform> [--profile <name>]`)" {
+		t.Errorf("auth use without profiles = %v (exit %d, stdout %q), want nothing to do", err, ExitCodeFor(err), stdout)
 	}
 	if len(p.asked) != 0 {
 		t.Errorf("prompted with nothing to choose: %v", p.titles())
@@ -470,10 +471,13 @@ func TestAuthLogoutPicksAccounts(t *testing.T) {
 		t.Errorf("inventory = %q, want the rows of a/%s kept", got, p1)
 	}
 
-	// No account on the platform: an error, without a prompt.
+	// No account on the platform: nothing to do, without a prompt.
 	_, _, err, p = runPick(t, cfgPath, nil, "auth", "logout", p1)
-	if ExitCodeFor(err) != ExitNotFound || len(p.asked) != 0 {
-		t.Errorf("logout of a platform without accounts = %v (prompts %v)", err, p.titles())
+	if !errors.Is(err, errNothingToDo) || ExitCodeFor(err) != ExitOK || err.Error() != "nothing to do: no "+p1+" account configured" || len(p.asked) != 0 {
+		t.Errorf("logout of a platform without accounts = %v (exit %d, prompts %v)", err, ExitCodeFor(err), p.titles())
+	}
+	if got := accountNames(loadConfig(t, cfgPath)); got != "b/"+p2 {
+		t.Errorf("accounts = %q, want nothing removed", got)
 	}
 	if _, _, err, _ = runPick(t, cfgPath, nil, "auth", "logout", "nonsense"); ExitCodeFor(err) != ExitUsage {
 		t.Errorf("logout of an unknown platform = %v, want a usage error", err)
@@ -516,9 +520,9 @@ func TestAuthLogoutPickFlags(t *testing.T) {
 	if token(t, dir, creds.Key("a", p2)) != "" || token(t, dir, creds.Key("b", p2)) != "" {
 		t.Error("secrets of removed accounts survived")
 	}
-	_, _, err, _ = runPick(t, cfgPath, nil, "auth", "logout")
-	if ExitCodeFor(err) != ExitNotFound {
-		t.Errorf("logout with nothing configured = %v, want not found", err)
+	_, _, err, p = runPick(t, cfgPath, nil, "auth", "logout")
+	if !errors.Is(err, errNothingToDo) || ExitCodeFor(err) != ExitOK || !strings.Contains(err.Error(), "no profiles configured") || len(p.asked) != 0 {
+		t.Errorf("logout with nothing configured = %v (exit %d, prompts %v), want nothing to do", err, ExitCodeFor(err), p.titles())
 	}
 }
 

@@ -56,7 +56,7 @@ func pickPlatform(rt *app.Runtime) (platform.ID, error) {
 }
 
 func errNoProfiles() error {
-	return fmt.Errorf("%w: no profiles configured; run `polyctl auth login <platform> [--profile <name>]`", platform.ErrNotFound)
+	return nothingToDo("no profiles configured (run `polyctl auth login <platform> [--profile <name>]`)")
 }
 
 // profileOptions lists the profiles with their platforms.
@@ -155,7 +155,7 @@ func removeInteractive(ctx context.Context, rt *app.Runtime, only platform.ID, k
 	}
 	if len(opts) == 0 {
 		if only != "" {
-			return fmt.Errorf("%w: no %s account configured", platform.ErrNotFound, only)
+			return nothingToDo("no %s account configured", only)
 		}
 		return errNoProfiles()
 	}
@@ -542,7 +542,11 @@ func runManage(ctx context.Context, rt *app.Runtime) error {
 			rt.Infof("error: %v", err)
 			continue
 		}
-		if err := run(ctx, rt); err != nil && !errors.Is(err, prompt.ErrAborted) {
+		switch err := run(ctx, rt); {
+		case err == nil, errors.Is(err, prompt.ErrAborted):
+		case errors.Is(err, errNothingToDo):
+			rt.Infof("%v", err) // a note, not an error
+		default:
 			rt.Infof("error: %v", err)
 		}
 	}
@@ -557,7 +561,7 @@ func pickAccount(rt *app.Runtime, title string) (config.AccountRef, error) {
 	refs := cfg.Accounts("")
 	switch len(refs) {
 	case 0:
-		return config.AccountRef{}, fmt.Errorf("%w: no accounts configured", platform.ErrNotFound)
+		return config.AccountRef{}, nothingToDo("no accounts configured")
 	case 1:
 		return refs[0], nil
 	}

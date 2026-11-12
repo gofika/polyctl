@@ -354,3 +354,25 @@ func TestDomainNSSetDoesNotCacheOnPendingTask(t *testing.T) {
 		t.Errorf("new record should be cached, got %+v", rows)
 	}
 }
+
+// A declined confirmation of `ecs stop` stops nothing and is not an error: a
+// note on stderr and a nil error, which is exit code 0.
+func TestECSStopDeclinedIsNotAnError(t *testing.T) {
+	for _, answer := range []string{"n\n", "\n"} {
+		h := newHarness(t, app.Flags{})
+		h.rt.Stdin = strings.NewReader(answer)
+		if err := h.run("ecs", "stop", "i-1"); err != nil {
+			t.Errorf("answer %q: ecs stop = %v, want no error", answer, err)
+		}
+		stderr := h.stderr.String()
+		if !strings.HasSuffix(stderr, "nothing to do: instance i-1 was not stopped\n") || strings.Contains(stderr, "error:") || strings.Contains(stderr, "stop requested") {
+			t.Errorf("answer %q: stderr = %q, want the note", answer, stderr)
+		}
+		if h.stdout.Len() != 0 {
+			t.Errorf("answer %q: stdout = %q, want nothing", answer, h.stdout.String())
+		}
+		if n := len(h.api.callsFor("StopInstance")); n != 0 {
+			t.Errorf("answer %q: StopInstance was called %d time(s)", answer, n)
+		}
+	}
+}
