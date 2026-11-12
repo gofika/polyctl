@@ -222,8 +222,15 @@ if none exists it is created; if several exist the command fails unless
 func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 	var typ, name, value, id string
 	cmd := &cobra.Command{
-		Use:               "delete <domain>",
-		Short:             "Delete DNS records matching --name/--type (and optionally --value)",
+		Use:   "delete <domain>",
+		Short: "Delete DNS records matching --name/--type (and optionally --value)",
+		Long: "Delete DNS records matching --name/--type (and optionally --value), or the\n" +
+			"one record with --id. A single match is deleted at once. Several matches are\n" +
+			"listed on stderr and, in the interactive flow, confirmed first (default no);\n" +
+			"--yes skips the question. In the non-interactive flow (no terminal,\n" +
+			"--no-input or POLYCTL_NO_INPUT=1) nothing is asked and stdin is not read:\n" +
+			"--yes is required to delete several records, and without it the command is\n" +
+			"a usage error (exit code 2) and nothing is deleted.",
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: completeDomains(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -263,8 +270,10 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 				return fmt.Errorf("%w: no matching record in zone %s", platform.ErrNotFound, t.Domain)
 			}
 			if len(matches) > 1 && !rt.Flags.Yes {
+				// Shown in both flows, so the caller sees what is affected:
+				// before the question, or with the refusal that asks for --yes.
 				_ = output.RenderGrid(rt.Stderr, recordGrid(matches, t.Platform))
-				ok, err := rt.Confirm(cmd.Context(), fmt.Sprintf("delete %d records", len(matches)), false)
+				ok, err := rt.Confirm(cmd.Context(), fmt.Sprintf("delete %d records in zone %s", len(matches), t.Domain), false)
 				if err != nil {
 					return err
 				}

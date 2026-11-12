@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/platform"
 )
 
@@ -582,6 +583,7 @@ func TestLoginNonInteractiveAndInteractive(t *testing.T) {
 	errBuf.Reset()
 	res, err = p.Login(ctx, platform.LoginInput{
 		Options:     map[string]string{"env": "dev"},
+		Interactive: true,
 		Stdin:       strings.NewReader(testUser + "\n" + testToken + "\n"),
 		Stdout:      &strings.Builder{},
 		Stderr:      &errBuf,
@@ -680,5 +682,65 @@ func TestContextCancellation(t *testing.T) {
 	cancel()
 	if _, err := c.ListDomains(ctx); !errors.Is(err, context.Canceled) {
 		t.Errorf("cancelled context should abort, got %v", err)
+	}
+}
+
+// refusingReader fails the test when the login reads stdin.
+type refusingReader struct{ t *testing.T }
+
+func (r refusingReader) Read([]byte) (int, error) {
+	r.t.Error("stdin was read")
+	return 0, io.EOF
+}
+
+// The non-interactive flow asks nothing and reads nothing: a missing
+// username or token is a usage error naming its --set key.
+func TestLoginNonInteractiveNeverAsks(t *testing.T) {
+	_, srv := newFakeServer(t)
+	orig := baseURLs[envTest]
+	baseURLs[envTest] = srv.URL
+	t.Cleanup(func() { baseURLs[envTest] = orig })
+	for _, tc := range []struct {
+		name     string
+		opts     map[string]string
+		existing map[string]string
+		want     []string
+		wantNot  string
+	}{
+		{"nothing", map[string]string{"env": "test"}, nil, []string{"--set username=<user>", "--set token=-"}, ""},
+		{"no token", map[string]string{"env": "test", "username": testUser}, nil, []string{"--set token=-"}, "--set username"},
+		{"no username", map[string]string{"env": "test", "token": testToken}, nil, []string{"--set username=<user>"}, "--set token"},
+		{"re-authentication without a token", map[string]string{"env": "test"}, map[string]string{metaUsername: testUser}, []string{"--set token=-"}, "--set username"},
+	} {
+		var stderr strings.Builder
+		opened := 0
+		_, err := (&provider{}).Login(context.Background(), platform.LoginInput{
+			Options: tc.opts, Existing: tc.existing,
+			Stdin: refusingReader{t}, Stdout: &strings.Builder{}, Stderr: &stderr,
+			OpenBrowser: func(string) error { opened++; return nil },
+		})
+		if !errors.Is(err, app.ErrUsage) {
+			t.Errorf("%s: %v, want a usage error", tc.name, err)
+			continue
+		}
+		for _, w := range tc.want {
+			if !strings.Contains(err.Error(), w) {
+				t.Errorf("%s: the error does not name %q: %v", tc.name, w, err)
+			}
+		}
+		if tc.wantNot != "" && strings.Contains(err.Error(), tc.wantNot) {
+			t.Errorf("%s: the error names %q, which was given: %v", tc.name, tc.wantNot, err)
+		}
+		if opened != 0 || stderr.Len() != 0 {
+			t.Errorf("%s: browser opened %d time(s), stderr %q; want neither", tc.name, opened, stderr.String())
+		}
+	}
+	// With both values it completes without touching stdin.
+	res, err := (&provider{}).Login(context.Background(), platform.LoginInput{
+		Options: map[string]string{"env": "test", "username": testUser, "token": testToken},
+		Stdin:   refusingReader{t}, Stdout: &strings.Builder{}, Stderr: &strings.Builder{},
+	})
+	if err != nil || res.Secret[secretToken] != testToken {
+		t.Errorf("complete login: %v %+v", err, res)
 	}
 }

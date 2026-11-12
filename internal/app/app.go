@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/gofika/polyctl/internal/browser"
@@ -33,6 +34,35 @@ type Flags struct {
 	Verbose   bool
 	NoBrowser bool
 	Yes       bool
+	// NoInput forces the non-interactive flow, also on a terminal.
+	NoInput bool
+}
+
+// EnvNoInput is the environment variable that forces the non-interactive
+// flow, like --no-input.
+const EnvNoInput = "POLYCTL_NO_INPUT"
+
+// noInputEnv reads EnvNoInput: 1, true and yes switch it on, 0, false, no
+// and an empty value switch it off (case does not matter). Anything else is
+// an error, and counts as on meanwhile: a command that cannot tell must not
+// ask.
+func noInputEnv() (bool, error) {
+	v := strings.TrimSpace(os.Getenv(EnvNoInput))
+	switch strings.ToLower(v) {
+	case "", "0", "false", "no":
+		return false, nil
+	case "1", "true", "yes":
+		return true, nil
+	}
+	return true, fmt.Errorf("invalid %s value %q (expected 1, true or yes to switch it on; 0, false, no or empty to switch it off)", EnvNoInput, v)
+}
+
+// CheckNoInputEnv reports an invalid EnvNoInput value. Init checks it for
+// every command; argument validation that runs before Init calls it too, so
+// that the invalid value is what gets reported and not its consequence.
+func CheckNoInputEnv() error {
+	_, err := noInputEnv()
+	return err
 }
 
 // Runtime is the shared command context.
@@ -44,6 +74,10 @@ type Runtime struct {
 	// Picker answers the arrow-key prompts. Nil means the terminal one;
 	// tests inject a scripted implementation.
 	Picker prompt.Picker
+	// SkipNoInputEnvCheck keeps Init from rejecting an invalid EnvNoInput
+	// value. Help and shell completion set it: they ask nothing, and a
+	// mistyped variable must not take them down.
+	SkipNoInputEnvCheck bool
 
 	cfg       *config.Config
 	store     *creds.Multi
@@ -51,6 +85,10 @@ type Runtime struct {
 	format    output.Format
 	warned    bool
 	configDir string
+	// prompt is the one line reader on Stdin. It is shared because it reads
+	// ahead: a second reader on the same pipe would miss what the first
+	// one buffered.
+	prompt *prompt.IO
 }
 
 // New creates a Runtime; nothing is loaded until first use.
@@ -62,6 +100,11 @@ func New(flags Flags, stdin io.Reader, stdout, stderr io.Writer) *Runtime {
 func (rt *Runtime) Init() error {
 	if rt.Flags.Refresh && rt.Flags.Offline {
 		return errors.New("--refresh and --offline are mutually exclusive")
+	}
+	if !rt.SkipNoInputEnvCheck {
+		if err := CheckNoInputEnv(); err != nil {
+			return err
+		}
 	}
 	if _, err := rt.Config(); err != nil {
 		return err
@@ -109,33 +152,121 @@ func (rt *Runtime) Infof(format string, args ...any) {
 	fmt.Fprintf(rt.Stderr, format+"\n", args...)
 }
 
-// Prompt returns the interactive IO.
-func (rt *Runtime) Prompt() *prompt.IO { return prompt.New(rt.Stdin, rt.Stdout, rt.Stderr) }
+// Prompt returns the line prompts on the runtime's streams, in the flow
+// Interactive reports. Every call returns the same reader, so several reads
+// of a piped stdin (`--set a=- --set b=-`, then a login flow) each get their
+// own line.
+func (rt *Runtime) Prompt() *prompt.IO {
+	if rt.prompt == nil || rt.prompt.In != rt.Stdin {
+		rt.prompt = prompt.New(rt.Stdin, rt.Stdout, rt.Stderr)
+	}
+	return rt.prompt.WithInteractive(rt.Interactive())
+}
 
-// Confirm asks a yes/no question on a line of its own, for commands that
-// work without a terminal too. Leaving the question (Ctrl-C, Ctrl-D, an
-// interrupted command) is a no.
-func (rt *Runtime) Confirm(ctx context.Context, label string, def bool) (bool, error) {
-	ok, err := rt.Prompt().WithContext(ctx).Confirm(label, def)
+// CanConfirm returns nil when a confirmation of action ("delete 3 records")
+// can be obtained: --yes was given, or the flow is interactive. Otherwise it
+// is the usage error of a command that needs --yes. Commands call it before
+// doing any work that a refusal would waste.
+func (rt *Runtime) CanConfirm(action string) error {
+	if rt.Flags.Yes || rt.Interactive() {
+		return nil
+	}
+	return UsageErrf("confirmation required: pass --yes to proceed (would %s)", action)
+}
+
+// Confirm is the one gate for confirmations. With --yes the answer is yes
+// and nothing is asked, in both flows. In the interactive flow the question
+// "action (y/N)" is asked on a line of its own; leaving it (Ctrl-C, Ctrl-D,
+// an interrupted command) is a no. In the non-interactive flow nothing is
+// asked and stdin is not read: it is the usage error of CanConfirm.
+func (rt *Runtime) Confirm(ctx context.Context, action string, def bool) (bool, error) {
+	if rt.Flags.Yes {
+		return true, nil
+	}
+	if err := rt.CanConfirm(action); err != nil {
+		return false, err
+	}
+	ok, err := rt.Prompt().WithContext(ctx).Confirm(action, def)
 	if errors.Is(err, prompt.ErrAborted) {
 		return false, nil
 	}
 	return ok, err
 }
 
+// StdinValue returns the value of `--set key=-`. The interactive flow asks
+// for it on the terminal (without echo when secret is set). The
+// non-interactive flow reads one line of the piped stdin, printing nothing;
+// a stdin that is a terminal, or holds no value, is a usage error.
+func (rt *Runtime) StdinValue(ctx context.Context, key string, secret bool) (string, error) {
+	p := rt.Prompt().WithContext(ctx)
+	if rt.Interactive() {
+		if secret {
+			return p.RequiredSecret(key)
+		}
+		return p.Required(key)
+	}
+	v, err := p.ReadValue()
+	switch {
+	case errors.Is(err, prompt.ErrStdinTerminal):
+		return "", UsageErrf("--set %s=- needs the value piped on stdin (stdin is a terminal)", key)
+	case errors.Is(err, prompt.ErrNoValue):
+		return "", UsageErrf("--set %s=- found no value on stdin (each --set key=- reads one line, in the order given)", key)
+	}
+	return v, err
+}
+
 // Pick returns the Picker for arrow-key prompts: the injected one, or the
-// terminal implementation, which reads Stdin and draws on Stderr.
+// terminal implementation, which reads Stdin and draws on Stderr. In the
+// non-interactive flow no picker is built: the one returned refuses every
+// question with a usage error and touches neither stream.
 func (rt *Runtime) Pick() prompt.Picker {
+	if !rt.Interactive() {
+		return refusingPicker{}
+	}
 	if rt.Picker != nil {
 		return rt.Picker
 	}
 	return prompt.NewPicker(rt.Stdin, rt.Stderr)
 }
 
-// Interactive reports whether the command may ask questions: both stdin and
-// stderr are terminals, or a Picker was injected. Commands must not prompt
-// for a missing argument when it is false, so scripts never block.
+// refusingPicker is the Picker of the non-interactive flow.
+type refusingPicker struct{}
+
+func (refusingPicker) refuse(title string) error {
+	return UsageErrf("%s: input required but polyctl is not interactive", title)
+}
+
+func (p refusingPicker) Select(title string, _ []prompt.Option, _ string) (string, error) {
+	return "", p.refuse(title)
+}
+
+func (p refusingPicker) MultiSelect(title string, _ []prompt.Option) ([]string, error) {
+	return nil, p.refuse(title)
+}
+
+func (p refusingPicker) Confirm(title string, _ bool) (bool, error) {
+	return false, p.refuse(title)
+}
+
+func (p refusingPicker) Input(title, _ string, _ func(string) error) (string, error) {
+	return "", p.refuse(title)
+}
+
+// Interactive is the one place that decides the flow of a command. The
+// interactive flow, where questions may be asked, needs stdin and stderr to
+// be terminals (an injected Picker stands in for them in tests) and is
+// switched off by --no-input or POLYCTL_NO_INPUT. Everything else is the
+// non-interactive flow: nothing is asked or confirmed and nothing is read
+// from a terminal, so scripts never block. No other code looks at the
+// streams to choose a behaviour; it asks here, or is handed the answer.
 func (rt *Runtime) Interactive() bool {
+	if rt.Flags.NoInput {
+		return false
+	}
+	// Read on every call: cobra validates arguments before Init runs.
+	if off, _ := noInputEnv(); off {
+		return false
+	}
 	if rt.Picker != nil {
 		return true
 	}
@@ -397,9 +528,13 @@ func (rt *Runtime) DB() (*inventory.DB, error) {
 	return db, nil
 }
 
-// LoginInput builds the input for a provider login flow.
+// LoginInput builds the input for a provider login flow. It carries the flow
+// of the command, and never lets a non-interactive login open a browser.
 func (rt *Runtime) LoginInput(profileName string, opts map[string]string, existing map[string]string) platform.LoginInput {
+	interactive := rt.Interactive()
 	return platform.LoginInput{
+		Interactive: interactive,
+		Prompt:      rt.Prompt(),
 		ProfileName: profileName,
 		Options:     opts,
 		Existing:    existing,
@@ -407,7 +542,7 @@ func (rt *Runtime) LoginInput(profileName string, opts map[string]string, existi
 		Stdout:      rt.Stdout,
 		Stderr:      rt.Stderr,
 		OpenBrowser: browser.Open,
-		NoBrowser:   rt.Flags.NoBrowser,
+		NoBrowser:   rt.Flags.NoBrowser || !interactive,
 	}
 }
 

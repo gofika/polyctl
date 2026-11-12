@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+
+	"github.com/gofika/polyctl/internal/prompt"
 )
 
 // ID identifies a supported platform.
@@ -83,9 +85,19 @@ type Profile struct {
 // Meta returns a metadata value or "".
 func (p Profile) Meta(key string) string { return p.Metadata[key] }
 
-// LoginInput carries everything an interactive login flow may need.
+// LoginInput carries everything a login flow may need, in either flow.
 type LoginInput struct {
 	ProfileName string
+	// Interactive is the flow of the command, as decided by the runtime.
+	// When false the login must not ask, choose or confirm anything and must
+	// not read a terminal: values come from Options, the documented
+	// environment variables and, where a provider documents it, one value
+	// piped on stdin; whatever is still missing is a usage error. Providers
+	// branch on this value only, never on the kind of the streams.
+	Interactive bool
+	// Prompt is the shared line reader on Stdin, already in that flow. Nil
+	// (tests) means one is built from the streams below.
+	Prompt *prompt.IO
 	// Options are free-form key=value pairs from `auth login --set k=v`.
 	Options map[string]string
 	// Existing metadata when re-authenticating an existing profile.
@@ -97,8 +109,26 @@ type LoginInput struct {
 	// OpenBrowser opens a URL in the user's browser; it never fails the
 	// login flow, callers should print the URL as a fallback.
 	OpenBrowser func(url string) error
-	// NoBrowser disables automatic browser launching.
+	// NoBrowser disables automatic browser launching. It is always set in
+	// the non-interactive flow.
 	NoBrowser bool
+}
+
+// IO returns the prompts of the login flow: the shared reader when there is
+// one, in the flow of in.Interactive, ending with ctx.
+func (in LoginInput) IO(ctx context.Context) *prompt.IO {
+	p := in.Prompt
+	if p == nil {
+		p = prompt.New(in.Stdin, in.Stdout, in.Stderr)
+	}
+	return p.WithInteractive(in.Interactive).WithContext(ctx)
+}
+
+// MayOpenBrowser reports whether the login may launch a browser: only in
+// the interactive flow, and not with --no-browser. Otherwise the URL is
+// printed and that is all.
+func (in LoginInput) MayOpenBrowser() bool {
+	return in.Interactive && !in.NoBrowser && in.OpenBrowser != nil
 }
 
 // Opt returns a login option or the default.
@@ -132,7 +162,7 @@ type Provider interface {
 	DisplayName() string
 	// LoginHelp is a short description of the login flow, shown in `auth login --help`.
 	LoginHelp() string
-	// Login runs the interactive authentication flow.
+	// Login runs the authentication flow (see LoginInput.Interactive).
 	Login(ctx context.Context, in LoginInput) (*LoginResult, error)
 	// Open creates an authenticated client for the profile.
 	Open(ctx context.Context, p Profile) (Client, error)

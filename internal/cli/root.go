@@ -17,6 +17,7 @@ import (
 	"github.com/gofika/polyctl/internal/httpx"
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt"
 )
 
 // Exit codes.
@@ -50,7 +51,9 @@ func ExitCodeFor(err error) int {
 		return ExitOffline
 	case errors.Is(err, platform.ErrNotSupported):
 		return ExitNotSupported
-	case errors.Is(err, app.ErrUsage):
+	case errors.Is(err, app.ErrUsage), errors.Is(err, prompt.ErrNotInteractive):
+		// The second one is the safety net of the non-interactive flow: a
+		// question that could not be asked is a value the caller left out.
 		return ExitUsage
 	}
 	return ExitError
@@ -68,6 +71,23 @@ func nothingToDo(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", errNothingToDo, fmt.Sprintf(format, args...))
 }
 
+// asksNothing reports whether cmd is help or shell completion (cobra's
+// help, completion, __complete and __completeNoDesc commands, or anything
+// below them). They never ask a question, so an invalid POLYCTL_NO_INPUT
+// value does not concern them and must not break them.
+func asksNothing(cmd *cobra.Command) bool {
+	for c := cmd; c != nil && c.HasParent(); c = c.Parent() {
+		if c.Parent().HasParent() {
+			continue
+		}
+		switch c.Name() {
+		case "help", "completion", cobra.ShellCompRequestCmd, cobra.ShellCompNoDescRequestCmd:
+			return true
+		}
+	}
+	return false
+}
+
 // usageErr wraps an error so it maps to ExitUsage.
 func usageErr(format string, args ...any) error { return app.UsageErrf(format, args...) }
 
@@ -76,6 +96,9 @@ func usageErr(format string, args ...any) error { return app.UsageErrf(format, a
 func usageArgs(v cobra.PositionalArgs) cobra.PositionalArgs {
 	return func(c *cobra.Command, a []string) error {
 		if err := v(c, a); err != nil {
+			if errors.Is(err, app.ErrUsage) {
+				return err // already one, with its own message
+			}
 			return usageErr("%v", err)
 		}
 		return nil
@@ -131,7 +154,14 @@ name.com and GoDaddy.
 Platform-neutral commands (dns, domain) route automatically to the account
 that owns a domain, using the local inventory (~/.config/polyctl/inventory.db).
 Platform-specific commands (aws, gcp, aliyun, cf, namecom, godaddy) expose each
-platform's native features.`,
+platform's native features.
+
+polyctl has two flows. On a terminal it is interactive: a missing argument
+may be asked for, destructive actions are confirmed and logins prompt for
+credentials. Without a terminal on stdin and stderr (scripts, pipes, CI,
+cron), with --no-input or with POLYCTL_NO_INPUT=1 it is non-interactive:
+nothing is ever asked, a missing argument or an unconfirmed action is a
+usage error (exit code 2) that names what to pass, and --yes confirms.`,
 		Version:       Version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -139,6 +169,7 @@ platform's native features.`,
 			if !cmd.HasParent() {
 				return nil // bare `polyctl` only prints help
 			}
+			rt.SkipNoInputEnvCheck = asksNothing(cmd)
 			if err := rt.Init(); err != nil {
 				return usageErr("%v", err)
 			}
@@ -158,7 +189,8 @@ platform's native features.`,
 	pf.StringVarP(&rt.Flags.Output, "output", "o", "", "output format: table, json or yaml (default table)")
 	pf.BoolVarP(&rt.Flags.Verbose, "verbose", "v", false, "verbose logging to stderr")
 	pf.BoolVar(&rt.Flags.NoBrowser, "no-browser", false, "do not open a browser during login; print the URL instead")
-	pf.BoolVarP(&rt.Flags.Yes, "yes", "y", false, "assume yes for confirmation prompts")
+	pf.BoolVarP(&rt.Flags.Yes, "yes", "y", false, "assume yes for confirmations (required for them in the non-interactive flow)")
+	pf.BoolVar(&rt.Flags.NoInput, "no-input", false, "never ask questions, also on a terminal: missing arguments and unconfirmed actions are usage errors (also POLYCTL_NO_INPUT=1)")
 	_ = root.RegisterFlagCompletionFunc("output", cobra.FixedCompletions([]string{"table", "json", "yaml"}, cobra.ShellCompDirectiveNoFileComp))
 	_ = root.RegisterFlagCompletionFunc("profile", completeProfiles(rt))
 

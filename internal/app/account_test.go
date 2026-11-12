@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"github.com/gofika/polyctl/internal/creds"
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt"
 )
 
 // withProj adds a profile "proj" holding an account on both fake platforms
@@ -730,16 +732,197 @@ func TestLegacySecretMarkWhenNoSecretIsFound(t *testing.T) {
 	}
 }
 
+// terminalStub stands in for a terminal: a Runtime with it is in the
+// interactive flow. It counts the arrow-key prompts it is asked to show.
+type terminalStub struct{ asked int }
+
+func (p *terminalStub) Select(string, []prompt.Option, string) (string, error) {
+	p.asked++
+	return "", prompt.ErrAborted
+}
+
+func (p *terminalStub) MultiSelect(string, []prompt.Option) ([]string, error) {
+	p.asked++
+	return nil, prompt.ErrAborted
+}
+
+func (p *terminalStub) Confirm(string, bool) (bool, error) {
+	p.asked++
+	return false, prompt.ErrAborted
+}
+
+func (p *terminalStub) Input(string, string, func(string) error) (string, error) {
+	p.asked++
+	return "", prompt.ErrAborted
+}
+
+// unreadStdin counts the reads of a stdin that must not be read.
+type unreadStdin struct{ reads int }
+
+func (r *unreadStdin) Read([]byte) (int, error) {
+	r.reads++
+	return 0, io.EOF
+}
+
 // Confirm treats a question that was left as a no.
 func TestConfirmLeftIsNo(t *testing.T) {
+	t.Setenv(app.EnvNoInput, "")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	rt := app.New(app.Flags{}, strings.NewReader("y\n"), &bytes.Buffer{}, &bytes.Buffer{})
+	rt.Picker = &terminalStub{}
 	if ok, err := rt.Confirm(ctx, "delete", true); ok || err != nil {
 		t.Errorf("Confirm on an interrupted command = %v, %v; want false, nil", ok, err)
 	}
 	if ok, err := rt.Confirm(context.Background(), "delete", false); !ok || err != nil {
-		t.Errorf("Confirm with y on stdin = %v, %v; want true, nil", ok, err)
+		t.Errorf("Confirm with y typed = %v, %v; want true, nil", ok, err)
+	}
+}
+
+// The flow is decided in one place: a terminal on stdin and stderr (here the
+// injected picker), unless --no-input or POLYCTL_NO_INPUT forces it off.
+func TestInteractiveDecision(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		terminal bool
+		flag     bool
+		env      string
+		want     bool
+		initErr  bool
+	}{
+		{name: "terminal", terminal: true, want: true},
+		{name: "no terminal"},
+		{name: "terminal, --no-input", terminal: true, flag: true},
+		{name: "no terminal, --no-input", flag: true},
+		{name: "terminal, env 1", terminal: true, env: "1"},
+		{name: "terminal, env true", terminal: true, env: "true"},
+		{name: "terminal, env YES", terminal: true, env: "YES"},
+		{name: "terminal, env padded", terminal: true, env: " 1 "},
+		{name: "terminal, env 0", terminal: true, env: "0", want: true},
+		{name: "terminal, env false", terminal: true, env: "False", want: true},
+		{name: "terminal, env no", terminal: true, env: "no", want: true},
+		{name: "terminal, env empty", terminal: true, env: "", want: true},
+		{name: "terminal, env invalid", terminal: true, env: "maybe", initErr: true},
+		{name: "no terminal, env invalid", env: "2", initErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv(config.EnvConfigDir, dir)
+			t.Setenv(app.EnvNoInput, tc.env)
+			stdin, stub := &unreadStdin{}, &terminalStub{}
+			var stderr bytes.Buffer
+			rt := app.New(app.Flags{NoInput: tc.flag}, stdin, &bytes.Buffer{}, &stderr)
+			if tc.terminal {
+				rt.Picker = stub
+			}
+			// The decision is available before Init: cobra validates the
+			// arguments first.
+			if got := rt.Interactive(); got != tc.want {
+				t.Errorf("Interactive() = %v, want %v", got, tc.want)
+			}
+			err := rt.Init()
+			if (err != nil) != tc.initErr {
+				t.Fatalf("Init = %v, want an error: %v", err, tc.initErr)
+			}
+			if tc.initErr && (!strings.Contains(err.Error(), app.EnvNoInput) || !strings.Contains(err.Error(), tc.env)) {
+				t.Errorf("Init error does not name the variable and its value: %v", err)
+			}
+			if got := rt.Prompt().Interactive(); got != tc.want {
+				t.Errorf("Prompt().Interactive() = %v, want %v", got, tc.want)
+			}
+			in := rt.LoginInput("p", nil, nil)
+			if in.Interactive != tc.want || in.NoBrowser != !tc.want || in.MayOpenBrowser() != tc.want || in.Prompt != rt.Prompt() {
+				t.Errorf("LoginInput: Interactive %v, NoBrowser %v, MayOpenBrowser %v; want %v, %v, %v and the shared prompt", in.Interactive, in.NoBrowser, in.MayOpenBrowser(), tc.want, !tc.want, tc.want)
+			}
+			if tc.want {
+				if rt.Pick() != prompt.Picker(stub) {
+					t.Error("Pick must return the injected picker in the interactive flow")
+				}
+				return
+			}
+			// Non-interactive: every question is refused without touching
+			// the picker or either stream.
+			pk := rt.Pick()
+			_, e1 := pk.Select("Platform", []prompt.Option{{Label: "a", Value: "a"}}, "")
+			_, e2 := pk.MultiSelect("Remove", nil)
+			_, e3 := pk.Confirm("Sure", true)
+			_, e4 := pk.Input("Name", "x", nil)
+			for i, e := range []error{e1, e2, e3, e4} {
+				if !errors.Is(e, app.ErrUsage) {
+					t.Errorf("picker question %d = %v, want a usage error", i, e)
+				}
+			}
+			if !strings.Contains(e1.Error(), "Platform") {
+				t.Errorf("the refusal does not name the question: %v", e1)
+			}
+			p := rt.Prompt()
+			if _, err := p.Required("x"); !errors.Is(err, prompt.ErrNotInteractive) {
+				t.Errorf("line prompt = %v, want ErrNotInteractive", err)
+			}
+			ok, err := rt.Confirm(context.Background(), "delete 2 records", true)
+			if ok || !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "confirmation required: pass --yes to proceed (would delete 2 records)") {
+				t.Errorf("Confirm = %v, %v; want the usage error naming --yes", ok, err)
+			}
+			if err := rt.CanConfirm("delete 2 records"); !errors.Is(err, app.ErrUsage) {
+				t.Errorf("CanConfirm = %v, want a usage error", err)
+			}
+			if stub.asked != 0 || stdin.reads != 0 || stderr.Len() != 0 {
+				t.Errorf("picker asked %d time(s), stdin read %d time(s), stderr %q; want nothing", stub.asked, stdin.reads, stderr.String())
+			}
+			// --yes answers the confirmation in the non-interactive flow too.
+			rt.Flags.Yes = true
+			if ok, err := rt.Confirm(context.Background(), "delete 2 records", false); !ok || err != nil {
+				t.Errorf("Confirm with --yes = %v, %v", ok, err)
+			}
+			if err := rt.CanConfirm("x"); err != nil || stdin.reads != 0 {
+				t.Errorf("CanConfirm with --yes = %v (stdin read %d time(s))", err, stdin.reads)
+			}
+		})
+	}
+}
+
+// --yes skips the question in the interactive flow as well.
+func TestConfirmYesAsksNothing(t *testing.T) {
+	t.Setenv(app.EnvNoInput, "")
+	stdin := &unreadStdin{}
+	var stderr bytes.Buffer
+	rt := app.New(app.Flags{Yes: true}, stdin, &bytes.Buffer{}, &stderr)
+	rt.Picker = &terminalStub{}
+	if ok, err := rt.Confirm(context.Background(), "delete", false); !ok || err != nil || stdin.reads != 0 || stderr.Len() != 0 {
+		t.Errorf("Confirm with --yes = %v, %v (stdin read %d time(s), stderr %q)", ok, err, stdin.reads, stderr.String())
+	}
+}
+
+// `--set key=-` values: one line each from one shared reader, silently, in
+// the non-interactive flow; a prompt in the interactive one.
+func TestStdinValue(t *testing.T) {
+	t.Setenv(app.EnvNoInput, "")
+	ctx := context.Background()
+	var stderr bytes.Buffer
+	rt := app.New(app.Flags{}, strings.NewReader("first\nsecond\n"), &bytes.Buffer{}, &stderr)
+	for _, want := range []string{"first", "second"} {
+		if v, err := rt.StdinValue(ctx, "key", true); err != nil || v != want {
+			t.Errorf("StdinValue = %q, %v; want %q", v, err, want)
+		}
+	}
+	// The same reader serves the login flow afterwards: nothing is left.
+	if _, err := rt.LoginInput("p", nil, nil).IO(ctx).ReadValue(); !errors.Is(err, prompt.ErrNoValue) {
+		t.Errorf("read after both lines = %v, want ErrNoValue", err)
+	}
+	_, err := rt.StdinValue(ctx, "token", true)
+	if !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "--set token=-") {
+		t.Errorf("StdinValue on an empty stdin = %v, want a usage error naming the key", err)
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("the non-interactive flow printed %q", stderr.String())
+	}
+
+	// Interactive: asked for, with the key as the label.
+	stderr.Reset()
+	rt = app.New(app.Flags{}, strings.NewReader("typed\n"), &bytes.Buffer{}, &stderr)
+	rt.Picker = &terminalStub{}
+	if v, err := rt.StdinValue(ctx, "token", true); err != nil || v != "typed" || !strings.Contains(stderr.String(), "token: ") {
+		t.Errorf("interactive StdinValue = %q, %v (stderr %q)", v, err, stderr.String())
 	}
 }
 

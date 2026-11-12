@@ -17,11 +17,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/oauth2"
 	"google.golang.org/api/dns/v1"
 	"google.golang.org/api/option"
 
+	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/platform"
 )
 
@@ -692,11 +694,15 @@ func withFakeEndpoints(t *testing.T, f *fakeGoogle) {
 	t.Cleanup(func() { extraOptions = old })
 }
 
+// loginInput builds the input of a login. With scripted answers on stdin it
+// is the interactive flow; without, the non-interactive one, whose stdin
+// must not be read at all.
 func loginInput(stdin string, opts map[string]string) (platform.LoginInput, *bytes.Buffer) {
 	var errBuf bytes.Buffer
 	return platform.LoginInput{
 		ProfileName: "test",
 		Options:     opts,
+		Interactive: stdin != "",
 		Stdin:       strings.NewReader(stdin),
 		Stdout:      &bytes.Buffer{},
 		Stderr:      &errBuf,
@@ -858,5 +864,100 @@ func TestProviderRegistration(t *testing.T) {
 	}
 	if !strings.Contains(prov.LoginHelp(), "adc") {
 		t.Error("login help")
+	}
+}
+
+// The non-interactive flow asks nothing: a value or a choice that is still
+// open is a usage error naming the --set key, decided before anything that
+// would be wasted (a browser round trip, a listener).
+func TestLoginNonInteractiveNeverAsks(t *testing.T) {
+	f := newFake(t)
+	withFakeEndpoints(t, f)
+	p := &provider{}
+	usage := func(name string, in platform.LoginInput, errBuf *bytes.Buffer, want ...string) {
+		t.Helper()
+		opened := 0
+		in.NoBrowser, in.OpenBrowser = false, func(string) error { opened++; return nil }
+		_, err := p.Login(context.Background(), in)
+		if !errors.Is(err, app.ErrUsage) {
+			t.Errorf("%s: %v, want a usage error", name, err)
+			return
+		}
+		for _, w := range want {
+			if !strings.Contains(err.Error(), w) {
+				t.Errorf("%s: the error does not name %q: %v", name, w, err)
+			}
+		}
+		if opened != 0 {
+			t.Errorf("%s: the browser was opened %d time(s)", name, opened)
+		}
+		for _, label := range []string{"project id: ", "key file: ", "client id: ", "client secret: ", "Google Cloud project"} {
+			if strings.Contains(errBuf.String(), label) {
+				t.Errorf("%s: a question was printed: %q", name, errBuf.String())
+			}
+		}
+	}
+
+	// service account: the key file, then the project.
+	in, errBuf := loginInput("", map[string]string{"method": "sa"})
+	usage("sa without key_file", in, errBuf, "--set key_file=")
+	if errBuf.Len() != 0 {
+		t.Errorf("sa without key_file printed %q", errBuf.String())
+	}
+	in, errBuf = loginInput("", map[string]string{"method": "sa", "key_file": writeServiceAccountKey(t, f, "")})
+	usage("sa key without a project", in, errBuf, "--set project=<id>")
+	if errBuf.Len() != 0 {
+		t.Errorf("sa key without a project printed %q", errBuf.String())
+	}
+
+	// oauth: everything that would be asked, in one error, before the listener.
+	in, errBuf = loginInput("", map[string]string{"method": "oauth"})
+	usage("oauth without anything", in, errBuf, "--set client_id=<id>", "--set client_secret=-", "--set project=<id>")
+	in, errBuf = loginInput("", map[string]string{"method": "oauth", "client_id": "id", "client_secret": "s"})
+	usage("oauth without a project", in, errBuf, "--set project=<id>")
+	if strings.Contains(errBuf.String(), "Open this URL") {
+		t.Errorf("oauth without a project started the browser flow: %q", errBuf.String())
+	}
+
+	// oauth with everything given: the URL is printed, no browser is opened,
+	// and the wait for it is bounded.
+	oldWait := oauthWait
+	oauthWait = 50 * time.Millisecond
+	t.Cleanup(func() { oauthWait = oldWait })
+	in, errBuf = loginInput("", map[string]string{"method": "oauth", "client_id": "id", "client_secret": "s", "project": "proj"})
+	opened := 0
+	in.NoBrowser, in.OpenBrowser = false, func(string) error { opened++; return nil }
+	done := make(chan error, 1)
+	go func() { _, err := p.Login(context.Background(), in); done <- err }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, platform.ErrLoginCancelled) || !strings.Contains(err.Error(), "no authorization received within") {
+			t.Errorf("oauth wait = %v, want a bounded wait ending in ErrLoginCancelled", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the non-interactive oauth login waits without a limit")
+	}
+	if opened != 0 || !strings.Contains(errBuf.String(), "accounts.google.com") || strings.Contains(errBuf.String(), "Ctrl-C") {
+		t.Errorf("oauth wait: browser opened %d time(s), stderr %q", opened, errBuf.String())
+	}
+
+	// adc: an unambiguous project is taken without asking.
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", writeServiceAccountKey(t, f, "proj"))
+	in, errBuf = loginInput("", nil)
+	if res, err := p.Login(context.Background(), in); err != nil || res.Metadata["project"] != "proj" || strings.Contains(errBuf.String(), "1)") {
+		t.Errorf("adc with a project of its own: %v %+v (stderr %q)", err, res, errBuf.String())
+	}
+	// A re-authentication keeps its project.
+	in, _ = loginInput("", nil)
+	in.Existing = map[string]string{"method": methodADC, "project": "proj"}
+	if res, err := p.Login(context.Background(), in); err != nil || res.Metadata["project"] != "proj" {
+		t.Errorf("adc re-authentication: %v %+v", err, res)
+	}
+	// Several visible projects and no default: a usage error with the list.
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", writeServiceAccountKey(t, f, ""))
+	in, errBuf = loginInput("", nil)
+	usage("adc with several projects", in, errBuf, "--set project=<id>", "other", "proj")
+	if strings.Contains(errBuf.String(), "1)") {
+		t.Errorf("adc with several projects drew the list: %q", errBuf.String())
 	}
 }

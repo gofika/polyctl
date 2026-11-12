@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/domain"
 
+	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/platform"
 )
 
@@ -699,8 +701,11 @@ func TestLoginInteractiveRejectsBadKey(t *testing.T) {
 	})
 	var stderr bytes.Buffer
 	var opened []string
+	t.Setenv(envKeyID, "")
+	t.Setenv(envKeySecret, "")
 	in := platform.LoginInput{
-		Stdin: strings.NewReader("LTAIbad\nverysecret\n\n"), Stdout: &bytes.Buffer{}, Stderr: &stderr,
+		Interactive: true,
+		Stdin:       strings.NewReader("LTAIbad\nverysecret\n\n"), Stdout: &bytes.Buffer{}, Stderr: &stderr,
 		OpenBrowser: func(u string) error { opened = append(opened, u); return errors.New("no browser") },
 		Existing:    map[string]string{metaRegion: "cn-shanghai"},
 	}
@@ -759,5 +764,97 @@ func TestOpenRequiresSecret(t *testing.T) {
 	}
 	if _, err := p.Open(context.Background(), platform.Profile{Name: "x", Metadata: map[string]string{metaSite: "eu"}, Secret: map[string]string{secretKeyID: "a", secretKeySecret: "b"}}); err == nil {
 		t.Error("invalid site metadata should fail to open")
+	}
+}
+
+// refusingReader fails the test when the login reads stdin.
+type refusingReader struct{ t *testing.T }
+
+func (r refusingReader) Read([]byte) (int, error) {
+	r.t.Error("stdin was read")
+	return 0, io.EOF
+}
+
+// The non-interactive flow asks nothing and reads nothing: the AccessKey
+// comes from --set or the environment, a missing one is a usage error, and
+// the region falls back to its default.
+func TestLoginNonInteractiveNeverAsks(t *testing.T) {
+	f := newFakeAPI(t)
+	withFakeEndpoint(t, f)
+	var seenKey string
+	f.on("GetCallerIdentity", func(q url.Values) (int, any) {
+		seenKey = q.Get("AccessKeyId")
+		return 200, map[string]any{"AccountId": "42", "Arn": "acs:ram::42:user/dev", "IdentityType": "RAMUser"}
+	})
+	t.Setenv(envKeyID, "")
+	t.Setenv(envKeySecret, "")
+	login := func(opts, existing map[string]string) (*platform.LoginResult, string, int, error) {
+		var stderr bytes.Buffer
+		opened := 0
+		res, err := (&provider{}).Login(context.Background(), platform.LoginInput{
+			Options: opts, Existing: existing,
+			Stdin: refusingReader{t}, Stdout: &bytes.Buffer{}, Stderr: &stderr,
+			OpenBrowser: func(string) error { opened++; return nil },
+		})
+		return res, stderr.String(), opened, err
+	}
+
+	for _, tc := range []struct {
+		name    string
+		opts    map[string]string
+		want    []string
+		wantNot string
+	}{
+		{"nothing", nil, []string{"--set access_key_id=<id>", "--set access_key_secret=-", envKeyID, envKeySecret, "--set from_cli=<profile>"}, ""},
+		{"no secret", map[string]string{"access_key_id": "LTAIone"}, []string{"--set access_key_secret=-"}, "--set access_key_id"},
+		{"no id", map[string]string{"access_key_secret": "s"}, []string{"--set access_key_id=<id>"}, "--set access_key_secret"},
+	} {
+		_, stderr, opened, err := login(tc.opts, nil)
+		if !errors.Is(err, app.ErrUsage) {
+			t.Errorf("%s: %v, want a usage error", tc.name, err)
+			continue
+		}
+		for _, w := range tc.want {
+			if !strings.Contains(err.Error(), w) {
+				t.Errorf("%s: the error does not name %q: %v", tc.name, w, err)
+			}
+		}
+		if tc.wantNot != "" && strings.Contains(err.Error(), tc.wantNot) {
+			t.Errorf("%s: the error names %q, which was given: %v", tc.name, tc.wantNot, err)
+		}
+		if opened != 0 || stderr != "" || seenKey != "" {
+			t.Errorf("%s: browser opened %d time(s), stderr %q, API called with %q; want none of it", tc.name, opened, stderr, seenKey)
+		}
+	}
+
+	// --set values: no question, the region is the documented default.
+	res, stderr, opened, err := login(map[string]string{"access_key_id": "LTAIset", "access_key_secret": "s"}, nil)
+	if err != nil || seenKey != "LTAIset" || res.Metadata[metaRegion] != DefaultRegion || res.Secret[secretKeySecret] != "s" {
+		t.Fatalf("--set key: %v %+v (key %q)", err, res, seenKey)
+	}
+	if opened != 0 || strings.Contains(stderr, "AccessKey ID") || strings.Contains(stderr, "Region id") || !strings.Contains(stderr, "using region "+DefaultRegion) {
+		t.Errorf("--set key: browser opened %d time(s), stderr %q", opened, stderr)
+	}
+	// A re-authentication keeps its region; --set region wins.
+	if res, _, _, err = login(map[string]string{"access_key_id": "LTAIset", "access_key_secret": "s"}, map[string]string{metaRegion: "cn-shanghai"}); err != nil || res.Metadata[metaRegion] != "cn-shanghai" {
+		t.Errorf("existing region: %v %+v", err, res)
+	}
+	if res, _, _, err = login(map[string]string{"access_key_id": "LTAIset", "access_key_secret": "s", "region": "us-west-1"}, map[string]string{metaRegion: "cn-shanghai"}); err != nil || res.Metadata[metaRegion] != "us-west-1" {
+		t.Errorf("--set region: %v %+v", err, res)
+	}
+
+	// The environment, as a pair; --set wins over it.
+	t.Setenv(envKeyID, "LTAIenv")
+	t.Setenv(envKeySecret, "envsecret")
+	res, stderr, _, err = login(nil, nil)
+	if err != nil || seenKey != "LTAIenv" || res.Secret[secretKeySecret] != "envsecret" || !strings.Contains(stderr, envKeyID) || strings.Contains(stderr, "envsecret") {
+		t.Errorf("environment key: %v %+v (key %q, stderr %q)", err, res, seenKey, stderr)
+	}
+	if _, _, _, err = login(map[string]string{"access_key_id": "LTAIset", "access_key_secret": "s"}, nil); err != nil || seenKey != "LTAIset" {
+		t.Errorf("--set over the environment: %v (key %q)", err, seenKey)
+	}
+	// Half a key from --set is never completed from the environment.
+	if _, _, _, err = login(map[string]string{"access_key_id": "LTAIset"}, nil); !errors.Is(err, app.ErrUsage) {
+		t.Errorf("half a key = %v, want a usage error", err)
 	}
 }

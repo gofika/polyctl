@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/gofika/polyctl/internal/creds"
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt"
 )
 
 // aliAccount is the account the harness configures.
@@ -356,15 +358,21 @@ func TestDomainNSSetDoesNotCacheOnPendingTask(t *testing.T) {
 }
 
 // A declined confirmation of `ecs stop` stops nothing and is not an error: a
-// note on stderr and a nil error, which is exit code 0.
+// note on stderr and a nil error, which is exit code 0. The question belongs
+// to the interactive flow.
 func TestECSStopDeclinedIsNotAnError(t *testing.T) {
+	t.Setenv(app.EnvNoInput, "") // not the developer's setting
 	for _, answer := range []string{"n\n", "\n"} {
 		h := newHarness(t, app.Flags{})
+		h.rt.Picker = terminalStub{t}
 		h.rt.Stdin = strings.NewReader(answer)
 		if err := h.run("ecs", "stop", "i-1"); err != nil {
 			t.Errorf("answer %q: ecs stop = %v, want no error", answer, err)
 		}
 		stderr := h.stderr.String()
+		if !strings.Contains(stderr, "stop instance i-1 (y/N)") {
+			t.Errorf("answer %q: the question was not asked: %q", answer, stderr)
+		}
 		if !strings.HasSuffix(stderr, "nothing to do: instance i-1 was not stopped\n") || strings.Contains(stderr, "error:") || strings.Contains(stderr, "stop requested") {
 			t.Errorf("answer %q: stderr = %q, want the note", answer, stderr)
 		}
@@ -375,4 +383,97 @@ func TestECSStopDeclinedIsNotAnError(t *testing.T) {
 			t.Errorf("answer %q: StopInstance was called %d time(s)", answer, n)
 		}
 	}
+}
+
+// The two flows of `ecs stop`: the interactive one asks, the non-interactive
+// one never asks or reads stdin and needs --yes.
+func TestECSStopFlows(t *testing.T) {
+	stoppable := func(h *harness) {
+		h.api.on("StopInstance", func(q url.Values) (int, any) { return 200, map[string]any{"RequestId": "r"} })
+	}
+	for _, tc := range []struct {
+		name     string
+		flags    app.Flags
+		env      string // POLYCTL_NO_INPUT
+		terminal bool   // a terminal is attached (the injected picker)
+		stdin    string // only read by the interactive flow
+		stopped  bool
+		refused  bool
+		asked    bool
+	}{
+		{name: "interactive, yes", terminal: true, stdin: "y\n", stopped: true, asked: true},
+		{name: "interactive, --yes", flags: app.Flags{Yes: true}, terminal: true, stopped: true},
+		{name: "no terminal", refused: true},
+		{name: "no terminal, --yes", flags: app.Flags{Yes: true}, stopped: true},
+		{name: "--no-input on a terminal", flags: app.Flags{NoInput: true}, terminal: true, refused: true},
+		{name: "--no-input --yes on a terminal", flags: app.Flags{NoInput: true, Yes: true}, terminal: true, stopped: true},
+		{name: "POLYCTL_NO_INPUT on a terminal", env: "1", terminal: true, refused: true},
+		{name: "POLYCTL_NO_INPUT with --yes", env: "true", flags: app.Flags{Yes: true}, terminal: true, stopped: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(app.EnvNoInput, tc.env)
+			h := newHarness(t, tc.flags)
+			stoppable(h)
+			if tc.terminal {
+				h.rt.Picker = terminalStub{t}
+			}
+			h.rt.Stdin = unreadStdin{t}
+			if tc.asked {
+				h.rt.Stdin = strings.NewReader(tc.stdin)
+			}
+			err := h.run("ecs", "stop", "i-1")
+			stderr := h.stderr.String()
+			if asked := strings.Contains(stderr, "(y/N)"); asked != tc.asked {
+				t.Errorf("question asked = %v, want %v (stderr %q)", asked, tc.asked, stderr)
+			}
+			if tc.refused {
+				if !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "confirmation required: pass --yes to proceed (would stop instance i-1)") {
+					t.Errorf("ecs stop = %v, want the usage error that names --yes", err)
+				}
+				// Refused before the account is opened: nothing was sent.
+				if n := len(h.api.calls); n != 0 || stderr != "" || h.stdout.Len() != 0 {
+					t.Errorf("refused: %d API call(s), stderr %q, stdout %q; want nothing", n, stderr, h.stdout.String())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ecs stop = %v", err)
+			}
+			if n := len(h.api.callsFor("StopInstance")); (n == 1) != tc.stopped {
+				t.Errorf("StopInstance was called %d time(s), stopped want %v", n, tc.stopped)
+			}
+		})
+	}
+}
+
+// terminalStub stands in for a terminal: a Runtime with it is in the
+// interactive flow. It fails the test when an arrow-key prompt is shown.
+type terminalStub struct{ t *testing.T }
+
+func (p terminalStub) Select(title string, _ []prompt.Option, _ string) (string, error) {
+	p.t.Errorf("unexpected select prompt %q", title)
+	return "", prompt.ErrAborted
+}
+
+func (p terminalStub) MultiSelect(title string, _ []prompt.Option) ([]string, error) {
+	p.t.Errorf("unexpected multi-select prompt %q", title)
+	return nil, prompt.ErrAborted
+}
+
+func (p terminalStub) Confirm(title string, _ bool) (bool, error) {
+	p.t.Errorf("unexpected confirm prompt %q", title)
+	return false, prompt.ErrAborted
+}
+
+func (p terminalStub) Input(title, _ string, _ func(string) error) (string, error) {
+	p.t.Errorf("unexpected input prompt %q", title)
+	return "", prompt.ErrAborted
+}
+
+// unreadStdin fails the test when it is read.
+type unreadStdin struct{ t *testing.T }
+
+func (r unreadStdin) Read([]byte) (int, error) {
+	r.t.Error("stdin was read")
+	return 0, io.EOF
 }

@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/platform"
-	"github.com/gofika/polyctl/internal/prompt"
 )
 
 func init() { platform.Register(&provider{}) }
@@ -52,7 +52,7 @@ func (*provider) ID() platform.ID     { return platform.GoDaddy }
 func (*provider) DisplayName() string { return "GoDaddy" }
 
 func (*provider) LoginHelp() string {
-	return "Personal Access Token created at " + keysURL + " (" + accessRequirement + "; use --set env=ote for the test environment). Non-interactive: --set token=- reads the token from stdin (legacy API key pair: --set key=... --set secret=- or --set method=api_key)"
+	return "Personal Access Token created at " + keysURL + " (" + accessRequirement + "; use --set env=ote for the test environment). Non-interactive: --set token=- reads the token from stdin (legacy API key pair: --set key=<key> --set secret=-, which selects --set method=api_key by itself)"
 }
 
 func (*provider) ResourceTypes() []platform.ResourceType {
@@ -60,7 +60,10 @@ func (*provider) ResourceTypes() []platform.ResourceType {
 }
 
 // Login guides the user through creating a Personal Access Token (or,
-// when asked for, a legacy API key pair) and verifies it.
+// when asked for, a legacy API key pair) and verifies it. The interactive
+// flow asks for what --set did not give; the non-interactive flow asks
+// nothing and reads nothing: a missing value is a usage error naming its
+// --set key.
 func (*provider) Login(ctx context.Context, in platform.LoginInput) (*platform.LoginResult, error) {
 	env := strings.ToLower(strings.TrimSpace(in.Opt(metaEnv, in.Existing[metaEnv])))
 	switch env {
@@ -104,8 +107,21 @@ func (*provider) Login(ctx context.Context, in platform.LoginInput) (*platform.L
 		return nil, fmt.Errorf("unknown GoDaddy auth method %q (expected pat or api_key)", method)
 	}
 
+	if !cred.complete() && !in.Interactive {
+		if method == methodPAT {
+			return nil, app.UsageErrf("godaddy login needs a Personal Access Token: pass --set token=- (the token on stdin; create one at %s)", keysURL)
+		}
+		var missing []string
+		if cred.key == "" {
+			missing = append(missing, "--set key=<api key>")
+		}
+		if cred.secret == "" {
+			missing = append(missing, "--set secret=- (the API secret on stdin)")
+		}
+		return nil, app.UsageErrf("godaddy login with an API key pair needs the key and its secret: pass %s", strings.Join(missing, " and "))
+	}
 	if !cred.complete() {
-		io := prompt.New(in.Stdin, in.Stdout, in.Stderr).WithContext(ctx)
+		io := in.IO(ctx)
 		if method == methodPAT {
 			fmt.Fprintf(in.Stderr, "GoDaddy (%s) uses Personal Access Tokens; create a %s token at:\n  %s\n", env, env, keysURL)
 		} else {
@@ -114,7 +130,7 @@ func (*provider) Login(ctx context.Context, in platform.LoginInput) (*platform.L
 		if env == envProduction {
 			fmt.Fprintln(in.Stderr, "Note: for production API access "+accessRequirement+".")
 		}
-		if !in.NoBrowser && in.OpenBrowser != nil {
+		if in.MayOpenBrowser() {
 			if err := in.OpenBrowser(keysURL); err != nil {
 				fmt.Fprintf(in.Stderr, "could not open a browser (%v); open the URL above manually\n", err)
 			}

@@ -769,14 +769,24 @@ func newECSStopCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "stop <instance-id>",
 		Short: "Stop a running ECS instance",
-		Args:  cobra.ExactArgs(1),
+		Long: "Stop a running ECS instance. In the interactive flow the stop is confirmed\n" +
+			"first (default no); --yes skips the question. In the non-interactive flow\n" +
+			"(no terminal, --no-input or POLYCTL_NO_INPUT=1) nothing is asked: --yes is\n" +
+			"required, and without it the command is a usage error (exit code 2).",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			action := fmt.Sprintf("stop instance %s", args[0])
+			// Before anything else: the non-interactive flow without --yes
+			// is refused without needing credentials or the network.
+			if err := rt.CanConfirm(action); err != nil {
+				return err
+			}
 			c, p, err := openClient(rt, cmd.Context())
 			if err != nil {
 				return err
 			}
 			if !rt.Flags.Yes {
-				ok, err := rt.Confirm(cmd.Context(), fmt.Sprintf("stop instance %s", args[0]), false)
+				ok, err := rt.Confirm(cmd.Context(), action, false)
 				if err != nil {
 					return err
 				}

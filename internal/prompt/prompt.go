@@ -14,9 +14,19 @@ import (
 	"golang.org/x/term"
 )
 
-// ErrNotInteractive is returned when input is required but stdin is not a
-// terminal. Leaving a prompt on a terminal is ErrAborted instead.
-var ErrNotInteractive = errors.New("interactive input required (stdin closed or not a terminal); pass the value with --set or on stdin")
+// ErrNotInteractive is returned when a question would have to be asked in the
+// non-interactive flow, where nothing is ever asked. It is a usage error:
+// the caller left out a value it has to pass. Leaving a prompt in the
+// interactive flow is ErrAborted instead.
+var ErrNotInteractive = errors.New("input required, but polyctl is not running interactively (no terminal, --no-input or POLYCTL_NO_INPUT)")
+
+// ErrNoValue is returned by ReadValue when stdin holds no value: it ended,
+// or its first line is empty.
+var ErrNoValue = errors.New("no value on stdin")
+
+// ErrStdinTerminal is returned by ReadValue when stdin is a terminal: the
+// non-interactive flow reads piped data only, never what a person types.
+var ErrStdinTerminal = errors.New("stdin is a terminal; the value has to be piped")
 
 // IO bundles the streams used by prompts.
 type IO struct {
@@ -25,6 +35,9 @@ type IO struct {
 	Err io.Writer
 
 	reader *bufio.Reader
+	// interactive is the flow the command runs in, decided by the caller
+	// (app.Runtime.Interactive) and never by looking at the streams here.
+	interactive bool
 	// ctx ends a prompt that is waiting for input (see WithContext).
 	ctx context.Context
 	// editor reads lines from a terminal in raw mode. It is kept between
@@ -32,7 +45,10 @@ type IO struct {
 	editor *term.Terminal
 }
 
-// New returns an IO using the given streams (nil means os.Std*).
+// New returns an IO using the given streams (nil means os.Std*). It is in
+// the non-interactive flow, where every question fails with
+// ErrNotInteractive without printing or reading anything, until
+// WithInteractive says otherwise.
 func New(in io.Reader, out, errw io.Writer) *IO {
 	if in == nil {
 		in = os.Stdin
@@ -54,9 +70,45 @@ func (p *IO) WithContext(ctx context.Context) *IO {
 	return p
 }
 
-// IsTerminal reports whether the input is an interactive terminal.
-func (p *IO) IsTerminal() bool {
-	return IsTerminal(p.In)
+// WithInteractive sets the flow of p: true lets its questions be asked,
+// false makes them fail with ErrNotInteractive. It returns p.
+func (p *IO) WithInteractive(interactive bool) *IO {
+	p.interactive = interactive
+	return p
+}
+
+// Interactive reports the flow handed to WithInteractive.
+func (p *IO) Interactive() bool { return p.interactive }
+
+// refuse is the error of a question that cannot be asked.
+func refuse(label string) error {
+	label = strings.TrimSuffix(strings.TrimSpace(label), ":")
+	return fmt.Errorf("%w: cannot ask for %q", ErrNotInteractive, label)
+}
+
+// ReadValue reads one value from stdin for the non-interactive flow: a
+// single line, trimmed, without printing a label. Several calls read
+// successive lines. A stdin that is a terminal is not read (ErrStdinTerminal)
+// and one without a value is ErrNoValue.
+func (p *IO) ReadValue() (string, error) {
+	if p.ctx != nil && p.ctx.Err() != nil {
+		return "", p.ctx.Err()
+	}
+	if IsTerminal(p.In) {
+		return "", ErrStdinTerminal
+	}
+	s, err := p.readString()
+	if errors.Is(err, ErrAborted) {
+		// Nothing was asked, so nothing was left: the command was interrupted.
+		return "", context.Cause(p.ctx)
+	}
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	if s = strings.TrimSpace(s); s == "" {
+		return "", ErrNoValue
+	}
+	return s, nil
 }
 
 // done is closed when the prompt's context is; it is nil without one.
@@ -74,15 +126,21 @@ func (p *IO) done() <-chan struct{} {
 const rawLineEditor = runtime.GOOS != "windows"
 
 // read prints label and reads one line: without echo when secret is set and
-// the input is a terminal. On a terminal, leaving the prompt (Ctrl-C, Ctrl-D
-// on an empty line, an interrupted command) is ErrAborted; input that ends
-// anywhere else is ErrNotInteractive.
+// the input is a terminal. Leaving the prompt (Ctrl-C, Ctrl-D on an empty
+// line, an interrupted command, input that ends) is ErrAborted. In the
+// non-interactive flow nothing is printed or read: it is ErrNotInteractive.
 func (p *IO) read(label string, secret bool) (string, error) {
+	if !p.interactive {
+		return "", refuse(label)
+	}
 	if p.ctx != nil && p.ctx.Err() != nil {
 		return "", ErrAborted
 	}
+	// The flow is interactive; what follows only picks the way to read: a
+	// terminal is read in raw mode, anything else (scripted input in tests)
+	// line by line.
 	f, _ := p.In.(*os.File)
-	onTerminal := f != nil && term.IsTerminal(int(f.Fd()))
+	onTerminal := IsTerminal(p.In)
 	if onTerminal && rawLineEditor && (secret || IsTerminal(p.Err)) {
 		// A visible line is echoed by the editor, on Err: when that is not
 		// the terminal the line mode below echoes instead.
@@ -99,11 +157,8 @@ func (p *IO) read(label string, secret bool) (string, error) {
 		// Terminate the label line so the caller's error message does not
 		// share it.
 		fmt.Fprintln(p.Err)
-		switch {
-		case errors.Is(err, ErrAborted), errors.Is(err, io.EOF) && onTerminal:
-			return "", ErrAborted // Ctrl-D on a terminal
-		case errors.Is(err, io.EOF):
-			return "", ErrNotInteractive
+		if errors.Is(err, ErrAborted) || errors.Is(err, io.EOF) {
+			return "", ErrAborted // Ctrl-D, or the input ended
 		}
 		return "", err
 	}
@@ -288,8 +343,12 @@ func (p *IO) Confirm(label string, def bool) (bool, error) {
 	if def {
 		hint = "Y/n"
 	}
-	// What was typed before the question appeared is not an answer to it.
-	if f, ok := p.In.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+	if !p.interactive {
+		return false, refuse(label)
+	}
+	// What was typed before the question appeared is not an answer to it
+	// (only a terminal holds such input; for anything else this is a no-op).
+	if f, ok := p.In.(*os.File); ok {
 		discardInput(f)
 		p.editor = nil // with what it had read ahead
 	}
@@ -309,6 +368,9 @@ func (p *IO) Confirm(label string, def bool) (bool, error) {
 
 // Choose asks the user to pick one of options (by number or value).
 func (p *IO) Choose(label string, options []string, def string) (string, error) {
+	if !p.interactive {
+		return "", refuse(label)
+	}
 	for i, o := range options {
 		marker := " "
 		if o == def {

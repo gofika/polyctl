@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/platform"
-	"github.com/gofika/polyctl/internal/prompt"
 )
 
 func init() { platform.Register(&provider{}) }
@@ -58,10 +58,12 @@ func (*provider) ResourceTypes() []platform.ResourceType {
 	return []platform.ResourceType{platform.ResDomain, platform.ResZone, platform.ResDNSRecord}
 }
 
-// Login collects a username and API token (interactively or from --set
-// options), verifies them against GET /v4/hello and returns the profile.
+// Login collects a username and API token, verifies them against GET
+// /v4/hello and returns the profile. The interactive flow asks for what
+// --set did not give; the non-interactive flow asks nothing and reads
+// nothing: a missing value is a usage error naming its --set key.
 func (*provider) Login(ctx context.Context, in platform.LoginInput) (*platform.LoginResult, error) {
-	io := prompt.New(in.Stdin, in.Stdout, in.Stderr).WithContext(ctx)
+	io := in.IO(ctx)
 
 	env, err := normalizeEnv(in.Opt("env", in.Existing[metaEnv]))
 	if err != nil {
@@ -70,6 +72,16 @@ func (*provider) Login(ctx context.Context, in platform.LoginInput) (*platform.L
 	username := in.Opt("username", in.Existing[metaUsername])
 	token := in.Opt("token", "")
 
+	if !in.Interactive && (username == "" || token == "") {
+		var missing []string
+		if username == "" {
+			missing = append(missing, "--set username=<user>")
+		}
+		if token == "" {
+			missing = append(missing, "--set token=- (the API token on stdin)")
+		}
+		return nil, app.UsageErrf("name.com login needs a username and an API token: pass %s (create a token at %s)", strings.Join(missing, " and "), apiTokenURL)
+	}
 	if token == "" {
 		fmt.Fprintf(io.Err, "name.com login (%s environment)\n", env)
 		fmt.Fprintf(io.Err, "Create an API token in your account settings:\n  %s\n", apiTokenURL)
@@ -77,7 +89,7 @@ func (*provider) Login(ctx context.Context, in platform.LoginInput) (*platform.L
 		if env == envTest {
 			fmt.Fprintf(io.Err, "The test environment (api.dev.name.com) requires your username with %s appended and a token generated for that environment; the suffix is added for you if missing.\n", testUserSuffix)
 		}
-		if !in.NoBrowser && in.OpenBrowser != nil {
+		if in.MayOpenBrowser() {
 			if err := in.OpenBrowser(apiTokenURL); err == nil {
 				fmt.Fprintln(io.Err, "(opened in your browser)")
 			}

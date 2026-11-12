@@ -18,23 +18,36 @@ import (
 	"github.com/gofika/polyctl/internal/prompt"
 )
 
-// oneArgOrInteractive requires exactly one argument, except on a terminal,
-// where the argument may be left out and is then asked for.
-func oneArgOrInteractive(rt *app.Runtime) cobra.PositionalArgs {
+// oneArgOrInteractive requires exactly one argument, except in the
+// interactive flow, where the argument may be left out and is then asked
+// for. missing is the usage error of the non-interactive flow: it names the
+// argument to pass.
+func oneArgOrInteractive(rt *app.Runtime, missing func() error) cobra.PositionalArgs {
 	return func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 && rt.Interactive() {
-			return nil
+		if len(args) == 0 {
+			if rt.Interactive() {
+				return nil
+			}
+			// cobra validates arguments before Init runs. An invalid
+			// POLYCTL_NO_INPUT is why nothing can be asked here: report
+			// that, not the missing argument it leads to.
+			if err := app.CheckNoInputEnv(); err != nil {
+				return usageErr("%v", err)
+			}
+			return missing()
 		}
 		return cobra.ExactArgs(1)(cmd, args)
 	}
 }
 
 // quietAbort wraps a command so that leaving one of its prompts with Esc or
-// Ctrl-C ends it with a short note instead of an error.
+// Ctrl-C ends it with a short note instead of an error. The non-interactive
+// flow has no prompt to leave: there the error is returned as it is, so an
+// interrupted script never ends "cancelled" with exit code 0.
 func quietAbort(rt *app.Runtime, run func(*cobra.Command, []string) error) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {
 		err := run(cmd, args)
-		if errors.Is(err, prompt.ErrAborted) {
+		if errors.Is(err, prompt.ErrAborted) && rt.Interactive() {
 			rt.Infof("cancelled")
 			return nil
 		}
@@ -42,8 +55,27 @@ func quietAbort(rt *app.Runtime, run func(*cobra.Command, []string) error) func(
 	}
 }
 
+// errPlatformRequired is the usage error of `auth login` without a platform
+// in the non-interactive flow.
+func errPlatformRequired() error {
+	var ids []string
+	for _, p := range platform.Providers() {
+		ids = append(ids, string(p.ID()))
+	}
+	return usageErr("auth login: <platform> is required (one of: %s)", strings.Join(ids, ", "))
+}
+
+// errProfileRequired is the usage error of `auth use` without a profile in
+// the non-interactive flow.
+func errProfileRequired() error {
+	return usageErr("auth use: <profile> is required (see `polyctl auth list`)")
+}
+
 // pickPlatform asks for one of the supported platforms.
 func pickPlatform(rt *app.Runtime) (platform.ID, error) {
+	if !rt.Interactive() {
+		return "", errPlatformRequired()
+	}
 	var opts []prompt.Option
 	for _, p := range platform.Providers() {
 		opts = append(opts, prompt.Option{Label: p.DisplayName(), Value: string(p.ID())})
@@ -82,6 +114,9 @@ func profileOptions(cfg *config.Config) []prompt.Option {
 // pickProfile asks for one of the configured profiles; the current one is
 // preselected.
 func pickProfile(rt *app.Runtime, title string) (string, error) {
+	if !rt.Interactive() {
+		return "", errProfileRequired()
+	}
 	cfg, err := rt.Config()
 	if err != nil {
 		return "", err
@@ -128,8 +163,12 @@ const (
 // removeInteractive lets the user choose accounts (and profiles without
 // accounts) in a multi-select, shows what will be removed, asks for
 // confirmation and removes them the way `auth logout` does. only restricts
-// the list to one platform. --yes skips the confirmations.
+// the list to one platform. --yes skips the confirmations. It belongs to
+// the interactive flow only.
 func removeInteractive(ctx context.Context, rt *app.Runtime, only platform.ID, keep keepMode) error {
+	if !rt.Interactive() {
+		return usageErr("--profile <name> is required")
+	}
 	cfg, err := rt.Config()
 	if err != nil {
 		return err
@@ -444,13 +483,14 @@ func newAuthManageCmd(rt *app.Runtime) *cobra.Command {
 			"with Ctrl-C, or Ctrl-D on an empty line.\n\n" +
 			"The configuration is read again before every action, so changes made by\n" +
 			"other polyctl commands while the menu is open are kept.\n\n" +
-			"The menu is drawn on stderr and needs a terminal on stdin and stderr. In\n" +
-			"scripts use auth list, auth use, auth login, auth status, auth rename and\n" +
-			"auth logout instead.",
+			"The menu is drawn on stderr and belongs to the interactive flow only: it\n" +
+			"needs a terminal on stdin and stderr and is refused with --no-input or\n" +
+			"POLYCTL_NO_INPUT=1 (usage error, exit code 2). In scripts use auth list,\n" +
+			"auth use, auth login, auth status, auth rename and auth logout instead.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !rt.Interactive() {
-				return usageErr("auth manage needs an interactive terminal; use `polyctl auth list`, `auth use <profile>`, `auth login <platform>`, `auth status`, `auth rename <old> <new>` or `auth logout [platform] --profile <name>` instead")
+				return usageErr("auth manage is interactive only (it needs a terminal on stdin and stderr, without --no-input); use `polyctl auth list`, `auth use <profile>`, `auth login <platform>`, `auth status`, `auth rename <old> <new>` or `auth logout [platform] --profile <name>` instead")
 			}
 			return runManage(cmd.Context(), rt)
 		},

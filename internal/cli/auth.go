@@ -37,13 +37,17 @@ func loginHelp() string {
 
 // secretOptionKeys are --set keys whose value is a credential. Passing one
 // on the command line exposes it to process listings and shell history, so
-// the value may be given as "-" to read it from stdin instead.
+// polyctl warns and points at the "-" form, which reads the value from
+// stdin instead (any key may use that form). GoDaddy's legacy "key" is not
+// listed: it is the public half of the pair, and the documented scripted
+// form is --set key=<key> --set secret=-.
 var secretOptionKeys = map[string]bool{
 	"token":             true,
 	"secret":            true,
-	"key":               true,
 	"client_secret":     true,
 	"access_key_secret": true,
+	"secret_access_key": true,
+	"session_token":     true,
 	"password":          true,
 }
 
@@ -59,13 +63,21 @@ func newAuthLoginCmd(rt *app.Runtime) *cobra.Command {
 			"profile, or to a profile named \"default\" when no profile is current (or the\n" +
 			"current one no longer exists). When the platform is already configured in\n" +
 			"another profile only, --profile is required.\n\n" +
-			"On a terminal the platform may be left out: it is then chosen from a list.\n" +
-			"Ctrl-C, or Ctrl-D on an empty line, leaves a question of the login flow:\n" +
-			"nothing is stored then.\n\nLogin flows:\n" + loginHelp() +
+			"In the interactive flow (a terminal, without --no-input) the platform may be\n" +
+			"left out: it is then chosen from a list, and the login asks for what it\n" +
+			"needs. Ctrl-C, or Ctrl-D on an empty line, leaves a question of the login\n" +
+			"flow: nothing is stored then.\n\n" +
+			"In the non-interactive flow (no terminal on stdin and stderr, --no-input or\n" +
+			"POLYCTL_NO_INPUT=1) nothing is asked, no browser is opened and nothing is read\n" +
+			"from a terminal: the platform is required, values come from --set and the\n" +
+			"documented environment variables, and a value or choice that is still\n" +
+			"missing is a usage error (exit code 2) naming the --set key to pass.\n\n" +
+			"Login flows:\n" + loginHelp() +
 			"\nPlatform-specific options are passed with --set key=value (see each platform's\n" +
-			"section in the README). A secret option (token, key, secret, client_secret, ...)\n" +
-			"may be given as --set key=- to read the value from stdin instead of argv.",
-		Args:              oneArgOrInteractive(rt),
+			"section in the README). Any option may be given as --set key=- to read its\n" +
+			"value from stdin instead of argv, which secrets (token, secret,\n" +
+			"client_secret, ...) should: each one reads one line, in the order given.",
+		Args:              oneArgOrInteractive(rt, errPlatformRequired),
 		ValidArgsFunction: completePlatforms,
 		RunE: quietAbort(rt, func(cmd *cobra.Command, args []string) error {
 			var id platform.ID
@@ -115,21 +127,21 @@ func newAuthLoginCmd(rt *app.Runtime) *cobra.Command {
 				if !ok {
 					return usageErr("--set expects key=value, got %q", s)
 				}
-				if secretOptionKeys[k] && v != "" {
-					if v == "-" {
-						if v, err = rt.Prompt().WithContext(cmd.Context()).RequiredSecret(k); err != nil {
-							return err
-						}
-					} else {
-						rt.Infof("warning: --set %s=... is visible in process listings and shell history; pass %s=- to read it from stdin", k, k)
+				switch {
+				case v == "-":
+					// One line of stdin per key, in the order given.
+					if v, err = rt.StdinValue(cmd.Context(), k, secretOptionKeys[k]); err != nil {
+						return err
 					}
+				case secretOptionKeys[k] && v != "":
+					rt.Infof("warning: --set %s=... is visible in process listings and shell history; pass %s=- to read it from stdin", k, k)
 				}
 				opts[k] = v
 			}
 			return loginAccount(cmd.Context(), rt, prov, name, rt.Flags.Profile != "", opts)
 		}),
 	}
-	cmd.Flags().StringArrayVar(&sets, "set", nil, "platform-specific login option key=value (repeatable; value - reads a secret from stdin)")
+	cmd.Flags().StringArrayVar(&sets, "set", nil, "platform-specific login option key=value (repeatable; key=- reads the value, one line, from stdin)")
 	return cmd
 }
 
@@ -357,9 +369,10 @@ func newAuthUseCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "use <profile>",
 		Short: "Set the current profile",
-		Long: "Set the current profile. On a terminal the profile may be left out: it is\n" +
-			"then chosen from a list.",
-		Args: oneArgOrInteractive(rt),
+		Long: "Set the current profile. In the interactive flow (a terminal, without\n" +
+			"--no-input) the profile may be left out: it is then chosen from a list. In\n" +
+			"the non-interactive flow the profile is required (usage error, exit code 2).",
+		Args: oneArgOrInteractive(rt, errProfileRequired),
 		ValidArgsFunction: func(cmd *cobra.Command, args []string, tc string) ([]string, cobra.ShellCompDirective) {
 			if len(args) > 0 {
 				return nil, cobra.ShellCompDirectiveNoFileComp
@@ -522,9 +535,12 @@ func newAuthLogoutCmd(rt *app.Runtime) *cobra.Command {
 		Long: "Without a platform, remove the whole profile: every account in it and their\n" +
 			"stored credentials. With a platform, remove only that account; the profile is\n" +
 			"removed too when it was its last one.\n\n" +
-			"On a terminal --profile may be left out: the accounts to remove are then\n" +
-			"chosen from a list (only those on the platform, when one is given) and\n" +
-			"confirmed before anything is removed; --yes skips the confirmations.",
+			"In the interactive flow (a terminal, without --no-input) --profile may be\n" +
+			"left out: the accounts to remove are then chosen from a list (only those on\n" +
+			"the platform, when one is given) and confirmed before anything is removed;\n" +
+			"--yes skips the confirmations. In the non-interactive flow --profile is\n" +
+			"required (usage error, exit code 2); naming the profile is the confirmation,\n" +
+			"so nothing is asked.",
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completePlatforms,
 		RunE: quietAbort(rt, func(cmd *cobra.Command, args []string) error {

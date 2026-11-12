@@ -32,6 +32,7 @@ func setup(t *testing.T, profiles bool) (dir, cfgPath string) {
 	t.Setenv("POLYCTL_CREDENTIAL_STORE", "file")
 	t.Setenv("POLYCTL_INVENTORY_DB", "")
 	t.Setenv("POLYCTL_OUTPUT", "")
+	t.Setenv(app.EnvNoInput, "") // not the developer's setting
 	cfgPath = filepath.Join(dir, "config.yaml")
 	if !profiles {
 		return dir, cfgPath

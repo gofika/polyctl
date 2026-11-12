@@ -19,7 +19,6 @@ import (
 	"github.com/gofika/polyctl/internal/creds"
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/platform"
-	"github.com/gofika/polyctl/internal/prompt"
 )
 
 // addHollow adds a profile without accounts, as a hand-edited config or a
@@ -915,23 +914,23 @@ func TestDNSDeleteDeclinedIsNotAnError(t *testing.T) {
 		}
 		return len(rows)
 	}
-	args := []string{"--config", cfgPath, "dns", "delete", "example.com", "--type", "A", "--name", "www"}
+	args := []string{"dns", "delete", "example.com", "--type", "A", "--name", "www"}
+	deleted := func() bool { return fc.count("DeleteRecord") != 0 || len(fc.records["z1"]) != 2 || cached() != 2 }
 
-	// "n", and an empty answer: the default is no.
+	// The question belongs to the interactive flow. "n", and an empty
+	// answer: the default is no.
 	for _, answer := range []string{"n\n", "no\n", "\n"} {
-		var out, errb bytes.Buffer
-		code := Main(args, strings.NewReader(answer), &out, &errb)
-		stderr := errb.String()
-		if code != ExitOK || !strings.HasSuffix(stderr, "nothing to do: no record was deleted\n") || strings.Contains(stderr, "error:") || strings.Contains(stderr, "deleted www") {
-			t.Errorf("answer %q: exit %d (stderr %q), want the note and exit code 0", answer, code, stderr)
+		r := runFlow(t, context.Background(), cfgPath, &scriptedPicker{t: t}, strings.NewReader(answer), args...)
+		if r.code != ExitOK || !errors.Is(r.err, errNothingToDo) || r.err.Error() != "nothing to do: no record was deleted" || strings.Contains(r.stderr, "deleted www") {
+			t.Errorf("answer %q: %v, exit %d (stderr %q), want the note and exit code 0", answer, r.err, r.code, r.stderr)
 		}
-		if !strings.Contains(stderr, "delete 2 records") || !strings.Contains(stderr, "1.2.3.4") || !strings.Contains(stderr, "5.6.7.8") {
-			t.Errorf("answer %q: the records were not shown with the question: %q", answer, stderr)
+		if !strings.Contains(r.stderr, "delete 2 records in zone example.com (y/N)") || !strings.Contains(r.stderr, "1.2.3.4") || !strings.Contains(r.stderr, "5.6.7.8") {
+			t.Errorf("answer %q: the records were not shown with the question: %q", answer, r.stderr)
 		}
-		if out.String() != "" {
-			t.Errorf("answer %q: stdout = %q, want nothing", answer, out.String())
+		if r.stdout != "" {
+			t.Errorf("answer %q: stdout = %q, want nothing", answer, r.stdout)
 		}
-		if fc.count("DeleteRecord") != 0 || len(fc.records["z1"]) != 2 || cached() != 2 {
+		if deleted() {
 			t.Errorf("answer %q: records were deleted: calls %v, records %+v, %d cached", answer, fc.calls, fc.records["z1"], cached())
 		}
 	}
@@ -940,39 +939,37 @@ func TestDNSDeleteDeclinedIsNotAnError(t *testing.T) {
 	// waits for the answer, is a no as well.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	var out, errb bytes.Buffer
-	rt := app.New(app.Flags{}, leavingReader(t, cancel), &out, &errb)
-	root := NewRoot(rt)
-	root.SetArgs(args)
-	root.SetOut(&out)
-	root.SetErr(&errb)
-	err := root.ExecuteContext(ctx)
-	_ = rt.Close()
-	if !errors.Is(err, errNothingToDo) || ExitCodeFor(err) != ExitOK || err.Error() != "nothing to do: no record was deleted" {
-		t.Errorf("left confirmation = %v (exit %d), want nothing to do", err, ExitCodeFor(err))
+	r := runFlow(t, ctx, cfgPath, &scriptedPicker{t: t}, leavingReader(t, cancel), args...)
+	if !errors.Is(r.err, errNothingToDo) || r.code != ExitOK || r.err.Error() != "nothing to do: no record was deleted" {
+		t.Errorf("left confirmation = %v (exit %d), want nothing to do", r.err, r.code)
 	}
-	if out.String() != "" || strings.Contains(errb.String(), "deleted www") || fc.count("DeleteRecord") != 0 || len(fc.records["z1"]) != 2 || cached() != 2 {
-		t.Errorf("left confirmation: stdout %q, stderr %q, calls %v", out.String(), errb.String(), fc.calls)
+	if r.stdout != "" || strings.Contains(r.stderr, "deleted www") || deleted() {
+		t.Errorf("left confirmation: stdout %q, stderr %q, calls %v", r.stdout, r.stderr, fc.calls)
 	}
 
-	// A stdin that ends without an answer cannot confirm anything: the
-	// request was not carried out, which stays an error.
-	code, _, stderr := mainRun(cfgPath, "dns", "delete", "example.com", "--type", "A", "--name", "www")
-	if code != ExitError || !strings.Contains(stderr, "error: "+prompt.ErrNotInteractive.Error()) || fc.count("DeleteRecord") != 0 {
-		t.Errorf("dns delete with a closed stdin: exit %d (stderr %q)", code, stderr)
+	// The same through Main: the note is printed without "error:".
+	// (Main has no terminal here, so it is the non-interactive flow: no
+	// question, no read of stdin, a usage error that asks for --yes. A
+	// piped "y" is data, not an answer.)
+	var out, errb bytes.Buffer
+	code := Main(append([]string{"--config", cfgPath}, args...), strings.NewReader("y\n"), &out, &errb)
+	if code != ExitUsage || !strings.Contains(errb.String(), "error: usage error: confirmation required: pass --yes to proceed (would delete 2 records in zone example.com)") || strings.Contains(errb.String(), "(y/N)") || deleted() {
+		t.Errorf("dns delete without a terminal: exit %d (stderr %q)", code, errb.String())
+	}
+	if !strings.Contains(errb.String(), "1.2.3.4") || !strings.Contains(errb.String(), "5.6.7.8") || out.Len() != 0 {
+		t.Errorf("the refusal must show the affected records on stderr: stdout %q, stderr %q", out.String(), errb.String())
 	}
 
 	// No matching record is still an error.
-	code, _, stderr = mainRun(cfgPath, "dns", "delete", "example.com", "--type", "A", "--name", "nope")
+	code, _, stderr := mainRun(cfgPath, "dns", "delete", "example.com", "--type", "A", "--name", "nope")
 	if code != ExitNotFound || !strings.HasPrefix(stderr, "error: ") || strings.Contains(stderr, "nothing to do") {
 		t.Errorf("dns delete without a match: exit %d (stderr %q)", code, stderr)
 	}
 
 	// Answering yes deletes both.
-	out.Reset()
-	errb.Reset()
-	if code := Main(args, strings.NewReader("y\n"), &out, &errb); code != ExitOK || strings.Contains(errb.String(), "nothing to do") {
-		t.Fatalf("confirmed dns delete: exit %d (stderr %q)", code, errb.String())
+	r = runFlow(t, context.Background(), cfgPath, &scriptedPicker{t: t}, strings.NewReader("y\n"), args...)
+	if r.code != ExitOK || r.err != nil || strings.Contains(r.stderr, "nothing to do") {
+		t.Fatalf("confirmed dns delete: %v, exit %d (stderr %q)", r.err, r.code, r.stderr)
 	}
 	if fc.count("DeleteRecord") != 2 || len(fc.records["z1"]) != 0 || cached() != 0 {
 		t.Errorf("confirmed dns delete: calls %v, records %+v, %d cached", fc.calls, fc.records["z1"], cached())

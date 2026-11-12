@@ -207,6 +207,7 @@ var (
 )
 
 func TestRuntimeInteractive(t *testing.T) {
+	t.Setenv(app.EnvNoInput, "")
 	rt := app.New(app.Flags{}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	if rt.Interactive() {
 		t.Error("buffers are not a terminal")
@@ -220,18 +221,32 @@ func TestRuntimeInteractive(t *testing.T) {
 	if rt.Interactive() {
 		t.Error("the null device is not a terminal")
 	}
-	if rt.Pick() == nil {
-		t.Error("Pick must fall back to the terminal picker")
+	// Without a terminal no picker is built: the one returned refuses.
+	if _, err := rt.Pick().Select("Platform", nil, ""); ExitCodeFor(err) != ExitUsage {
+		t.Errorf("Pick without a terminal: Select = %v, want a usage error", err)
 	}
 	fake := &scriptedPicker{t: t}
 	rt.Picker = fake
 	if !rt.Interactive() || rt.Pick() != prompt.Picker(fake) {
 		t.Error("an injected picker makes the runtime interactive and is the one returned")
 	}
+	// --no-input and POLYCTL_NO_INPUT win over a terminal.
+	rt.Flags.NoInput = true
+	if rt.Interactive() || rt.Pick() == prompt.Picker(fake) {
+		t.Error("--no-input must switch the interactive flow off, with a picker present too")
+	}
+	rt.Flags.NoInput = false
+	t.Setenv(app.EnvNoInput, "1")
+	if rt.Interactive() || rt.Pick() == prompt.Picker(fake) {
+		t.Error("POLYCTL_NO_INPUT=1 must switch the interactive flow off, with a picker present too")
+	}
+	if len(fake.asked) != 0 {
+		t.Errorf("the picker was asked: %v", fake.titles())
+	}
 }
 
 // TestNonInteractiveNeverPrompts runs the commands that prompt on a terminal
-// without one: they must fail with their usage errors, as before.
+// without one: they must fail with usage errors that name what to pass.
 func TestNonInteractiveNeverPrompts(t *testing.T) {
 	dir, cfgPath := setupMulti(t)
 	before, err := os.ReadFile(cfgPath)
@@ -242,9 +257,9 @@ func TestNonInteractiveNeverPrompts(t *testing.T) {
 		args []string
 		want string
 	}{
-		{[]string{"auth", "manage"}, "auth manage needs an interactive terminal"},
-		{[]string{"auth", "use"}, "accepts 1 arg(s), received 0"},
-		{[]string{"auth", "login"}, "accepts 1 arg(s), received 0"},
+		{[]string{"auth", "manage"}, "auth manage is interactive only"},
+		{[]string{"auth", "use"}, "auth use: <profile> is required"},
+		{[]string{"auth", "login"}, "auth login: <platform> is required (one of: "},
 		{[]string{"auth", "logout"}, "--profile <name> is required"},
 		{[]string{"auth", "logout", p1}, "--profile <name> is required"},
 		{[]string{"auth", "logout", "--yes"}, "--profile <name> is required"},

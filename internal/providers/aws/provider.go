@@ -26,6 +26,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -36,6 +37,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ssooidc"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 
+	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/platform"
 	"github.com/gofika/polyctl/internal/prompt"
 )
@@ -72,18 +74,32 @@ type provider struct{}
 func (*provider) ID() platform.ID     { return platform.AWS }
 func (*provider) DisplayName() string { return "Amazon Web Services" }
 func (*provider) LoginHelp() string {
-	return "IAM Identity Center device login (--set method=sso, recommended), static access keys (--set method=keys) or a named profile from ~/.aws/config (--set method=profile --set aws_profile=<name>). Options: --set region=<default region>, --set start_url=..., --set sso_region=..., --set account_id=..., --set role_name=..."
+	return "IAM Identity Center device login (--set method=sso, recommended), static access keys (--set method=keys) or a named profile from ~/.aws/config (--set method=profile --set aws_profile=<name>). Options: --set region=<default region>, --set start_url=..., --set sso_region=..., --set account_id=..., --set role_name=...; keys: --set access_key_id=... --set secret_access_key=- [--set session_token=-], or AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN. Non-interactive: --set method is required; sso needs --set start_url, prints the URL and code and waits for the approval, and needs --set account_id / --set role_name when several are accessible"
 }
 func (*provider) ResourceTypes() []platform.ResourceType {
 	return []platform.ResourceType{platform.ResZone, platform.ResDNSRecord, platform.ResDomain, platform.ResInstance}
 }
 
-// Login runs one of the interactive authentication flows.
+// Environment variables read by the keys method, the names the AWS SDKs and
+// CLI use.
+const (
+	envAccessKeyID     = "AWS_ACCESS_KEY_ID"
+	envSecretAccessKey = "AWS_SECRET_ACCESS_KEY"
+	envSessionToken    = "AWS_SESSION_TOKEN"
+)
+
+// Login runs one of the authentication flows. The interactive flow asks for
+// what --set did not give. The non-interactive flow (in.Interactive false)
+// asks nothing: a missing value or an open choice is a usage error naming
+// the --set key.
 func (p *provider) Login(ctx context.Context, in platform.LoginInput) (*platform.LoginResult, error) {
-	io := prompt.New(in.Stdin, in.Stdout, in.Stderr).WithContext(ctx)
+	io := in.IO(ctx)
 	method := in.Opt("method", "")
 	if method == "" && in.Existing != nil {
 		method = in.Existing[metaMethod]
+	}
+	if method == "" && !in.Interactive {
+		return nil, app.UsageErrf("aws login needs a method: pass --set method=sso, --set method=keys or --set method=profile")
 	}
 	if method == "" {
 		fmt.Fprintln(io.Err, "How do you want to authenticate to AWS?")
@@ -116,24 +132,59 @@ func existingOr(m map[string]string, key, def string) string {
 }
 
 func loginKeys(ctx context.Context, in platform.LoginInput, io *prompt.IO, region string) (*platform.LoginResult, error) {
-	fmt.Fprintln(io.Err, "Create an access key in the IAM console: https://console.aws.amazon.com/iam/home#/security_credentials")
-	keyID, err := io.Required("Access key id")
-	if err != nil {
-		return nil, err
+	// --set first; then the environment, as a whole and only when --set gave
+	// none of the pair, so that halves of two key pairs are never mixed.
+	keyID := strings.TrimSpace(in.Opt(secretAccessKeyID, ""))
+	secret := strings.TrimSpace(in.Opt(secretSecretAccessKey, ""))
+	session := strings.TrimSpace(in.Opt(secretSessionToken, ""))
+	_, sessionSet := in.Options[secretSessionToken]
+	if keyID == "" && secret == "" {
+		envID, envSecret := strings.TrimSpace(os.Getenv(envAccessKeyID)), strings.TrimSpace(os.Getenv(envSecretAccessKey))
+		if envID != "" && envSecret != "" {
+			keyID, secret = envID, envSecret
+			if !sessionSet {
+				session, sessionSet = strings.TrimSpace(os.Getenv(envSessionToken)), true
+			}
+			fmt.Fprintf(io.Err, "using the access key from %s / %s\n", envAccessKeyID, envSecretAccessKey)
+		}
 	}
-	secret, err := io.RequiredSecret("Secret access key")
-	if err != nil {
-		return nil, err
-	}
-	session, err := io.Secret("Session token (optional, for temporary credentials)")
-	if err != nil {
-		return nil, err
+	if keyID == "" || secret == "" {
+		if !in.Interactive {
+			var missing []string
+			if keyID == "" {
+				missing = append(missing, "--set access_key_id=<id>")
+			}
+			if secret == "" {
+				missing = append(missing, "--set secret_access_key=- (the secret on stdin)")
+			}
+			return nil, app.UsageErrf("aws login with method=keys needs an access key: pass %s, or set %s and %s (and %s for temporary credentials)",
+				strings.Join(missing, " and "), envAccessKeyID, envSecretAccessKey, envSessionToken)
+		}
+		fmt.Fprintln(io.Err, "Create an access key in the IAM console: https://console.aws.amazon.com/iam/home#/security_credentials")
+		var err error
+		if keyID == "" {
+			if keyID, err = io.Required("Access key id"); err != nil {
+				return nil, err
+			}
+		}
+		if secret == "" {
+			if secret, err = io.RequiredSecret("Secret access key"); err != nil {
+				return nil, err
+			}
+		}
+		// The optional token is asked for only along with the key itself,
+		// and never in the non-interactive flow.
+		if !sessionSet {
+			if session, err = io.Secret("Session token (optional, for temporary credentials)"); err != nil {
+				return nil, err
+			}
+		}
 	}
 	cfg := awssdk.Config{
 		Region:      region,
 		Credentials: credentials.NewStaticCredentialsProvider(keyID, secret, session),
 	}
-	id, err := verifyIdentity(ctx, cfg)
+	id, err := verifyLogin(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -151,10 +202,15 @@ func loginKeys(ctx context.Context, in platform.LoginInput, io *prompt.IO, regio
 func loginProfile(ctx context.Context, in platform.LoginInput, io *prompt.IO, region string) (*platform.LoginResult, error) {
 	name := in.Opt(metaAWSProfile, existingOr(in.Existing, metaAWSProfile, "default"))
 	if _, set := in.Options[metaAWSProfile]; !set {
-		var err error
-		name, err = io.Line("AWS profile name (from ~/.aws/config)", name)
-		if err != nil {
-			return nil, err
+		if in.Interactive {
+			var err error
+			name, err = io.Line("AWS profile name (from ~/.aws/config)", name)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			// The default of the question, taken without asking.
+			fmt.Fprintf(io.Err, "using AWS profile %q (pass --set aws_profile=<name> to choose another)\n", name)
 		}
 	}
 	// The region of the shared profile wins unless --set region was given;
@@ -164,7 +220,7 @@ func loginProfile(ctx context.Context, in platform.LoginInput, io *prompt.IO, re
 	if err != nil {
 		return nil, err
 	}
-	id, err := verifyIdentity(ctx, cfg)
+	id, err := verifyLogin(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -197,6 +253,10 @@ func loadSharedConfig(ctx context.Context, name, region string, override bool) (
 	}
 	return cfg, nil
 }
+
+// verifyLogin checks the credentials a login flow ended up with. Tests
+// replace it: the flows themselves need no network up to this point.
+var verifyLogin = verifyIdentity
 
 // verifyIdentity calls sts GetCallerIdentity with cfg.
 func verifyIdentity(ctx context.Context, cfg awssdk.Config) (*platform.Identity, error) {

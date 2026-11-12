@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
@@ -13,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ssooidc"
 	oidctypes "github.com/aws/aws-sdk-go-v2/service/ssooidc/types"
 
+	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/platform"
 	"github.com/gofika/polyctl/internal/prompt"
 )
@@ -26,7 +28,11 @@ const (
 // loginSSO performs the IAM Identity Center device authorization flow.
 func loginSSO(ctx context.Context, in platform.LoginInput, io *prompt.IO, region string) (*platform.LoginResult, error) {
 	startURL := in.Opt(metaStartURL, existingOr(in.Existing, metaStartURL, ""))
-	if _, set := in.Options[metaStartURL]; !set {
+	if !in.Interactive && startURL == "" {
+		// Before any request: there is nobody to ask.
+		return nil, app.UsageErrf("aws login with method=sso needs the Identity Center start URL: pass --set start_url=<url> (and --set sso_region=<region> unless it is %s)", defaultRegion)
+	}
+	if _, set := in.Options[metaStartURL]; !set && in.Interactive {
 		fmt.Fprintln(io.Err, "The start URL is shown in the IAM Identity Center console, e.g. https://d-0123456789.awsapps.com/start")
 		var err error
 		if startURL != "" {
@@ -40,9 +46,14 @@ func loginSSO(ctx context.Context, in platform.LoginInput, io *prompt.IO, region
 	}
 	ssoRegion := in.Opt(metaSSORegion, existingOr(in.Existing, metaSSORegion, defaultRegion))
 	if _, set := in.Options[metaSSORegion]; !set {
-		var err error
-		if ssoRegion, err = io.Line("Identity Center region", ssoRegion); err != nil {
-			return nil, err
+		if in.Interactive {
+			var err error
+			if ssoRegion, err = io.Line("Identity Center region", ssoRegion); err != nil {
+				return nil, err
+			}
+		} else {
+			// The default of the question, taken without asking.
+			fmt.Fprintf(io.Err, "using Identity Center region %s (pass --set sso_region=<region> to choose another)\n", ssoRegion)
 		}
 	}
 
@@ -66,10 +77,14 @@ func loginSSO(ctx context.Context, in platform.LoginInput, io *prompt.IO, region
 		verifyURL = awssdk.ToString(auth.VerificationUri)
 	}
 	fmt.Fprintf(io.Err, "\nOpen the following URL in your browser and confirm the code %s:\n  %s\n\n", awssdk.ToString(auth.UserCode), verifyURL)
-	if !in.NoBrowser && in.OpenBrowser != nil {
+	if in.MayOpenBrowser() {
 		if err := in.OpenBrowser(verifyURL); err != nil {
 			fmt.Fprintf(io.Err, "could not open the browser automatically (%v); open the URL manually\n", err)
 		}
+	}
+	if !in.Interactive {
+		fmt.Fprintln(io.Err, "polyctl is not running interactively: it asks nothing and waits for the approval until the code expires.")
+		fmt.Fprintln(io.Err, "When several accounts or roles are accessible, --set account_id=<id> and --set role_name=<name> are required.")
 	}
 	fmt.Fprintln(io.Err, "Waiting for authorization...")
 
@@ -108,7 +123,7 @@ func loginSSO(ctx context.Context, in platform.LoginInput, io *prompt.IO, region
 			awssdk.ToString(rc.RoleCredentials.SecretAccessKey),
 			awssdk.ToString(rc.RoleCredentials.SessionToken)),
 	}
-	id, err := verifyIdentity(ctx, cfg)
+	id, err := verifyLogin(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -256,6 +271,18 @@ func listRoles(ctx context.Context, c *sso.Client, token, accountID string) ([]s
 	return out, nil
 }
 
+// accountList renders accounts as "id (name), ..." for error messages.
+func accountList(accounts []ssoAccount) string {
+	parts := make([]string, len(accounts))
+	for i, a := range accounts {
+		parts[i] = a.ID
+		if a.Name != "" {
+			parts[i] += " (" + a.Name + ")"
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
 // chooseAccount returns the account id and a human label.
 func chooseAccount(ctx context.Context, c *sso.Client, token string, in platform.LoginInput, io *prompt.IO) (string, string, error) {
 	accounts, err := listAccounts(ctx, c, token)
@@ -269,7 +296,7 @@ func chooseAccount(ctx context.Context, c *sso.Client, token string, in platform
 				return a.ID, a.label(), nil
 			}
 		}
-		return "", "", fmt.Errorf("account %s is not accessible with this login (accessible: %d account(s))", want, len(accounts))
+		return "", "", fmt.Errorf("account %s is not accessible with this login (accessible: %s)", want, accountList(accounts))
 	}
 	if len(accounts) == 0 {
 		return "", "", errors.New("this Identity Center user has no account assignments")
@@ -279,6 +306,17 @@ func chooseAccount(ctx context.Context, c *sso.Client, token string, in platform
 		a := accounts[0]
 		fmt.Fprintf(io.Err, "Using the only accessible account: %s\n", a.label())
 		return a.ID, a.label(), nil
+	}
+	if !in.Interactive {
+		// A re-authentication keeps its account; anything else is a choice
+		// nobody is there to make.
+		for _, a := range accounts {
+			if def != "" && a.ID == def {
+				fmt.Fprintf(io.Err, "Using the account of the previous login: %s\n", a.label())
+				return a.ID, a.label(), nil
+			}
+		}
+		return "", "", app.UsageErrf("several accounts are accessible: pass --set account_id=<id> to choose one of: %s", accountList(accounts))
 	}
 	labels := make([]string, len(accounts))
 	defLabel := ""
@@ -323,6 +361,17 @@ func chooseRole(ctx context.Context, c *sso.Client, token, accountID string, in 
 	case 1:
 		fmt.Fprintf(io.Err, "Using the only available role: %s\n", roles[0])
 		return roles[0], nil
+	}
+	if !in.Interactive {
+		if prev := existingOr(in.Existing, metaRoleName, ""); prev != "" {
+			for _, r := range roles {
+				if r == prev {
+					fmt.Fprintf(io.Err, "Using the role of the previous login: %s\n", r)
+					return r, nil
+				}
+			}
+		}
+		return "", app.UsageErrf("several roles are available in account %s: pass --set role_name=<name> to choose one of: %s", accountID, strings.Join(roles, ", "))
 	}
 	def := existingOr(in.Existing, metaRoleName, roles[0])
 	found := false

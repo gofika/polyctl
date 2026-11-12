@@ -21,6 +21,7 @@ import (
 	oauth2api "google.golang.org/api/oauth2/v2"
 	"google.golang.org/api/option"
 
+	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/httpx"
 	"github.com/gofika/polyctl/internal/platform"
 	"github.com/gofika/polyctl/internal/prompt"
@@ -41,9 +42,17 @@ func clientOptions(ts oauth2.TokenSource) []option.ClientOption {
 	return append(opts, extraOptions...)
 }
 
-// Login runs the interactive authentication flow for the selected method.
+// oauthWait bounds the wait for the browser to return in the
+// non-interactive flow, where nobody may be there to interrupt it. Tests
+// shorten it.
+var oauthWait = 5 * time.Minute
+
+// Login runs the authentication flow for the selected method. The
+// interactive flow asks for what --set did not give. The non-interactive
+// flow (in.Interactive false) asks nothing: a missing value or an open
+// choice is a usage error naming the --set key.
 func (p *provider) Login(ctx context.Context, in platform.LoginInput) (*platform.LoginResult, error) {
-	pio := prompt.New(in.Stdin, in.Stdout, in.Stderr).WithContext(ctx)
+	pio := in.IO(ctx)
 	method := strings.ToLower(in.Opt("method", ""))
 	if method == "" && in.Existing != nil {
 		method = in.Existing["method"]
@@ -69,7 +78,7 @@ func loginADC(ctx context.Context, in platform.LoginInput, pio *prompt.IO) (*pla
 		fmt.Fprintln(pio.Err, "    gcloud auth application-default login")
 		fmt.Fprintln(pio.Err)
 		fmt.Fprintf(pio.Err, "Documentation: %s\n", adcDocsURL)
-		if !in.NoBrowser && in.OpenBrowser != nil {
+		if in.MayOpenBrowser() {
 			_ = in.OpenBrowser(adcDocsURL)
 		}
 		return nil, fmt.Errorf("%w: application default credentials not found: %v", platform.ErrUnauthorized, err)
@@ -100,6 +109,9 @@ type serviceAccountKey struct {
 // loginServiceAccount stores a JSON key file in the credential store.
 func loginServiceAccount(ctx context.Context, in platform.LoginInput, pio *prompt.IO) (*platform.LoginResult, error) {
 	path := in.Opt("key_file", "")
+	if path == "" && !in.Interactive {
+		return nil, app.UsageErrf("gcp login with method=service_account needs the key file: pass --set key_file=<path to the JSON key>")
+	}
 	if path == "" {
 		fmt.Fprintln(pio.Err, "Create a service account key (JSON) in the Google Cloud console under IAM & Admin > Service Accounts,")
 		fmt.Fprintln(pio.Err, "grant it DNS Administrator and/or Compute roles, download it, and enter the file path below.")
@@ -127,6 +139,9 @@ func loginServiceAccount(ctx context.Context, in platform.LoginInput, pio *promp
 	}
 	if project == "" {
 		project = key.ProjectID
+	}
+	if project == "" && !in.Interactive {
+		return nil, app.UsageErrf("the service account key names no project: pass --set project=<id>")
 	}
 	if project == "" {
 		if project, err = pio.Required("Google Cloud project id"); err != nil {
@@ -172,6 +187,23 @@ func expandHome(p string) string {
 func loginOAuth(ctx context.Context, in platform.LoginInput, pio *prompt.IO) (*platform.LoginResult, error) {
 	clientID := in.Opt("client_id", "")
 	clientSecret := in.Opt("client_secret", "")
+	if !in.Interactive {
+		// Everything that would be asked is checked before the listener
+		// starts, so that nobody goes through the browser for nothing.
+		var missing []string
+		if clientID == "" {
+			missing = append(missing, "--set client_id=<id>")
+		}
+		if clientSecret == "" {
+			missing = append(missing, "--set client_secret=- (the secret on stdin)")
+		}
+		if in.Opt("project", "") == "" && in.Existing["project"] == "" {
+			missing = append(missing, "--set project=<id>")
+		}
+		if len(missing) > 0 {
+			return nil, app.UsageErrf("gcp login with method=oauth needs %s", strings.Join(missing, ", "))
+		}
+	}
 	if clientID == "" || clientSecret == "" {
 		fmt.Fprintln(pio.Err, "polyctl needs an OAuth client of your own: in the Google Cloud console open APIs & Services > Credentials,")
 		fmt.Fprintln(pio.Err, "create an OAuth client ID of type \"Desktop app\", and enter its id and secret below.")
@@ -281,16 +313,28 @@ func runLoopbackFlow(ctx context.Context, in platform.LoginInput, pio *prompt.IO
 	fmt.Fprintln(pio.Err)
 	fmt.Fprintln(pio.Err, "    "+authURL)
 	fmt.Fprintln(pio.Err)
-	if !in.NoBrowser && in.OpenBrowser != nil {
+	if in.MayOpenBrowser() {
 		if err := in.OpenBrowser(authURL); err != nil {
 			fmt.Fprintf(pio.Err, "could not open the browser automatically: %v\n", err)
 		}
 	}
-	fmt.Fprintln(pio.Err, "Waiting for the browser to return (Ctrl-C to cancel)...")
+	// On a terminal the user ends the wait with Ctrl-C. Without one nobody
+	// may be there: the wait is bounded.
+	var timeout <-chan time.Time
+	if in.Interactive {
+		fmt.Fprintln(pio.Err, "Waiting for the browser to return (Ctrl-C to cancel)...")
+	} else {
+		fmt.Fprintf(pio.Err, "Waiting up to %s for the browser to return...\n", oauthWait)
+		timer := time.NewTimer(oauthWait)
+		defer timer.Stop()
+		timeout = timer.C
+	}
 
 	var res result
 	select {
 	case res = <-results:
+	case <-timeout:
+		return nil, nil, fmt.Errorf("%w: no authorization received within %s", platform.ErrLoginCancelled, oauthWait)
 	case <-ctx.Done():
 		return nil, nil, fmt.Errorf("%w: %v", platform.ErrLoginCancelled, ctx.Err())
 	}
@@ -329,9 +373,11 @@ func lookupEmail(ctx context.Context, ts oauth2.TokenSource) string {
 	return ui.Email
 }
 
-// chooseProject resolves the project id: --set project, then the previous
-// profile's project, then a pick list from Resource Manager, then a prompt
-// defaulting to the ADC project.
+// chooseProject resolves the project id: --set project, then, in the
+// interactive flow, a pick list from Resource Manager or a prompt, with the
+// previous profile's project or the ADC project as the default. The
+// non-interactive flow takes that default without asking, then the only
+// listed project; several candidates are a usage error.
 func chooseProject(ctx context.Context, in platform.LoginInput, pio *prompt.IO, ts oauth2.TokenSource, adcProject string) (string, error) {
 	if p := in.Opt("project", ""); p != "" {
 		return p, nil
@@ -339,6 +385,28 @@ func chooseProject(ctx context.Context, in platform.LoginInput, pio *prompt.IO, 
 	def := adcProject
 	if in.Existing != nil && in.Existing["project"] != "" {
 		def = in.Existing["project"]
+	}
+	if !in.Interactive {
+		if def != "" {
+			fmt.Fprintf(pio.Err, "using project %s (pass --set project=<id> to choose another)\n", def)
+			return def, nil
+		}
+		var ids []string
+		if crm, err := cloudresourcemanager.NewService(ctx, clientOptions(ts)...); err == nil {
+			if projects, err := listProjects(ctx, crm); err == nil {
+				for _, p := range projects {
+					ids = append(ids, p.ProjectId)
+				}
+			}
+		}
+		switch len(ids) {
+		case 0:
+			return "", app.UsageErrf("gcp login needs a project: pass --set project=<id>")
+		case 1:
+			fmt.Fprintf(pio.Err, "using the only visible project: %s\n", ids[0])
+			return ids[0], nil
+		}
+		return "", app.UsageErrf("several projects are visible: pass --set project=<id> to choose one of: %s", strings.Join(ids, ", "))
 	}
 	var ids []string
 	if crm, err := cloudresourcemanager.NewService(ctx, clientOptions(ts)...); err == nil {

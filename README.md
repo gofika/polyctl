@@ -156,6 +156,7 @@ All state lives in one directory, `~/.config/polyctl/` by default (created with 
 | `POLYCTL_OUTPUT` | Default output format (`table`, `json`, `yaml`). Lower priority than `--output` and the `output:` key in `config.yaml`. |
 | `POLYCTL_CREDENTIAL_STORE` | Overrides `credential_store` in `config.yaml` (`auto`, `keyring`, `file`). |
 | `POLYCTL_INVENTORY_DB` | Path of the SQLite inventory file (default `<config dir>/inventory.db`). |
+| `POLYCTL_NO_INPUT` | `1`, `true` or `yes` forces the non-interactive flow, like `--no-input`: nothing is ever asked. `0`, `false`, `no` or empty leave it off; any other value is a usage error (exit code 2). See [Interactive and non-interactive use](#interactive-and-non-interactive-use). |
 
 | Global flag | Effect |
 | --- | --- |
@@ -165,8 +166,9 @@ All state lives in one directory, `~/.config/polyctl/` by default (created with 
 | `--offline` | Never touch the network; serve from the inventory only. Mutually exclusive with `--refresh`. |
 | `-o, --output <fmt>` | `table` (default), `json` or `yaml`. |
 | `-v, --verbose` | Extra diagnostics on stderr. |
-| `--no-browser` | During login, print URLs instead of opening a browser. |
-| `-y, --yes` | Assume "yes" on confirmation prompts (for example multi-record deletes, or the interactive `auth logout`). |
+| `--no-browser` | During login, print URLs instead of opening a browser. Implied in the non-interactive flow, which never opens one. |
+| `-y, --yes` | Assume "yes" for confirmations (multi-record `dns delete`, `aliyun ecs stop`, the interactive `auth logout`, the removal inside `auth manage`), in both flows. In the non-interactive flow it is the only way to confirm: without it such a command is a usage error (exit code 2). It confirms, it does not choose: a missing argument is still asked for on a terminal, and still a usage error without one. |
+| `--no-input` | Force the non-interactive flow, also on a terminal: never ask, choose or confirm anything. Missing arguments and unconfirmed actions are usage errors (exit code 2) that name what to pass. Same as `POLYCTL_NO_INPUT=1`. With `--yes`: no question at all, and destructive actions proceed. |
 | `--version` | Print the build version. |
 
 The `dns` and `domain` command groups add one flag of their own, `--platform <platform>`, which restricts routing (and any indexing) to the accounts on that platform; see [Routing rules](#routing-rules). `sync` and `inventory list` have their own `--platform` filters, described under [Caching](#caching).
@@ -293,6 +295,69 @@ CREATE TABLE sync_state (              -- freshness of each synced set
 
 `polyctl inventory path` prints the database actually in use (`POLYCTL_INVENTORY_DB` when set, otherwise `<config dir>/inventory.db`).
 
+## Interactive and non-interactive use
+
+polyctl has two call flows, and every command behaves the same way within one of them.
+
+- **Interactive**: a person at a terminal. A missing argument may be asked for with an arrow-key list, destructive actions ask for confirmation (default No), and login flows prompt for credentials and open a browser.
+- **Non-interactive**: scripts, CI, pipes, cron. polyctl never shows a menu, never asks you to choose or confirm anything, never reads an answer from a terminal and never opens a browser, so it never waits for a person. What the interactive flow would have asked for has to be passed; when it is missing the command fails right away with a usage error (exit code 2) that names the argument, flag, `--set` key or environment variable to pass, and changes nothing.
+
+The flow is decided once per command, in one place:
+
+| Situation | Flow |
+| --- | --- |
+| stdin **and** stderr are terminals | interactive |
+| stdin or stderr is not a terminal (pipe, redirect, `</dev/null`, CI, cron) | non-interactive |
+| `--no-input`, or `POLYCTL_NO_INPUT` set to `1` / `true` / `yes` | non-interactive, also on a terminal |
+
+`--yes` / `-y` means "assume yes for confirmations" in both flows. On a terminal it skips the confirmation questions only; a missing argument is still asked for. `--no-input --yes` together mean no question at all, and destructive actions proceed.
+
+In the non-interactive flow stdin is data, not a conversation: a piped `y` does not confirm anything and piped lines do not answer questions. stdin is read only where a command says so: `--set key=-` on `auth login` reads the value of that one key (one line per such key, in the order given, no label printed), and nothing else: no login reads a token from stdin on its own, so a pipe that stays open without data never blocks a command. Notes and errors are plain lines on stderr (no colours, no drawing), results go to stdout.
+
+What each command asks, and what it needs instead:
+
+| Command | Interactive flow asks | Non-interactive flow requires |
+| --- | --- | --- |
+| `auth login` | the platform, from a list | `auth login <platform>` |
+| `auth login <platform> --set key=-` | the value of `key`, typed at a prompt (hidden for secrets) | the value piped on stdin, one line per `key=-` |
+| `auth use` | the profile, from a list | `auth use <profile>` |
+| `auth logout [platform]` | the accounts to remove (multiple choice), "Remove N entries?" and "Keep cached inventory?"; `--yes` skips the two confirmations | `--profile <name>` (naming the profile is the confirmation; `--keep-inventory` keeps the cache) |
+| `auth manage` | everything, in a menu | not available: use `auth list`, `auth use <profile>`, `auth login <platform>`, `auth status`, `auth rename <old> <new>`, `auth logout [platform] --profile <name>` |
+| `dns delete <domain>` matching several records | "delete N records in zone ... (y/N)" after listing them; `--yes` skips it | `--yes` (the matching records are still listed on stderr with the refusal) |
+| `aliyun ecs stop <instance-id>` | "stop instance ... (y/N)"; `--yes` skips it | `--yes` (refused before the account is opened) |
+| `auth login cloudflare` | the API token (after opening the token page); the account, when the token sees several | `CLOUDFLARE_API_TOKEN` or `--set token=-` (stdin is read only for `--set token=-`); `--set account_id=<id>` when the token sees several accounts |
+| `auth login namecom` | username and API token | `--set username=<user>` and `--set token=-` |
+| `auth login godaddy` | the Personal Access Token (or, with `--set method=api_key`, key and secret) | `--set token=-`, or `--set key=<key> --set secret=-` |
+| `auth login aws` | the method | `--set method=sso\|keys\|profile` |
+| `auth login aws --set method=keys` | access key id, secret access key, optional session token | `--set access_key_id=<id> --set secret_access_key=-` (and `--set session_token=-`), or `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` (+ `AWS_SESSION_TOKEN`) |
+| `auth login aws --set method=profile` | the AWS profile name (default `default`) | nothing: `--set aws_profile=<name>`, else the profile of the previous login, else `default` |
+| `auth login aws --set method=sso` | start URL, Identity Center region; then, after the browser approval, the account and the role when several are accessible | `--set start_url=<url>` (the region defaults to `us-east-1`, or `--set sso_region=`); `--set account_id=<id>` and `--set role_name=<name>` when several are accessible |
+| `auth login gcp` (`adc`) | the project, from the visible ones | nothing when the project is unambiguous (`--set project=<id>`, the previous login's, the ADC project, the only visible one); otherwise `--set project=<id>` |
+| `auth login gcp --set method=service-account` | the key file path; the project when the key names none | `--set key_file=<path>`; `--set project=<id>` when the key names none |
+| `auth login gcp --set method=oauth` | client id and secret; the project | `--set client_id=<id> --set client_secret=- --set project=<id>` |
+| `auth login aliyun` | AccessKey ID and Secret, region | `--set access_key_id=<id> --set access_key_secret=-`, or `ALIBABA_CLOUD_ACCESS_KEY_ID` + `ALIBABA_CLOUD_ACCESS_KEY_SECRET`, or `--set from_cli=<profile>`; the region defaults to the previous login's, then `cn-hangzhou` |
+
+A re-authentication (`auth login` for an account the profile already has) reuses what the previous login recorded (username, start URL, account, role, project, region, method), so in the non-interactive flow usually only the secret has to be passed again.
+
+Two login flows need a person in a browser but nothing typed into polyctl, so they stay available in the non-interactive flow: polyctl prints the URL, does not open a browser, and waits for a bounded time.
+
+- `auth login aws --set method=sso` prints the verification URL and code and polls until the device code expires (the lifetime AWS gives the code; 10 minutes when it names none). If the approved login can access several accounts or roles and `--set account_id` / `--set role_name` were not given, it then fails with a usage error that lists them, so pass both in scripts.
+- `auth login gcp --set method=oauth` prints the consent URL and waits up to 5 minutes for the browser to return to its loopback listener. On a terminal it waits until you press Ctrl-C.
+
+Every other command (`auth list`, `auth status`, `auth rename`, `sync`, `inventory`, `domain`, `dns list` / `update`, single-record `dns delete`, and the remaining platform-specific commands) asks nothing in either flow.
+
+```sh
+# scripts and CI: nothing is asked
+printf '%s\n' "$NAMECOM_TOKEN" | polyctl auth login namecom --profile acme --set username=acme --set token=-
+polyctl dns delete example.com --type A --name www --yes
+polyctl aliyun ecs stop i-0123456789 --yes
+
+# the same guarantees on your own terminal
+polyctl --no-input auth use            # usage error: auth use: <profile> is required
+POLYCTL_NO_INPUT=1 polyctl dns delete example.com --type A --name www
+#   usage error: confirmation required: pass --yes to proceed (would delete 2 records in zone example.com)
+```
+
 ## Accounts
 
 A **profile** is a named set of accounts, at most one per platform. It usually stands for one project or one customer: the profile `acme` holds acme's Cloudflare account, its name.com account and its AWS account, so one name selects all of them. Two accounts on the same platform (production and a test environment, two AWS organisations) go into two profiles. Commands:
@@ -307,12 +372,12 @@ polyctl auth logout [platform] --profile <name> [--keep-inventory]
 polyctl auth manage
 ```
 
-- `auth login` runs the platform's login flow, stores the secret and writes the account's metadata to `config.yaml`. The account is added to `--profile` when given, otherwise to the current profile, otherwise (no profile is current, or `current_profile` names a profile that does not exist) to a profile named `default`; a profile that does not exist is created, and the target profile becomes current if none was. Logging in to a platform the profile already has re-authenticates that account and leaves the profile's other accounts alone. Without `--profile`, when the target profile has no account on the platform but another profile does, nothing is changed and the command fails with a usage error (exit code 2) that lists those profiles: pass `--profile <name>` to re-authenticate one of them, or `--profile <target>` to really add a second account on that platform. Platform-specific inputs are passed with `--set key=value` (repeatable); anything not given is asked interactively. Every login flow verifies against the platform, so with `--offline` `auth login` fails with exit code 6 before anything is asked, read from stdin or stored. Platform names accept aliases (`cf`, `name.com`, `gd`, `google`, `alibaba`, ...).
+- `auth login` runs the platform's login flow, stores the secret and writes the account's metadata to `config.yaml`. The account is added to `--profile` when given, otherwise to the current profile, otherwise (no profile is current, or `current_profile` names a profile that does not exist) to a profile named `default`; a profile that does not exist is created, and the target profile becomes current if none was. Logging in to a platform the profile already has re-authenticates that account and leaves the profile's other accounts alone. Without `--profile`, when the target profile has no account on the platform but another profile does, nothing is changed and the command fails with a usage error (exit code 2) that lists those profiles: pass `--profile <name>` to re-authenticate one of them, or `--profile <target>` to really add a second account on that platform. Platform-specific inputs are passed with `--set key=value` (repeatable); `--set key=-` reads the value of that key from stdin instead of the command line. Anything not given is asked in the interactive flow; in the non-interactive flow nothing is asked, no browser is opened, and a value or choice that is still missing is a usage error (exit code 2) naming the `--set` key (see [Interactive and non-interactive use](#interactive-and-non-interactive-use)). Every login flow verifies against the platform, so with `--offline` `auth login` fails with exit code 6 before anything is asked, read from stdin or stored. Platform names accept aliases (`cf`, `name.com`, `gd`, `google`, `alibaba`, ...).
 - `auth list` shows one row per account: profile, platform, whether the profile is current (`*`), the credential backend and a summary of the metadata. A profile without accounts gets one row too, marked `(no accounts)`; in JSON and YAML that row has `name` and `current` only, no `platform`.
-- `auth use` sets `current_profile`; an unknown profile is an error (exit code 4). On a terminal, `auth use` without a name asks which profile; when no profile is configured there is nothing to pick, which is a `nothing to do` note and exit code 0.
+- `auth use` sets `current_profile`; an unknown profile is an error (exit code 4). In the interactive flow, `auth use` without a name asks which profile; when no profile is configured there is nothing to pick, which is a `nothing to do` note and exit code 0. In the non-interactive flow the name is required (usage error, exit code 2).
 - `auth status` calls the platform of every account (or only those of `--profile`) to verify the stored credentials and prints the resolved identity (account, user, email, ARN, project...), one row per account. It exits with code 3 if any account fails. With `--offline` it only checks that credentials are present.
 - `auth rename <old> <new>` renames a profile. Its accounts, their secrets (copied to the `<new>/<platform>` keys before the old entries are deleted) and their cached resources move to the new name, and `current_profile` follows when it was the renamed profile. An unknown `<old>` is an error (exit code 4); a `<new>` that already exists, is empty or contains spaces or slashes is a usage error (exit code 2). If a step fails before `config.yaml` is saved, the copies are removed and the profile keeps its old name. A profile with an account still marked `legacy_secret` (see [Upgrading from 0.1.x](#upgrading-from-01x)) cannot be renamed until the old entry has been moved or removed: the message names the backend that has to be available for that, or says to log in to the account again when the backend is not on record or the entry could not be moved. An old account that simply has no stored secret is not held back by this. The rename is also refused, with nothing changed, when an account's `credential_backend` names a backend that is not available in this run (for example `keyring` while only the file store is in use), because its secret could not be moved.
-- `auth logout --profile <name>` removes the whole profile: every account in it, their secrets from every backend, and their cached resources from the inventory (keep those with `--keep-inventory`). `auth logout <platform> --profile <name>` removes only that account; the profile itself is removed when it was its last one. The platform is optional; `--profile` is required, except on a terminal, where leaving it out opens a list of accounts to choose from (see [Interactive management](#interactive-management)). `config.yaml` is saved after each removed account; if it was changed by another process in the meantime the command stops before anything of the next account is removed (see [Configuration](#configuration)). When an account's `credential_backend` names a backend that is not available in this run, the account is still removed from `config.yaml`, with a warning that its credentials in that backend were not removed; the same goes for an old 0.1.x entry recorded in `legacy_backend`. Removing the current profile leaves no current profile until the next `auth use` or `auth login`. `auth logout <platform> --profile <name>` for a platform the profile has no account on is an error (exit code 4); the interactive list with no account to offer (none at all, or none on the given platform) is not: it prints a `nothing to do` note and exits with code 0.
+- `auth logout --profile <name>` removes the whole profile: every account in it, their secrets from every backend, and their cached resources from the inventory (keep those with `--keep-inventory`). `auth logout <platform> --profile <name>` removes only that account; the profile itself is removed when it was its last one. The platform is optional; `--profile` is required, except in the interactive flow, where leaving it out opens a list of accounts to choose from (see [Interactive management](#interactive-management)). `config.yaml` is saved after each removed account; if it was changed by another process in the meantime the command stops before anything of the next account is removed (see [Configuration](#configuration)). When an account's `credential_backend` names a backend that is not available in this run, the account is still removed from `config.yaml`, with a warning that its credentials in that backend were not removed; the same goes for an old 0.1.x entry recorded in `legacy_backend`. Removing the current profile leaves no current profile until the next `auth use` or `auth login`. `auth logout <platform> --profile <name>` for a platform the profile has no account on is an error (exit code 4); the interactive list with no account to offer (none at all, or none on the given platform) is not: it prints a `nothing to do` note and exits with code 0.
 
 ```sh
 polyctl auth login cloudflare --profile acme     # creates the profile acme (and makes it current if no profile was)
@@ -327,7 +392,7 @@ polyctl auth logout --profile acme-prod          # drop the whole profile
 
 ### Interactive management
 
-On a terminal, `polyctl auth manage` opens a menu for everything above. It prints the table of `auth list` (accounts, and profiles without accounts) and offers:
+In the interactive flow, `polyctl auth manage` opens a menu for everything above (it is interactive only: without a terminal, with `--no-input` or with `POLYCTL_NO_INPUT=1` it is a usage error that names the commands to use instead). It prints the table of `auth list` (accounts, and profiles without accounts) and offers:
 
 | Menu entry | What it does |
 | --- | --- |
@@ -336,14 +401,14 @@ On a terminal, `polyctl auth manage` opens a menu for everything above. It print
 | Add an account (log in) | Pick a platform, then an existing profile or "New profile..." (you type the name), then the login flow of `auth login` runs. The profile is chosen explicitly, as with `--profile`. |
 | Verify credentials | Tick the accounts to check (Ctrl-A ticks all) and get the table of `auth status`. |
 | Rename a profile | `auth rename`, with the profile picked from a list. |
-| Remove accounts or profiles | Tick any number of accounts across profiles. polyctl lists what will be removed (a profile goes when its last account does), asks for confirmation (default No), asks whether to keep the cached inventory (default No), then removes them the way `auth logout` does. |
+| Remove accounts or profiles | Tick any number of accounts across profiles. polyctl lists what will be removed (a profile goes when its last account does), asks for confirmation (default No), asks whether to keep the cached inventory (default No), then removes them the way `auth logout` does. With `--yes` (`auth manage --yes`) both questions are skipped: the ticked entries are removed right after the selection, and their cached inventory with them. |
 | Quit | Leave the menu (`q` does the same). |
 
 Arrow keys or `j` / `k` move, space ticks an entry of a multiple choice, `/` filters a list, enter confirms; the keys are shown under every question, the ones that confirm and leave first, so a narrow terminal still shows them. In a yes/no question `y` and `n` select the answer, which is underlined (it shows without colours too), and enter confirms it; they do not answer on their own, so a habitual `y` + enter never runs on into the next question. A multiple choice needs at least one ticked entry: enter with nothing ticked keeps the question open and says so, until an entry is ticked. Keys pressed before a yes/no question appeared are discarded, so nothing typed ahead confirms it. Esc or Ctrl-C leaves the current question and returns to the menu; at the top level Esc, Ctrl-C or `q` leaves the menu, with exit code 0. While a `/` filter is in use Esc first closes the filter input, then clears the filter if one is applied, and only then leaves the question. A filter that matches nothing takes no enter: change the text, or press Esc. While the filter text is typed, space and the editing keys belong to the text (Ctrl-U deletes it, Ctrl-A and Ctrl-E jump to its ends, Ctrl-K and Ctrl-D delete forward) and do not tick or move anything; the arrow keys still move. The key hints only list what works in the current state. Labels too long for the terminal are cut with an ellipsis, and a terminal that does not report its size is treated as 80 by 24. A failing action is reported and the menu stays open. An action that finds nothing to act on (no profile to switch to, no account to show) prints a `nothing to do` note, not an error, and the menu stays open too.
 
 The menu can stay open for a long time, so it reads `config.yaml` again before it draws the table and before every action: changes made meanwhile by other polyctl commands show up and are kept. An action whose save fails changes nothing, in the file or in the table.
 
-Three commands ask for a missing argument the same way instead of failing:
+In the interactive flow three commands ask for a missing argument the same way instead of failing:
 
 ```sh
 polyctl auth use                 # pick the profile from a list
@@ -356,7 +421,7 @@ polyctl auth logout cloudflare   # the same, listing Cloudflare accounts only
 
 The questions of a login flow (token, key, region, ...) can be left the same way: Ctrl-C, or Ctrl-D on an empty line, ends `auth login` with `cancelled` and exit code 0, stores nothing, and inside `auth manage` returns to the menu. A secret is never echoed, and the terminal is put back as it was. On Windows Ctrl-C at such a question interrupts the command, which also leaves `auth manage`.
 
-Prompts and menus are drawn on stderr, so stdout still carries results only. They appear only when both stdin and stderr are terminals: in a pipe, a script or CI the same invocations fail with the usage error (exit code 2) they always did, and `auth manage` says which commands to use instead. polyctl never waits for an answer there.
+Prompts and menus are drawn on stderr, so stdout still carries results only. They appear only in the interactive flow, when both stdin and stderr are terminals and neither `--no-input` nor `POLYCTL_NO_INPUT` is set: in a pipe, a script or CI the same invocations fail with a usage error (exit code 2) that names the argument to pass, and `auth manage` says which commands to use instead. polyctl never waits for an answer there; see [Interactive and non-interactive use](#interactive-and-non-interactive-use).
 
 ### Upgrading from 0.1.x
 
@@ -370,11 +435,11 @@ In 0.1.x a profile was a single account on a single platform. From 0.2 on a prof
 
 ### Login flows per platform
 
-Browser-based flows open your default browser; pass `--no-browser` to print the URL instead (useful over SSH).
+Browser-based flows open your default browser; pass `--no-browser` to print the URL instead (useful over SSH). What follows describes the interactive flow first. In the non-interactive flow no browser is opened, nothing is asked and nothing is read from a terminal: each platform's "Non-interactive" line says what to pass, and whatever is still missing is a usage error (exit code 2) naming the `--set` key. Any `--set key=-` reads that value from stdin, one line per key in the order given, which keeps secrets out of the process list and the shell history.
 
 #### Cloudflare
 
-Uses an API token. polyctl opens <https://dash.cloudflare.com/profile/api-tokens>, where you create a token (the "Edit zone DNS" template is a good start; required: `Zone:Read` and `DNS:Edit`; optional: `Account:Read` to list accounts, `Zone:Edit` for cache purge / development mode / SSL mode, `User:Read` to show your email), then prompts for it. Non-interactive: export `CLOUDFLARE_API_TOKEN` (the same variable Terraform and wrangler use) or pipe the token on stdin.
+Uses an API token. polyctl opens <https://dash.cloudflare.com/profile/api-tokens>, where you create a token (the "Edit zone DNS" template is a good start; required: `Zone:Read` and `DNS:Edit`; optional: `Account:Read` to list accounts, `Zone:Edit` for cache purge / development mode / SSL mode, `User:Read` to show your email), then prompts for it. Non-interactive: export `CLOUDFLARE_API_TOKEN` (the same variable Terraform and wrangler use), or pass `--set token=-` with the token on stdin; `--set token` wins over the variable, and without either the login is a usage error (exit code 2). stdin is read only for `--set token=-`: a token piped without it is ignored, so a login whose stdin is an idle pipe fails at once instead of waiting.
 
 ```sh
 polyctl auth login cloudflare                                        # added to the current profile (or to "default" when no profile is current)
@@ -382,14 +447,15 @@ CLOUDFLARE_API_TOKEN=... polyctl auth login cloudflare --profile acme --set acco
 polyctl auth login cloudflare --profile acme --set token=...         # works, but warns: the token lands in shell history / process list
 ```
 
-`account_id` is optional; when omitted polyctl discovers the accounts the token can see and asks you to pick one if there are several. The token is verified before it is stored.
+`account_id` is optional; when omitted polyctl discovers the accounts the token can see and asks you to pick one if there are several. In the non-interactive flow several accounts are a usage error that lists them: pass `--set account_id=<id>` (a re-authentication keeps the account it had). The token is verified before it is stored.
 
 #### name.com
 
-Username plus API token. polyctl opens <https://www.name.com/account/settings/api> for token creation and prompts for both values.
+Username plus API token. polyctl opens <https://www.name.com/account/settings/api> for token creation and prompts for both values. Non-interactive: `--set username=<user> --set token=-` with the token on stdin; a missing one is a usage error (the two are never read as lines of a piped conversation).
 
 ```sh
 polyctl auth login namecom --profile acme
+printf '%s\n' "$NAMECOM_TOKEN" | polyctl auth login namecom --profile acme --set username=acme --set token=-   # scripts
 polyctl auth login namecom --profile acme-test --set username=acme --set token=... --set env=test   # a second name.com account needs its own profile
 ```
 
@@ -397,10 +463,11 @@ polyctl auth login namecom --profile acme-test --set username=acme --set token=.
 
 #### GoDaddy
 
-Personal Access Token (PAT) created at <https://developer.godaddy.com/personal-access-token>. GoDaddy does not offer an OAuth flow for third-party CLIs, so polyctl opens that page and prompts for the token. The legacy API key + secret pair is still accepted (`--set key=... --set secret=...` or `--set method=api_key`) but GoDaddy has deprecated it for the Domains API.
+Personal Access Token (PAT) created at <https://developer.godaddy.com/personal-access-token>. GoDaddy does not offer an OAuth flow for third-party CLIs, so polyctl opens that page and prompts for the token. The legacy API key + secret pair is still accepted (`--set key=... --set secret=...` or `--set method=api_key`) but GoDaddy has deprecated it for the Domains API. Non-interactive: `--set token=-` with the token on stdin (legacy pair: `--set key=<key> --set secret=-`); a missing value is a usage error.
 
 ```sh
 polyctl auth login godaddy --profile acme
+printf '%s\n' "$GODADDY_TOKEN" | polyctl auth login godaddy --profile acme --set token=-   # scripts
 polyctl auth login godaddy --profile acme-ote --set token=... --set env=ote
 polyctl auth login godaddy --profile legacy --set key=... --set secret=...   # legacy API key pair
 ```
@@ -409,19 +476,20 @@ polyctl auth login godaddy --profile legacy --set key=... --set secret=...   # l
 
 #### AWS
 
-Three methods, selected with `--set method=`:
+Three methods, selected with `--set method=`. On a terminal the method is asked for when it is not given; in the non-interactive flow `--set method=` is required (a re-authentication keeps its method).
 
 | Method | What happens |
 | --- | --- |
-| `sso` (default) | IAM Identity Center device-code flow. polyctl registers an OIDC client, opens the verification URL in your browser, waits for approval and stores the SSO token. `--set start_url=`, `--set sso_region=`, `--set account_id=`, `--set role_name=` are prompted for when omitted; when the token can access several accounts/roles you pick one. Short-lived role credentials are minted on each use and refreshed automatically; when the SSO session itself expires, run `auth login` again. |
-| `keys` | Static access key id (prompted) and secret access key (prompted without echo), optionally a session token. |
-| `profile` | Delegate to a profile in `~/.aws/config` / `~/.aws/credentials` (`--set aws_profile=<name>`). Nothing is copied; polyctl stores only a reference and lets the AWS SDK's own credential chain resolve it. |
+| `sso` (default) | IAM Identity Center device-code flow. polyctl registers an OIDC client, opens the verification URL in your browser, waits for approval and stores the SSO token. `--set start_url=`, `--set sso_region=`, `--set account_id=`, `--set role_name=` are prompted for when omitted; when the token can access several accounts/roles you pick one. Non-interactive: `--set start_url=` is required (`sso_region` defaults to `us-east-1`), the URL and code are printed without opening a browser and polyctl waits for the approval until the code expires; `--set account_id=` and `--set role_name=` are required when several are accessible (otherwise a usage error lists them). Short-lived role credentials are minted on each use and refreshed automatically; when the SSO session itself expires, run `auth login` again. |
+| `keys` | Static access key id (prompted) and secret access key (prompted without echo), optionally a session token. They can be passed instead with `--set access_key_id=<id> --set secret_access_key=-` (and `--set session_token=-`), or, when neither of the two is given with `--set`, taken as a whole from `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`; then nothing is asked. Non-interactive: one of those is required, and the session token is never asked for. |
+| `profile` | Delegate to a profile in `~/.aws/config` / `~/.aws/credentials` (`--set aws_profile=<name>`). Nothing is copied; polyctl stores only a reference and lets the AWS SDK's own credential chain resolve it. Non-interactive: without `--set aws_profile=` the profile of the previous login is used, else `default`, with a note. |
 
 `--set region=` sets the default region for regional services (EC2). Route 53 and Route 53 Domains are global.
 
 ```sh
 polyctl auth login aws --profile acme --set method=sso --set start_url=https://acme.awsapps.com/start --set sso_region=us-east-1 --set account_id=123456789012 --set role_name=AdministratorAccess --set region=eu-west-1
 polyctl auth login aws --profile lab --set method=keys
+printf '%s\n' "$SECRET" | polyctl auth login aws --profile ci --set method=keys --set access_key_id=AKIA... --set secret_access_key=-   # scripts
 polyctl auth login aws --profile legacy --set method=profile --set aws_profile=default
 ```
 
@@ -429,11 +497,11 @@ polyctl auth login aws --profile legacy --set method=profile --set aws_profile=d
 
 | Method | What happens |
 | --- | --- |
-| `adc` (default) | Uses Application Default Credentials. If none exist polyctl prints the `gcloud auth application-default login` command to run (and opens the ADC documentation page), then exits with code 3; re-run `auth login` after completing it. |
-| `service-account` (alias `sa`; stored as `service_account`) | `--set key_file=<path>`; the service-account JSON key is read and its contents stored in the credential store. `--set project=` defaults to the key's `project_id`. |
-| `oauth` | Your own OAuth client (`--set client_id=`, `--set client_secret=`); polyctl opens the consent screen, receives the code on a loopback listener and stores the refresh token. |
+| `adc` (default) | Uses Application Default Credentials. If none exist polyctl prints the `gcloud auth application-default login` command to run (and opens the ADC documentation page), then exits with code 3; re-run `auth login` after completing it. (The page is not opened in the non-interactive flow.) |
+| `service-account` (alias `sa`; stored as `service_account`) | `--set key_file=<path>`; the service-account JSON key is read and its contents stored in the credential store. `--set project=` defaults to the key's `project_id`. Non-interactive: `--set key_file=` is required, and `--set project=` when the key names no project. |
+| `oauth` | Your own OAuth client (`--set client_id=`, `--set client_secret=`); polyctl opens the consent screen, receives the code on a loopback listener and stores the refresh token. Non-interactive: `--set client_id=`, `--set client_secret=-` and `--set project=` are all required up front (a re-authentication keeps its project); the URL is printed without opening a browser and polyctl waits up to 5 minutes for the browser to return. |
 
-`--set project=` sets the default project; when omitted polyctl lists the projects the credentials can see and asks you to choose.
+`--set project=` sets the default project; when omitted polyctl lists the projects the credentials can see and asks you to choose. In the non-interactive flow nothing is asked: the project of the previous login, then the ADC project, then the only visible project is used (with a note); several visible projects and no default are a usage error that lists them.
 
 ```sh
 polyctl auth login gcp --profile acme --set project=acme-prod
@@ -442,10 +510,11 @@ polyctl auth login gcp --profile acme-ci --set method=service-account --set key_
 
 #### Alibaba Cloud
 
-RAM AccessKey pair from <https://ram.console.aliyun.com/manage/ak>. polyctl opens the page and prompts for the key id and secret.
+RAM AccessKey pair from <https://ram.console.aliyun.com/manage/ak>. polyctl opens the page and prompts for the key id and secret, then for the region. Both can be passed with `--set access_key_id=<id> --set access_key_secret=-` or, when neither is given with `--set`, taken as a pair from `ALIBABA_CLOUD_ACCESS_KEY_ID` / `ALIBABA_CLOUD_ACCESS_KEY_SECRET`; then they are not asked for. Non-interactive: one of those, or `--set from_cli=`, is required, and the region is never asked for (`--set region=`, else the CLI profile's, else the previous login's, else `cn-hangzhou`).
 
 ```sh
 polyctl auth login aliyun --profile acme --set region=cn-hangzhou
+printf '%s\n' "$AK_SECRET" | polyctl auth login aliyun --profile ci --set access_key_id=LTAI... --set access_key_secret=-   # scripts
 polyctl auth login aliyun --profile acme --set from_cli=default       # import from an `aliyun` CLI profile
 ```
 
@@ -468,7 +537,7 @@ Every `dns` command also takes `[--profile <name>] [--platform <platform>]`.
 - `<domain>` may be the zone apex or any name under it (`www.example.com` resolves to the `example.com` zone). `--name` is relative to the zone (`www`, `@`); when omitted, the record name is `<domain>` itself.
 - `dns update` is an upsert keyed on name + type: one existing record is updated (TTL, priority and proxy status are kept unless given), none means create, several means an error unless `--add` is passed, which always creates another record.
 - In tables, a TTL that is a platform marker rather than a number of seconds is shown by name: `auto` (Cloudflare automatic TTL, `1` in the API), `alias` (Route 53 alias records, which use the target's TTL) and `default` (a GoDaddy record just written without `--ttl`). `-o json` and `-o yaml` keep the raw value.
-- `dns delete` with a selector that matches several records shows them and asks for confirmation (skip with `-y`). Answering no, or leaving the question, deletes nothing: the command prints `nothing to do: no record was deleted` and exits with code 0. A selector that matches no record is an error (exit code 4). `--value` narrows the match; `--id` deletes exactly one record by platform id.
+- `dns delete` with a selector that matches several records shows them and asks for confirmation (skip with `-y`). Answering no, or leaving the question, deletes nothing: the command prints `nothing to do: no record was deleted` and exits with code 0. In the non-interactive flow (no terminal, `--no-input`, `POLYCTL_NO_INPUT=1`) the question is never asked and stdin is not read: the records are shown, nothing is deleted, and the command fails with the usage error `confirmation required: pass --yes to proceed (would delete N records in zone <domain>)` (exit code 2) unless `-y` is given. A selector that matches no record is an error (exit code 4). `--value` narrows the match; `--id` deletes exactly one record by platform id.
 - `--proxied` applies to Cloudflare only; the `PROXIED` column appears for Cloudflare zones.
 - After a successful write the record is upserted into (or removed from) the inventory, so the next `dns list` shows it without a refresh.
 
@@ -635,6 +704,8 @@ aliyun domain ns set <domain> --ns ns1,ns2
 aliyun ecs list [--region]                        aliyun ecs start <instance-id> [--region]     aliyun ecs stop <instance-id> [--region] [--force]
 ```
 
+`aliyun ecs stop` asks for confirmation on a terminal (default No; declining is a `nothing to do` note and exit code 0) unless `--yes` is given. In the non-interactive flow it never asks: without `--yes` it is a usage error (exit code 2) raised before the account is opened.
+
 Inventory types: `zone` (Alidns domains), `dns_record`, `domain` (registered domains), `instance`. Alidns stores the relative record name as `RR`; both the native `aliyun dns record` commands and the neutral `dns` commands expose it as `--name`. Records also carry a resolution line (`--line`), shown in the `LINE` column.
 
 ## Output formats
@@ -666,9 +737,9 @@ Human-readable progress and notes always go to stderr, so stdout is safe to pipe
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Success. Also a menu or selection prompt left with Esc or Ctrl-C, a question of a login flow left with Ctrl-C or Ctrl-D, and a command that had nothing to do: no account to `sync` or `domain index` (none configured, none matching `--profile` / `--platform`, none supporting `--type`), no profile or account to pick from in `auth use` / `auth logout` / `auth manage`, a declined or left confirmation of `dns delete` or `aliyun ecs stop`. |
-| `1` | Generic error (API failure, I/O error, a confirmation that cannot be asked because stdin is closed or not a terminal and `-y` was not given, `config.yaml` changed by another process while the command ran, ...). |
-| `2` | Usage error: bad flag combination, unknown platform or resource type, missing required flag or argument, `auth manage` without a terminal, an invalid or already used name for `auth rename`, invalid config, `auth login` without `--profile` for a platform that only other profiles have. |
+| `0` | Success. Also a menu or selection prompt left with Esc or Ctrl-C, a question of a login flow left with Ctrl-C or Ctrl-D, and a command that had nothing to do: no account to `sync` or `domain index` (none configured, none matching `--profile` / `--platform`, none supporting `--type`), no profile or account to pick from in `auth use` / `auth logout` / `auth manage`, a declined or left confirmation of `dns delete` or `aliyun ecs stop`. The prompts in this row exist in the interactive flow only. |
+| `1` | Generic error (API failure, I/O error, a login that was not approved in time, `config.yaml` changed by another process while the command ran, ...). |
+| `2` | Usage error: bad flag combination, unknown platform or resource type, missing required flag or argument, an invalid or already used name for `auth rename`, invalid config, an invalid `POLYCTL_NO_INPUT` value, `auth login` without `--profile` for a platform that only other profiles have. Also everything the non-interactive flow cannot ask for: `auth manage`, a missing argument (`auth login` without a platform, `auth use` without a profile, `auth logout` without `--profile`), a confirmation without `--yes` (`dns delete` of several records, `aliyun ecs stop`), and a login value or choice that was not passed (the message names the `--set` key or environment variable). |
 | `3` | Authentication: missing credentials, no account on the platform in the selected profile, rejected token, expired SSO session, `auth status` with a failing account. |
 | `4` | Not found: unknown domain / zone / record / profile, a `--profile` / `--platform` selection that names no account able to hold the requested domain (`dns list`, `domain info`, ...), `auth logout <platform>` for a platform the profile has no account on, or a set that was never synced in `--offline` mode. |
 | `5` | Ambiguous: the domain has more than one candidate account (pass `--profile` and/or `--platform`, as the message says), or the platform more than one candidate profile (pass `--profile`). |
@@ -696,8 +767,8 @@ internal/creds/              Keyring store, 0600 file store, Multi (read from an
 internal/inventory/          SQLite schema, Replace/Upsert/Delete, Purge/RenameProfile, domain lookup, stats
 internal/output/             table / json / yaml rendering
 internal/httpx/              Small JSON REST client with retries (Cloudflare, name.com, GoDaddy)
-internal/prompt/             Line / secret / confirm prompts with TTY detection; Picker (arrow-key select, multi-select,
-                             confirm, input) drawn on stderr
+internal/prompt/             Line / secret / confirm prompts in the flow handed to them (they refuse in the
+                             non-interactive one); Picker (arrow-key select, multi-select, confirm, input) drawn on stderr
 internal/browser/            Open a URL in the default browser (macOS, Windows, Linux)
 ```
 
@@ -709,7 +780,7 @@ Adding a platform means implementing `platform.Provider` (and `DNSService` / `Re
 - Keyring entries are created under the service name `polyctl`; on macOS you may be asked once to allow `polyctl` access to the Keychain item.
 - When the keyring is unavailable, `credentials.json` is written with mode `0600` inside a `0700` directory. Treat that file like `~/.aws/credentials`. Set `credential_store: keyring` if you would rather fail than fall back.
 - `inventory.db` contains the full record data of every zone you synced (including TXT verification strings and the public IPs of instances). It is not encrypted; keep the config directory private or point `POLYCTL_INVENTORY_DB` at a protected location.
-- Secrets are read from the terminal without echo. Passing them on the command line with `--set token=...` is convenient for scripts but leaves them in shell history and in the process list; prefer the interactive prompt or a secrets manager that injects them.
+- Secrets are read from the terminal without echo. Passing them on the command line with `--set token=...` is convenient for scripts but leaves them in shell history and in the process list; prefer the interactive prompt, or `--set key=-` with the value piped on stdin by a secrets manager.
 - AWS SSO role credentials and GCP OAuth access tokens are short-lived and minted on demand; polyctl stores the Identity Center access/refresh tokens (plus the registered OIDC client) and the Google refresh token, and refreshes them when possible.
 - Create least-privilege tokens: Cloudflare tokens scoped to the zones you manage, GoDaddy/name.com tokens per machine, AWS roles limited to Route 53 / EC2, GCP service accounts with the DNS Administrator and Compute Instance Admin roles only.
 - Network access goes directly to each platform's public API over HTTPS with a `polyctl/<version>` User-Agent; there is no telemetry and no intermediary service.

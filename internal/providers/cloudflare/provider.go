@@ -12,7 +12,6 @@ import (
 
 	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/platform"
-	"github.com/gofika/polyctl/internal/prompt"
 )
 
 func init() { platform.Register(&provider{}) }
@@ -67,7 +66,7 @@ func (p *provider) base() string {
 func (*provider) ID() platform.ID     { return platform.Cloudflare }
 func (*provider) DisplayName() string { return "Cloudflare" }
 func (*provider) LoginHelp() string {
-	return "API token created in the dashboard (non-interactive: export " + tokenEnv + " or pipe the token on stdin; --set account_id=... pins an account)"
+	return "API token created in the dashboard (non-interactive: export " + tokenEnv + " or pass --set token=- with the token on stdin; --set account_id=<id> pins an account, and is required there when the token sees several)"
 }
 func (*provider) ResourceTypes() []platform.ResourceType {
 	return []platform.ResourceType{platform.ResZone, platform.ResDNSRecord}
@@ -75,11 +74,15 @@ func (*provider) ResourceTypes() []platform.ResourceType {
 
 // Login obtains and verifies an API token. Cloudflare has no public OAuth
 // flow for third-party CLIs, so the user creates a token in the dashboard
-// and pastes it here. Non-interactive callers export CLOUDFLARE_API_TOKEN or
-// pipe the token on stdin. `--set token=...` still works for compatibility
-// (the CLI warns about argv exposure and accepts `--set token=-` for stdin).
+// and pastes it here. The token comes from --set token (the CLI warns about
+// argv exposure and accepts `--set token=-` for stdin), then from
+// CLOUDFLARE_API_TOKEN. After that the interactive flow asks for it; the
+// non-interactive flow fails with a usage error. It does not fall back to
+// reading stdin on its own: a pipe that stays open without data (ssh
+// without -n, docker run -i, some CI runners) would block the command
+// forever, and a script fed to a shell on stdin would lose its next line.
 func (p *provider) Login(ctx context.Context, in platform.LoginInput) (*platform.LoginResult, error) {
-	io := prompt.New(in.Stdin, in.Stdout, in.Stderr).WithContext(ctx)
+	io := in.IO(ctx)
 	token := strings.TrimSpace(in.Opt("token", ""))
 	if token == "" {
 		if v := strings.TrimSpace(os.Getenv(tokenEnv)); v != "" {
@@ -87,13 +90,16 @@ func (p *provider) Login(ctx context.Context, in platform.LoginInput) (*platform
 			fmt.Fprintf(io.Err, "using the API token from %s\n", tokenEnv)
 		}
 	}
+	if token == "" && !in.Interactive {
+		return nil, app.UsageErrf("cloudflare login needs an API token: set %s or pass --set token=- with the token on stdin (create one at %s)", tokenEnv, tokenPageURL)
+	}
 	if token == "" {
 		fmt.Fprintln(io.Err, "Cloudflare authenticates polyctl with an API token.")
 		fmt.Fprintln(io.Err, "Create one at:", tokenPageURL)
 		fmt.Fprintln(io.Err, `  - the "Edit zone DNS" template is a good starting point`)
 		fmt.Fprintln(io.Err, "  - required permissions: Zone:Read, DNS:Edit; add Account:Read to list accounts")
 		fmt.Fprintln(io.Err, "  - optional: Zone:Edit (cache purge, dev mode, SSL mode), User:Read (shows your email)")
-		if !in.NoBrowser && in.OpenBrowser != nil {
+		if in.MayOpenBrowser() {
 			if err := in.OpenBrowser(tokenPageURL); err != nil {
 				fmt.Fprintln(io.Err, "could not open a browser; open the URL above manually")
 			}
@@ -149,8 +155,8 @@ func (p *provider) Login(ctx context.Context, in platform.LoginInput) (*platform
 	case len(accounts) == 1:
 		chosen = &accounts[0]
 	case len(accounts) > 1:
-		if !io.IsTerminal() {
-			return nil, fmt.Errorf("the token sees %d accounts; pass --set account_id=<id> to choose one of: %s", len(accounts), accountNames(accounts))
+		if !in.Interactive {
+			return nil, app.UsageErrf("the token sees %d accounts; pass --set account_id=<id> to choose one of: %s", len(accounts), accountNames(accounts))
 		}
 		opts := make([]string, len(accounts))
 		for i, acc := range accounts {

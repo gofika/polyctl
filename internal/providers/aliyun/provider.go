@@ -27,8 +27,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/platform"
-	"github.com/gofika/polyctl/internal/prompt"
 )
 
 func init() { platform.Register(&provider{}) }
@@ -59,18 +59,32 @@ func (*provider) LoginHelp() string {
 AliyunDNSFullAccess / AliyunDomainFullAccess / AliyunECSReadOnlyAccess (as needed) and prompts
 for the AccessKey ID and Secret. Options: --set region=<id> (default ` + DefaultRegion + `),
 --set site=cn|intl to force the registrar site (default: cn for cn-* regions, intl otherwise),
---set from_cli=<profile> to import the key from ~/.aliyun/config.json (aliyun CLI).`
+--set from_cli=<profile> to import the key from ~/.aliyun/config.json (aliyun CLI).
+Non-interactive: --set access_key_id=... --set access_key_secret=- (the secret on stdin),
+or ` + envKeyID + ` / ` + envKeySecret + `, or --set from_cli=<profile>.`
 }
 
 func (*provider) ResourceTypes() []platform.ResourceType {
 	return []platform.ResourceType{platform.ResZone, platform.ResDNSRecord, platform.ResDomain, platform.ResInstance}
 }
 
-// Login runs the interactive AccessKey flow (or imports from the aliyun CLI).
+// Environment variables read for the AccessKey, the names the Alibaba Cloud
+// SDKs and CLI use.
+const (
+	envKeyID     = "ALIBABA_CLOUD_ACCESS_KEY_ID"
+	envKeySecret = "ALIBABA_CLOUD_ACCESS_KEY_SECRET"
+)
+
+// Login runs the AccessKey flow (or imports from the aliyun CLI). The key
+// comes from --set from_cli, from --set access_key_id / access_key_secret,
+// then from the environment. After that the interactive flow asks for what
+// is missing; the non-interactive flow asks nothing: a missing value is a
+// usage error, and the region falls back to its default.
 func (p *provider) Login(ctx context.Context, in platform.LoginInput) (*platform.LoginResult, error) {
-	io := prompt.New(in.Stdin, in.Stdout, in.Stderr).WithContext(ctx)
+	io := in.IO(ctx)
 	region := in.Opt("region", "")
-	var keyID, keySecret string
+	keyID := strings.TrimSpace(in.Opt(secretKeyID, ""))
+	keySecret := strings.TrimSpace(in.Opt(secretKeySecret, ""))
 
 	if cliProfile := in.Opt("from_cli", ""); cliProfile != "" {
 		cp, err := loadCLIProfile(cliConfigPath(), cliProfile)
@@ -82,21 +96,41 @@ func (p *provider) Login(ctx context.Context, in platform.LoginInput) (*platform
 			region = cp.RegionID
 		}
 		fmt.Fprintf(io.Err, "Imported AccessKey %s... from aliyun CLI profile %q.\n", keyPrefix(keyID), cp.Name)
-	} else {
+	} else if keyID == "" && keySecret == "" && strings.TrimSpace(os.Getenv(envKeyID)) != "" && strings.TrimSpace(os.Getenv(envKeySecret)) != "" {
+		// As a whole only, so that halves of two keys are never mixed.
+		keyID, keySecret = strings.TrimSpace(os.Getenv(envKeyID)), strings.TrimSpace(os.Getenv(envKeySecret))
+		fmt.Fprintf(io.Err, "using the AccessKey from %s / %s\n", envKeyID, envKeySecret)
+	}
+	if (keyID == "" || keySecret == "") && !in.Interactive {
+		var missing []string
+		if keyID == "" {
+			missing = append(missing, "--set access_key_id=<id>")
+		}
+		if keySecret == "" {
+			missing = append(missing, "--set access_key_secret=- (the secret on stdin)")
+		}
+		return nil, app.UsageErrf("aliyun login needs an AccessKey: pass %s, or set %s and %s, or import one with --set from_cli=<profile>",
+			strings.Join(missing, " and "), envKeyID, envKeySecret)
+	}
+	if keyID == "" || keySecret == "" {
 		fmt.Fprintln(io.Err, "Alibaba Cloud has no browser login for third-party tools; a RAM AccessKey is used instead.")
 		fmt.Fprintln(io.Err, "Create one (RAM user with AliyunDNSFullAccess, AliyunDomainFullAccess and/or AliyunECSReadOnlyAccess) at:")
 		fmt.Fprintln(io.Err, "  "+accessKeyURL)
-		if !in.NoBrowser && in.OpenBrowser != nil {
+		if in.MayOpenBrowser() {
 			if err := in.OpenBrowser(accessKeyURL); err != nil {
 				fmt.Fprintf(io.Err, "(could not open the browser: %v)\n", err)
 			}
 		}
 		var err error
-		if keyID, err = io.Required("AccessKey ID"); err != nil {
-			return nil, err
+		if keyID == "" {
+			if keyID, err = io.Required("AccessKey ID"); err != nil {
+				return nil, err
+			}
 		}
-		if keySecret, err = io.RequiredSecret("AccessKey Secret"); err != nil {
-			return nil, err
+		if keySecret == "" {
+			if keySecret, err = io.RequiredSecret("AccessKey Secret"); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if region == "" {
@@ -104,9 +138,15 @@ func (p *provider) Login(ctx context.Context, in platform.LoginInput) (*platform
 		if def == "" {
 			def = DefaultRegion
 		}
-		var err error
-		if region, err = io.Line("Region id", def); err != nil {
-			return nil, err
+		if in.Interactive {
+			var err error
+			if region, err = io.Line("Region id", def); err != nil {
+				return nil, err
+			}
+		} else {
+			// The default of the question, taken without asking.
+			region = def
+			fmt.Fprintf(io.Err, "using region %s (pass --set region=<id> to choose another)\n", region)
 		}
 	}
 	region = strings.TrimSpace(region)

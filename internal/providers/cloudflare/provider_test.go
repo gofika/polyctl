@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/platform"
 )
 
@@ -796,8 +798,12 @@ func TestLoginReadsTokenFromEnv(t *testing.T) {
 	if !strings.Contains(stderr.String(), tokenEnv) {
 		t.Fatalf("must say the token came from the environment: %s", stderr.String())
 	}
-	if !strings.Contains(p.LoginHelp(), tokenEnv) || strings.Contains(p.LoginHelp(), "token=") {
-		t.Fatalf("help must advertise the env var, not --set token: %s", p.LoginHelp())
+	// The help names the variable and the stdin form, never a token on the
+	// command line, and no longer promises a token piped without --set.
+	help := p.LoginHelp()
+	if !strings.Contains(help, tokenEnv) || !strings.Contains(help, "--set token=-") ||
+		strings.Contains(strings.ReplaceAll(help, "token=-", ""), "token=") || strings.Contains(help, "pipe the token") {
+		t.Fatalf("help must advertise the env var and --set token=-, not --set token=<value>: %s", help)
 	}
 }
 
@@ -809,6 +815,7 @@ func TestLoginPromptsAndVerifies(t *testing.T) {
 	in := platform.LoginInput{
 		ProfileName: "cf",
 		Options:     map[string]string{"account_id": "acc1"},
+		Interactive: true,
 		Stdin:       strings.NewReader("good-token\n"),
 		Stdout:      &bytes.Buffer{},
 		Stderr:      &stderr,
@@ -863,8 +870,13 @@ func TestLoginAmbiguousAccountsNonInteractive(t *testing.T) {
 		NoBrowser: true,
 	}
 	_, err := p.Login(context.Background(), in)
-	if err == nil || !strings.Contains(err.Error(), "account_id") {
-		t.Fatalf("want ambiguity error mentioning account_id, got %v", err)
+	if !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "--set account_id=<id>") {
+		t.Fatalf("want a usage error naming --set account_id, got %v", err)
+	}
+	for _, cand := range []string{"acc1=Acme", "acc2=Beta"} {
+		if !strings.Contains(err.Error(), cand) {
+			t.Errorf("the error must list the candidate %q: %v", cand, err)
+		}
 	}
 	// Previous metadata resolves the ambiguity on re-login.
 	in.Existing = map[string]string{metaAccountID: "acc1"}
@@ -1023,5 +1035,87 @@ func TestContextCancellation(t *testing.T) {
 	cancel()
 	if _, err := c.ListZones(ctx); err == nil {
 		t.Fatal("cancelled context must fail")
+	}
+}
+
+// refusingReader fails the test when the login reads stdin.
+type refusingReader struct{ t *testing.T }
+
+func (r refusingReader) Read([]byte) (int, error) {
+	r.t.Error("stdin was read")
+	return 0, io.EOF
+}
+
+// The non-interactive flow never asks: the token comes from --set or the
+// environment, without guidance, label or browser. A missing token is a
+// usage error raised without reading stdin, so an idle pipe cannot block it.
+func TestLoginNonInteractive(t *testing.T) {
+	_, srv := newFake(t)
+	p := &provider{baseURL: srv.URL}
+	t.Setenv(tokenEnv, "")
+	run := func(stdin io.Reader, opts map[string]string) (*platform.LoginResult, string, int, error) {
+		var stderr bytes.Buffer
+		opened := 0
+		res, err := p.Login(context.Background(), platform.LoginInput{
+			Options: opts, Stdin: stdin, Stdout: &bytes.Buffer{}, Stderr: &stderr,
+			// NoBrowser is left unset on purpose: the provider itself must
+			// not reach the browser when it is not interactive.
+			OpenBrowser: func(string) error { opened++; return nil },
+		})
+		return res, stderr.String(), opened, err
+	}
+
+	// No token: a usage error that names every way to pass it. stdin is not
+	// read, whatever it holds: it is data, and it may never deliver a line.
+	_, stderr, opened, err := run(refusingReader{t}, map[string]string{"account_id": "acc1"})
+	if !errors.Is(err, app.ErrUsage) {
+		t.Fatalf("no token = %v, want a usage error", err)
+	}
+	for _, want := range []string{tokenEnv, "--set token=-", "stdin"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the usage error does not name %q: %v", want, err)
+		}
+	}
+	if opened != 0 || stderr != "" {
+		t.Errorf("no token: browser opened %d time(s), stderr %q; want neither", opened, stderr)
+	}
+
+	// The environment variable supplies it, again without touching stdin.
+	t.Setenv(tokenEnv, " good-token ")
+	res, _, opened, err := run(refusingReader{t}, map[string]string{"account_id": "acc1"})
+	if err != nil || res.Secret[secretToken] != "good-token" || opened != 0 {
+		t.Fatalf("token from %s: %v %+v, browser opened %d time(s)", tokenEnv, err, res, opened)
+	}
+	t.Setenv(tokenEnv, "")
+
+	// With the token given, stdin is not touched; several accounts are a
+	// usage error and not a question.
+	_, stderr, opened, err = run(refusingReader{t}, map[string]string{"token": "good-token"})
+	if !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "--set account_id=<id>") {
+		t.Errorf("several accounts = %v, want a usage error naming --set account_id", err)
+	}
+	if opened != 0 || strings.Contains(stderr, "Account") {
+		t.Errorf("several accounts: browser opened %d time(s), stderr %q", opened, stderr)
+	}
+	if res, _, _, err := run(refusingReader{t}, map[string]string{"token": "good-token", "account_id": "acc2"}); err != nil || res.Metadata[metaAccountID] != "acc2" {
+		t.Errorf("with --set account_id: %v %+v", err, res)
+	}
+}
+
+// The interactive flow asks which account to use when the token sees several.
+func TestLoginInteractiveChoosesAccount(t *testing.T) {
+	_, srv := newFake(t)
+	p := &provider{baseURL: srv.URL}
+	var stderr bytes.Buffer
+	res, err := p.Login(context.Background(), platform.LoginInput{
+		Interactive: true, NoBrowser: true,
+		Options: map[string]string{"token": "good-token"},
+		Stdin:   strings.NewReader("2\n"), Stdout: &bytes.Buffer{}, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Metadata[metaAccountID] != "acc2" || !strings.Contains(stderr.String(), "Account") {
+		t.Errorf("chosen account: %+v (stderr %q)", res.Metadata, stderr.String())
 	}
 }

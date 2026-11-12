@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 
+	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/platform"
 )
 
@@ -128,6 +130,7 @@ func TestLoginInteractiveAndVerify(t *testing.T) {
 	in := platform.LoginInput{
 		Options:     map[string]string{"base_url": srv.URL},
 		Existing:    map[string]string{"env": "ote"},
+		Interactive: true,
 		Stdin:       strings.NewReader(testToken + "\n"),
 		Stdout:      &stdout,
 		Stderr:      &stderr,
@@ -293,5 +296,53 @@ func TestCommandTree(t *testing.T) {
 	}
 	if c, _, _ := cmd.Find([]string{"domain", "ns", "set"}); c == nil || c.Flags().Lookup("ns") == nil {
 		t.Error("domain ns set lacks --ns")
+	}
+}
+
+// refusingReader fails the test when the login reads stdin.
+type refusingReader struct{ t *testing.T }
+
+func (r refusingReader) Read([]byte) (int, error) {
+	r.t.Error("stdin was read")
+	return 0, io.EOF
+}
+
+// The non-interactive flow asks nothing and reads nothing: a missing
+// credential is a usage error naming its --set key.
+func TestLoginNonInteractiveNeverAsks(t *testing.T) {
+	_, srv := newFake(t, testKey, testSecret)
+	for _, tc := range []struct {
+		name    string
+		opts    map[string]string
+		want    []string
+		wantNot string
+	}{
+		{"no token", map[string]string{}, []string{"--set token=-"}, "--set key"},
+		{"api key pair without values", map[string]string{"method": "api_key"}, []string{"--set key=<api key>", "--set secret=-"}, "--set token"},
+		{"api key without its secret", map[string]string{"key": testKey}, []string{"--set secret=-"}, "--set key="},
+		{"api secret without its key", map[string]string{"secret": testSecret}, []string{"--set key=<api key>"}, "--set secret="},
+	} {
+		tc.opts["base_url"], tc.opts["env"] = srv.URL, "ote"
+		var stderr bytes.Buffer
+		opened := 0
+		_, err := (&provider{}).Login(context.Background(), platform.LoginInput{
+			Options: tc.opts, Stdin: refusingReader{t}, Stdout: &bytes.Buffer{}, Stderr: &stderr,
+			OpenBrowser: func(string) error { opened++; return nil },
+		})
+		if !errors.Is(err, app.ErrUsage) {
+			t.Errorf("%s: %v, want a usage error", tc.name, err)
+			continue
+		}
+		for _, w := range tc.want {
+			if !strings.Contains(err.Error(), w) {
+				t.Errorf("%s: the error does not name %q: %v", tc.name, w, err)
+			}
+		}
+		if strings.Contains(err.Error(), tc.wantNot) {
+			t.Errorf("%s: the error names %q: %v", tc.name, tc.wantNot, err)
+		}
+		if opened != 0 || stderr.Len() != 0 {
+			t.Errorf("%s: browser opened %d time(s), stderr %q; want neither", tc.name, opened, stderr.String())
+		}
 	}
 }
