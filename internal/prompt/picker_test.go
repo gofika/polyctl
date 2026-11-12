@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 )
 
@@ -43,12 +44,28 @@ func TestOrderValues(t *testing.T) {
 	}
 }
 
-func TestListHeight(t *testing.T) {
-	if got := listHeight(3); got != 0 {
-		t.Errorf("a short list must keep its natural height, got %d", got)
+func TestVisibleRows(t *testing.T) {
+	for _, c := range []struct{ n, termRows, headRows, want int }{
+		{3, 24, 1, 3},   // a short list is shown whole
+		{40, 24, 1, 12}, // a long list is capped
+		{40, 14, 2, 9},  // head, options, blank row, hints and cursor row fit 14 rows
+		{10, 10, 1, 6},  // a short terminal makes a short list scroll too
+		{40, 4, 2, 3},   // never fewer than three rows
+		{2, 4, 2, 2},    // nor more rows than options
+	} {
+		if got := visibleRows(c.n, c.termRows, c.headRows); got != c.want {
+			t.Errorf("visibleRows(%d, %d, %d) = %d, want %d", c.n, c.termRows, c.headRows, got, c.want)
+		}
 	}
-	if got := listHeight(40); got <= 0 || got >= 40 {
-		t.Errorf("a long list must be capped, got %d", got)
+}
+
+func TestTextRows(t *testing.T) {
+	const text = "Nothing ticked: press space on a row first."
+	if got := textRows(text, 80); got != 1 {
+		t.Errorf("textRows on 80 columns = %d, want 1", got)
+	}
+	if got := textRows(text, 30); got != 2 {
+		t.Errorf("textRows on 30 columns = %d, want 2", got)
 	}
 }
 
@@ -185,8 +202,12 @@ func TestPickerConfirm(t *testing.T) {
 	}{
 		{[]string{keyEnter}, false, false},
 		{[]string{keyEnter}, true, true},
-		{[]string{"y"}, false, true},
-		{[]string{"n"}, true, false},
+		// y and n select an answer; only Enter confirms it.
+		{[]string{"y", keyEnter}, false, true},
+		{[]string{"n", keyEnter}, true, false},
+		{[]string{"y", "n", keyEnter}, false, false},
+		{[]string{"y", "y", keyEnter}, false, true},
+		{[]string{"N", "Y", keyEnter}, false, true},
 	} {
 		got, err := drive(t, tc.keys, func(p Picker) (bool, error) { return p.Confirm("Sure?", tc.def) })
 		if err != nil || got != tc.want {
@@ -200,6 +221,12 @@ func TestPickerConfirm(t *testing.T) {
 	_, err := drive(t, []string{keyCtrlC}, func(p Picker) (bool, error) { return p.Confirm("Sure?", true) })
 	if !errors.Is(err, ErrAborted) {
 		t.Errorf("ctrl-c = %v, want ErrAborted", err)
+	}
+	// y alone does not finish the prompt, so the Enter that habitually
+	// follows it cannot land in the next prompt.
+	_, err = drive(t, []string{"y", keyCtrlC}, func(p Picker) (bool, error) { return p.Confirm("Sure?", false) })
+	if !errors.Is(err, ErrAborted) {
+		t.Errorf("y then ctrl-c = %v, want ErrAborted: y must not answer the prompt", err)
 	}
 }
 
@@ -334,5 +361,105 @@ func TestSyncFilterHint(t *testing.T) {
 	}
 	if !km.Select.ClearFilter.Enabled() || km.Select.SetFilter.Enabled() || !km.Select.Filter.Enabled() {
 		t.Error("bindings must mirror the state the field is in: filter applied, not being typed")
+	}
+}
+
+// Leaving the filter input without a filter in effect (nothing typed, text
+// deleted again, or no match, which resets the filter) leaves nothing for
+// Esc to clear: the next Esc must end the prompt.
+func TestPickerEscAfterEmptyFilter(t *testing.T) {
+	const keyEsc, keyBackspace = "\x1b", "\x7f"
+	_, err := drive(t, []string{"/", keyEsc, keyEsc}, func(p Picker) (string, error) { return p.Select("Pick", abc, "") })
+	if !errors.Is(err, ErrAborted) {
+		t.Errorf("select: /, esc, esc = %v, want ErrAborted", err)
+	}
+	for _, keys := range [][]string{
+		{"/", keyEsc, keyEsc},
+		{"/", "0", keyBackspace, keyEnter, keyEsc},
+		{"/", "zzz", keyEnter, keyEsc},
+	} {
+		_, err := drive(t, keys, func(p Picker) ([]string, error) { return p.MultiSelect("Pick", abc) })
+		if !errors.Is(err, ErrAborted) {
+			t.Errorf("multi-select: keys %q = %v, want ErrAborted", keys, err)
+		}
+	}
+}
+
+// Enter in a filter that matches nothing is not a submission: the prompt
+// must keep reading keys instead of dropping every later one.
+func TestPickerEnterOnEmptyFilterKeepsPromptAlive(t *testing.T) {
+	const keyEsc, keyBackspace = "\x1b", "\x7f"
+	sel := func(p Picker) (string, error) { return p.Select("Pick", abc, "") }
+	_, err := drive(t, []string{"/", "zzz", keyEnter, keyCtrlC}, sel)
+	if !errors.Is(err, ErrAborted) {
+		t.Errorf("ctrl-c after enter on an empty filter = %v, want ErrAborted", err)
+	}
+	// The first Esc closes the filter input, the next one leaves.
+	_, err = drive(t, []string{"/", "zzz", keyEnter, keyEsc, keyEsc}, sel)
+	if !errors.Is(err, ErrAborted) {
+		t.Errorf("esc, esc after enter on an empty filter = %v, want ErrAborted", err)
+	}
+	got, err := drive(t, []string{"/", "zzz", keyEnter, keyBackspace, keyBackspace, keyBackspace, "be", keyEnter}, sel)
+	if err != nil || got != "b" {
+		t.Errorf("corrected filter then enter = %q, %v; want b", got, err)
+	}
+}
+
+// While the filter matches nothing there is no row to move to. The library
+// would put the cursor before the first row: a multi-select then panics on
+// the next toggle and a select confirms a value that is not highlighted.
+func TestPickerMoveKeysOnEmptyFilter(t *testing.T) {
+	const keyEsc, keyCtrlD, keyBackspace = "\x1b", "\x04", "\x7f"
+	multi := func(p Picker) ([]string, error) { return p.MultiSelect("Pick", abc) }
+	for _, tc := range []struct {
+		keys []string
+		want []string
+	}{
+		{[]string{"/", "zzz", keyDown, keyEnter, " ", keyEnter}, []string{"a"}},
+		{[]string{"/", "zzz", keyCtrlD, keyEsc, keyDown, " ", keyEnter}, []string{"b"}},
+		// With a match the cursor still moves inside the filter input.
+		{[]string{"/", "a", keyDown, keyEnter, " ", keyEnter}, []string{"b"}},
+	} {
+		got, err := drive(t, tc.keys, multi)
+		if err != nil || !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("multi-select keys %q = %v, %v; want %v", tc.keys, got, err, tc.want)
+		}
+	}
+	got, err := drive(t, []string{"/", "zzz", keyUp, keyCtrlD, keyBackspace, keyBackspace, keyBackspace, "ga", keyEnter},
+		func(p Picker) (string, error) { return p.Select("Pick", abc, "") })
+	if err != nil || got != "c" {
+		t.Errorf("select: move keys on an empty filter, then a match = %q, %v; want c", got, err)
+	}
+}
+
+func TestKnownSize(t *testing.T) {
+	for _, c := range []struct{ w, h, wantW, wantH int }{
+		{0, 0, 80, 24},
+		{120, 0, 120, 24},
+		{0, 40, 80, 40},
+		{100, 30, 100, 30},
+	} {
+		got := knownSize(tea.WindowSizeMsg{Width: c.w, Height: c.h})
+		if got.Width != c.wantW || got.Height != c.wantH {
+			t.Errorf("knownSize(%dx%d) = %dx%d, want %dx%d", c.w, c.h, got.Width, got.Height, c.wantW, c.wantH)
+		}
+	}
+}
+
+// Tab must not confirm a multi-select, with a filter applied either: it
+// would skip the check for a ticked row. The prompt stays open until it is
+// left.
+func TestPickerMultiSelectTabDoesNotConfirm(t *testing.T) {
+	const keyEsc = "\x1b"
+	for name, keys := range map[string][]string{
+		"no filter":               {"\t", keyCtrlC},
+		"filter applied by enter": {"/", "a", keyEnter, "\t", keyCtrlC},
+		"filter applied by esc":   {"/", "a", keyEsc, "\t", keyCtrlC},
+		"ticked, filter applied":  {" ", "/", "a", keyEnter, "\t", keyCtrlC},
+	} {
+		got, err := drive(t, keys, func(p Picker) ([]string, error) { return p.MultiSelect("Pick", abc) })
+		if !errors.Is(err, ErrAborted) {
+			t.Errorf("%s: MultiSelect = %v, %v; want ErrAborted", name, got, err)
+		}
 	}
 }

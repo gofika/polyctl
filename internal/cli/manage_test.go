@@ -22,6 +22,13 @@ import (
 // abort is a scripted answer: the user leaves the prompt with Esc or Ctrl-C.
 type abort struct{}
 
+// then is a scripted answer that first runs do, while the prompt is open,
+// and then answers with answer: what happens while the user looks at a menu.
+type then struct {
+	do     func()
+	answer any
+}
+
 // keepDefault is a scripted answer to Input: the user accepts the default.
 type keepDefault struct{}
 
@@ -51,6 +58,10 @@ func (p *scriptedPicker) next(a asked) (any, error) {
 	}
 	v := p.answers[0]
 	p.answers = p.answers[1:]
+	if th, ok := v.(then); ok {
+		th.do()
+		v = th.answer
+	}
 	if _, ok := v.(abort); ok {
 		return nil, prompt.ErrAborted
 	}
@@ -962,7 +973,7 @@ func TestAuthRenameRefusesLegacySecret(t *testing.T) {
 	if code != ExitError {
 		t.Fatalf("rename of a legacy-marked profile: exit %d (stderr %q)", code, stderr)
 	}
-	for _, want := range []string{`profile "old" cannot be renamed yet`, "pre-0.2 layout", `"keyring"`, "auth login " + p1 + " --profile old"} {
+	for _, want := range []string{`profile "old" cannot be renamed yet`, "pre-0.2 layout", `"keyring"`, "make that backend available"} {
 		if !strings.Contains(stderr, want) {
 			t.Errorf("stderr lacks %q: %q", want, stderr)
 		}
@@ -1370,21 +1381,41 @@ func TestAuthLoginOffline(t *testing.T) {
 		unchanged(strings.Join(args, " "))
 	}
 
-	// With the platform picked from the list.
-	_, _, err, _ = runPick(t, cfgPath, []any{p1}, "auth", "login", "--profile", "b", "--offline")
+	// On a terminal without a platform: it fails before the platform list
+	// is shown, not after the questions were answered.
+	_, _, err, p := runPick(t, cfgPath, nil, "auth", "login", "--profile", "b", "--offline")
 	if !errors.Is(err, app.ErrOffline) || ExitCodeFor(err) != ExitOffline {
 		t.Errorf("interactive auth login --offline = %v, want app.ErrOffline", err)
 	}
+	if len(p.asked) != 0 {
+		t.Errorf("auth login --offline asked %v before failing", p.titles())
+	}
 	unchanged("interactive auth login --offline")
 
-	// "Add an account" of the menu: reported, and the menu stays open.
-	stdout, stderr, err, _ := runPick(t, cfgPath, []any{
-		actLogin, p1, "b",
-		actLogin, p1, newProfileValue, "new",
-		actQuit,
-	}, "auth", "manage", "--offline")
+	// A secret option is not read from stdin either.
+	var out, errb bytes.Buffer
+	stdin := strings.NewReader("s3cret\n")
+	code := Main([]string{"--config", cfgPath, "auth", "login", p1, "--profile", "b", "--set", "token=-", "--offline"}, stdin, &out, &errb)
+	if code != ExitOffline || stdin.Len() != len("s3cret\n") || strings.Contains(errb.String(), "token") {
+		t.Errorf("auth login --set token=- --offline: exit %d, %d byte(s) of stdin left (stderr %q)", code, stdin.Len(), errb.String())
+	}
+	unchanged("auth login --set token=- --offline")
+
+	// A wrong platform name is still a usage error.
+	if code, _, _ := mainRun(cfgPath, "auth", "login", "nosuch", "--offline"); code != ExitUsage {
+		t.Errorf("auth login nosuch --offline: exit %d, want %d", code, ExitUsage)
+	}
+
+	// "Add an account" of the menu: reported at once, without asking for a
+	// platform or a profile, and the menu stays open.
+	stdout, stderr, err, p := runPick(t, cfgPath, []any{actLogin, actLogin, actQuit}, "auth", "manage", "--offline")
 	if err != nil || stdout != "" {
 		t.Fatalf("auth manage --offline: %v (stdout %q, stderr %q)", err, stdout, stderr)
+	}
+	for _, a := range p.asked {
+		if a.Title != menuTitle {
+			t.Errorf("auth manage --offline asked %q", a.Title)
+		}
 	}
 	if n := strings.Count(stderr, "error: "+app.ErrOffline.Error()); n != 2 {
 		t.Errorf("%d offline errors reported, want 2: %q", n, stderr)

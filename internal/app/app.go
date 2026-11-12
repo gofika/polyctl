@@ -168,6 +168,23 @@ func (rt *Runtime) Config() (*config.Config, error) {
 	return cfg, nil
 }
 
+// ReloadConfig reads the configuration from disk again, replacing the copy
+// loaded earlier; pointers into the old copy must not be used afterwards.
+// Long-running interactive commands call it before acting, so that changes
+// made by other polyctl processes are seen and not overwritten. When the
+// file cannot be read the earlier copy stays in use and the error is
+// returned.
+func (rt *Runtime) ReloadConfig() (*config.Config, error) {
+	old := rt.cfg
+	rt.cfg = nil
+	cfg, err := rt.Config()
+	if err != nil {
+		rt.cfg = old
+		return nil, err
+	}
+	return cfg, nil
+}
+
 // Creds returns the credential store.
 func (rt *Runtime) Creds() (*creds.Multi, error) {
 	if rt.store != nil {
@@ -204,57 +221,127 @@ func (rt *Runtime) Creds() (*creds.Multi, error) {
 // It is best effort: an account whose secret could not be moved keeps its
 // legacy_secret mark and is still readable through LoadProfile.
 func (rt *Runtime) migrateSecrets(cfg *config.Config, st *creds.Multi) {
-	changed := false
+	pending := false
+	for _, ref := range cfg.Accounts("") {
+		if a := cfg.Profiles[ref.Profile].Platforms[ref.Platform]; a.LegacySecret && st.Has(a.LegacySecretBackend()) {
+			pending = true
+		}
+	}
+	if !pending {
+		// The usual case: no lock is taken and nothing is read again.
+		return
+	}
+	// Several polyctl processes started together would all find the same
+	// work. The lock makes them take turns, and each looks at the files as
+	// the one before it left them.
+	if err := st.Locked(func() error { rt.migrateSecretsLocked(cfg, st); return nil }); err != nil {
+		rt.Verbosef("migrate credentials: %v", err)
+	}
+}
+
+func (rt *Runtime) migrateSecretsLocked(cfg *config.Config, st *creds.Multi) {
+	// What another process finished since this one loaded its config.
+	disk, err := config.Load(cfg.Path())
+	if err != nil {
+		disk = nil
+	}
+	onDisk := func(ref config.AccountRef) *config.Account {
+		if disk == nil {
+			return nil
+		}
+		if p := disk.Profiles[ref.Profile]; p != nil {
+			return p.Platforms[ref.Platform]
+		}
+		return nil
+	}
+	var changed []config.AccountRef
 	for _, ref := range cfg.Accounts("") {
 		a := cfg.Profiles[ref.Profile].Platforms[ref.Platform]
 		if !a.LegacySecret {
 			continue
 		}
-		if !st.Has(a.CredentialBackend) {
-			// The backend that holds the legacy secret is not reachable in
-			// this run (keyring unavailable): nothing can be moved or
-			// removed there, so keep the mark and retry on a later run.
+		if d := onDisk(ref); d != nil && !d.LegacySecret {
+			a.CredentialBackend = d.CredentialBackend
+			a.ClearLegacySecret()
 			continue
 		}
-		key := creds.Key(ref.Profile, string(ref.Platform))
-		_, err := st.Get(key)
-		switch {
-		case err == nil:
-			// Already under the new key (an interrupted migration, or a
-			// token refreshed since): never overwrite it with the old copy.
-		case errors.Is(err, creds.ErrNotFound):
-			secret, err := st.Get(ref.Profile)
-			if err != nil {
-				// Not found here does not prove there is nothing to move:
-				// the secret may sit in a backend this run cannot reach
-				// (keyring unavailable). Keep the mark and try again later.
-				if !errors.Is(err, creds.ErrNotFound) {
-					rt.Verbosef("migrate credentials of %s: %v", ref.Label(), err)
-				}
-				continue
+		if rt.migrateSecret(ref, a, st) {
+			changed = append(changed, ref)
+		}
+	}
+	if len(changed) == 0 {
+		return
+	}
+	err = cfg.Save()
+	if errors.Is(err, config.ErrChanged) && disk != nil {
+		// Another process wrote the config since this one loaded it. Save
+		// the file as it is now with these accounts updated; the older copy
+		// in memory stays as it is and still cannot be saved over the file.
+		for _, ref := range changed {
+			if d := onDisk(ref); d != nil {
+				a := cfg.Profiles[ref.Profile].Platforms[ref.Platform]
+				d.LegacySecret, d.LegacyBackend, d.CredentialBackend = a.LegacySecret, a.LegacyBackend, a.CredentialBackend
 			}
-			if err := st.Set(key, secret); err != nil {
+		}
+		err = disk.Save()
+	}
+	if err != nil {
+		rt.Verbosef("save migrated config: %v", err)
+	}
+}
+
+// migrateSecret moves the secret of one account marked LegacySecret and
+// reports whether the account's config entry changed.
+func (rt *Runtime) migrateSecret(ref config.AccountRef, a *config.Account, st *creds.Multi) (changed bool) {
+	if !st.Has(a.LegacySecretBackend()) {
+		// The backend that holds the legacy secret is not reachable in
+		// this run (keyring unavailable): nothing can be moved or
+		// removed there, so keep the mark and retry on a later run.
+		return false
+	}
+	// record notes where the secret is stored now. It runs after a failed
+	// Set too, which may have written the primary backend before it failed
+	// to remove the copy in another one.
+	key := creds.Key(ref.Profile, string(ref.Platform))
+	record := func() {
+		if b := st.Backend(key); b != "" && b != a.CredentialBackend {
+			a.SetCredentialBackend(b)
+			changed = true
+		}
+	}
+	_, err := st.Get(key)
+	switch {
+	case err == nil:
+		// Already under the new key (an interrupted migration, or a
+		// token refreshed since): never overwrite it with the old copy.
+	case errors.Is(err, creds.ErrNotFound):
+		secret, err := st.Get(ref.Profile)
+		if err != nil {
+			// Not found here does not prove there is nothing to move:
+			// the secret may sit in a backend this run cannot reach
+			// (keyring unavailable). Keep the mark and try again later.
+			if !errors.Is(err, creds.ErrNotFound) {
 				rt.Verbosef("migrate credentials of %s: %v", ref.Label(), err)
-				continue
 			}
-			a.CredentialBackend = st.Name()
-		default:
+			return false
+		}
+		if err := st.Set(key, secret); err != nil {
 			rt.Verbosef("migrate credentials of %s: %v", ref.Label(), err)
-			continue
+			record()
+			return changed
 		}
-		if err := st.Delete(ref.Profile); err != nil && !errors.Is(err, creds.ErrNotFound) {
-			// Keep the mark so the removal is retried on a later run.
-			rt.Verbosef("remove legacy credentials of %s: %v", ref.Label(), err)
-			continue
-		}
-		a.LegacySecret = false
-		changed = true
+	default:
+		rt.Verbosef("migrate credentials of %s: %v", ref.Label(), err)
+		return false
 	}
-	if changed {
-		if err := cfg.Save(); err != nil {
-			rt.Verbosef("save migrated config: %v", err)
-		}
+	record()
+	if err := st.Delete(ref.Profile); err != nil && !errors.Is(err, creds.ErrNotFound) {
+		// Keep the mark so the removal is retried on a later run.
+		rt.Verbosef("remove legacy credentials of %s: %v", ref.Label(), err)
+		return changed
 	}
+	a.ClearLegacySecret()
+	return true
 }
 
 // InventoryPath returns the inventory database path: POLYCTL_INVENTORY_DB
@@ -328,7 +415,30 @@ func (rt *Runtime) LoadProfile(name string, id platform.ID) (platform.Profile, e
 		return platform.Profile{}, err
 	}
 	return platform.Profile{Name: name, Platform: id, Metadata: a.Metadata, Secret: secret,
-		UpdateSecret: func(s map[string]string) error { return st.Set(key, s) }}, nil
+		UpdateSecret: func(s map[string]string) error {
+			if err := st.Set(key, s); err != nil {
+				return err
+			}
+			rt.recordBackend(cfg, a, st.Name())
+			return nil
+		}}, nil
+}
+
+// recordBackend notes in the config that an account's secret was written to
+// another backend than the recorded one (a token refreshed after the keyring
+// became available moves from the file to the keyring). Commands rely on the
+// record to tell whether the secret is within reach. A failure to save is
+// not an error of the write that led here.
+func (rt *Runtime) recordBackend(cfg *config.Config, a *config.Account, backend string) {
+	if a.CredentialBackend == backend {
+		return
+	}
+	prev, prevLegacy := a.CredentialBackend, a.LegacyBackend
+	a.SetCredentialBackend(backend)
+	if err := cfg.Save(); err != nil {
+		a.CredentialBackend, a.LegacyBackend = prev, prevLegacy
+		rt.Verbosef("record the credential backend: %v", err)
+	}
 }
 
 // ProfileFor picks the profile to use for a platform:

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -18,7 +19,8 @@ func newSyncCmd(rt *app.Runtime) *cobra.Command {
 		Short: "Fetch resources from the platforms into the local inventory",
 		Long: `Fetch resources of every account of every profile (or those selected with
 --profile / --platform) and replace them in the local inventory. Resource types default to
-everything the platform supports; narrow with --type.`,
+everything the platform supports; narrow with --type. A selection that names no
+account is a not-found error (exit code 4).`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if rt.Flags.Offline {
@@ -46,10 +48,12 @@ everything the platform supports; narrow with --type.`,
 			}
 			var reports []app.SyncReport
 			var firstErr error
+			matched := 0
 			for _, ref := range refs {
 				if len(want) > 0 && !want[ref.Platform] {
 					continue
 				}
+				matched++
 				reps, err := rt.SyncAccount(cmd.Context(), ref, rts)
 				reports = append(reports, reps...)
 				if err != nil {
@@ -59,8 +63,11 @@ everything the platform supports; narrow with --type.`,
 					}
 				}
 			}
+			if matched == 0 {
+				return errNoSyncAccount(rt.Flags.Profile, platforms)
+			}
 			if len(reports) == 0 && firstErr == nil {
-				return fmt.Errorf("nothing to sync (no matching accounts)")
+				return fmt.Errorf("nothing to sync: no selected account supports the requested resource types")
 			}
 			return renderSyncReports(rt, reports, firstErr)
 		},
@@ -70,6 +77,23 @@ everything the platform supports; narrow with --type.`,
 	_ = cmd.RegisterFlagCompletionFunc("platform", completePlatforms)
 	_ = cmd.RegisterFlagCompletionFunc("type", cobra.FixedCompletions([]string{"domain", "zone", "dns_record", "instance"}, cobra.ShellCompDirectiveNoFileComp))
 	return cmd
+}
+
+// errNoSyncAccount says that the selection of `sync` names no account. It is
+// a not-found error, like the other commands' answer to a profile without an
+// account on the requested platform.
+func errNoSyncAccount(profile string, platforms []string) error {
+	on := ""
+	if len(platforms) > 0 {
+		on = " on " + strings.Join(platforms, ", ")
+	}
+	switch {
+	case profile != "":
+		return fmt.Errorf("%w: profile %q has no account%s; nothing to sync (run `polyctl auth list`)", platform.ErrNotFound, profile, on)
+	case on != "":
+		return fmt.Errorf("%w: no account%s is configured; nothing to sync (run `polyctl auth list`)", platform.ErrNotFound, on)
+	}
+	return fmt.Errorf("%w: no accounts configured; nothing to sync (run `polyctl auth login <platform>`)", platform.ErrNotFound)
 }
 
 // renderSyncReports prints the reports and returns firstErr, or an error

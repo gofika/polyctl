@@ -628,8 +628,20 @@ func TestSyncSelectsAccounts(t *testing.T) {
 	if _, _, err := run(t, cfgPath, "sync", "--profile", "nope"); ExitCodeFor(err) != ExitNotFound {
 		t.Errorf("sync --profile nope = %v (exit %d)", err, ExitCodeFor(err))
 	}
-	if _, _, err := run(t, cfgPath, "sync", "--profile", "b", "--platform", p1); err == nil || !strings.Contains(err.Error(), "nothing to sync") {
-		t.Errorf("sync of an account that does not exist = %v", err)
+	// A selection that names no account is a not-found error, like every
+	// other command's answer to a profile without the requested account.
+	_, _, err := run(t, cfgPath, "sync", "--profile", "b", "--platform", p1)
+	if ExitCodeFor(err) != ExitNotFound || !strings.Contains(err.Error(), `profile "b" has no account on `+p1) || !strings.Contains(err.Error(), "nothing to sync") {
+		t.Errorf("sync of an account that does not exist = %v (exit %d)", err, ExitCodeFor(err))
+	}
+	_, _, err = run(t, cfgPath, "sync", "--platform", "aws")
+	if ExitCodeFor(err) != ExitNotFound || !strings.Contains(err.Error(), "no account on aws is configured") {
+		t.Errorf("sync of a platform without accounts = %v (exit %d)", err, ExitCodeFor(err))
+	}
+	// Accounts that exist but cannot hold the requested type are not that.
+	_, _, err = run(t, cfgPath, "sync", "--profile", "b", "--type", "instance")
+	if err == nil || ExitCodeFor(err) != ExitError || !strings.Contains(err.Error(), "nothing to sync") {
+		t.Errorf("sync of a type no selected account supports = %v (exit %d)", err, ExitCodeFor(err))
 	}
 
 	// domain index follows the same selection.

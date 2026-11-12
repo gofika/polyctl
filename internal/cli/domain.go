@@ -79,6 +79,17 @@ func newDomainInfoCmd(rt *app.Runtime) *cobra.Command {
 		ValidArgsFunction: completeDomains(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			info := domainInfo{Domain: platform.NormalizeDomain(args[0]), Cached: true}
+			if rt.Flags.Profile != "" || rt.Flags.Platform != "" {
+				// A selection that names no account is reported as such
+				// and not as a domain missing from the index.
+				names, err := rt.DomainAccounts()
+				if err != nil {
+					return err
+				}
+				if len(names) == 0 {
+					return fmt.Errorf("%w: no domain-capable account matches --profile / --platform", platform.ErrNotFound)
+				}
+			}
 			var errs []error
 			if t, err := rt.ResolveDomain(cmd.Context(), args[0], platform.ResDomain); err == nil {
 				info.Registrar = t
@@ -332,14 +343,22 @@ func newDomainListCmd(rt *app.Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if rt.Flags.Refresh {
+			filtered := rt.Flags.Profile != "" || only != ""
+			if filtered || rt.Flags.Refresh {
+				// A selection that names no account is an error, as it is
+				// for `domain index`, and not an empty index.
 				names, err := rt.DomainAccounts()
 				if err != nil {
 					return err
 				}
-				for _, n := range names {
-					if _, err := rt.SyncAccount(cmd.Context(), n, []platform.ResourceType{platform.ResZone, platform.ResDomain}); err != nil {
-						rt.Infof("warning: %s: %v", n.Label(), err)
+				if filtered && len(names) == 0 {
+					return fmt.Errorf("%w: no domain-capable account matches --profile / --platform", platform.ErrNotFound)
+				}
+				if rt.Flags.Refresh {
+					for _, n := range names {
+						if _, err := rt.SyncAccount(cmd.Context(), n, []platform.ResourceType{platform.ResZone, platform.ResDomain}); err != nil {
+							rt.Infof("warning: %s: %v", n.Label(), err)
+						}
 					}
 				}
 			}
@@ -347,7 +366,9 @@ func newDomainListCmd(rt *app.Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if rt.Flags.Profile != "" || only != "" {
+			empty := "index is empty; run `polyctl domain index`"
+			if filtered {
+				empty = "no indexed domain or zone matches --profile / --platform; run `polyctl domain index`"
 				var f []inventory.IndexEntry
 				for _, e := range entries {
 					if (rt.Flags.Profile == "" || e.Profile == rt.Flags.Profile) && (only == "" || e.Platform == only) {
@@ -357,7 +378,7 @@ func newDomainListCmd(rt *app.Runtime) *cobra.Command {
 				entries = f
 			}
 			return rt.Render(entries, func() output.Grid {
-				g := output.Grid{Headers: []string{"DOMAIN", "KIND", "PLATFORM", "PROFILE", "RESOURCE ID"}, Empty: "index is empty; run `polyctl domain index`"}
+				g := output.Grid{Headers: []string{"DOMAIN", "KIND", "PLATFORM", "PROFILE", "RESOURCE ID"}, Empty: empty}
 				for _, e := range entries {
 					g.Rows = append(g.Rows, []string{e.Domain, string(e.Type), string(e.Platform), e.Profile, e.ResourceID})
 				}

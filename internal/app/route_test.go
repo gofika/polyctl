@@ -257,6 +257,35 @@ func TestResolveDomainOfflineUnknown(t *testing.T) {
 	}
 }
 
+// Offline, a selection that names no account must be reported as such, the
+// way it is online, and not as a gap in the index that indexing would fix.
+func TestResolveDomainOfflineChecksTheSelection(t *testing.T) {
+	seeded := func(flags app.Flags) *harness {
+		flags.Offline = true
+		h := newHarness(t, flags, nil)
+		h.seedZones("a", zone("z1", "example.com"))
+		return h
+	}
+	_, err := seeded(app.Flags{Profile: "nope"}).rt.ResolveDomain(ctx, "www.example.com", platform.ResZone)
+	if !errors.Is(err, platform.ErrNotFound) || !strings.Contains(err.Error(), `profile "nope" not found`) {
+		t.Errorf("unknown --profile offline = %v, want the profile reported as not found", err)
+	}
+	// Profile a has a name.com account only.
+	_, err = seeded(app.Flags{Profile: "a", Platform: "godaddy"}).rt.ResolveDomain(ctx, "www.example.com", platform.ResZone)
+	if !errors.Is(err, app.ErrDomainUnknown) || !strings.Contains(err.Error(), "no account selected by --profile / --platform") || strings.Contains(err.Error(), "domain index") {
+		t.Errorf("--profile / --platform without an account offline = %v", err)
+	}
+	// A valid selection that simply misses still points at the index.
+	_, err = seeded(app.Flags{Profile: "b"}).rt.ResolveDomain(ctx, "www.example.com", platform.ResZone)
+	if !errors.Is(err, app.ErrDomainUnknown) || !strings.Contains(err.Error(), "run `polyctl domain index` when online") {
+		t.Errorf("valid selection, miss offline = %v", err)
+	}
+	// And one that hits resolves.
+	if tgt, err := seeded(app.Flags{Profile: "a", Platform: "namecom"}).rt.ResolveDomain(ctx, "www.example.com", platform.ResZone); err != nil || tgt.Profile != "a" {
+		t.Errorf("valid selection, hit offline = %+v, %v", tgt, err)
+	}
+}
+
 func TestResolveDomainAutoIndexesWhenIndexMissing(t *testing.T) {
 	h := newHarness(t, app.Flags{}, nil)
 	h.client("a").zones = []platform.Zone{zone("z1", "example.com")}

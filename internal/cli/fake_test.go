@@ -25,6 +25,9 @@ var (
 	fakeClients  = map[string]*fakeClient{}
 	// fakeLogins counts the calls of the fake providers' Login.
 	fakeLogins int
+	// fakeLoginHook, when set, runs inside Login: what another polyctl
+	// process does while a login flow is waiting for the user.
+	fakeLoginHook func()
 )
 
 func registerFake() {
@@ -39,6 +42,7 @@ func resetFake() {
 	defer fakeMu.Unlock()
 	fakeClients = map[string]*fakeClient{}
 	fakeLogins = 0
+	fakeLoginHook = nil
 }
 
 // loginCalls returns how often a fake provider's Login ran since the last
@@ -84,7 +88,11 @@ func (*fakeProvider) ResourceTypes() []platform.ResourceType {
 func (p *fakeProvider) Login(ctx context.Context, in platform.LoginInput) (*platform.LoginResult, error) {
 	fakeMu.Lock()
 	fakeLogins++
+	hook := fakeLoginHook
 	fakeMu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	token := in.Options["token"]
 	if token == "" {
 		token = "fake"

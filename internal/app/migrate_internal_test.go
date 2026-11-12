@@ -310,3 +310,94 @@ func TestMigrateSecretsSkipsUnreachableBackend(t *testing.T) {
 		t.Fatal("the mark must survive: the legacy entry in the other backend was not removed")
 	}
 }
+
+// namedStore gives a store another backend name.
+type namedStore struct {
+	creds.Store
+	name string
+}
+
+func (n namedStore) Name() string { return n.name }
+
+func (e *migrateEnv) accountOnDisk() *config.Account {
+	e.t.Helper()
+	disk, err := config.Load(e.cfgPath)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	a, err := disk.Account("old", platform.NameCom)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return a
+}
+
+// Multi.Set writes the primary backend first and then removes the copy in
+// the others. When that removal fails the secret has moved all the same, and
+// the config must say where it is now.
+func TestMigrateSecretsRecordsBackendAfterPartialSet(t *testing.T) {
+	e := newMigrateEnv(t)
+	setToken(t, e.secondary, "old", "legacy")
+	sticky := &stickyStore{File: e.secondary, deleteErr: errors.New("read-only")}
+	st := &creds.Multi{Primary: namedStore{e.primary, "keyring"}, Others: []creds.Store{sticky}}
+
+	e.rt.migrateSecrets(e.cfg, st)
+
+	if tokenIn(t, e.primary, newKey) != "legacy" || tokenIn(t, e.secondary, "old") != "legacy" {
+		t.Fatalf("new key %q, legacy copy %q", tokenIn(t, e.primary, newKey), tokenIn(t, e.secondary, "old"))
+	}
+	for where, a := range map[string]*config.Account{"memory": e.account(), "disk": e.accountOnDisk()} {
+		if a.CredentialBackend != "keyring" || !a.LegacySecret || a.LegacySecretBackend() != "file" {
+			t.Errorf("%s: backend %q, marked %v, legacy backend %q; want keyring, true, file", where, a.CredentialBackend, a.LegacySecret, a.LegacySecretBackend())
+		}
+	}
+
+	// The next run removes the legacy copy and drops the mark.
+	sticky.deleteErr = nil
+	e.rt.migrateSecrets(e.cfg, st)
+	for where, a := range map[string]*config.Account{"memory": e.account(), "disk": e.accountOnDisk()} {
+		if a.CredentialBackend != "keyring" || a.LegacySecret || a.LegacyBackend != "" {
+			t.Errorf("%s after the retry: %+v", where, a)
+		}
+	}
+	if tokenIn(t, e.secondary, "old") != "" || tokenIn(t, e.primary, newKey) != "legacy" {
+		t.Error("the legacy copy must be gone and the secret kept")
+	}
+}
+
+// An account logged in again while the backend of its legacy entry was out
+// of reach has its secret in one backend and the old entry in another. The
+// mark must survive every run that cannot reach the old backend, and the run
+// that can removes the entry.
+func TestMigrateSecretsLegacyEntryInAnotherBackend(t *testing.T) {
+	e := newMigrateEnv(t)
+	a := e.account()
+	a.CredentialBackend = "keyring"
+	a.SetCredentialBackend("file") // what a new login on a file-only store records
+	if a.LegacyBackend != "keyring" {
+		t.Fatalf("LegacyBackend = %q, want keyring", a.LegacyBackend)
+	}
+	if err := e.cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	setToken(t, e.primary, newKey, "new")
+
+	e.rt.migrateSecrets(e.cfg, &creds.Multi{Primary: e.primary})
+	if d := e.accountOnDisk(); !a.LegacySecret || !d.LegacySecret || d.LegacyBackend != "keyring" || d.CredentialBackend != "file" {
+		t.Fatalf("after a run without the keyring: memory %+v, disk %+v", a, d)
+	}
+
+	// The keyring is back and still holds the bare-name entry.
+	setToken(t, e.secondary, "old", "legacy")
+	st := &creds.Multi{Primary: namedStore{e.secondary, "keyring"}, Others: []creds.Store{e.primary}}
+	e.rt.migrateSecrets(e.cfg, st)
+	if tokenIn(t, e.secondary, "old") != "" {
+		t.Error("the legacy entry must be removed from the backend that holds it")
+	}
+	if tokenIn(t, e.primary, newKey) != "new" {
+		t.Error("the current secret must be left alone")
+	}
+	if d := e.accountOnDisk(); a.LegacySecret || d.LegacySecret || d.LegacyBackend != "" || d.CredentialBackend != "file" {
+		t.Errorf("after the run with the keyring: memory %+v, disk %+v", a, d)
+	}
+}

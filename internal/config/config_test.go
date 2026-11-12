@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -332,6 +333,46 @@ func TestLoadRejectsLegacyAndCurrentKeysTogether(t *testing.T) {
 	}
 }
 
+// A hand-edited profile that mixes the two layouts in a way that cannot be
+// converted must not load with a part of it silently dropped.
+func TestLoadRejectsHalfLegacyProfiles(t *testing.T) {
+	cases := map[string]struct{ body, want string }{
+		"null platform with metadata":  {"profiles:\n  p:\n    platform:\n    metadata:\n      email: me@example.com\n", "platform (legacy layout) is empty"},
+		"null platform alone":          {"profiles:\n  p:\n    platform:\n", "platform (legacy layout) is empty"},
+		"empty platform":               {"profiles:\n  p:\n    platform: \"\"\n", "platform (legacy layout) is empty"},
+		"null platform and platforms":  {"profiles:\n  p:\n    platform:\n    platforms:\n      godaddy: {}\n", "both platform (legacy layout) and platforms are set"},
+		"platform and null platforms":  {"profiles:\n  p:\n    platform: cloudflare\n    platforms:\n", "both platform (legacy layout) and platforms are set"},
+		"both null":                    {"profiles:\n  p:\n    platform:\n    platforms:\n", "both platform (legacy layout) and platforms are set"},
+		"metadata without platform":    {"profiles:\n  p:\n    metadata:\n      email: me@example.com\n", "metadata is set on the profile itself"},
+		"metadata next to platforms":   {"profiles:\n  p:\n    metadata:\n      email: me@example.com\n    platforms:\n      aws: {}\n", "metadata is set on the profile itself"},
+		"backend without platform":     {"profiles:\n  p:\n    credential_backend: keyring\n", "credential_backend is set on the profile itself"},
+		"timestamps next to platforms": {"profiles:\n  p:\n    platforms:\n      aws: {}\n    updated_at: 2026-01-02T03:04:05Z\n", "updated_at is set on the profile itself"},
+		// Keys that arrive through a merge key count like written ones.
+		"merged platform and platforms": {"base: &b\n  platform: aws\nprofiles:\n  p:\n    <<: *b\n    platforms: {}\n", "both platform (legacy layout) and platforms are set"},
+		"merged platforms and platform": {"base: &b\n  platforms:\n    aws: {}\nprofiles:\n  p:\n    <<: *b\n    platform: godaddy\n", "both platform (legacy layout) and platforms are set"},
+		"merge list with platform":      {"one: &one\n  platform: aws\ntwo: &two\n  platforms: {}\nprofiles:\n  p:\n    <<: [*two, *one]\n", "both platform (legacy layout) and platforms are set"},
+		"inline merged metadata":        {"profiles:\n  p:\n    <<: {metadata: {email: me@example.com}}\n    platforms:\n      aws: {}\n", "metadata is set on the profile itself"},
+		"aliased profile with both":     {"base: &b\n  platform: aws\n  platforms: {}\nprofiles:\n  p: *b\n", "both platform (legacy layout) and platforms are set"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := writeConfig(t, tc.body)
+			cfg, err := config.Load(path)
+			if err == nil {
+				t.Fatalf("Load = %+v, want an error", cfg.Profiles["p"])
+			}
+			for _, want := range []string{"parse " + path, tc.want} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error lacks %q: %v", want, err)
+				}
+			}
+			if raw, _ := os.ReadFile(path); string(raw) != tc.body {
+				t.Error("a rejected config must be left untouched")
+			}
+		})
+	}
+}
+
 func TestLoadEmptyProfileMapping(t *testing.T) {
 	bodies := map[string]string{
 		"null":            "profiles:\n  empty:\n",
@@ -582,5 +623,126 @@ func TestDirHonoursEnvOverride(t *testing.T) {
 	}
 	if p != filepath.Join(dir, "config.yaml") {
 		t.Fatalf("DefaultPath() = %q", p)
+	}
+}
+
+// Save must not write a copy of the config over changes made to the file
+// after that copy was loaded.
+func TestSaveRefusesToOverwriteLaterChanges(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	first, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Another process creates the file while this copy still thinks there
+	// is none.
+	other, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other.Profiles["theirs"] = &config.Profile{Platforms: map[platform.ID]*config.Account{platform.AWS: {}}}
+	if err := other.Save(); err != nil {
+		t.Fatal(err)
+	}
+	first.CurrentProfile = "mine"
+	if err := first.Save(); !errors.Is(err, config.ErrChanged) || !strings.Contains(err.Error(), path) {
+		t.Fatalf("Save over a file created meanwhile = %v, want ErrChanged naming the file", err)
+	}
+
+	// The same once the file exists: a copy loaded before a later write.
+	stale, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other.CurrentProfile = "theirs"
+	if err := other.Save(); err != nil {
+		t.Fatalf("a copy may be saved again and again: %v", err)
+	}
+	want, _ := os.ReadFile(path)
+	stale.Profiles["mine"] = &config.Profile{Platforms: map[platform.ID]*config.Account{}}
+	if err := stale.Save(); !errors.Is(err, config.ErrChanged) {
+		t.Fatalf("Save of a stale copy = %v, want ErrChanged", err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != string(want) {
+		t.Errorf("a refused save changed the file:\n%s", got)
+	}
+	entries, _ := os.ReadDir(filepath.Dir(path))
+	if len(entries) != 1 {
+		t.Errorf("a refused save left files behind: %v", entries)
+	}
+
+	// A fresh load can be saved, and a file removed meanwhile counts as a
+	// change too.
+	fresh, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fresh.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := fresh.Save(); !errors.Is(err, config.ErrChanged) {
+		t.Errorf("Save after the file was removed = %v, want ErrChanged", err)
+	}
+}
+
+func TestLegacySecretBackend(t *testing.T) {
+	a := &config.Account{CredentialBackend: "keyring", LegacySecret: true}
+	if got := a.LegacySecretBackend(); got != "keyring" {
+		t.Errorf("LegacySecretBackend = %q, want the credential backend", got)
+	}
+	// The secret is stored again elsewhere: the old entry stays on record.
+	a.SetCredentialBackend("file")
+	a.SetCredentialBackend("file")
+	if a.CredentialBackend != "file" || a.LegacyBackend != "keyring" || a.LegacySecretBackend() != "keyring" {
+		t.Errorf("after storing in the file: %+v", a)
+	}
+	a.ClearLegacySecret()
+	if a.LegacySecret || a.LegacyBackend != "" || a.CredentialBackend != "file" {
+		t.Errorf("after clearing the mark: %+v", a)
+	}
+	// Without the mark there is nothing to remember.
+	b := &config.Account{CredentialBackend: "file"}
+	b.SetCredentialBackend("keyring")
+	if b.LegacyBackend != "" || b.CredentialBackend != "keyring" {
+		t.Errorf("unmarked account: %+v", b)
+	}
+	// The record survives a save.
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Profiles["p"] = &config.Profile{Platforms: map[platform.ID]*config.Account{
+		platform.AWS: {CredentialBackend: "file", LegacySecret: true, LegacyBackend: "keyring"},
+	}}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	again, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := again.Account("p", platform.AWS); got == nil || got.LegacySecretBackend() != "keyring" || got.CredentialBackend != "file" || !got.LegacySecret {
+		t.Errorf("reloaded account = %+v", got)
+	}
+}
+
+// A legacy profile whose keys all come from a merge key is converted like
+// one that has them written out.
+func TestLoadLegacyProfileThroughMergeKey(t *testing.T) {
+	path := writeConfig(t, "base: &b\n  platform: aws\n  credential_backend: file\nprofiles:\n  p:\n    <<: *b\n")
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	a, err := cfg.Account("p", platform.AWS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !a.LegacySecret || a.CredentialBackend != "file" {
+		t.Errorf("account = %+v, want the merged legacy account", a)
 	}
 }

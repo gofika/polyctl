@@ -149,7 +149,7 @@ func removeInteractive(ctx context.Context, rt *app.Runtime, only platform.ID, k
 		for _, n := range cfg.ProfileNames() {
 			if len(cfg.Profiles[n].Platforms) == 0 {
 				emptyProfiles[n+"/"] = n
-				opts = append(opts, prompt.Option{Label: n + " / (no accounts)", Value: n + "/"})
+				opts = append(opts, prompt.Option{Label: n + " / " + noAccounts, Value: n + "/"})
 			}
 		}
 	}
@@ -299,8 +299,8 @@ func renameProfile(ctx context.Context, rt *app.Runtime, oldName, newName string
 	ids := prof.PlatformIDs()
 	for _, id := range ids {
 		if a := prof.Platforms[id]; a.LegacySecret {
-			return fmt.Errorf("profile %q cannot be renamed yet: its %s credentials are still stored in the pre-0.2 layout and could not be moved (credential backend %q); make that backend available, or run `polyctl auth login %s --profile %s` again, then retry",
-				oldName, id, a.CredentialBackend, id, oldName)
+			return fmt.Errorf("profile %q cannot be renamed yet: an entry for its %s credentials is still stored in the pre-0.2 layout and could not be moved or removed (credential backend %q); make that backend available, then retry",
+				oldName, id, a.LegacySecretBackend())
 		}
 		if a := prof.Platforms[id]; !store.Has(a.CredentialBackend) {
 			// Its secret cannot be read or moved now; renaming would
@@ -406,8 +406,11 @@ func newAuthManageCmd(rt *app.Runtime) *cobra.Command {
 		Short: "Manage profiles and accounts in an interactive menu",
 		Long: "Open an interactive menu to view, add, verify, rename and remove profiles\n" +
 			"and their accounts. Arrow keys (or j/k) move, space toggles in a multiple\n" +
-			"choice, \"/\" filters a list, enter confirms, Esc or Ctrl-C goes back (and\n" +
-			"leaves the menu from its top level).\n\n" +
+			"choice, \"/\" filters a list, enter confirms (in a yes/no question y and n\n" +
+			"select the answer, enter confirms it), Esc or Ctrl-C goes back (and leaves\n" +
+			"the menu from its top level).\n\n" +
+			"The configuration is read again before every action, so changes made by\n" +
+			"other polyctl commands while the menu is open are kept.\n\n" +
 			"The menu is drawn on stderr and needs a terminal on stdin and stderr. In\n" +
 			"scripts use auth list, auth use, auth login, auth status, auth rename and\n" +
 			"auth logout instead.",
@@ -449,13 +452,22 @@ func runManage(ctx context.Context, rt *app.Runtime) error {
 			return removeInteractive(ctx, rt, "", keepUnset)
 		},
 	}
-	for {
+	for first := true; ; first = false {
 		if err := ctx.Err(); err != nil {
 			return nil
 		}
-		cfg, err := rt.Config()
+		// The menu stays open for as long as the user likes, and other
+		// polyctl processes may change the config meanwhile: every round
+		// starts from the file, never from the copy loaded at startup.
+		cfg, err := rt.ReloadConfig()
 		if err != nil {
-			return err
+			if first {
+				return err
+			}
+			rt.Infof("error: %v", err)
+			if cfg, err = rt.Config(); err != nil {
+				return err
+			}
 		}
 		fmt.Fprintln(rt.Stderr)
 		if err := output.RenderGrid(rt.Stderr, profileGrid(profileRows(cfg))); err != nil {
@@ -491,6 +503,11 @@ func runManage(ctx context.Context, rt *app.Runtime) error {
 		run, ok := actions[action]
 		if !ok {
 			return fmt.Errorf("unknown menu action %q", action)
+		}
+		// Again after the choice: the menu may have been waiting for long.
+		if _, err := rt.ReloadConfig(); err != nil {
+			rt.Infof("error: %v", err)
+			continue
 		}
 		if err := run(ctx, rt); err != nil && !errors.Is(err, prompt.ErrAborted) {
 			rt.Infof("error: %v", err)
@@ -608,6 +625,9 @@ func manageUse(ctx context.Context, rt *app.Runtime) error {
 // manageLogin asks for a platform and a target profile (an existing one or a
 // new name) and runs the login flow of `auth login`.
 func manageLogin(ctx context.Context, rt *app.Runtime) error {
+	if rt.Flags.Offline {
+		return app.ErrOffline // before asking for anything
+	}
 	id, err := pickPlatform(rt)
 	if err != nil {
 		return err

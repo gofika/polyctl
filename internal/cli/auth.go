@@ -56,8 +56,9 @@ func newAuthLoginCmd(rt *app.Runtime) *cobra.Command {
 			"(or a 0600 file when no keyring is available).\n\n" +
 			"A profile holds one account per platform, so a single profile can cover every\n" +
 			"platform a project uses. The account is added to --profile, or to the current\n" +
-			"profile, or to a profile named \"default\" when no profile is current. When the\n" +
-			"platform is already configured in another profile only, --profile is required.\n\n" +
+			"profile, or to a profile named \"default\" when no profile is current (or the\n" +
+			"current one no longer exists). When the platform is already configured in\n" +
+			"another profile only, --profile is required.\n\n" +
 			"On a terminal the platform may be left out: it is then chosen from a list.\n\nLogin flows:\n" + loginHelp() +
 			"\nPlatform-specific options are passed with --set key=value (see each platform's\n" +
 			"section in the README). A secret option (token, key, secret, client_secret, ...)\n" +
@@ -67,12 +68,20 @@ func newAuthLoginCmd(rt *app.Runtime) *cobra.Command {
 		RunE: quietAbort(rt, func(cmd *cobra.Command, args []string) error {
 			var id platform.ID
 			var err error
+			if len(args) == 1 {
+				if id, err = platform.Parse(args[0]); err != nil {
+					return usageErr("%v", err)
+				}
+			}
+			if rt.Flags.Offline {
+				// Every login flow verifies against the platform: fail
+				// before asking for anything or reading a secret.
+				return app.ErrOffline
+			}
 			if len(args) == 0 {
 				if id, err = pickPlatform(rt); err != nil {
 					return err
 				}
-			} else if id, err = platform.Parse(args[0]); err != nil {
-				return usageErr("%v", err)
 			}
 			prov, err := platform.Get(id)
 			if err != nil {
@@ -85,6 +94,12 @@ func newAuthLoginCmd(rt *app.Runtime) *cobra.Command {
 			name := rt.Flags.Profile
 			if name == "" {
 				name = cfg.CurrentProfile
+				if _, ok := cfg.Profiles[name]; name != "" && !ok {
+					// A stale current_profile (hand-edited config) must not
+					// quietly bring a profile of that name into being.
+					rt.Infof("note: the current profile %q does not exist; using profile %q", name, config.DefaultProfile)
+					name = ""
+				}
 			}
 			if name == "" {
 				name = config.DefaultProfile
@@ -168,6 +183,18 @@ func loginAccount(ctx context.Context, rt *app.Runtime, prov platform.Provider, 
 	if err != nil {
 		return err
 	}
+	// The login flow can take minutes (browser, device code). Work on the
+	// config as it is now, so that what another polyctl process saved in
+	// the meantime is kept and the save below is not refused as stale.
+	if fresh, err := rt.ReloadConfig(); err == nil {
+		cfg = fresh
+		prof, acct = cfg.Profiles[name], nil
+		if prof != nil {
+			acct = prof.Platforms[id]
+		}
+	} else {
+		rt.Verbosef("reload config: %v", err)
+	}
 	key := creds.Key(name, string(id))
 	isNew := acct == nil
 	if err := store.Set(key, res.Secret); err != nil {
@@ -178,8 +205,15 @@ func loginAccount(ctx context.Context, rt *app.Runtime, prov platform.Provider, 
 		}
 		return fmt.Errorf("store credentials: %w", err)
 	}
+	// What a failed save puts back, so that the config in memory keeps
+	// matching the file: a later save must not write this login after all.
+	newProfile, prevCurrent := prof == nil, cfg.CurrentProfile
+	var before config.Account
+	if !isNew {
+		before = *acct
+	}
 	now := time.Now()
-	if prof == nil {
+	if newProfile {
 		prof = &config.Profile{Platforms: map[platform.ID]*config.Account{}}
 		cfg.Profiles[name] = prof
 	}
@@ -187,20 +221,23 @@ func loginAccount(ctx context.Context, rt *app.Runtime, prov platform.Provider, 
 		acct = &config.Account{CreatedAt: now}
 		prof.Platforms[id] = acct
 	}
-	if acct.LegacySecret && store.Has(acct.CredentialBackend) {
+	if acct.LegacySecret && store.Has(acct.LegacySecretBackend()) {
 		// The secret now lives under the profile/platform key. When
 		// the backend holding the old entry is out of reach, or the
 		// removal fails, the mark stays and a later run cleans up.
 		if err := store.Delete(name); err != nil && !errors.Is(err, creds.ErrNotFound) {
 			rt.Verbosef("remove legacy credentials of profile %q: %v", name, err)
 		} else {
-			acct.LegacySecret = false
+			acct.ClearLegacySecret()
 		}
 	}
 	acct.Metadata = res.Metadata
-	acct.CredentialBackend = store.Name()
+	// While the mark stays, this keeps the backend of the old entry on
+	// record: it is the one that has to be within reach to clean up.
+	acct.SetCredentialBackend(store.Name())
 	acct.UpdatedAt = now
-	if cfg.CurrentProfile == "" {
+	if _, ok := cfg.Profiles[cfg.CurrentProfile]; !ok {
+		// No current profile, or one that does not exist.
 		cfg.CurrentProfile = name
 	}
 	if err := cfg.Save(); err != nil {
@@ -211,7 +248,14 @@ func loginAccount(ctx context.Context, rt *app.Runtime, prov platform.Provider, 
 			if derr := store.Delete(key); derr == nil {
 				kept = "removed"
 			}
+			delete(prof.Platforms, id)
+			if newProfile {
+				delete(cfg.Profiles, name)
+			}
+		} else {
+			*acct = before
 		}
+		cfg.CurrentProfile = prevCurrent
 		return fmt.Errorf("save config: %w (stored %s credentials for profile %q were %s)", err, id, name, kept)
 	}
 	label := res.Label
@@ -222,20 +266,35 @@ func loginAccount(ctx context.Context, rt *app.Runtime, prov platform.Provider, 
 	return nil
 }
 
+// profileRow is one row of `auth list`: an account, or a profile without
+// accounts, which has no platform.
 type profileRow struct {
 	Name      string            `json:"name" yaml:"name"`
-	Platform  platform.ID       `json:"platform" yaml:"platform"`
+	Platform  platform.ID       `json:"platform,omitempty" yaml:"platform,omitempty"`
 	Current   bool              `json:"current" yaml:"current"`
 	Backend   string            `json:"credential_backend,omitempty" yaml:"credential_backend,omitempty"`
 	Metadata  map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
-	UpdatedAt time.Time         `json:"updated_at" yaml:"updated_at"`
+	UpdatedAt *time.Time        `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
 }
+
+// noAccounts stands in for the account of a profile that has none.
+const noAccounts = "(no accounts)"
 
 func profileRows(cfg *config.Config) []profileRow {
 	var rows []profileRow
-	for _, ref := range cfg.Accounts("") {
-		a := cfg.Profiles[ref.Profile].Platforms[ref.Platform]
-		rows = append(rows, profileRow{Name: ref.Profile, Platform: ref.Platform, Current: ref.Profile == cfg.CurrentProfile, Backend: a.CredentialBackend, Metadata: a.Metadata, UpdatedAt: a.UpdatedAt})
+	for _, n := range cfg.ProfileNames() {
+		prof := cfg.Profiles[n]
+		current := n == cfg.CurrentProfile
+		if len(prof.Platforms) == 0 {
+			// Listed too: it can be current, renamed, removed and logged in to.
+			rows = append(rows, profileRow{Name: n, Current: current})
+			continue
+		}
+		for _, id := range prof.PlatformIDs() {
+			a := prof.Platforms[id]
+			updated := a.UpdatedAt
+			rows = append(rows, profileRow{Name: n, Platform: id, Current: current, Backend: a.CredentialBackend, Metadata: a.Metadata, UpdatedAt: &updated})
+		}
 	}
 	return rows
 }
@@ -255,7 +314,9 @@ func newAuthListCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List every profile and its platform accounts",
-		Args:  cobra.NoArgs,
+		Long: "List every profile and its platform accounts, one row per account. A profile\n" +
+			"without accounts is listed too, as one row without a platform.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := rt.Config()
 			if err != nil {
@@ -274,6 +335,10 @@ func profileGrid(rows []profileRow) output.Grid {
 		cur := ""
 		if r.Current {
 			cur = "*"
+		}
+		if r.Platform == "" {
+			g.Rows = append(g.Rows, []string{cur, r.Name, "", "", noAccounts})
+			continue
 		}
 		g.Rows = append(g.Rows, []string{cur, r.Name, string(r.Platform), r.Backend, metaSummary(r.Metadata)})
 	}
@@ -315,9 +380,11 @@ func useProfile(rt *app.Runtime, name string) error {
 	if _, err := cfg.Profile(name); err != nil {
 		return fmt.Errorf("%w: %v", platform.ErrNotFound, err)
 	}
+	prev := cfg.CurrentProfile
 	cfg.CurrentProfile = name
 	if err := cfg.Save(); err != nil {
-		return err
+		cfg.CurrentProfile = prev
+		return fmt.Errorf("save config: %w", err)
 	}
 	rt.Infof("current profile set to %q", name)
 	return nil
@@ -527,11 +594,20 @@ func removeEmptyProfile(rt *app.Runtime, name string) error {
 	if err != nil {
 		return err
 	}
+	prof, had := cfg.Profiles[name]
+	prevCurrent := cfg.CurrentProfile
 	delete(cfg.Profiles, name)
 	if cfg.CurrentProfile == name {
 		cfg.CurrentProfile = ""
 	}
-	return cfg.Save()
+	if err := cfg.Save(); err != nil {
+		if had {
+			cfg.Profiles[name] = prof
+		}
+		cfg.CurrentProfile = prevCurrent
+		return fmt.Errorf("save config: %w", err)
+	}
+	return nil
 }
 
 // removeAccount removes one account: its cached resources (unless
@@ -572,11 +648,18 @@ func removeAccount(ctx context.Context, rt *app.Runtime, ref config.AccountRef, 
 	}
 	if !store.Has(a.CredentialBackend) {
 		rt.Infof("warning: the %s credentials of profile %q are stored in the %s backend, which is not available now, and were not removed", id, name, a.CredentialBackend)
-	} else if a.LegacySecret {
-		if err := store.Delete(name); err != nil && !errors.Is(err, creds.ErrNotFound) {
-			return fmt.Errorf("remove credentials: %w", err)
+	}
+	if a.LegacySecret {
+		switch legacy := a.LegacySecretBackend(); {
+		case store.Has(legacy):
+			if err := store.Delete(name); err != nil && !errors.Is(err, creds.ErrNotFound) {
+				return fmt.Errorf("remove credentials: %w", err)
+			}
+		case legacy != a.CredentialBackend:
+			rt.Infof("warning: an older %s credentials entry of profile %q (stored by polyctl 0.1) is in the %s backend, which is not available now, and was not removed", id, name, legacy)
 		}
 	}
+	prevCurrent := cfg.CurrentProfile
 	delete(prof.Platforms, id)
 	if len(prof.Platforms) == 0 {
 		delete(cfg.Profiles, name)
@@ -585,5 +668,13 @@ func removeAccount(ctx context.Context, rt *app.Runtime, ref config.AccountRef, 
 		}
 	}
 	// Save after every account, for the same reason.
-	return cfg.Save()
+	if err := cfg.Save(); err != nil {
+		// Keep the config in memory equal to the file: the account is still
+		// listed there, and running the command again finishes the removal.
+		prof.Platforms[id] = a
+		cfg.Profiles[name] = prof
+		cfg.CurrentProfile = prevCurrent
+		return fmt.Errorf("save config: %w (the %s credentials of profile %q were already removed; run the command again)", err, id, name)
+	}
+	return nil
 }

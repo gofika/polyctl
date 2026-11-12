@@ -3,6 +3,7 @@
 package config
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -33,6 +34,34 @@ type Account struct {
 	// profile layout whose secret is still stored under the bare profile
 	// name. It is cleared once the secret has been moved.
 	LegacySecret bool `yaml:"legacy_secret,omitempty"`
+	// LegacyBackend names the backend that holds that bare-name entry when
+	// it is not CredentialBackend: the secret was stored again elsewhere
+	// while the old backend was out of reach. Empty means CredentialBackend.
+	LegacyBackend string `yaml:"legacy_backend,omitempty"`
+}
+
+// LegacySecretBackend returns the backend that holds the bare-profile-name
+// entry of an account marked LegacySecret.
+func (a *Account) LegacySecretBackend() string {
+	if a.LegacyBackend != "" {
+		return a.LegacyBackend
+	}
+	return a.CredentialBackend
+}
+
+// SetCredentialBackend records the backend the account's secret is stored
+// in now. While the legacy mark is set, the backend of the bare-name entry
+// is remembered, so that it can still be found and removed later.
+func (a *Account) SetCredentialBackend(backend string) {
+	if a.LegacySecret && a.LegacyBackend == "" && a.CredentialBackend != backend {
+		a.LegacyBackend = a.CredentialBackend
+	}
+	a.CredentialBackend = backend
+}
+
+// ClearLegacySecret removes the legacy mark once the bare-name entry is gone.
+func (a *Account) ClearLegacySecret() {
+	a.LegacySecret, a.LegacyBackend = false, ""
 }
 
 // Profile is a named set of accounts, at most one per platform. It usually
@@ -50,24 +79,29 @@ type legacyProfile struct {
 	UpdatedAt         time.Time         `yaml:"updated_at"`
 }
 
+// legacyKeys are the keys of the legacy layout, in file order.
+var legacyKeys = []string{"platform", "metadata", "credential_backend", "created_at", "updated_at"}
+
 // UnmarshalYAML accepts both the current layout and the legacy one, which is
-// converted to a profile holding that single platform.
+// converted to a profile holding that single platform. A hand-edited mixture
+// of the two is rejected rather than loaded with a part of it dropped: the
+// next save would make the loss permanent.
 func (p *Profile) UnmarshalYAML(n *yaml.Node) error {
-	var probe struct {
-		Platform  *string    `yaml:"platform"`
-		Platforms *yaml.Node `yaml:"platforms"`
-	}
-	if err := n.Decode(&probe); err != nil {
-		return err
-	}
 	p.Platforms = map[platform.ID]*Account{}
-	if probe.Platform != nil && probe.Platforms != nil {
+	// Presence is what counts, not the value: "platform:" with nothing
+	// after it is still a profile written in the legacy layout.
+	has := map[string]bool{}
+	mappingKeys(n, has, 0)
+	if has["platform"] && has["platforms"] {
 		return errors.New("both platform (legacy layout) and platforms are set; keep only platforms")
 	}
-	if probe.Platform != nil {
+	if has["platform"] {
 		var old legacyProfile
 		if err := n.Decode(&old); err != nil {
 			return err
+		}
+		if old.Platform == "" {
+			return errors.New("platform (legacy layout) is empty; name the platform, or move the account under platforms")
 		}
 		id, err := platform.Parse(old.Platform)
 		if err != nil {
@@ -81,6 +115,11 @@ func (p *Profile) UnmarshalYAML(n *yaml.Node) error {
 			LegacySecret:      true,
 		}
 		return nil
+	}
+	for _, k := range legacyKeys {
+		if has[k] {
+			return fmt.Errorf("%s is set on the profile itself (legacy layout) without platform; move it under platforms.<platform>", k)
+		}
 	}
 	var cur struct {
 		Platforms map[string]*Account `yaml:"platforms"`
@@ -104,6 +143,34 @@ func (p *Profile) UnmarshalYAML(n *yaml.Node) error {
 	return nil
 }
 
+// mappingKeys records in has the keys of mapping n as decoding sees them:
+// an alias stands for the node it names, and the keys a merge key ("<<")
+// brings in count like the ones written out. depth stops a self-referencing
+// alias.
+func mappingKeys(n *yaml.Node, has map[string]bool, depth int) {
+	const maxDepth = 32
+	if n == nil || depth > maxDepth {
+		return
+	}
+	switch n.Kind {
+	case yaml.AliasNode:
+		mappingKeys(n.Alias, has, depth+1)
+	case yaml.SequenceNode:
+		// Only reached below a merge key, which may list several mappings.
+		for _, c := range n.Content {
+			mappingKeys(c, has, depth+1)
+		}
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			if k := n.Content[i]; k.Kind == yaml.ScalarNode && k.ShortTag() == "!!merge" {
+				mappingKeys(n.Content[i+1], has, depth+1)
+			} else {
+				has[k.Value] = true
+			}
+		}
+	}
+}
+
 // PlatformIDs returns the profile's platforms, sorted.
 func (p *Profile) PlatformIDs() []platform.ID {
 	ids := make([]platform.ID, 0, len(p.Platforms))
@@ -124,7 +191,23 @@ type Config struct {
 	Output          string              `yaml:"output,omitempty"`
 
 	path string
+	// read is the state of the file when it was loaded or last saved; Save
+	// compares it with the file to notice a change made in between.
+	read fileState
 }
+
+// fileState identifies the contents of the config file.
+type fileState struct {
+	exists bool
+	sum    [sha256.Size]byte
+}
+
+func stateOf(b []byte) fileState { return fileState{exists: true, sum: sha256.Sum256(b)} }
+
+// ErrChanged is returned by Save when the file was changed, by another
+// polyctl process or by hand, after this copy of it was loaded. Saving would
+// silently undo that change.
+var ErrChanged = errors.New("the config file was changed since it was read")
 
 // Duration marshals as a Go duration string.
 type Duration time.Duration
@@ -175,6 +258,7 @@ func Load(path string) (*Config, error) {
 		}
 		return nil, err
 	}
+	c.read = stateOf(b)
 	if err := yaml.Unmarshal(b, c); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
@@ -197,10 +281,22 @@ func Load(path string) (*Config, error) {
 // Path returns where the config is saved.
 func (c *Config) Path() string { return c.path }
 
-// Save writes the config atomically with mode 0600.
+// Save writes the config atomically with mode 0600. It refuses with
+// ErrChanged when the file no longer is what this copy was loaded from: the
+// copy lacks whatever was written in between, and saving it would drop that.
 func (c *Config) Save() error {
 	if err := os.MkdirAll(filepath.Dir(c.path), 0o700); err != nil {
 		return err
+	}
+	var now fileState
+	switch cur, err := os.ReadFile(c.path); {
+	case err == nil:
+		now = stateOf(cur)
+	case !errors.Is(err, os.ErrNotExist):
+		return err
+	}
+	if now != c.read {
+		return fmt.Errorf("%w (%s); nothing was saved, run the command again", ErrChanged, c.path)
 	}
 	b, err := yaml.Marshal(c)
 	if err != nil {
@@ -226,7 +322,11 @@ func (c *Config) Save() error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), c.path)
+	if err := os.Rename(tmp.Name(), c.path); err != nil {
+		return err
+	}
+	c.read = stateOf(b)
+	return nil
 }
 
 // Profile returns a profile by name.

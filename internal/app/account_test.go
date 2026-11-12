@@ -3,11 +3,15 @@ package app_test
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/zalando/go-keyring"
 
 	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/config"
@@ -598,23 +602,24 @@ func TestLegacySecretMigrationThroughOpen(t *testing.T) {
 }
 
 func TestLegacySecretFallbackWhenMigrationFails(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("directory permissions do not stop root")
-	}
 	rt, dir, stderr := legacyRuntime(t, app.Flags{Verbose: true}, map[string]string{"old": "legacy-old"})
 	cfgPath := filepath.Join(dir, "config.yaml")
-	// A read-only config dir lets the store read but not write, so the
-	// secret cannot be moved.
-	if err := os.Chmod(dir, 0o500); err != nil {
+	// A lock file that cannot be opened (a directory is in its place) lets
+	// the store read but not write, on every operating system, so the secret
+	// cannot be moved.
+	lock := filepath.Join(dir, "credentials.lock")
+	if err := os.Remove(lock); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if err := os.Mkdir(lock, 0o700); err != nil {
+		t.Fatal(err)
+	}
 
 	p, err := rt.LoadProfile("old", platform.NameCom)
 	if err != nil || p.Secret["token"] != "legacy-old" {
 		t.Fatalf("LoadProfile must fall back to the legacy key: %+v, %v", p, err)
 	}
-	if !strings.Contains(stderr.String(), "migrate credentials of namecom/old") {
+	if !strings.Contains(stderr.String(), "migrate credentials: lock ") {
 		t.Errorf("verbose output = %q", stderr.String())
 	}
 	cfg, _ := rt.Config()
@@ -628,8 +633,8 @@ func TestLegacySecretFallbackWhenMigrationFails(t *testing.T) {
 		t.Errorf("legacy secret = %v, %v", s, err)
 	}
 
-	// Once the directory is writable again the next run finishes the job.
-	if err := os.Chmod(dir, 0o700); err != nil {
+	// Once the store can be written again the next run finishes the job.
+	if err := os.Remove(lock); err != nil {
 		t.Fatal(err)
 	}
 	rt2 := app.New(app.Flags{ConfigPath: cfgPath}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
@@ -889,5 +894,237 @@ func TestResolveDomainPlatformFlagLimitsIndexing(t *testing.T) {
 	h3.rt.Flags.Profile, h3.rt.Flags.Platform = "a", "godaddy"
 	if _, err := h3.rt.ResolveDomain(ctx, "example.com", platform.ResZone); !errors.Is(err, app.ErrDomainUnknown) || !strings.Contains(err.Error(), "no account selected by --profile / --platform") {
 		t.Errorf("--profile a --platform godaddy = %v", err)
+	}
+}
+
+// Several polyctl processes started together after an upgrade all find the
+// same secrets to move. Each Runtime stands for one process here: they share
+// the files but nothing in memory.
+func TestLegacySecretMigrationInParallel(t *testing.T) {
+	const accounts, processes = 40, 4
+	dir := t.TempDir()
+	t.Setenv(config.EnvConfigDir, dir)
+	t.Setenv("POLYCTL_CREDENTIAL_STORE", "file")
+	t.Setenv("POLYCTL_OUTPUT", "")
+	var body strings.Builder
+	body.WriteString("credential_store: file\nprofiles:\n")
+	seed := creds.NewFile(dir)
+	for i := 0; i < accounts; i++ {
+		name := fmt.Sprintf("p%d", i)
+		fmt.Fprintf(&body, "  %s:\n    platform: namecom\n    credential_backend: file\n", name)
+		if err := seed.Set(name, map[string]string{"token": name}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(body.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var rts []*app.Runtime
+	for i := 0; i < processes; i++ {
+		rt := app.New(app.Flags{ConfigPath: cfgPath}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+		if err := rt.Init(); err != nil {
+			t.Fatal(err)
+		}
+		rts = append(rts, rt)
+	}
+	var wg sync.WaitGroup
+	for _, rt := range rts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := rt.Creds(); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	for i := 0; i < accounts; i++ {
+		name := fmt.Sprintf("p%d", i)
+		if s, err := seed.Get(creds.Key(name, "namecom")); err != nil || s["token"] != name {
+			t.Errorf("secret of %s under the new key = %v, %v", name, s, err)
+		}
+		if _, err := seed.Get(name); !errors.Is(err, creds.ErrNotFound) {
+			t.Errorf("bare key %s survived: %v", name, err)
+		}
+	}
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "legacy_secret") || strings.Contains(string(raw), "platform: ") || strings.Count(string(raw), "platforms:") != accounts {
+		t.Errorf("config after the parallel migration:\n%s", raw)
+	}
+	// Every process sees its accounts as migrated, whoever did the work.
+	for i, rt := range rts {
+		cfg, _ := rt.Config()
+		for _, r := range cfg.Accounts("") {
+			if a, _ := cfg.Account(r.Profile, r.Platform); a.LegacySecret {
+				t.Errorf("process %d: %s is still marked legacy", i, r)
+			}
+		}
+	}
+}
+
+// A process that only reads must not write its older copy of the config back
+// when another process finished the migration and changed the file since.
+func TestLegacySecretMigrationKeepsLaterConfigChanges(t *testing.T) {
+	rt, dir, _ := legacyRuntime(t, app.Flags{}, map[string]string{"old": "legacy-old", "shop": "legacy-shop"})
+	cfgPath := filepath.Join(dir, "config.yaml")
+
+	// Another process migrates and then adds an account.
+	other := app.New(app.Flags{ConfigPath: cfgPath}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	if err := other.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := other.Creds(); err != nil {
+		t.Fatal(err)
+	}
+	ocfg, _ := other.Config()
+	ocfg.Profiles["added"] = profileOn(platform.GoDaddy)
+	ocfg.CurrentProfile = "added"
+	if err := ocfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(cfgPath)
+
+	// rt loaded the config before all that and opens the store only now.
+	if _, err := rt.Creds(); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := os.ReadFile(cfgPath); !bytes.Equal(before, after) {
+		t.Errorf("the config was rewritten from an older copy:\n%s", after)
+	}
+	cfg, _ := rt.Config()
+	for _, name := range []string{"old", "shop"} {
+		if a := cfg.Profiles[name].Platforms[cfg.Profiles[name].PlatformIDs()[0]]; a.LegacySecret {
+			t.Errorf("%s is still marked legacy in memory", name)
+		}
+	}
+
+	// A migration that does have work keeps the other changes too.
+	rt2, dir2, _ := legacyRuntime(t, app.Flags{}, map[string]string{"old": "legacy-old"})
+	cfgPath2 := filepath.Join(dir2, "config.yaml")
+	disk, err := config.Load(cfgPath2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	disk.Profiles["added"] = profileOn(platform.GoDaddy)
+	if err := disk.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt2.Creds(); err != nil {
+		t.Fatal(err)
+	}
+	disk, err = config.Load(cfgPath2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := disk.Profiles["added"]; !ok {
+		t.Error("the migration dropped a profile added by another process")
+	}
+	if a, _ := disk.Account("old", platform.NameCom); a == nil || a.LegacySecret {
+		t.Errorf("old/namecom on disk = %+v, want it migrated", a)
+	}
+}
+
+// A refreshed token is written to the primary backend and its copy in the
+// other one removed; the config must follow, or commands that check whether
+// the recorded backend is within reach look in the wrong place.
+func TestUpdateSecretRecordsTheBackend(t *testing.T) {
+	keyring.MockInit()
+	registerFakes()
+	resetFakes()
+	dir := t.TempDir()
+	t.Setenv(config.EnvConfigDir, dir)
+	t.Setenv("POLYCTL_CREDENTIAL_STORE", "auto")
+	t.Setenv("POLYCTL_OUTPUT", "")
+	cfgPath := filepath.Join(dir, "config.yaml")
+	body := "profiles:\n  p:\n    platforms:\n      namecom:\n        credential_backend: file\n"
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file := creds.NewFile(dir)
+	if err := file.Set("p/namecom", map[string]string{"token": "old"}); err != nil {
+		t.Fatal(err)
+	}
+	rt := app.New(app.Flags{ConfigPath: cfgPath}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	if err := rt.Init(); err != nil {
+		t.Fatal(err)
+	}
+	p, err := rt.LoadProfile("p", platform.NameCom)
+	if err != nil || p.Secret["token"] != "old" {
+		t.Fatalf("LoadProfile = %+v, %v", p, err)
+	}
+	if raw, _ := os.ReadFile(cfgPath); string(raw) != body {
+		t.Errorf("reading a secret must not rewrite the config:\n%s", raw)
+	}
+	if err := p.UpdateSecret(map[string]string{"token": "refreshed"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Get("p/namecom"); !errors.Is(err, creds.ErrNotFound) {
+		t.Errorf("the file copy survived: %v", err)
+	}
+	if s, err := (creds.Keyring{}).Get("p/namecom"); err != nil || s["token"] != "refreshed" {
+		t.Errorf("keyring = %v, %v", s, err)
+	}
+	disk, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a, _ := disk.Account("p", platform.NameCom); a == nil || a.CredentialBackend != "keyring" {
+		t.Errorf("account on disk = %+v, want credential_backend keyring", a)
+	}
+}
+
+func TestReloadConfig(t *testing.T) {
+	rt := newHarness(t, app.Flags{}, nil).rt
+	cfg, err := rt.Config()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Another process adds an account and switches the current profile.
+	other, err := config.Load(cfg.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	other.Profiles["added"] = profileOn(platform.GoDaddy)
+	other.CurrentProfile = "added"
+	if err := other.Save(); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := rt.ReloadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := rt.Config(); again != fresh || fresh == cfg {
+		t.Error("ReloadConfig must replace the copy Config returns")
+	}
+	if _, ok := fresh.Profiles["added"]; !ok || fresh.CurrentProfile != "added" {
+		t.Errorf("reloaded config = %+v", fresh)
+	}
+	// A change saved from the reloaded copy keeps what the other process did.
+	delete(fresh.Profiles, "a")
+	if err := fresh.Save(); err != nil {
+		t.Fatal(err)
+	}
+	disk, err := config.Load(cfg.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := disk.Profiles["added"]; !ok || disk.CurrentProfile != "added" {
+		t.Errorf("config on disk = %+v", disk)
+	}
+
+	// An unreadable file leaves the earlier copy in use.
+	if err := os.WriteFile(cfg.Path(), []byte("profiles: ["), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.ReloadConfig(); err == nil {
+		t.Fatal("ReloadConfig of a malformed file must fail")
+	}
+	if kept, err := rt.Config(); err != nil || kept != fresh {
+		t.Errorf("Config after a failed reload = %p, %v; want the earlier copy", kept, err)
 	}
 }

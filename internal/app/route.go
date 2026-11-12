@@ -114,6 +114,16 @@ func (rt *Runtime) ResolveDomain(ctx context.Context, domain string, kind platfo
 	if err != nil || t != nil {
 		return t, err
 	}
+	// Check the selection before blaming the index: an unknown --profile, or
+	// a --profile / --platform pair that names no account, is not something
+	// indexing can fix. This reads the config only, so it works offline too.
+	profiles, err := rt.indexCandidates(ctx, kind)
+	if err != nil {
+		return nil, err
+	}
+	if len(profiles) == 0 && (rt.Flags.Profile != "" || only != "") {
+		return nil, fmt.Errorf("%w: %q, and no account selected by --profile / --platform is able to manage %ss", ErrDomainUnknown, domain, kind)
+	}
 	if rt.Flags.Offline {
 		return nil, fmt.Errorf("%w: %q (%s); run `polyctl domain index` when online", ErrDomainUnknown, domain, kind)
 	}
@@ -122,14 +132,7 @@ func (rt *Runtime) ResolveDomain(ctx context.Context, domain string, kind platfo
 	// Once at least one profile is indexed, a miss no longer triggers a
 	// network scan: a profile whose sync keeps failing never gets a state,
 	// and re-indexing everything on every miss would hammer the platforms.
-	profiles, err := rt.indexCandidates(ctx, kind)
-	if err != nil {
-		return nil, err
-	}
 	if len(profiles) == 0 {
-		if rt.Flags.Profile != "" || only != "" {
-			return nil, fmt.Errorf("%w: %q, and no account selected by --profile / --platform is able to manage %ss", ErrDomainUnknown, domain, kind)
-		}
 		return nil, fmt.Errorf("%w: %q, and no account is able to manage %ss (run `polyctl auth login`)", ErrDomainUnknown, domain, kind)
 	}
 	needIndex := rt.Flags.Refresh
@@ -175,7 +178,7 @@ func (rt *Runtime) ResolveDomain(ctx context.Context, domain string, kind platfo
 }
 
 // indexCandidates returns the accounts able to hold kind, restricted to
-// --profile when it is set.
+// --profile and --platform when they are set.
 func (rt *Runtime) indexCandidates(ctx context.Context, kind platform.ResourceType) ([]config.AccountRef, error) {
 	return rt.AccountsFor(kind)
 }
