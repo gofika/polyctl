@@ -124,7 +124,7 @@ func newDomainListCmd(rt *app.Runtime) *cobra.Command {
 			}
 			set := inventory.Set{Platform: platform.GoDaddy, Profile: name, Type: platform.ResDomain}
 			rows, cached, err := rt.EnsureSet(cmd.Context(), set, func(ctx context.Context) ([]platform.Resource, error) {
-				c, _, err := rt.Open(ctx, name)
+				c, _, err := rt.Open(ctx, name, platform.GoDaddy)
 				if err != nil {
 					return nil, err
 				}
@@ -197,7 +197,7 @@ func loadDomain(ctx context.Context, rt *app.Runtime, name string) (*platform.Do
 			return nil, profile, false, fmt.Errorf("%w: domain %s is not in the local inventory", platform.ErrNotFound, name)
 		}
 	}
-	c, _, err := rt.Open(ctx, profile)
+	c, _, err := rt.Open(ctx, profile, platform.GoDaddy)
 	if err != nil {
 		return nil, profile, false, err
 	}
@@ -494,7 +494,7 @@ func newDNSListCmd(rt *app.Runtime) *cobra.Command {
 			zone := platform.NormalizeDomain(args[0])
 			set := inventory.Set{Platform: platform.GoDaddy, Profile: profile, Type: platform.ResDNSRecord, Scope: zone}
 			rows, cached, err := rt.EnsureSet(cmd.Context(), set, func(ctx context.Context) ([]platform.Resource, error) {
-				c, _, err := rt.Open(ctx, profile)
+				c, _, err := rt.Open(ctx, profile, platform.GoDaddy)
 				if err != nil {
 					return nil, err
 				}

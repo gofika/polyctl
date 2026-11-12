@@ -22,7 +22,7 @@ func Command(rt *app.Runtime) *cobra.Command {
 		Short: "Google Cloud native commands",
 		Long: `Google Cloud commands that follow the platform's own model: Cloud DNS managed
 zones hold multi-value record sets, Compute Engine instances live in zones.
-Every command runs against the project stored in the active gcp profile
+Every command runs against the project stored in the selected profile's gcp account
 (pass --profile to pick another one).`,
 	}
 	cmd.AddCommand(newProjectCmd(rt), newDNSCmd(rt), newComputeCmd(rt))
@@ -104,7 +104,7 @@ type currentProject struct {
 func newProjectCurrentCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "current",
-		Short: "Show the project the active gcp profile operates on",
+		Short: "Show the project the selected gcp account operates on",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name, err := rt.ProfileFor(platform.GCP)
@@ -115,7 +115,7 @@ func newProjectCurrentCmd(rt *app.Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			p, err := cfg.Profile(name)
+			p, err := cfg.Account(name, platform.GCP)
 			if err != nil {
 				return err
 			}

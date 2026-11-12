@@ -18,14 +18,100 @@ import (
 // EnvConfigDir overrides the configuration directory when set.
 const EnvConfigDir = "POLYCTL_CONFIG_DIR"
 
-// Profile is a configured account on one platform.
-type Profile struct {
-	Platform platform.ID       `yaml:"platform"`
+// DefaultProfile is the profile `auth login` creates when none is named and
+// none is current.
+const DefaultProfile = "default"
+
+// Account is one platform account inside a profile.
+type Account struct {
 	Metadata map[string]string `yaml:"metadata,omitempty"`
 	// CredentialBackend records where the secret was stored ("keyring" or "file").
 	CredentialBackend string    `yaml:"credential_backend,omitempty"`
 	CreatedAt         time.Time `yaml:"created_at,omitempty"`
 	UpdatedAt         time.Time `yaml:"updated_at,omitempty"`
+	// LegacySecret marks an account converted from the one-platform-per-
+	// profile layout whose secret is still stored under the bare profile
+	// name. It is cleared once the secret has been moved.
+	LegacySecret bool `yaml:"legacy_secret,omitempty"`
+}
+
+// Profile is a named set of accounts, at most one per platform. It usually
+// stands for one project or one customer.
+type Profile struct {
+	Platforms map[platform.ID]*Account `yaml:"platforms"`
+}
+
+// legacyProfile is the pre-0.2 layout: one platform per profile.
+type legacyProfile struct {
+	Platform          string            `yaml:"platform"`
+	Metadata          map[string]string `yaml:"metadata"`
+	CredentialBackend string            `yaml:"credential_backend"`
+	CreatedAt         time.Time         `yaml:"created_at"`
+	UpdatedAt         time.Time         `yaml:"updated_at"`
+}
+
+// UnmarshalYAML accepts both the current layout and the legacy one, which is
+// converted to a profile holding that single platform.
+func (p *Profile) UnmarshalYAML(n *yaml.Node) error {
+	var probe struct {
+		Platform  *string    `yaml:"platform"`
+		Platforms *yaml.Node `yaml:"platforms"`
+	}
+	if err := n.Decode(&probe); err != nil {
+		return err
+	}
+	p.Platforms = map[platform.ID]*Account{}
+	if probe.Platform != nil && probe.Platforms != nil {
+		return errors.New("both platform (legacy layout) and platforms are set; keep only platforms")
+	}
+	if probe.Platform != nil {
+		var old legacyProfile
+		if err := n.Decode(&old); err != nil {
+			return err
+		}
+		id, err := platform.Parse(old.Platform)
+		if err != nil {
+			return err
+		}
+		p.Platforms[id] = &Account{
+			Metadata:          old.Metadata,
+			CredentialBackend: old.CredentialBackend,
+			CreatedAt:         old.CreatedAt,
+			UpdatedAt:         old.UpdatedAt,
+			LegacySecret:      true,
+		}
+		return nil
+	}
+	var cur struct {
+		Platforms map[string]*Account `yaml:"platforms"`
+	}
+	if err := n.Decode(&cur); err != nil {
+		return err
+	}
+	for name, a := range cur.Platforms {
+		id, err := platform.Parse(name)
+		if err != nil {
+			return err
+		}
+		if _, dup := p.Platforms[id]; dup {
+			return fmt.Errorf("platform %s is configured twice", id)
+		}
+		if a == nil {
+			a = &Account{}
+		}
+		p.Platforms[id] = a
+	}
+	return nil
+}
+
+// PlatformIDs returns the profile's platforms, sorted.
+func (p *Profile) PlatformIDs() []platform.ID {
+	ids := make([]platform.ID, 0, len(p.Platforms))
+	for id := range p.Platforms {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
 }
 
 // Config is the on-disk document.
@@ -97,13 +183,13 @@ func Load(path string) (*Config, error) {
 	}
 	for name, p := range c.Profiles {
 		if p == nil {
-			return nil, fmt.Errorf("parse %s: profile %q is empty", path, name)
+			// An empty mapping ("name:" with nothing under it).
+			p = &Profile{}
+			c.Profiles[name] = p
 		}
-		id, err := platform.Parse(string(p.Platform))
-		if err != nil {
-			return nil, fmt.Errorf("parse %s: profile %q: %w", path, name, err)
+		if p.Platforms == nil {
+			p.Platforms = map[platform.ID]*Account{}
 		}
-		p.Platform = id
 	}
 	return c, nil
 }
@@ -162,12 +248,53 @@ func (c *Config) ProfileNames() []string {
 	return names
 }
 
-// ProfilesFor returns profile names on a platform, sorted.
+// Account returns the account of a profile on a platform.
+func (c *Config) Account(profile string, id platform.ID) (*Account, error) {
+	p, err := c.Profile(profile)
+	if err != nil {
+		return nil, err
+	}
+	a, ok := p.Platforms[id]
+	if !ok {
+		return nil, fmt.Errorf("profile %q has no %s account (run `polyctl auth login %s --profile %s`)", profile, id, id, profile)
+	}
+	return a, nil
+}
+
+// ProfilesFor returns the names of the profiles that have an account on a
+// platform, sorted.
 func (c *Config) ProfilesFor(id platform.ID) []string {
 	var out []string
 	for _, n := range c.ProfileNames() {
-		if c.Profiles[n].Platform == id {
+		if _, ok := c.Profiles[n].Platforms[id]; ok {
 			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// AccountRef names one account: a profile and a platform.
+type AccountRef struct {
+	Profile  string
+	Platform platform.ID
+}
+
+// String renders "profile/platform".
+func (r AccountRef) String() string { return r.Profile + "/" + string(r.Platform) }
+
+// Label renders "platform/profile", the form used in status lines.
+func (r AccountRef) Label() string { return string(r.Platform) + "/" + r.Profile }
+
+// Accounts returns every configured account, sorted by profile then platform.
+// A non-empty profile restricts the result to that profile.
+func (c *Config) Accounts(profile string) []AccountRef {
+	var out []AccountRef
+	for _, n := range c.ProfileNames() {
+		if profile != "" && n != profile {
+			continue
+		}
+		for _, id := range c.Profiles[n].PlatformIDs() {
+			out = append(out, AccountRef{Profile: n, Platform: id})
 		}
 	}
 	return out

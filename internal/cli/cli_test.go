@@ -41,11 +41,13 @@ func setup(t *testing.T, profiles bool) (dir, cfgPath string) {
 		t.Fatal(err)
 	}
 	cfg.CredentialStore = "file"
-	cfg.Profiles["a"] = &config.Profile{Platform: fakePlatform, CredentialBackend: "file", Metadata: map[string]string{"account": "acct-a"}}
+	cfg.Profiles["a"] = &config.Profile{Platforms: map[platform.ID]*config.Account{
+		fakePlatform: {CredentialBackend: "file", Metadata: map[string]string{"account": "acct-a"}},
+	}}
 	if err := cfg.Save(); err != nil {
 		t.Fatal(err)
 	}
-	if err := creds.NewFile(dir).Set("a", map[string]string{"token": "secret"}); err != nil {
+	if err := creds.NewFile(dir).Set(creds.Key("a", string(fakePlatform)), map[string]string{"token": "secret"}); err != nil {
 		t.Fatal(err)
 	}
 	return dir, cfgPath
@@ -101,7 +103,7 @@ func TestAuthListNoConfig(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("exit %d, stderr %q", code, errb.String())
 	}
-	if !strings.Contains(out.String(), "no profiles configured") || !strings.Contains(out.String(), "auth login") {
+	if !strings.Contains(out.String(), "no accounts configured") || !strings.Contains(out.String(), "auth login") {
 		t.Errorf("table stdout = %q", out.String())
 	}
 
@@ -155,7 +157,7 @@ func TestAuthUseAndLogout(t *testing.T) {
 	if _, _, err := run(t, cfgPath, "auth", "use", "nope"); ExitCodeFor(err) != ExitNotFound {
 		t.Fatalf("auth use nope = %v", err)
 	}
-	if _, stderr, err := run(t, cfgPath, "auth", "use", "a"); err != nil || !strings.Contains(stderr, "default profile set") {
+	if _, stderr, err := run(t, cfgPath, "auth", "use", "a"); err != nil || !strings.Contains(stderr, `current profile set to "a"`) {
 		t.Fatalf("auth use a: %v %q", err, stderr)
 	}
 	cfg, _ := config.Load(cfgPath)
@@ -174,7 +176,7 @@ func TestAuthUseAndLogout(t *testing.T) {
 	if len(cfg.Profiles) != 0 || cfg.CurrentProfile != "" {
 		t.Errorf("config after logout = %+v", cfg)
 	}
-	if _, err := creds.NewFile(dir).Get("a"); !errors.Is(err, creds.ErrNotFound) {
+	if _, err := creds.NewFile(dir).Get(creds.Key("a", string(fakePlatform))); !errors.Is(err, creds.ErrNotFound) {
 		t.Errorf("credentials survived logout: %v", err)
 	}
 	db := openInventory(t, dir)

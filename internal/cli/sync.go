@@ -16,17 +16,13 @@ func newSyncCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "sync",
 		Short: "Fetch resources from the platforms into the local inventory",
-		Long: `Fetch resources of every profile (or those selected with --platform /
---profile) and replace them in the local inventory. Resource types default to
+		Long: `Fetch resources of every account of every profile (or those selected with
+--profile / --platform) and replace them in the local inventory. Resource types default to
 everything the platform supports; narrow with --type.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if rt.Flags.Offline {
 				return app.ErrOffline
-			}
-			cfg, err := rt.Config()
-			if err != nil {
-				return err
 			}
 			want := map[platform.ID]bool{}
 			for _, p := range platforms {
@@ -44,30 +40,27 @@ everything the platform supports; narrow with --type.`,
 				}
 				rts = append(rts, rt)
 			}
-			names := cfg.ProfileNames()
-			if rt.Flags.Profile != "" {
-				if _, err := cfg.Profile(rt.Flags.Profile); err != nil {
-					return fmt.Errorf("%w: %v", platform.ErrNotFound, err)
-				}
-				names = []string{rt.Flags.Profile}
+			refs, err := rt.Accounts()
+			if err != nil {
+				return err
 			}
 			var reports []app.SyncReport
 			var firstErr error
-			for _, n := range names {
-				if len(want) > 0 && !want[cfg.Profiles[n].Platform] {
+			for _, ref := range refs {
+				if len(want) > 0 && !want[ref.Platform] {
 					continue
 				}
-				reps, err := rt.SyncProfile(cmd.Context(), n, rts)
+				reps, err := rt.SyncAccount(cmd.Context(), ref, rts)
 				reports = append(reports, reps...)
 				if err != nil {
-					rt.Infof("warning: %s: %v", n, err)
+					rt.Infof("warning: %s: %v", ref.Label(), err)
 					if firstErr == nil {
 						firstErr = err
 					}
 				}
 			}
 			if len(reports) == 0 && firstErr == nil {
-				return fmt.Errorf("nothing to sync (no matching profiles)")
+				return fmt.Errorf("nothing to sync (no matching accounts)")
 			}
 			return renderSyncReports(rt, reports, firstErr)
 		},

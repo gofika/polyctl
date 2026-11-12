@@ -38,17 +38,27 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	created := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	updated := time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC)
 	cfg.CurrentProfile = "work"
 	cfg.CredentialStore = "file"
 	cfg.Output = "json"
-	cfg.Profiles["work"] = &config.Profile{
-		Platform:          platform.Cloudflare,
-		Metadata:          map[string]string{"account": "acc-1", "email": "me@example.com"},
-		CredentialBackend: "file",
-		CreatedAt:         created,
-		UpdatedAt:         created,
-	}
-	cfg.Profiles["reg"] = &config.Profile{Platform: platform.NameCom}
+	cfg.Profiles["work"] = &config.Profile{Platforms: map[platform.ID]*config.Account{
+		platform.Cloudflare: {
+			Metadata:          map[string]string{"account": "acc-1", "email": "me@example.com"},
+			CredentialBackend: "file",
+			CreatedAt:         created,
+			UpdatedAt:         created,
+		},
+		platform.NameCom: {
+			Metadata:          map[string]string{"username": "me"},
+			CredentialBackend: "keyring",
+			CreatedAt:         created,
+			UpdatedAt:         updated,
+		},
+	}}
+	cfg.Profiles["reg"] = &config.Profile{Platforms: map[platform.ID]*config.Account{
+		platform.NameCom: {},
+	}}
 	cfg.TTL = map[string]config.Duration{
 		string(platform.ResDNSRecord): config.Duration(90 * time.Minute),
 		"default":                     config.Duration(2 * time.Hour),
@@ -65,7 +75,15 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		t.Errorf("TTL not marshalled as a duration string:\n%s", raw)
 	}
 	if strings.Contains(string(raw), "secret") {
-		t.Errorf("config must not contain secrets:\n%s", raw)
+		t.Errorf("config must not contain secrets or a legacy_secret mark:\n%s", raw)
+	}
+	for _, want := range []string{"\n    work:\n        platforms:\n", "\n            cloudflare:\n", "\n            namecom:\n"} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("saved config lacks %q:\n%s", want, raw)
+		}
+	}
+	if strings.Contains(string(raw), "platform:") {
+		t.Errorf("saved config uses the legacy platform key:\n%s", raw)
 	}
 	if runtime.GOOS != "windows" {
 		fi, err := os.Stat(path)
@@ -76,8 +94,12 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 			t.Errorf("config mode = %o, want 0600", fi.Mode().Perm())
 		}
 	}
-	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
-		t.Errorf("temporary file left behind: %v", err)
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "config.yaml" {
+		t.Errorf("temporary file left behind: %v", entries)
 	}
 
 	got, err := config.Load(path)
@@ -88,23 +110,280 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		t.Errorf("scalar fields not round-tripped: %+v", got)
 	}
 	work := got.Profiles["work"]
-	if work == nil || work.Platform != platform.Cloudflare || work.CredentialBackend != "file" {
-		t.Fatalf("profile work = %+v", work)
+	if work == nil || len(work.Platforms) != 2 {
+		t.Fatalf("profile work = %+v, want two platforms", work)
 	}
-	if !reflect.DeepEqual(work.Metadata, map[string]string{"account": "acc-1", "email": "me@example.com"}) {
-		t.Errorf("metadata = %v", work.Metadata)
+	cf := work.Platforms[platform.Cloudflare]
+	if cf == nil || cf.CredentialBackend != "file" || cf.LegacySecret {
+		t.Fatalf("work/cloudflare = %+v", cf)
 	}
-	if !work.CreatedAt.Equal(created) || !work.UpdatedAt.Equal(created) {
-		t.Errorf("timestamps = %v / %v, want %v", work.CreatedAt, work.UpdatedAt, created)
+	if !reflect.DeepEqual(cf.Metadata, map[string]string{"account": "acc-1", "email": "me@example.com"}) {
+		t.Errorf("work/cloudflare metadata = %v", cf.Metadata)
 	}
-	if got.Profiles["reg"] == nil || got.Profiles["reg"].Platform != platform.NameCom {
-		t.Errorf("profile reg = %+v", got.Profiles["reg"])
+	if !cf.CreatedAt.Equal(created) || !cf.UpdatedAt.Equal(created) {
+		t.Errorf("work/cloudflare timestamps = %v / %v, want %v", cf.CreatedAt, cf.UpdatedAt, created)
+	}
+	nc := work.Platforms[platform.NameCom]
+	if nc == nil || nc.CredentialBackend != "keyring" || nc.LegacySecret {
+		t.Fatalf("work/namecom = %+v", nc)
+	}
+	if !reflect.DeepEqual(nc.Metadata, map[string]string{"username": "me"}) {
+		t.Errorf("work/namecom metadata = %v", nc.Metadata)
+	}
+	if !nc.CreatedAt.Equal(created) || !nc.UpdatedAt.Equal(updated) {
+		t.Errorf("work/namecom timestamps = %v / %v", nc.CreatedAt, nc.UpdatedAt)
+	}
+	reg := got.Profiles["reg"]
+	if reg == nil || len(reg.Platforms) != 1 || reg.Platforms[platform.NameCom] == nil {
+		t.Fatalf("profile reg = %+v", reg)
+	}
+	if a := reg.Platforms[platform.NameCom]; a.Metadata != nil || a.CredentialBackend != "" || !a.CreatedAt.IsZero() {
+		t.Errorf("reg/namecom = %+v, want a zero account", a)
 	}
 	if d := got.TTLFor(platform.ResDNSRecord); d != 90*time.Minute {
 		t.Errorf("TTLFor(dns_record) = %v, want 90m", d)
 	}
 	if d := got.TTLFor(platform.ResZone); d != 2*time.Hour {
 		t.Errorf("TTLFor(zone) = %v, want the configured default 2h", d)
+	}
+}
+
+// writeConfig writes a config file into a temp dir and returns its path.
+func writeConfig(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+const legacyConfig = `current_profile: cf
+profiles:
+    cf:
+        platform: cloudflare
+        metadata:
+            account: acc-1
+        credential_backend: keyring
+        created_at: 2026-01-02T03:04:05Z
+        updated_at: 2026-02-03T04:05:06Z
+    reg:
+        platform: name.com
+`
+
+func TestLoadLegacyLayout(t *testing.T) {
+	path := writeConfig(t, legacyConfig)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.CurrentProfile != "cf" {
+		t.Errorf("CurrentProfile = %q", cfg.CurrentProfile)
+	}
+	if got := cfg.Accounts(""); !reflect.DeepEqual(got, []config.AccountRef{
+		{Profile: "cf", Platform: platform.Cloudflare},
+		{Profile: "reg", Platform: platform.NameCom},
+	}) {
+		t.Fatalf("Accounts = %v", got)
+	}
+	a, err := cfg.Account("cf", platform.Cloudflare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !a.LegacySecret {
+		t.Error("converted account must be marked LegacySecret")
+	}
+	if a.CredentialBackend != "keyring" || !reflect.DeepEqual(a.Metadata, map[string]string{"account": "acc-1"}) {
+		t.Errorf("cf/cloudflare = %+v", a)
+	}
+	created := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	updated := time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC)
+	if !a.CreatedAt.Equal(created) || !a.UpdatedAt.Equal(updated) {
+		t.Errorf("timestamps = %v / %v", a.CreatedAt, a.UpdatedAt)
+	}
+	// A platform alias in the legacy key is normalised to its ID.
+	reg, err := cfg.Account("reg", platform.NameCom)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reg.LegacySecret || reg.Metadata != nil {
+		t.Errorf("reg/namecom = %+v", reg)
+	}
+
+	// Saving rewrites the file in the current layout and keeps the mark.
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(raw)
+	if strings.Contains(out, "platform:") {
+		t.Errorf("saved config still uses the legacy platform key:\n%s", out)
+	}
+	if !strings.Contains(out, "\n    cf:\n        platforms:\n            cloudflare:\n") {
+		t.Errorf("saved config is not in the platforms layout:\n%s", out)
+	}
+	if n := strings.Count(out, "legacy_secret: true"); n != 2 {
+		t.Errorf("legacy_secret: true appears %d times, want 2:\n%s", n, out)
+	}
+
+	again, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if !reflect.DeepEqual(again.Profiles, cfg.Profiles) {
+		t.Errorf("profiles changed across save and reload:\n got %+v\nwant %+v", again.Profiles, cfg.Profiles)
+	}
+
+	// Once the mark is cleared it is no longer written.
+	for _, ref := range again.Accounts("") {
+		again.Profiles[ref.Profile].Platforms[ref.Platform].LegacySecret = false
+	}
+	if err := again.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if raw, _ = os.ReadFile(path); strings.Contains(string(raw), "legacy_secret") {
+		t.Errorf("cleared mark still written:\n%s", raw)
+	}
+}
+
+func TestLoadCurrentLayoutIsNotLegacy(t *testing.T) {
+	cfg, err := config.Load(writeConfig(t, `profiles:
+    acme:
+        platforms:
+            cf:
+                metadata:
+                    account: acc-1
+            aws:
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	p := cfg.Profiles["acme"]
+	if got := p.PlatformIDs(); !reflect.DeepEqual(got, []platform.ID{platform.AWS, platform.Cloudflare}) {
+		t.Fatalf("PlatformIDs = %v", got)
+	}
+	if a := p.Platforms[platform.Cloudflare]; a.LegacySecret || a.Metadata["account"] != "acc-1" {
+		t.Errorf("acme/cloudflare = %+v", a)
+	}
+	// An account with nothing under it is an empty account, not nil.
+	if a := p.Platforms[platform.AWS]; a == nil || a.LegacySecret {
+		t.Errorf("acme/aws = %+v, want an empty account", a)
+	}
+}
+
+func TestLoadRejectsUnknownPlatform(t *testing.T) {
+	cases := map[string]string{
+		"legacy":  "profiles:\n  p:\n    platform: nosuch\n",
+		"current": "profiles:\n  p:\n    platforms:\n      cloudflare: {}\n      nosuch: {}\n",
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := config.Load(writeConfig(t, body))
+			if err == nil || !strings.Contains(err.Error(), `unknown platform "nosuch"`) {
+				t.Fatalf("Load = %v, want unknown platform error", err)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsPlatformConfiguredTwice(t *testing.T) {
+	// "cf" is an alias of "cloudflare": both name the same account.
+	_, err := config.Load(writeConfig(t, "profiles:\n  p:\n    platforms:\n      cloudflare: {}\n      cf: {}\n"))
+	if err == nil || !strings.Contains(err.Error(), "configured twice") {
+		t.Fatalf("Load = %v, want configured twice error", err)
+	}
+}
+
+func TestLoadRejectsLegacyAndCurrentKeysTogether(t *testing.T) {
+	// A profile is either in the legacy layout or in the current one; a file
+	// with both keys would silently lose one of the two accounts.
+	cases := map[string]string{
+		"different platforms": "profiles:\n  p:\n    platform: cloudflare\n    platforms:\n      godaddy: {}\n",
+		"same platform":       "profiles:\n  p:\n    platform: cloudflare\n    platforms:\n      cloudflare: {}\n",
+		"empty platforms":     "profiles:\n  p:\n    platform: cloudflare\n    platforms: {}\n",
+		"second profile":      "profiles:\n  ok:\n    platforms:\n      aws: {}\n  p:\n    platforms:\n      godaddy: {}\n    platform: cf\n",
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := writeConfig(t, body)
+			cfg, err := config.Load(path)
+			if err == nil {
+				t.Fatalf("Load = %+v, want an error", cfg.Profiles["p"])
+			}
+			for _, want := range []string{"parse " + path, "both platform (legacy layout) and platforms are set", "keep only platforms"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error lacks %q: %v", want, err)
+				}
+			}
+			if raw, _ := os.ReadFile(path); string(raw) != body {
+				t.Error("a rejected config must be left untouched")
+			}
+		})
+	}
+	// Each key alone still loads.
+	for _, body := range []string{"profiles:\n  p:\n    platform: cloudflare\n", "profiles:\n  p:\n    platforms:\n      cloudflare: {}\n"} {
+		cfg, err := config.Load(writeConfig(t, body))
+		if err != nil || len(cfg.Profiles["p"].Platforms) != 1 || cfg.Profiles["p"].Platforms[platform.Cloudflare] == nil {
+			t.Errorf("Load(%q) = %v", body, err)
+		}
+	}
+}
+
+func TestLoadEmptyProfileMapping(t *testing.T) {
+	bodies := map[string]string{
+		"null":            "profiles:\n  empty:\n",
+		"empty mapping":   "profiles:\n  empty: {}\n",
+		"null platforms":  "profiles:\n  empty:\n    platforms:\n",
+		"empty platforms": "profiles:\n  empty:\n    platforms: {}\n",
+	}
+	for name, body := range bodies {
+		t.Run(name, func(t *testing.T) {
+			path := writeConfig(t, body)
+			cfg, err := config.Load(path)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			p, err := cfg.Profile("empty")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p == nil || p.Platforms == nil || len(p.Platforms) != 0 {
+				t.Fatalf("profile = %+v, want an empty non-nil platform map", p)
+			}
+			if ids := p.PlatformIDs(); len(ids) != 0 {
+				t.Errorf("PlatformIDs = %v", ids)
+			}
+			if refs := cfg.Accounts(""); len(refs) != 0 {
+				t.Errorf("Accounts = %v", refs)
+			}
+			if _, err := cfg.Account("empty", platform.AWS); err == nil {
+				t.Error("Account on an empty profile must fail")
+			}
+			// The profile survives a save and reload.
+			if err := cfg.Save(); err != nil {
+				t.Fatal(err)
+			}
+			again, err := config.Load(path)
+			if err != nil {
+				t.Fatalf("reload: %v", err)
+			}
+			if p := again.Profiles["empty"]; p == nil || len(p.Platforms) != 0 {
+				t.Errorf("reloaded profile = %+v", p)
+			}
+		})
+	}
+}
+
+func TestLoadNullProfilesKey(t *testing.T) {
+	cfg, err := config.Load(writeConfig(t, "current_profile: x\nprofiles:\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Profiles == nil || len(cfg.Profiles) != 0 {
+		t.Fatalf("Profiles = %v, want empty non-nil map", cfg.Profiles)
 	}
 }
 
@@ -172,19 +451,29 @@ func TestTTLForOverrides(t *testing.T) {
 	}
 }
 
+// accounts builds a profile holding an empty account on each platform.
+func accounts(ids ...platform.ID) *config.Profile {
+	p := &config.Profile{Platforms: map[platform.ID]*config.Account{}}
+	for _, id := range ids {
+		p.Platforms[id] = &config.Account{}
+	}
+	return p
+}
+
 func TestProfilesForAndNames(t *testing.T) {
 	cfg := &config.Config{Profiles: map[string]*config.Profile{
-		"zeta":  {Platform: platform.NameCom},
-		"alpha": {Platform: platform.NameCom},
-		"cf":    {Platform: platform.Cloudflare},
+		"zeta":  accounts(platform.NameCom, platform.Cloudflare),
+		"alpha": accounts(platform.NameCom),
+		"cf":    accounts(platform.Cloudflare),
+		"none":  {},
 	}}
-	if got := cfg.ProfileNames(); !reflect.DeepEqual(got, []string{"alpha", "cf", "zeta"}) {
+	if got := cfg.ProfileNames(); !reflect.DeepEqual(got, []string{"alpha", "cf", "none", "zeta"}) {
 		t.Errorf("ProfileNames = %v", got)
 	}
 	if got := cfg.ProfilesFor(platform.NameCom); !reflect.DeepEqual(got, []string{"alpha", "zeta"}) {
 		t.Errorf("ProfilesFor(namecom) = %v", got)
 	}
-	if got := cfg.ProfilesFor(platform.Cloudflare); !reflect.DeepEqual(got, []string{"cf"}) {
+	if got := cfg.ProfilesFor(platform.Cloudflare); !reflect.DeepEqual(got, []string{"cf", "zeta"}) {
 		t.Errorf("ProfilesFor(cloudflare) = %v", got)
 	}
 	if got := cfg.ProfilesFor(platform.AWS); len(got) != 0 {
@@ -195,6 +484,82 @@ func TestProfilesForAndNames(t *testing.T) {
 	}
 	if _, err := cfg.Profile("missing"); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Errorf("Profile(missing) = %v, want not found error", err)
+	}
+}
+
+func TestAccountLookup(t *testing.T) {
+	want := &config.Account{Metadata: map[string]string{"account": "acc-1"}}
+	cfg := &config.Config{Profiles: map[string]*config.Profile{
+		"acme": {Platforms: map[platform.ID]*config.Account{
+			platform.Cloudflare: want,
+			platform.AWS:        {},
+		}},
+	}}
+	got, err := cfg.Account("acme", platform.Cloudflare)
+	if err != nil {
+		t.Fatalf("Account: %v", err)
+	}
+	if got != want {
+		t.Errorf("Account returned %p, want the stored account %p", got, want)
+	}
+	_, err = cfg.Account("acme", platform.GoDaddy)
+	if err == nil {
+		t.Fatal("Account on a platform the profile lacks must fail")
+	}
+	for _, part := range []string{`profile "acme"`, "no godaddy account", "auth login godaddy --profile acme"} {
+		if !strings.Contains(err.Error(), part) {
+			t.Errorf("error %q lacks %q", err, part)
+		}
+	}
+	if _, err := cfg.Account("missing", platform.Cloudflare); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Errorf("Account(missing) = %v, want not found error", err)
+	}
+}
+
+func TestAccountsAndPlatformIDsOrdering(t *testing.T) {
+	cfg := &config.Config{Profiles: map[string]*config.Profile{
+		"zeta":  accounts(platform.NameCom, platform.AWS, platform.Cloudflare),
+		"alpha": accounts(platform.GoDaddy, platform.GCP, platform.Aliyun),
+		"none":  {},
+	}}
+	if got := cfg.Profiles["zeta"].PlatformIDs(); !reflect.DeepEqual(got,
+		[]platform.ID{platform.AWS, platform.Cloudflare, platform.NameCom}) {
+		t.Errorf("PlatformIDs(zeta) = %v", got)
+	}
+	if got := cfg.Profiles["none"].PlatformIDs(); len(got) != 0 {
+		t.Errorf("PlatformIDs(none) = %v", got)
+	}
+	all := []config.AccountRef{
+		{Profile: "alpha", Platform: platform.Aliyun},
+		{Profile: "alpha", Platform: platform.GCP},
+		{Profile: "alpha", Platform: platform.GoDaddy},
+		{Profile: "zeta", Platform: platform.AWS},
+		{Profile: "zeta", Platform: platform.Cloudflare},
+		{Profile: "zeta", Platform: platform.NameCom},
+	}
+	// Map iteration is random: repeat to catch an unsorted result.
+	for i := 0; i < 20; i++ {
+		if got := cfg.Accounts(""); !reflect.DeepEqual(got, all) {
+			t.Fatalf("Accounts(\"\") = %v, want %v", got, all)
+		}
+	}
+	if got := cfg.Accounts("zeta"); !reflect.DeepEqual(got, all[3:]) {
+		t.Errorf("Accounts(zeta) = %v", got)
+	}
+	if got := cfg.Accounts("none"); len(got) != 0 {
+		t.Errorf("Accounts(none) = %v", got)
+	}
+	if got := cfg.Accounts("missing"); len(got) != 0 {
+		t.Errorf("Accounts(missing) = %v", got)
+	}
+	if got := all[4].String(); got != "zeta/cloudflare" {
+		t.Errorf("AccountRef.String() = %q", got)
+	}
+}
+
+func TestDefaultProfileName(t *testing.T) {
+	if config.DefaultProfile != "default" {
+		t.Errorf("DefaultProfile = %q", config.DefaultProfile)
 	}
 }
 

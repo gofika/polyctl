@@ -18,7 +18,10 @@ import (
 	"github.com/gofika/polyctl/internal/platform"
 )
 
-// harness is a Runtime with one aliyun profile ("ali", region cn-shanghai)
+// aliAccount is the account the harness configures.
+var aliAccount = config.AccountRef{Profile: "ali", Platform: platform.Aliyun}
+
+// harness is a Runtime with one aliyun account (profile "ali", region cn-shanghai)
 // whose requests go to a fake API.
 type harness struct {
 	t      *testing.T
@@ -45,12 +48,14 @@ func newHarness(t *testing.T, flags app.Flags) *harness {
 	}
 	cfg.CredentialStore = "file"
 	cfg.Profiles = map[string]*config.Profile{
-		"ali": {Platform: platform.Aliyun, Metadata: map[string]string{metaRegion: "cn-shanghai"}},
+		"ali": {Platforms: map[platform.ID]*config.Account{
+			platform.Aliyun: {Metadata: map[string]string{metaRegion: "cn-shanghai"}},
+		}},
 	}
 	if err := cfg.Save(); err != nil {
 		t.Fatal(err)
 	}
-	if err := creds.NewFile(dir).Set("ali", map[string]string{secretKeyID: "LTAItestkeyid000", secretKeySecret: "testsecret"}); err != nil {
+	if err := creds.NewFile(dir).Set(creds.Key("ali", string(platform.Aliyun)), map[string]string{secretKeyID: "LTAItestkeyid000", secretKeySecret: "testsecret"}); err != nil {
 		t.Fatal(err)
 	}
 	flags.ConfigPath = cfgPath
@@ -111,7 +116,7 @@ func instancesBody(region string, ids ...string) map[string]any {
 	return map[string]any{"TotalCount": len(items), "Instances": map[string]any{"Instance": items}}
 }
 
-func TestSyncProfileKeepsDomainsWhenRegistrarForbidden(t *testing.T) {
+func TestSyncAccountKeepsDomainsWhenRegistrarForbidden(t *testing.T) {
 	h := newHarness(t, app.Flags{})
 	ctx := context.Background()
 	set := inventory.Set{Platform: platform.Aliyun, Profile: "ali", Type: platform.ResDomain}
@@ -135,9 +140,9 @@ func TestSyncProfileKeepsDomainsWhenRegistrarForbidden(t *testing.T) {
 	})
 	h.api.on("DescribeInstances", func(q url.Values) (int, any) { return 200, instancesBody(q.Get("RegionId"), "i-1") })
 
-	reports, err := h.rt.SyncProfile(ctx, "ali", nil)
+	reports, err := h.rt.SyncAccount(ctx, aliAccount, nil)
 	if err != nil {
-		t.Fatalf("SyncProfile must not abort on a RAM denial: %v", err)
+		t.Fatalf("SyncAccount must not abort on a RAM denial: %v", err)
 	}
 	byType := map[platform.ResourceType]app.SyncReport{}
 	for _, r := range reports {
@@ -169,7 +174,7 @@ func TestSyncProfileKeepsDomainsWhenRegistrarForbidden(t *testing.T) {
 
 	// An authentication failure still aborts.
 	h.api.on("DescribeDomains", func(q url.Values) (int, any) { return 404, apiErr("InvalidAccessKeyId.NotFound", "bad key") })
-	if _, err := h.rt.SyncProfile(ctx, "ali", nil); !errors.Is(err, platform.ErrUnauthorized) {
+	if _, err := h.rt.SyncAccount(ctx, aliAccount, nil); !errors.Is(err, platform.ErrUnauthorized) {
 		t.Errorf("bad key sync = %v, want ErrUnauthorized", err)
 	}
 }
@@ -227,7 +232,7 @@ func TestECSListScopesToProfileRegion(t *testing.T) {
 		return 200, map[string]any{"TotalCount": 0, "Domains": map[string]any{"Domain": []map[string]any{}}}
 	})
 	h.api.on("QueryDomainList", func(q url.Values) (int, any) { return 200, domainListBody() })
-	if _, err := h.rt.SyncProfile(context.Background(), "ali", nil); err != nil {
+	if _, err := h.rt.SyncAccount(context.Background(), aliAccount, nil); err != nil {
 		t.Fatal(err)
 	}
 	n = len(h.api.callsFor("DescribeInstances"))
@@ -265,7 +270,7 @@ func TestDomainGetUsesInventory(t *testing.T) {
 
 	// The set is not marked fresh by an Upsert alone; a sync makes it fresh.
 	h.api.on("QueryDomainList", func(q url.Values) (int, any) { return 200, domainListBody("d1.example") })
-	if _, err := h.rt.SyncProfile(context.Background(), "ali", []platform.ResourceType{platform.ResDomain}); err != nil {
+	if _, err := h.rt.SyncAccount(context.Background(), aliAccount, []platform.ResourceType{platform.ResDomain}); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.run("domain", "get", "d1.example"); err != nil {

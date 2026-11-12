@@ -32,14 +32,17 @@ func resetFakes() {
 	fakeClients = map[string]*fakeClient{}
 }
 
-// client returns the fake client backing a profile, creating it on demand.
-func client(profile string) *fakeClient {
+// clientFor returns the fake client backing a profile's account on a
+// platform, creating it on demand. Clients are keyed by account, so one
+// profile holding both fake platforms gets two independent clients.
+func clientFor(profile string, id platform.ID) *fakeClient {
 	fakeMu.Lock()
 	defer fakeMu.Unlock()
-	c := fakeClients[profile]
+	key := profile + "/" + string(id)
+	c := fakeClients[key]
 	if c == nil {
-		c = &fakeClient{records: map[string][]platform.Record{}}
-		fakeClients[profile] = c
+		c = &fakeClient{id: id, records: map[string][]platform.Record{}}
+		fakeClients[key] = c
 	}
 	return c
 }
@@ -64,7 +67,7 @@ func (p *fakeProvider) Open(ctx context.Context, prof platform.Profile) (platfor
 	if prof.Secret["token"] == "" {
 		return nil, fmt.Errorf("%w: missing token", platform.ErrUnauthorized)
 	}
-	c := client(prof.Name)
+	c := clientFor(prof.Name, p.id)
 	c.record("Open")
 	if c.noDNS {
 		return &plainClient{c: c}, nil
@@ -75,6 +78,7 @@ func (p *fakeProvider) Open(ctx context.Context, prof platform.Profile) (platfor
 // fakeClient is an in-memory platform with zones, records and domains. It
 // records every call so tests can assert what reached the "network".
 type fakeClient struct {
+	id      platform.ID
 	mu      sync.Mutex
 	zones   []platform.Zone
 	records map[string][]platform.Record
@@ -106,7 +110,7 @@ func (c *fakeClient) count(prefix string) int {
 
 func (c *fakeClient) Verify(ctx context.Context) (*platform.Identity, error) {
 	c.record("Verify")
-	return &platform.Identity{Account: "fake-account"}, nil
+	return &platform.Identity{Account: "fake-account-" + string(c.id)}, nil
 }
 
 func (c *fakeClient) Sync(ctx context.Context, rt platform.ResourceType) ([]platform.Resource, error) {

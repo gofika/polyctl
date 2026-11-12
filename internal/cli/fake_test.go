@@ -15,6 +15,10 @@ import (
 // provider through platform.Override for the duration of the test binary.
 const fakePlatform = platform.Cloudflare
 
+// fakePlatform2 is a second fake platform, installed over the real GoDaddy
+// provider, for tests of profiles that hold several accounts.
+const fakePlatform2 = platform.GoDaddy
+
 var (
 	registerOnce sync.Once
 	fakeMu       sync.Mutex
@@ -22,7 +26,10 @@ var (
 )
 
 func registerFake() {
-	registerOnce.Do(func() { platform.Override(&fakeProvider{}) })
+	registerOnce.Do(func() {
+		platform.Override(&fakeProvider{id: fakePlatform, name: "Fake DNS"})
+		platform.Override(&fakeProvider{id: fakePlatform2, name: "Fake Registrar"})
+	})
 }
 
 func resetFake() {
@@ -31,37 +38,60 @@ func resetFake() {
 	fakeClients = map[string]*fakeClient{}
 }
 
-// client returns the fake client backing a profile, creating it on demand.
-func client(profile string) *fakeClient {
+// client returns the fake client backing a profile's account on
+// fakePlatform, creating it on demand.
+func client(profile string) *fakeClient { return clientOn(profile, fakePlatform) }
+
+// clientOn returns the fake client backing a profile's account on a
+// platform, creating it on demand.
+func clientOn(profile string, id platform.ID) *fakeClient {
 	fakeMu.Lock()
 	defer fakeMu.Unlock()
-	c := fakeClients[profile]
+	key := profile + "/" + string(id)
+	c := fakeClients[key]
 	if c == nil {
 		c = &fakeClient{records: map[string][]platform.Record{}}
-		fakeClients[profile] = c
+		fakeClients[key] = c
 	}
 	return c
 }
 
-type fakeProvider struct{}
+type fakeProvider struct {
+	id   platform.ID
+	name string
+}
 
-func (*fakeProvider) ID() platform.ID     { return fakePlatform }
-func (*fakeProvider) DisplayName() string { return "Fake DNS" }
-func (*fakeProvider) LoginHelp() string   { return "fake login" }
+func (p *fakeProvider) ID() platform.ID     { return p.id }
+func (p *fakeProvider) DisplayName() string { return p.name }
+func (*fakeProvider) LoginHelp() string     { return "fake login" }
 func (*fakeProvider) ResourceTypes() []platform.ResourceType {
 	return []platform.ResourceType{platform.ResZone, platform.ResDNSRecord, platform.ResDomain}
 }
 
-func (*fakeProvider) Login(ctx context.Context, in platform.LoginInput) (*platform.LoginResult, error) {
-	return &platform.LoginResult{Secret: map[string]string{"token": "fake"}, Label: in.ProfileName}, nil
+// Login stores the token option (default "fake") as the secret and records
+// the account option, falling back to the account of a previous login.
+func (p *fakeProvider) Login(ctx context.Context, in platform.LoginInput) (*platform.LoginResult, error) {
+	token := in.Options["token"]
+	if token == "" {
+		token = "fake"
+	}
+	account := in.Options["account"]
+	if account == "" {
+		account = in.Existing["account"]
+	}
+	res := &platform.LoginResult{Secret: map[string]string{"token": token}, Label: in.ProfileName}
+	if account != "" {
+		res.Metadata = map[string]string{"account": account}
+	}
+	return res, nil
 }
 
-func (*fakeProvider) Open(ctx context.Context, prof platform.Profile) (platform.Client, error) {
+func (p *fakeProvider) Open(ctx context.Context, prof platform.Profile) (platform.Client, error) {
 	if prof.Secret["token"] == "" {
 		return nil, fmt.Errorf("%w: missing token", platform.ErrUnauthorized)
 	}
-	c := client(prof.Name)
-	c.record("Open")
+	c := clientOn(prof.Name, p.id)
+	c.record("Open:" + prof.Secret["token"])
 	return c, nil
 }
 

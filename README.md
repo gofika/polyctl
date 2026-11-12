@@ -12,9 +12,9 @@ Everything it learns about your accounts is cached in a local SQLite inventory, 
 ## Features
 
 - Six platforms: Cloudflare, name.com, GoDaddy, AWS, GCP, Alibaba Cloud.
-- Multiple profiles per platform (`work-aws`, `personal-aws`, ...), one platform per profile.
+- Profiles that group accounts: one profile holds one account on each platform a project uses (`acme` = its Cloudflare, name.com and AWS accounts), and you can keep as many profiles as you have projects or customers.
 - Secrets in the OS keyring (macOS Keychain, Windows Credential Manager, Secret Service on Linux) with an automatic fallback to a `0600` file; `config.yaml` never holds a secret.
-- Domain routing: `polyctl dns list example.com` finds the right zone and account by itself. Conflicts (the same domain in two profiles) are reported instead of guessed.
+- Domain routing: `polyctl dns list example.com` finds the right zone and account by itself. Conflicts (the same domain in two accounts) are reported instead of guessed; `--profile` and `--platform` pick one.
 - Local inventory (`inventory.db`): per-resource-type TTLs, `--refresh` to force a fetch, `--offline` to forbid the network, `polyctl sync` to bulk-load.
 - `table` (default), `json` and `yaml` output for every command.
 - Distinct exit codes for usage, auth, not-found, ambiguous, offline and not-supported errors.
@@ -98,15 +98,21 @@ polyctl completion fish > ~/.config/fish/completions/polyctl.fish
 polyctl completion powershell | Out-String | Invoke-Expression
 ```
 
-Completion is context-aware: `--profile` completes configured profiles, `auth login` completes platform names, and the `<domain>` argument of `dns` / `domain` commands completes from the local domain index.
+Completion is context-aware: `--profile` completes configured profiles, `auth login`, `auth logout` and `--platform` complete platform names, and the `<domain>` argument of `dns` / `domain` commands completes from the local domain index.
 
 ## Quick start
 
 ```sh
-# 1. Log in to the accounts you use (secrets go to the keyring)
-polyctl auth login cloudflare --profile cf-main
-polyctl auth login namecom    --profile namecom
-polyctl auth login aws        --profile work-aws --set method=sso --set start_url=https://acme.awsapps.com/start --set sso_region=us-east-1
+# 1. Log in to the accounts you use (secrets go to the keyring).
+#    With no profile current, the first login creates the profile "default"
+#    and makes it current; the following ones add their platform to it.
+polyctl auth login cloudflare
+polyctl auth login namecom
+polyctl auth login aws --set method=sso --set start_url=https://acme.awsapps.com/start --set sso_region=us-east-1
+
+#    A second project gets its own profile
+polyctl auth login cloudflare --profile acme
+polyctl auth login godaddy    --profile acme
 
 # 2. Check that everything works
 polyctl auth status
@@ -120,12 +126,16 @@ polyctl dns list example.com
 polyctl dns update example.com --type A --name www --value 203.0.113.10
 polyctl domain ns set example.com --ns ns1.cloudflare.com,ns2.cloudflare.com
 
+#    When several accounts know the domain, say which one you mean
+polyctl dns list example.com --platform cloudflare
+polyctl dns list example.com --profile acme --platform cloudflare
+
 # 5. Or talk to one platform directly
-polyctl cf zone list
-polyctl aws ec2 list --profile work-aws
+polyctl aws ec2 list                  # the AWS account of the current profile
+polyctl cf zone list --profile acme   # the Cloudflare account of another profile
 ```
 
-Status lines (`zone example.com via cloudflare/cf-main`) go to **stderr**; results go to **stdout**, so `polyctl dns list example.com -o json | jq` works as expected.
+Status lines (`zone example.com via cloudflare/default`) go to **stderr**; results go to **stdout**, so `polyctl dns list example.com -o json | jq` works as expected.
 
 ## Configuration
 
@@ -149,7 +159,7 @@ All state lives in one directory, `~/.config/polyctl/` by default (created with 
 | Global flag | Effect |
 | --- | --- |
 | `--config <file>` | Config file to use; its directory becomes the config directory. |
-| `-p, --profile <name>` | Use this profile. Overrides automatic routing and the current profile. |
+| `-p, --profile <name>` | Use this profile. Overrides the current profile and restricts automatic routing, `sync`, `domain index` and `auth status` to the accounts of this profile. For `auth login` it names the profile the account is added to. |
 | `--refresh` | Ignore the cache: fetch from the platform and update the inventory. |
 | `--offline` | Never touch the network; serve from the inventory only. Mutually exclusive with `--refresh`. |
 | `-o, --output <fmt>` | `table` (default), `json` or `yaml`. |
@@ -158,10 +168,12 @@ All state lives in one directory, `~/.config/polyctl/` by default (created with 
 | `-y, --yes` | Assume "yes" on confirmation prompts (for example multi-record deletes). |
 | `--version` | Print the build version. |
 
+The `dns` and `domain` command groups add one flag of their own, `--platform <platform>`, which restricts routing (and any indexing) to the accounts on that platform; see [Routing rules](#routing-rules). `sync` and `inventory list` have their own `--platform` filters, described under [Caching](#caching).
+
 ### `config.yaml`
 
 ```yaml
-current_profile: cf-main          # used when a platform command has several candidate profiles
+current_profile: acme             # the profile platform commands and `auth login` use by default
 credential_store: auto            # auto (default) | keyring | file
 output: table                     # table | json | yaml
 
@@ -173,53 +185,63 @@ ttl:                              # freshness window per resource type (Go durat
   instance: 15m
 
 profiles:
-  cf-main:
-    platform: cloudflare
-    metadata:
-      account_id: 0123456789abcdef0123456789abcdef
-      email: ops@example.com
-    credential_backend: keyring
-    created_at: 2026-11-01T10:00:00Z
-    updated_at: 2026-11-01T10:00:00Z
-  namecom:
-    platform: namecom
-    metadata:
-      username: acme
-      env: production
-    credential_backend: keyring
-  work-aws:
-    platform: aws
-    metadata:
-      method: sso
-      start_url: https://acme.awsapps.com/start
-      sso_region: us-east-1
-      account_id: "123456789012"
-      role_name: AdministratorAccess
-      region: eu-west-1
-    credential_backend: keyring
+  acme:                           # one profile, one account per platform
+    platforms:
+      cloudflare:
+        metadata:
+          account_id: 0123456789abcdef0123456789abcdef
+          email: ops@example.com
+        credential_backend: keyring
+        created_at: 2026-11-01T10:00:00Z
+        updated_at: 2026-11-01T10:00:00Z
+      namecom:
+        metadata:
+          username: acme
+          env: production
+        credential_backend: keyring
+      aws:
+        metadata:
+          method: sso
+          start_url: https://acme.awsapps.com/start
+          sso_region: us-east-1
+          account_id: "123456789012"
+          role_name: AdministratorAccess
+          region: eu-west-1
+        credential_backend: keyring
+  lab:
+    platforms:
+      aws:
+        metadata:
+          method: keys
+          region: us-east-1
+        credential_backend: keyring
 ```
 
 Keys:
 
-- `current_profile`: the profile a **platform-specific** command uses when you did not pass `--profile` and the profile's platform matches. If it does not match, polyctl falls back to "the only profile on that platform", and errors with the candidate list when there are several.
+- `current_profile`: the profile a **platform-specific** command uses when you did not pass `--profile`, provided it has an account on that platform. If it has none, polyctl falls back to "the only profile with an account on that platform", and errors with the candidate list when there are several. It is also the profile `auth login` adds an account to when `--profile` is not given. Set by `auth use`, and by `auth login` when no profile is current.
 - `credential_store`: `auto` tries the keyring and falls back to the file (printing a warning once); `keyring` fails if no keyring is available; `file` always uses `credentials.json`.
 - `ttl`: how long a synced set stays fresh. Unset types use `default`; the built-in defaults are `dns_record: 1h`, `zone: 24h`, `domain: 24h`, `instance: 15m`, `default: 24h`.
 - `output`: default output format.
-- `profiles.<name>.platform`: one of `cloudflare`, `namecom`, `godaddy`, `aws`, `gcp`, `aliyun`.
-- `profiles.<name>.metadata`: non-secret values the provider needs (account id, region, project, login method...). Populated by `auth login`; you can edit them by hand.
-- `profiles.<name>.credential_backend`: where the secret was written (`keyring` or `file`). Informational.
+- `profiles.<name>.platforms.<platform>`: the profile's account on one platform; `<platform>` is one of `cloudflare`, `namecom`, `godaddy`, `aws`, `gcp`, `aliyun`. A profile holds at most one account per platform.
+- `profiles.<name>.platforms.<platform>.metadata`: non-secret values the provider needs (account id, region, project, login method...). Populated by `auth login`; you can edit them by hand.
+- `profiles.<name>.platforms.<platform>.credential_backend`: where the secret was written (`keyring` or `file`). Informational.
+- `profiles.<name>.platforms.<platform>.created_at` / `updated_at`: when the account was first added and last logged in.
+- `profiles.<name>.platforms.<platform>.legacy_secret`: written by polyctl only, while an account converted from a 0.1.x config still has its secret under the old key (see [Upgrading from 0.1.x](#upgrading-from-01x)). It disappears once the secret has been moved.
 
 Profile names must not contain spaces or slashes.
 
+Files written by 0.1.x, where a profile was a single platform (`profiles.<name>.platform: cloudflare` with `metadata` next to it), are still read: each such profile becomes a profile holding that one platform. See [Upgrading from 0.1.x](#upgrading-from-01x). A profile that has both a `platform:` and a `platforms:` key is rejected when the config is loaded (exit code 2); keep only `platforms:`.
+
 ### Credential storage
 
-`auth login` stores each profile's secret as one keyring entry (service `polyctl`, account = profile name) through `github.com/zalando/go-keyring`:
+`auth login` stores the secret of each account as one keyring entry (service `polyctl`, account = `<profile>/<platform>`, for example `acme/cloudflare`) through `github.com/zalando/go-keyring`:
 
 - macOS: Keychain
 - Windows: Credential Manager
 - Linux / BSD: Secret Service (GNOME Keyring, KWallet via the D-Bus API)
 
-When the keyring cannot be reached (headless servers, containers, no D-Bus session), polyctl falls back to `<config dir>/credentials.json` with mode `0600` and prints a one-line warning. Reads consult both backends, so a profile created on a headless box keeps working after a keyring becomes available, and vice versa. `auth logout` removes the secret from every backend.
+When the keyring cannot be reached (headless servers, containers, no D-Bus session), polyctl falls back to `<config dir>/credentials.json` with mode `0600` and prints a one-line warning. Reads consult both backends, so an account created on a headless box keeps working after a keyring becomes available, and vice versa. `auth logout` removes the secret from every backend. In the file backend the entries of `credentials.json` are keyed the same way.
 
 Force a backend with `credential_store: file` / `keyring` in `config.yaml` or the `POLYCTL_CREDENTIAL_STORE` environment variable.
 
@@ -269,21 +291,41 @@ CREATE TABLE sync_state (              -- freshness of each synced set
 
 ## Accounts
 
-A **profile** is one account on one platform. Commands:
+A **profile** is a named set of accounts, at most one per platform. It usually stands for one project or one customer: the profile `acme` holds acme's Cloudflare account, its name.com account and its AWS account, so one name selects all of them. Two accounts on the same platform (production and a test environment, two AWS organisations) go into two profiles. Commands:
 
 ```text
 polyctl auth login <platform> [--profile <name>] [--set key=value ...]
 polyctl auth list
 polyctl auth use <profile>
 polyctl auth status [--profile <name>]
-polyctl auth logout --profile <name> [--keep-inventory]
+polyctl auth logout [platform] --profile <name> [--keep-inventory]
 ```
 
-- `auth login` runs the platform's login flow, stores the secret, writes the metadata to `config.yaml` and makes the profile current if none was set. The profile name defaults to the platform name. Logging in again with an existing profile name re-authenticates it (the platform must match). Platform-specific inputs are passed with `--set key=value` (repeatable); anything not given is asked interactively. Platform names accept aliases (`cf`, `name.com`, `gd`, `google`, `alibaba`, ...).
-- `auth list` shows every profile, which one is current (`*`), its credential backend and a summary of its metadata.
-- `auth use` sets `current_profile`.
-- `auth status` calls each platform (or just `--profile`) to verify the stored credentials and prints the resolved identity (account, user, email, ARN, project...). It exits with code 3 if any profile fails. With `--offline` it only checks that credentials are present.
-- `auth logout` deletes the secret from every backend, removes the profile from `config.yaml` and purges the profile's cached resources from the inventory (keep them with `--keep-inventory`).
+- `auth login` runs the platform's login flow, stores the secret and writes the account's metadata to `config.yaml`. The account is added to `--profile` when given, otherwise to the current profile, otherwise (no profile is current) to a profile named `default`; a profile that does not exist is created, and the target profile becomes current if none was. Logging in to a platform the profile already has re-authenticates that account and leaves the profile's other accounts alone. Without `--profile`, when the target profile has no account on the platform but another profile does, nothing is changed and the command fails with a usage error (exit code 2) that lists those profiles: pass `--profile <name>` to re-authenticate one of them, or `--profile <target>` to really add a second account on that platform. Platform-specific inputs are passed with `--set key=value` (repeatable); anything not given is asked interactively. Platform names accept aliases (`cf`, `name.com`, `gd`, `google`, `alibaba`, ...).
+- `auth list` shows one row per account: profile, platform, whether the profile is current (`*`), the credential backend and a summary of the metadata.
+- `auth use` sets `current_profile`; an unknown profile is an error (exit code 4).
+- `auth status` calls the platform of every account (or only those of `--profile`) to verify the stored credentials and prints the resolved identity (account, user, email, ARN, project...), one row per account. It exits with code 3 if any account fails. With `--offline` it only checks that credentials are present.
+- `auth logout --profile <name>` removes the whole profile: every account in it, their secrets from every backend, and their cached resources from the inventory (keep those with `--keep-inventory`). `auth logout <platform> --profile <name>` removes only that account; the profile itself is removed when it was its last one. `--profile` is required, and the platform is optional. `config.yaml` is saved after each removed account. Removing the current profile leaves no current profile until the next `auth use` or `auth login`.
+
+```sh
+polyctl auth login cloudflare --profile acme     # creates the profile acme (and makes it current if no profile was)
+polyctl auth login namecom    --profile acme     # adds a second platform to it
+polyctl auth use acme                            # later logins and platform commands default to acme
+polyctl auth login aws                           # added to acme, provided no other profile has an AWS account
+polyctl auth login aws --profile acme            # always unambiguous
+polyctl auth logout namecom --profile acme       # drop one account
+polyctl auth logout --profile acme               # drop the whole profile
+```
+
+### Upgrading from 0.1.x
+
+In 0.1.x a profile was a single account on a single platform. From 0.2 on a profile is a named set of accounts, one per platform.
+
+- **`config.yaml` is converted automatically.** Each old profile becomes a profile of the same name holding that one platform; profile names, `current_profile`, metadata and the inventory are kept. Nothing has to be done by hand.
+- **Secrets move to new keys.** They were stored under the bare profile name and now live under `<profile>/<platform>` (for example `cloudflare/cloudflare` for an old profile named `cloudflare`). The first command that opens the credential store copies each secret to its new key, deletes the old entry and rewrites `config.yaml` in the new layout. Until that has succeeded for an account, for example because its secret sits in a keyring this machine cannot reach right now, the account stays marked as legacy (`config.yaml` keeps the old layout, or shows `legacy_secret: true` once it has been rewritten), keeps reading the old entry, and the move is retried on later runs. `-v` prints any error met while moving a secret.
+- **`auth login <platform>` no longer names the profile after the platform.** In 0.1.x `polyctl auth login cloudflare` wrote the profile `cloudflare`; now it targets the current profile (or `default`). To re-authenticate a converted profile, pass its old name: `polyctl auth login cloudflare --profile cloudflare`. If you forget, polyctl does not quietly create a second account: when the platform is configured only in other profiles, the login stops with a usage error naming them.
+- **`auth logout` takes an optional platform.** `polyctl auth logout --profile <name>` still removes the whole profile; `polyctl auth logout <platform> --profile <name>` removes one account of it.
+- **Merging is optional.** To gather converted one-platform profiles into one, log the platforms in again under a common `--profile` and remove the old profiles with `auth logout`.
 
 ### Login flows per platform
 
@@ -294,9 +336,9 @@ Browser-based flows open your default browser; pass `--no-browser` to print the 
 Uses an API token. polyctl opens <https://dash.cloudflare.com/profile/api-tokens>, where you create a token (the "Edit zone DNS" template is a good start; required: `Zone:Read` and `DNS:Edit`; optional: `Account:Read` to list accounts, `Zone:Edit` for cache purge / development mode / SSL mode, `User:Read` to show your email), then prompts for it. Non-interactive: export `CLOUDFLARE_API_TOKEN` (the same variable Terraform and wrangler use) or pipe the token on stdin.
 
 ```sh
-polyctl auth login cloudflare --profile cf-main
-CLOUDFLARE_API_TOKEN=... polyctl auth login cloudflare --profile cf-main --set account_id=...
-polyctl auth login cloudflare --profile cf-main --set token=...      # works, but warns: the token lands in shell history / process list
+polyctl auth login cloudflare                                        # added to the current profile (or to "default" when no profile is current)
+CLOUDFLARE_API_TOKEN=... polyctl auth login cloudflare --profile acme --set account_id=...
+polyctl auth login cloudflare --profile acme --set token=...         # works, but warns: the token lands in shell history / process list
 ```
 
 `account_id` is optional; when omitted polyctl discovers the accounts the token can see and asks you to pick one if there are several. The token is verified before it is stored.
@@ -306,20 +348,20 @@ polyctl auth login cloudflare --profile cf-main --set token=...      # works, bu
 Username plus API token. polyctl opens <https://www.name.com/account/settings/api> for token creation and prompts for both values.
 
 ```sh
-polyctl auth login namecom --profile namecom
-polyctl auth login namecom --profile namecom-test --set username=acme --set token=... --set env=test
+polyctl auth login namecom --profile acme
+polyctl auth login namecom --profile acme-test --set username=acme --set token=... --set env=test   # a second name.com account needs its own profile
 ```
 
-`env=test` (aliases `dev`, `development`) points the profile at name.com's test environment (`api.dev.name.com`). That environment requires a token generated for it and your username with `-test` appended; polyctl adds the suffix automatically when it is missing. API access must be enabled in the account settings, and name.com may require your IP address to be whitelisted there.
+`env=test` (aliases `dev`, `development`) points the account at name.com's test environment (`api.dev.name.com`). That environment requires a token generated for it and your username with `-test` appended; polyctl adds the suffix automatically when it is missing. API access must be enabled in the account settings, and name.com may require your IP address to be whitelisted there.
 
 #### GoDaddy
 
 Personal Access Token (PAT) created at <https://developer.godaddy.com/personal-access-token>. GoDaddy does not offer an OAuth flow for third-party CLIs, so polyctl opens that page and prompts for the token. The legacy API key + secret pair is still accepted (`--set key=... --set secret=...` or `--set method=api_key`) but GoDaddy has deprecated it for the Domains API.
 
 ```sh
-polyctl auth login godaddy --profile godaddy
-polyctl auth login godaddy --profile godaddy-ote --set token=... --set env=ote
-polyctl auth login godaddy --profile godaddy-legacy --set key=... --set secret=...   # legacy API key pair
+polyctl auth login godaddy --profile acme
+polyctl auth login godaddy --profile acme-ote --set token=... --set env=ote
+polyctl auth login godaddy --profile legacy --set key=... --set secret=...   # legacy API key pair
 ```
 
 `env=ote` (alias `test`) targets the OTE environment at `api.ote-godaddy.com`. For production API access GoDaddy requires the account to hold at least one domain or be on a plan that grants API management access; paid operations need a billing method on file. Requests that fail this check return `403 ACCESS_DENIED`, which polyctl reports as an authentication failure (exit code 3) with a hint to use an OTE credential for development.
@@ -337,7 +379,7 @@ Three methods, selected with `--set method=`:
 `--set region=` sets the default region for regional services (EC2). Route 53 and Route 53 Domains are global.
 
 ```sh
-polyctl auth login aws --profile work-aws --set method=sso --set start_url=https://acme.awsapps.com/start --set sso_region=us-east-1 --set account_id=123456789012 --set role_name=AdministratorAccess --set region=eu-west-1
+polyctl auth login aws --profile acme --set method=sso --set start_url=https://acme.awsapps.com/start --set sso_region=us-east-1 --set account_id=123456789012 --set role_name=AdministratorAccess --set region=eu-west-1
 polyctl auth login aws --profile lab --set method=keys
 polyctl auth login aws --profile legacy --set method=profile --set aws_profile=default
 ```
@@ -353,8 +395,8 @@ polyctl auth login aws --profile legacy --set method=profile --set aws_profile=d
 `--set project=` sets the default project; when omitted polyctl lists the projects the credentials can see and asks you to choose.
 
 ```sh
-polyctl auth login gcp --profile gcp-prod --set project=acme-prod
-polyctl auth login gcp --profile gcp-ci --set method=service-account --set key_file=./sa.json --set project=acme-ci
+polyctl auth login gcp --profile acme --set project=acme-prod
+polyctl auth login gcp --profile acme-ci --set method=service-account --set key_file=./sa.json --set project=acme-ci
 ```
 
 #### Alibaba Cloud
@@ -362,15 +404,15 @@ polyctl auth login gcp --profile gcp-ci --set method=service-account --set key_f
 RAM AccessKey pair from <https://ram.console.aliyun.com/manage/ak>. polyctl opens the page and prompts for the key id and secret.
 
 ```sh
-polyctl auth login aliyun --profile aliyun --set region=cn-hangzhou
-polyctl auth login aliyun --profile aliyun --set from_cli=default     # import from an `aliyun` CLI profile
+polyctl auth login aliyun --profile acme --set region=cn-hangzhou
+polyctl auth login aliyun --profile acme --set from_cli=default       # import from an `aliyun` CLI profile
 ```
 
 `--set from_cli=<name>` copies the AccessKey of an existing Alibaba Cloud CLI profile (`~/.aliyun/config.json`, or the file named by `ALIBABA_CLOUD_CLI_CONFIG`; `from_cli=current` picks the CLI's current profile; only AK-mode profiles can be imported) into the keyring. `--set region=` is the default region for ECS (default `cn-hangzhou`); Alidns is region-independent. `--set site=cn|intl` selects the Domain (registrar) API site: `cn` for aliyun.com accounts, `intl` for alibabacloud.com accounts; when omitted it is derived from the region (`cn-*` = `cn`, otherwise `intl`). Grant the RAM user `AliyunDNSFullAccess`, `AliyunDomainFullAccess` and/or `AliyunECSReadOnlyAccess` as needed.
 
 ## Platform-neutral commands
 
-These commands take a domain name and route it to the right platform and profile.
+These commands take a domain name and route it to the account that owns it: a platform and a profile. Both command groups accept `--profile <name>` and `--platform <platform>` to narrow the choice; `--platform` takes the same names and aliases as `auth login`.
 
 ### DNS
 
@@ -379,6 +421,8 @@ polyctl dns list   <domain> [--type A] [--name www]
 polyctl dns update <domain> --type <T> --value <V> [--name www|@] [--ttl 300] [--priority 10] [--proxied true|false] [--add]
 polyctl dns delete <domain> (--type <T> [--name www|@] [--value <V>] | --id <record-id>) [-y]
 ```
+
+Every `dns` command also takes `[--profile <name>] [--platform <platform>]`.
 
 - `<domain>` may be the zone apex or any name under it (`www.example.com` resolves to the `example.com` zone). `--name` is relative to the zone (`www`, `@`); when omitted, the record name is `<domain>` itself.
 - `dns update` is an upsert keyed on name + type: one existing record is updated (TTL, priority and proxy status are kept unless given), none means create, several means an error unless `--add` is passed, which always creates another record.
@@ -394,24 +438,39 @@ polyctl domain info  <domain>
 polyctl domain ns get <domain>
 polyctl domain ns set <domain> --ns ns1.example.net,ns2.example.net
 polyctl domain which <domain>
-polyctl domain index [--profile <name>]
-polyctl domain list  [--refresh] [--profile <name>]
+polyctl domain index [--profile <name>] [--platform <platform>]
+polyctl domain list  [--refresh] [--profile <name>] [--platform <platform>]
 ```
 
-- `domain info` combines the registrar view (status, expiry, auto-renew, lock, privacy, nameservers) with the DNS zone that serves the domain and the zone's nameservers; either half may be absent if only one kind of profile knows the domain.
+`domain info`, `ns get` and `ns set` also take `[--profile <name>] [--platform <platform>]`.
+
+- `domain info` combines the registrar view (status, expiry, auto-renew, lock, privacy, nameservers) with the DNS zone that serves the domain and the zone's nameservers; either half may be absent if only one kind of account knows the domain. `--platform` applies to both halves, so with it the half that lives on another platform is reported as a note on stderr.
 - `domain ns get` / `ns set` read and write the nameservers **at the registrar** (name.com, GoDaddy, Route 53 Domains, Alibaba Cloud Domains).
-- `domain which` prints every index entry for the domain and its parents: kind (`zone` or `domain`), platform, profile, resource id and when it was indexed. This is the place to look when routing surprises you.
-- `domain index` fetches zones and registered domains from every domain-capable profile and rebuilds the index. `domain list` prints the index (`--refresh` re-indexes first).
+- `domain which` prints every index entry for the domain and its parents: kind (`zone` or `domain`), platform, profile, resource id and when it was indexed. It is not narrowed by `--profile` / `--platform`, so this is the place to look when routing surprises you.
+- `domain index` fetches zones and registered domains from every domain-capable account of every profile and rebuilds the index; `--profile` and `--platform` limit it to the matching accounts. `domain list` prints the index, narrowed by `--profile` / `--platform` when given (`--refresh` re-indexes first).
 
 ### Routing rules
 
-1. `--profile <name>` wins: only that profile is searched (and indexed, if needed).
-2. Otherwise polyctl looks up the domain and each of its parents (`a.b.example.com`, `b.example.com`, `example.com`) in `domain_index`, restricted to the kind the command needs (`zone` for `dns ...`, `domain` for registrar operations). **The longest matching domain wins**, so a delegated sub-zone `b.example.com` beats its parent zone.
-3. If the best match belongs to more than one profile, the command fails with exit code 5 and lists the candidates. Pick one with `--profile`.
-4. If nothing matches, polyctl indexes the relevant profiles automatically the first time (when no index exists yet for them) or when `--refresh` is given, then retries. Otherwise it reports "domain not found in local index" (exit code 4) and suggests `polyctl domain index` or `--refresh`.
+1. Without `--profile` and `--platform`, every account of every profile is searched. `--profile <name>` restricts the search (and any indexing) to the accounts of that profile, `--platform <platform>` to the accounts on that platform; together they name exactly one account.
+2. Among those accounts polyctl looks up the domain and each of its parents (`a.b.example.com`, `b.example.com`, `example.com`) in `domain_index`, restricted to the kind the command needs (`zone` for `dns ...`, `domain` for registrar operations). **The longest matching domain wins**, so a delegated sub-zone `b.example.com` beats its parent zone.
+3. If the best match belongs to more than one account, the command fails with exit code 5, lists the candidates as `platform/profile (kind resource-id)` and names the flag that tells them apart: `--profile` when they are in different profiles, `--platform` when they are on different platforms, either or both when both differ.
+4. If nothing matches, polyctl indexes the relevant accounts automatically the first time (when no index exists yet for any of them) or when `--refresh` is given, then retries. Otherwise it reports "domain not found in local index" (exit code 4) and suggests `polyctl domain index` or `--refresh`; when only some of the accounts have never been indexed, the message lists them as `platform/profile`.
 5. With `--offline` no indexing happens; an unknown domain is an error.
 
-The status line on stderr always tells you which profile was used, for example `zone example.com via cloudflare/cf-main (local inventory)`.
+The usual source of ambiguity is a single profile, not two. A registrar account lists every domain it holds as a zone too (name.com and GoDaddy do), so when the profile `acme` has the domain at name.com and serves its DNS from Cloudflare, both accounts report a zone `example.com` and `--profile` cannot tell them apart:
+
+```text
+$ polyctl dns list example.com
+error: ambiguous owner of zone "example.com": candidates are [cloudflare/acme (zone 9a1...) namecom/acme (zone example.com)]; pass --platform <platform> to choose
+
+$ polyctl dns list example.com --platform cloudflare
+zone example.com via cloudflare/acme
+...
+```
+
+Registrar operations (`domain ns ...`) are not affected in this setup, because only name.com holds the registration. `--platform` cannot separate two resources of the same account with one name (two Route 53 hosted zones called `example.com`, say); for those, use the platform's own command with the resource id.
+
+The status line on stderr always tells you which account was used, as `<platform>/<profile>`, for example `zone example.com via cloudflare/acme (local inventory)`.
 
 ## Caching
 
@@ -433,12 +492,12 @@ polyctl inventory list [--platform <p>] [--type <t>] [--name <exact name>] [--pr
 polyctl inventory path
 ```
 
-- `sync` fetches the selected resource types (default: everything each platform supports) for the selected profiles (default: all) and **replaces** them in the inventory atomically, one set at a time. It prints a per-set report (count, duration, failures). An authentication failure stops the sync of that profile.
+- `sync` fetches the selected resource types (default: everything each platform supports) for the selected accounts (default: every account of every profile; `--profile` keeps one profile's accounts, `--platform` keeps the given platforms) and **replaces** them in the inventory atomically, one set at a time. It prints a per-set report (count, duration, failures). An authentication failure stops the sync of that account.
 - `inventory stats` shows row counts and the synced/expiry time of each set; `inventory list` dumps cached rows; `inventory path` prints the database path.
 
 ## Platform-specific commands
 
-Each platform has its own subtree under its short name: `cf`, `namecom`, `godaddy`, `aws`, `gcp`, `aliyun`. Profile selection for these commands is `--profile` > `current_profile` (if it belongs to that platform) > the only profile on that platform > an error listing the candidates. They honour `--refresh` / `--offline` for list operations the same way the neutral commands do, and always write through to the platform.
+Each platform has its own subtree under its short name: `cf`, `namecom`, `godaddy`, `aws`, `gcp`, `aliyun`. Profile selection for these commands is `--profile` (which must have an account on that platform, otherwise the command fails with exit code 3) > `current_profile` (if it has an account on that platform) > the only profile that has one > an error listing the candidates (exit code 5). They honour `--refresh` / `--offline` for list operations the same way the neutral commands do, and always write through to the platform.
 
 ### Cloudflare (`polyctl cf`)
 
@@ -551,7 +610,7 @@ Tables are tab-aligned and contain only the most useful columns. JSON and YAML e
 
 ```json
 {
-  "target": { "platform": "cloudflare", "profile": "cf-main", "resource_type": "zone", "resource_id": "9a1...", "domain": "example.com" },
+  "target": { "platform": "cloudflare", "profile": "acme", "resource_type": "zone", "resource_id": "9a1...", "domain": "example.com" },
   "cached": true,
   "records": [
     { "id": "f3c...", "zone_id": "9a1...", "name": "www.example.com", "type": "A", "content": "203.0.113.10", "ttl": 1, "proxied": true }
@@ -567,10 +626,10 @@ Human-readable progress and notes always go to stderr, so stdout is safe to pipe
 | --- | --- |
 | `0` | Success. |
 | `1` | Generic error (API failure, I/O error, aborted prompt, ...). |
-| `2` | Usage error: bad flag combination, unknown platform or resource type, missing required flag, invalid config. |
-| `3` | Authentication: missing credentials, rejected token, expired SSO session, `auth status` with a failing profile. |
+| `2` | Usage error: bad flag combination, unknown platform or resource type, missing required flag, invalid config, `auth login` without `--profile` for a platform that only other profiles have. |
+| `3` | Authentication: missing credentials, no account on the platform in the selected profile, rejected token, expired SSO session, `auth status` with a failing account. |
 | `4` | Not found: unknown domain / zone / record / profile, or a set that was never synced in `--offline` mode. |
-| `5` | Ambiguous: the domain or platform has more than one candidate profile; pass `--profile`. |
+| `5` | Ambiguous: the domain has more than one candidate account (pass `--profile` and/or `--platform`, as the message says), or the platform more than one candidate profile (pass `--profile`). |
 | `6` | Offline: the command needs the network but `--offline` was given. |
 | `7` | Not supported: the platform (or the profile's client) cannot perform the operation. |
 
@@ -582,13 +641,13 @@ Errors are printed to stderr as `error: <message>`.
 cmd/polyctl/                 main(): calls internal/cli.Main and exits with its code
 internal/cli/                Cobra command tree (root, auth, dns, domain, sync/inventory, platform mounts), exit-code mapping
 internal/app/                Runtime shared by all commands: config, credential store, inventory, profile selection,
-                             domain routing (ResolveDomain), cache policy (EnsureSet / NeedsRefresh), SyncProfile
+                             domain routing (ResolveDomain), cache policy (EnsureSet / NeedsRefresh), SyncAccount
 internal/platform/           Provider-neutral contracts: Provider, Client, DNSService, RegistrarService, Zone/Record/Domain,
                              resource types, sentinel errors, provider registry, DNS name helpers
 internal/providers/
   cloudflare/  namecom/  godaddy/  aws/  gcp/  aliyun/
                              One package per platform: provider.go (login, client, sync) and commands.go (native commands)
-internal/config/             config.yaml loading/saving, TTL defaults
+internal/config/             config.yaml loading/saving (profiles and their accounts), TTL defaults
 internal/creds/              Keyring store, 0600 file store, Multi (read from any, write to primary)
 internal/inventory/          SQLite schema, Replace/Upsert/Delete, domain lookup, stats
 internal/output/             table / json / yaml rendering

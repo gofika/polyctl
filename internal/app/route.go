@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/gofika/polyctl/internal/config"
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/platform"
 )
@@ -32,9 +33,9 @@ var ErrDomainUnknown = errors.New("domain not found in local index")
 // ResolveDomain finds which profile owns domain for the requested resource
 // kind (ResZone for DNS operations, ResDomain for registrar operations).
 //
-// Precedence: --profile restricts the search to that profile; otherwise the
-// longest matching domain in the index wins. If several profiles (or several
-// resources of one profile) own the same best match, an AmbiguousError is
+// Precedence: --profile and --platform restrict the search; otherwise the
+// longest matching domain in the index wins. If several accounts (or several
+// resources of one account) own the same best match, an AmbiguousError is
 // returned. When nothing is found and --refresh was given (or none of the
 // candidate profiles has ever been indexed), the relevant profiles are
 // indexed first and the lookup retried.
@@ -48,15 +49,19 @@ func (rt *Runtime) ResolveDomain(ctx context.Context, domain string, kind platfo
 	if err != nil {
 		return nil, err
 	}
+	only, err := rt.RoutePlatform()
+	if err != nil {
+		return nil, err
+	}
 	lookup := func() (*Target, error) {
 		entries, err := db.LookupDomain(ctx, cands, kind)
 		if err != nil {
 			return nil, err
 		}
-		if rt.Flags.Profile != "" {
+		if rt.Flags.Profile != "" || only != "" {
 			var filtered []inventory.IndexEntry
 			for _, e := range entries {
-				if e.Profile == rt.Flags.Profile {
+				if (rt.Flags.Profile == "" || e.Profile == rt.Flags.Profile) && (only == "" || e.Platform == only) {
 					filtered = append(filtered, e)
 				}
 			}
@@ -82,10 +87,24 @@ func (rt *Runtime) ResolveDomain(ctx context.Context, domain string, kind platfo
 		}
 		if len(owners) > 1 {
 			var names []string
+			profiles, platforms := map[string]bool{}, map[platform.ID]bool{}
 			for _, o := range owners {
-				names = append(names, fmt.Sprintf("%s (%s, %s %s)", o.Profile, o.Platform, o.Type, o.ResourceID))
+				names = append(names, fmt.Sprintf("%s/%s (%s %s)", o.Platform, o.Profile, o.Type, o.ResourceID))
+				profiles[o.Profile], platforms[o.Platform] = true, true
 			}
-			return nil, &AmbiguousError{What: fmt.Sprintf("owner of %s %q", kind, best), Candidates: names}
+			// Name only the flags that actually narrow the candidates down.
+			var hint string
+			switch {
+			case len(profiles) > 1 && len(platforms) > 1:
+				hint = "pass --profile <name> and/or --platform <platform> to choose"
+			case len(platforms) > 1:
+				hint = "pass --platform <platform> to choose"
+			case len(profiles) > 1:
+				hint = "pass --profile <name> to choose"
+			default:
+				hint = "the account holds several resources with this name; use the platform's own command with the resource id"
+			}
+			return nil, &AmbiguousError{What: fmt.Sprintf("owner of %s %q", kind, best), Candidates: names, Hint: hint}
 		}
 		o := owners[0]
 		return &Target{Platform: o.Platform, Profile: o.Profile, Type: o.Type, ResourceID: o.ResourceID, Domain: o.Domain}, nil
@@ -108,37 +127,37 @@ func (rt *Runtime) ResolveDomain(ctx context.Context, domain string, kind platfo
 		return nil, err
 	}
 	if len(profiles) == 0 {
-		if rt.Flags.Profile != "" {
-			return nil, fmt.Errorf("%w: profile %q cannot manage %ss; drop --profile or pick a %s-capable profile", ErrDomainUnknown, rt.Flags.Profile, kind, kind)
+		if rt.Flags.Profile != "" || only != "" {
+			return nil, fmt.Errorf("%w: %q, and no account selected by --profile / --platform is able to manage %ss", ErrDomainUnknown, domain, kind)
 		}
-		return nil, fmt.Errorf("%w: %q, and no profile is able to manage %ss (run `polyctl auth login`)", ErrDomainUnknown, domain, kind)
+		return nil, fmt.Errorf("%w: %q, and no account is able to manage %ss (run `polyctl auth login`)", ErrDomainUnknown, domain, kind)
 	}
 	needIndex := rt.Flags.Refresh
 	if !needIndex {
 		var unindexed []string
 		for _, p := range profiles {
-			st, err := db.GetState(ctx, inventory.Set{Platform: p.Platform, Profile: p.Name, Type: kind})
+			st, err := db.GetState(ctx, inventory.Set{Platform: p.Platform, Profile: p.Profile, Type: kind})
 			if err != nil {
 				return nil, err
 			}
 			if st == nil {
-				unindexed = append(unindexed, p.Name)
+				unindexed = append(unindexed, p.Label())
 			}
 		}
 		switch {
 		case len(unindexed) == len(profiles):
 			needIndex = true
 		case len(unindexed) > 0:
-			return nil, fmt.Errorf("%w: %q (%s); profile(s) %s not indexed yet, run `polyctl domain index` or retry with --refresh", ErrDomainUnknown, domain, kind, strings.Join(unindexed, ", "))
+			return nil, fmt.Errorf("%w: %q (%s); account(s) %s not indexed yet, run `polyctl domain index` or retry with --refresh", ErrDomainUnknown, domain, kind, strings.Join(unindexed, ", "))
 		}
 	}
 	if !needIndex {
 		return nil, fmt.Errorf("%w: %q (%s); run `polyctl domain index` or retry with --refresh", ErrDomainUnknown, domain, kind)
 	}
-	rt.Infof("indexing %s across %d profile(s)...", kind, len(profiles))
+	rt.Infof("indexing %s across %d account(s)...", kind, len(profiles))
 	for _, p := range profiles {
-		if _, err := rt.SyncProfile(ctx, p.Name, []platform.ResourceType{kind}); err != nil {
-			rt.Infof("warning: index %s/%s: %v", p.Platform, p.Name, err)
+		if _, err := rt.SyncAccount(ctx, p, []platform.ResourceType{kind}); err != nil {
+			rt.Infof("warning: index %s: %v", p.Label(), err)
 		}
 	}
 	t, err = lookup()
@@ -146,38 +165,24 @@ func (rt *Runtime) ResolveDomain(ctx context.Context, domain string, kind platfo
 		return nil, err
 	}
 	if t == nil {
-		return nil, fmt.Errorf("%w: %q is not a %s in any configured profile", ErrDomainUnknown, domain, kind)
+		where := "any configured account"
+		if rt.Flags.Profile != "" || only != "" {
+			where = "the accounts selected by --profile / --platform"
+		}
+		return nil, fmt.Errorf("%w: %q is not a %s in %s", ErrDomainUnknown, domain, kind, where)
 	}
 	return t, nil
 }
 
-func (rt *Runtime) indexCandidates(ctx context.Context, kind platform.ResourceType) ([]platform.Profile, error) {
-	cfg, err := rt.Config()
-	if err != nil {
-		return nil, err
-	}
-	names := cfg.ProfileNames()
-	if rt.Flags.Profile != "" {
-		names = []string{rt.Flags.Profile}
-	}
-	var out []platform.Profile
-	for _, n := range names {
-		p, ok := cfg.Profiles[n]
-		if !ok {
-			return nil, fmt.Errorf("profile %q not found", n)
-		}
-		prov, err := platform.Get(p.Platform)
-		if err != nil || !platform.Supports(prov, kind) {
-			continue
-		}
-		out = append(out, platform.Profile{Name: n, Platform: p.Platform, Metadata: p.Metadata})
-	}
-	return out, nil
+// indexCandidates returns the accounts able to hold kind, restricted to
+// --profile when it is set.
+func (rt *Runtime) indexCandidates(ctx context.Context, kind platform.ResourceType) ([]config.AccountRef, error) {
+	return rt.AccountsFor(kind)
 }
 
-// OpenTarget opens the client that owns t and asserts the service type.
+// OpenDNS opens the DNS client that owns t.
 func (rt *Runtime) OpenDNS(ctx context.Context, t *Target) (platform.DNSService, error) {
-	c, _, err := rt.Open(ctx, t.Profile)
+	c, _, err := rt.Open(ctx, t.Profile, t.Platform)
 	if err != nil {
 		return nil, err
 	}
@@ -190,7 +195,7 @@ func (rt *Runtime) OpenDNS(ctx context.Context, t *Target) (platform.DNSService,
 
 // OpenRegistrar opens the registrar client that owns t.
 func (rt *Runtime) OpenRegistrar(ctx context.Context, t *Target) (platform.RegistrarService, error) {
-	c, _, err := rt.Open(ctx, t.Profile)
+	c, _, err := rt.Open(ctx, t.Profile, t.Platform)
 	if err != nil {
 		return nil, err
 	}

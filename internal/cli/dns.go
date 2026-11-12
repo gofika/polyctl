@@ -18,10 +18,11 @@ func newDNSCmd(rt *app.Runtime) *cobra.Command {
 		Use:   "dns",
 		Short: "Platform-neutral DNS record management (auto-routed by domain)",
 		Long: `Manage DNS records of any zone regardless of where it is hosted. The owning
-platform and profile are looked up in the local domain index; pass --profile to
-override, --refresh to re-fetch from the platform, --offline to never touch the
-network.`,
+account (profile and platform) is looked up in the local domain index; pass
+--profile and/or --platform to narrow the search, --refresh to re-fetch from
+the platform, --offline to never touch the network.`,
 	}
+	addRouteFlags(rt, cmd)
 	cmd.AddCommand(newDNSListCmd(rt), newDNSUpdateCmd(rt), newDNSDeleteCmd(rt))
 	return cmd
 }

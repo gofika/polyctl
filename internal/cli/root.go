@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -135,7 +136,7 @@ platform's native features.`,
 	}
 	pf := root.PersistentFlags()
 	pf.StringVar(&rt.Flags.ConfigPath, "config", "", "config file (default ~/.config/polyctl/config.yaml)")
-	pf.StringVarP(&rt.Flags.Profile, "profile", "p", "", "profile to use (overrides automatic routing)")
+	pf.StringVarP(&rt.Flags.Profile, "profile", "p", "", "profile to use (overrides the current profile and automatic routing)")
 	pf.BoolVar(&rt.Flags.Refresh, "refresh", false, "force fetching from the platform and update the local inventory")
 	pf.BoolVar(&rt.Flags.Offline, "offline", false, "never access the network; serve from the local inventory only")
 	pf.StringVarP(&rt.Flags.Output, "output", "o", "", "output format: table, json or yaml (default table)")
@@ -177,7 +178,11 @@ func completeProfiles(rt *app.Runtime) func(*cobra.Command, []string, string) ([
 		}
 		var out []string
 		for _, n := range cfg.ProfileNames() {
-			out = append(out, fmt.Sprintf("%s\t%s", n, cfg.Profiles[n].Platform))
+			var ids []string
+			for _, id := range cfg.Profiles[n].PlatformIDs() {
+				ids = append(ids, string(id))
+			}
+			out = append(out, fmt.Sprintf("%s\t%s", n, strings.Join(ids, ", ")))
 		}
 		return out, cobra.ShellCompDirectiveNoFileComp
 	}
@@ -215,4 +220,11 @@ func completeDomains(rt *app.Runtime) func(*cobra.Command, []string, string) ([]
 		}
 		return out, cobra.ShellCompDirectiveNoFileComp
 	}
+}
+
+// addRouteFlags adds --platform to a platform-neutral command group. Together
+// with --profile it selects one account when a domain is known to several.
+func addRouteFlags(rt *app.Runtime, cmd *cobra.Command) {
+	cmd.PersistentFlags().StringVar(&rt.Flags.Platform, "platform", "", "only consider accounts on this platform")
+	_ = cmd.RegisterFlagCompletionFunc("platform", completePlatforms)
 }

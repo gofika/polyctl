@@ -18,8 +18,10 @@ import (
 
 var ctx = context.Background()
 
-// harness is a Runtime bound to a temporary config dir with three profiles:
-// a and b on the (fake) name.com platform, c on the (fake) GoDaddy platform.
+// harness is a Runtime bound to a temporary config dir with three profiles,
+// each holding one account: a and b on the (fake) name.com platform, c on the
+// (fake) GoDaddy platform. Tests that need a profile with several accounts
+// add it through mutate.
 type harness struct {
 	t              *testing.T
 	rt             *app.Runtime
@@ -44,9 +46,9 @@ func newHarness(t *testing.T, flags app.Flags, mutate func(*config.Config)) *har
 	}
 	cfg.CredentialStore = "file"
 	cfg.Profiles = map[string]*config.Profile{
-		"a": {Platform: platform.NameCom},
-		"b": {Platform: platform.NameCom},
-		"c": {Platform: platform.GoDaddy},
+		"a": profileOn(platform.NameCom),
+		"b": profileOn(platform.NameCom),
+		"c": profileOn(platform.GoDaddy),
 	}
 	if mutate != nil {
 		mutate(cfg)
@@ -55,8 +57,8 @@ func newHarness(t *testing.T, flags app.Flags, mutate func(*config.Config)) *har
 		t.Fatal(err)
 	}
 	store := creds.NewFile(dir)
-	for name := range cfg.Profiles {
-		if err := store.Set(name, map[string]string{"token": "secret-" + name}); err != nil {
+	for _, ref := range cfg.Accounts("") {
+		if err := store.Set(creds.Key(ref.Profile, string(ref.Platform)), map[string]string{"token": secretOf(ref.Profile, ref.Platform)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -80,6 +82,26 @@ func (h *harness) db() *inventory.DB {
 	return db
 }
 
+// profileOn builds a profile holding one empty account per given platform.
+func profileOn(ids ...platform.ID) *config.Profile {
+	p := &config.Profile{Platforms: map[platform.ID]*config.Account{}}
+	for _, id := range ids {
+		p.Platforms[id] = &config.Account{}
+	}
+	return p
+}
+
+// secretOf is the token the harness stores for an account.
+func secretOf(profile string, id platform.ID) string {
+	return "secret-" + profile + "-" + string(id)
+}
+
+func ref(profile string, id platform.ID) config.AccountRef {
+	return config.AccountRef{Profile: profile, Platform: id}
+}
+
+// platformOf returns the platform of a profile that holds exactly one
+// account; tests on multi-account profiles name the platform explicitly.
 func (h *harness) platformOf(profile string) platform.ID {
 	h.t.Helper()
 	cfg, _ := h.rt.Config()
@@ -87,14 +109,30 @@ func (h *harness) platformOf(profile string) platform.ID {
 	if !ok {
 		h.t.Fatalf("profile %q not in config", profile)
 	}
-	return p.Platform
+	ids := p.PlatformIDs()
+	if len(ids) != 1 {
+		h.t.Fatalf("profile %q has %d accounts, want exactly one", profile, len(ids))
+	}
+	return ids[0]
 }
 
-// seedZones writes a zone set for a profile straight into the inventory,
-// which also marks the zone index of that profile as built.
+// client returns the fake client of a single-account profile.
+func (h *harness) client(profile string) *fakeClient {
+	h.t.Helper()
+	return clientFor(profile, h.platformOf(profile))
+}
+
+// seedZones writes a zone set for a single-account profile straight into
+// the inventory, which also marks the zone index of that account as built.
 func (h *harness) seedZones(profile string, zones ...platform.Zone) {
 	h.t.Helper()
-	s := inventory.Set{Platform: h.platformOf(profile), Profile: profile, Type: platform.ResZone}
+	h.seedZonesFor(ref(profile, h.platformOf(profile)), zones...)
+}
+
+// seedZonesFor does the same for one account of any profile.
+func (h *harness) seedZonesFor(r config.AccountRef, zones ...platform.Zone) {
+	h.t.Helper()
+	s := inventory.Set{Platform: r.Platform, Profile: r.Profile, Type: platform.ResZone}
 	if err := h.db().Replace(ctx, s, app.ZoneResources(zones), time.Hour); err != nil {
 		h.t.Fatal(err)
 	}
@@ -134,7 +172,7 @@ func TestResolveDomainLongestMatch(t *testing.T) {
 	}
 	// Nothing was fetched: every answer came from the index.
 	for _, p := range []string{"a", "b", "c"} {
-		if n := client(p).count("Sync"); n != 0 {
+		if n := h.client(p).count("Sync"); n != 0 {
 			t.Errorf("profile %s synced %d times, want 0", p, n)
 		}
 	}
@@ -152,17 +190,21 @@ func TestResolveDomainAmbiguous(t *testing.T) {
 	if !errors.As(err, &amb) {
 		t.Fatalf("ResolveDomain(shared.com) = %v, want *app.AmbiguousError", err)
 	}
-	if len(amb.Candidates) != 2 || !strings.Contains(amb.Candidates[0], "a (namecom, zone z-shared-a)") || !strings.Contains(amb.Candidates[1], "b (namecom, zone z-shared-b)") {
+	if len(amb.Candidates) != 2 || amb.Candidates[0] != "namecom/a (zone z-shared-a)" || amb.Candidates[1] != "namecom/b (zone z-shared-b)" {
 		t.Errorf("candidates = %v", amb.Candidates)
 	}
-	if !strings.Contains(err.Error(), "--profile") {
-		t.Errorf("error should hint at --profile: %v", err)
+	// Both candidates are on one platform: only --profile tells them apart.
+	if !strings.Contains(err.Error(), "pass --profile <name> to choose") || strings.Contains(err.Error(), "--platform") {
+		t.Errorf("error should hint at --profile only: %v", err)
 	}
 	// A profile that owns the best match plus another that only owns a
 	// shorter match is not ambiguous: the longest match wins.
 	h.seedZones("c", zone("z-wild", "sub.example.com"))
 	if _, err := h.rt.ResolveDomain(ctx, "x.sub.example.com", platform.ResZone); !errors.As(err, &amb) {
 		t.Errorf("same zone in b and c must be ambiguous: %v", err)
+	} else if amb.Hint != "pass --profile <name> and/or --platform <platform> to choose" {
+		// b and c differ in both profile and platform: either flag works.
+		t.Errorf("hint = %q", amb.Hint)
 	}
 	if tgt, err := h.rt.ResolveDomain(ctx, "www.example.com", platform.ResZone); err != nil || tgt.Profile != "a" {
 		t.Errorf("example.com is only owned by a: %+v, %v", tgt, err)
@@ -186,10 +228,10 @@ func TestResolveDomainProfileFlagBreaksTie(t *testing.T) {
 	if !errors.Is(err, app.ErrDomainUnknown) {
 		t.Fatalf("ResolveDomain(example.com) with --profile b = %v, want ErrDomainUnknown", err)
 	}
-	if n := client("b").count("Sync"); n != 0 {
+	if n := h.client("b").count("Sync"); n != 0 {
 		t.Errorf("profile b was re-synced %d times although its index exists", n)
 	}
-	if n := client("a").count("Sync"); n != 0 {
+	if n := h.client("a").count("Sync"); n != 0 {
 		t.Errorf("profile a must not be touched when --profile b is given: %d syncs", n)
 	}
 }
@@ -204,7 +246,7 @@ func TestResolveDomainOfflineUnknown(t *testing.T) {
 		t.Errorf("error should tell the user to build the index: %v", err)
 	}
 	for _, p := range []string{"a", "b", "c"} {
-		if n := client(p).count("Sync"); n != 0 {
+		if n := h.client(p).count("Sync"); n != 0 {
 			t.Errorf("offline must never sync (profile %s: %d)", p, n)
 		}
 	}
@@ -217,7 +259,7 @@ func TestResolveDomainOfflineUnknown(t *testing.T) {
 
 func TestResolveDomainAutoIndexesWhenIndexMissing(t *testing.T) {
 	h := newHarness(t, app.Flags{}, nil)
-	client("a").zones = []platform.Zone{zone("z1", "example.com")}
+	h.client("a").zones = []platform.Zone{zone("z1", "example.com")}
 
 	tgt, err := h.rt.ResolveDomain(ctx, "www.example.com", platform.ResZone)
 	if err != nil {
@@ -227,14 +269,14 @@ func TestResolveDomainAutoIndexesWhenIndexMissing(t *testing.T) {
 		t.Errorf("target = %+v", tgt)
 	}
 	for _, p := range []string{"a", "b", "c"} {
-		if n := client(p).count("Sync:zone"); n != 1 {
+		if n := h.client(p).count("Sync:zone"); n != 1 {
 			t.Errorf("profile %s zone sync count = %d, want 1", p, n)
 		}
-		if n := client(p).count("Sync:domain"); n != 0 {
+		if n := h.client(p).count("Sync:domain"); n != 0 {
 			t.Errorf("profile %s synced domains although only zones were needed", p)
 		}
 	}
-	if !strings.Contains(h.stderr.String(), "indexing zone across 3 profile(s)") {
+	if !strings.Contains(h.stderr.String(), "indexing zone across 3 account(s)") {
 		t.Errorf("stderr = %q", h.stderr.String())
 	}
 	st, err := h.db().GetState(ctx, inventory.Set{Platform: platform.NameCom, Profile: "a", Type: platform.ResZone})
@@ -252,17 +294,17 @@ func TestResolveDomainAutoIndexesWhenIndexMissing(t *testing.T) {
 		t.Errorf("error should suggest --refresh: %v", err)
 	}
 	for _, p := range []string{"a", "b", "c"} {
-		if n := client(p).count("Sync:zone"); n != 1 {
+		if n := h.client(p).count("Sync:zone"); n != 1 {
 			t.Errorf("profile %s re-synced without --refresh (count %d)", p, n)
 		}
 	}
 	// Registrar lookups use their own index and trigger their own sync.
-	client("c").domains = []platform.Domain{{Name: "example.com", Nameservers: []string{"ns1.example.net"}}}
+	h.client("c").domains = []platform.Domain{{Name: "example.com", Nameservers: []string{"ns1.example.net"}}}
 	reg, err := h.rt.ResolveDomain(ctx, "example.com", platform.ResDomain)
 	if err != nil || reg.Profile != "c" || reg.Type != platform.ResDomain || reg.ResourceID != "example.com" {
 		t.Errorf("registrar target = %+v, %v", reg, err)
 	}
-	if n := client("c").count("Sync:domain"); n != 1 {
+	if n := h.client("c").count("Sync:domain"); n != 1 {
 		t.Errorf("profile c domain sync count = %d", n)
 	}
 }
@@ -270,8 +312,8 @@ func TestResolveDomainAutoIndexesWhenIndexMissing(t *testing.T) {
 func TestResolveDomainRefreshReindexes(t *testing.T) {
 	h := newHarness(t, app.Flags{Refresh: true}, nil)
 	h.seedStandard()
-	client("a").zones = []platform.Zone{zone("z-new", "brandnew.io")}
-	client("b").zones = []platform.Zone{zone("z-other", "other.com"), zone("z-shared-b", "shared.com"), zone("z-sub", "sub.example.com")}
+	h.client("a").zones = []platform.Zone{zone("z-new", "brandnew.io")}
+	h.client("b").zones = []platform.Zone{zone("z-other", "other.com"), zone("z-shared-b", "shared.com"), zone("z-sub", "sub.example.com")}
 
 	tgt, err := h.rt.ResolveDomain(ctx, "www.brandnew.io", platform.ResZone)
 	if err != nil {
@@ -280,7 +322,7 @@ func TestResolveDomainRefreshReindexes(t *testing.T) {
 	if tgt.Profile != "a" || tgt.ResourceID != "z-new" {
 		t.Errorf("target = %+v", tgt)
 	}
-	if n := client("a").count("Sync:zone"); n != 1 {
+	if n := h.client("a").count("Sync:zone"); n != 1 {
 		t.Errorf("profile a sync count = %d, want 1", n)
 	}
 	// The refresh replaced a's zones, so its old zone is gone from the index.
@@ -291,7 +333,7 @@ func TestResolveDomainRefreshReindexes(t *testing.T) {
 	if _, err := h.rt.ResolveDomain(ctx, "www.other.com", platform.ResZone); err != nil {
 		t.Errorf("ResolveDomain(other.com): %v", err)
 	}
-	if n := client("b").count("Sync:zone"); n != 1 {
+	if n := h.client("b").count("Sync:zone"); n != 1 {
 		t.Errorf("profile b sync count = %d, want 1 (only the first miss indexes)", n)
 	}
 }
@@ -307,12 +349,12 @@ func TestResolveDomainInvalid(t *testing.T) {
 
 func TestResolveDomainNoCapableProfile(t *testing.T) {
 	h := newHarness(t, app.Flags{}, func(c *config.Config) {
-		c.Profiles = map[string]*config.Profile{"cf": {Platform: platform.Cloudflare}}
+		c.Profiles = map[string]*config.Profile{"cf": profileOn(platform.Cloudflare)}
 	})
 	// Cloudflare is not registered in this test binary, so no profile can
 	// manage zones.
 	_, err := h.rt.ResolveDomain(ctx, "example.com", platform.ResZone)
-	if !errors.Is(err, app.ErrDomainUnknown) || !strings.Contains(err.Error(), "no profile is able") {
+	if !errors.Is(err, app.ErrDomainUnknown) || !strings.Contains(err.Error(), "no account is able to manage zones (run `polyctl auth login`)") {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -439,17 +481,21 @@ func TestProfileForPrecedence(t *testing.T) {
 		t.Errorf("no profile on platform = %v, want ErrUnauthorized", err)
 	}
 
-	// --profile wins, but must match the platform and exist.
+	// --profile wins, but must exist and have an account on the platform.
 	h.rt.Flags.Profile = "b"
 	if got, err := h.rt.ProfileFor(platform.NameCom); err != nil || got != "b" {
 		t.Errorf("--profile b: %q, %v", got, err)
 	}
-	if _, err := h.rt.ProfileFor(platform.GoDaddy); err == nil || !strings.Contains(err.Error(), "needs godaddy") {
-		t.Errorf("--profile on wrong platform = %v", err)
+	if _, err := h.rt.ProfileFor(platform.GoDaddy); !errors.Is(err, platform.ErrUnauthorized) ||
+		!strings.Contains(err.Error(), `profile "b" has no godaddy account`) ||
+		!strings.Contains(err.Error(), "auth login godaddy --profile b") {
+		t.Errorf("--profile lacking the platform = %v, want ErrUnauthorized with a login hint", err)
 	}
 	h.rt.Flags.Profile = "zzz"
-	if _, err := h.rt.ProfileFor(platform.NameCom); err == nil || !strings.Contains(err.Error(), "not found") {
+	if _, err := h.rt.ProfileFor(platform.NameCom); !errors.Is(err, platform.ErrNotFound) || !strings.Contains(err.Error(), `profile "zzz" not found`) {
 		t.Errorf("--profile unknown = %v", err)
+	} else if errors.Is(err, platform.ErrUnauthorized) {
+		t.Errorf("unknown --profile must not read as a missing login: %v", err)
 	}
 
 	// current_profile breaks the tie only on its own platform.
@@ -464,21 +510,27 @@ func TestProfileForPrecedence(t *testing.T) {
 	if got, err := h2.rt.ProfileFor(platform.NameCom); err != nil || got != "b" {
 		t.Errorf("--profile must beat current_profile: %q, %v", got, err)
 	}
+
+	// A current_profile that no longer exists is ignored.
+	h3 := newHarness(t, app.Flags{}, func(c *config.Config) { c.CurrentProfile = "gone" })
+	if got, err := h3.rt.ProfileFor(platform.GoDaddy); err != nil || got != "c" {
+		t.Errorf("dangling current_profile: %q, %v", got, err)
+	}
 }
 
 func TestOpenAndLoadProfile(t *testing.T) {
 	h := newHarness(t, app.Flags{}, nil)
-	c, p, err := h.rt.Open(ctx, "a")
+	c, p, err := h.rt.Open(ctx, "a", platform.NameCom)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if p.Name != "a" || p.Platform != platform.NameCom || p.Secret["token"] != "secret-a" {
+	if p.Name != "a" || p.Platform != platform.NameCom || p.Secret["token"] != secretOf("a", platform.NameCom) {
 		t.Errorf("profile = %+v", p)
 	}
 	if _, ok := c.(platform.DNSService); !ok {
 		t.Error("fake client should expose DNSService")
 	}
-	if client("a").count("Open") != 1 {
+	if h.client("a").count("Open") != 1 {
 		t.Error("provider Open not called")
 	}
 	if c2, p2, err := h.rt.OpenFor(ctx, platform.GoDaddy); err != nil || p2.Name != "c" || c2 == nil {
@@ -486,27 +538,37 @@ func TestOpenAndLoadProfile(t *testing.T) {
 	}
 
 	// Missing credentials map to ErrUnauthorized with a login hint.
-	if err := creds.NewFile(h.dir).Delete("b"); err != nil {
+	if err := creds.NewFile(h.dir).Delete(creds.Key("b", string(platform.NameCom))); err != nil {
 		t.Fatal(err)
 	}
-	_, err = h.rt.LoadProfile("b")
+	_, err = h.rt.LoadProfile("b", platform.NameCom)
 	if !errors.Is(err, platform.ErrUnauthorized) || !strings.Contains(err.Error(), "auth login namecom --profile b") {
 		t.Errorf("LoadProfile without creds = %v", err)
 	}
-	if _, err := h.rt.LoadProfile("nobody"); err == nil {
-		t.Error("LoadProfile(nobody) must fail")
+	if _, err := h.rt.LoadProfile("nobody", platform.NameCom); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Errorf("LoadProfile(nobody) = %v", err)
+	}
+	// An existing profile without an account on the platform.
+	if _, err := h.rt.LoadProfile("a", platform.GoDaddy); err == nil || !strings.Contains(err.Error(), `profile "a" has no godaddy account`) {
+		t.Errorf("LoadProfile on a platform the profile lacks = %v", err)
+	}
+	if _, _, err := h.rt.Open(ctx, "a", platform.GoDaddy); err == nil {
+		t.Error("Open on a platform the profile lacks must fail")
+	}
+	if n := clientFor("a", platform.GoDaddy).count("Open"); n != 0 {
+		t.Errorf("provider Open reached for a missing account (%d calls)", n)
 	}
 
 	// --offline refuses to open anything.
 	h.rt.Flags.Offline = true
-	if _, _, err := h.rt.Open(ctx, "a"); !errors.Is(err, app.ErrOffline) {
+	if _, _, err := h.rt.Open(ctx, "a", platform.NameCom); !errors.Is(err, app.ErrOffline) {
 		t.Errorf("Open offline = %v, want ErrOffline", err)
 	}
 }
 
 func TestOpenDNSAndRegistrarNotSupported(t *testing.T) {
 	h := newHarness(t, app.Flags{}, nil)
-	client("c").noDNS = true
+	h.client("c").noDNS = true
 	tgt := &app.Target{Platform: platform.GoDaddy, Profile: "c", Type: platform.ResZone, ResourceID: "z", Domain: "x.com"}
 	if _, err := h.rt.OpenDNS(ctx, tgt); !errors.Is(err, platform.ErrNotSupported) {
 		t.Errorf("OpenDNS on plain client = %v, want ErrNotSupported", err)
@@ -526,7 +588,7 @@ func TestOpenDNSAndRegistrarNotSupported(t *testing.T) {
 func TestZoneRecordsCachesPerZone(t *testing.T) {
 	h := newHarness(t, app.Flags{}, nil)
 	h.seedZones("a", zone("z1", "example.com"), zone("z2", "other.com"))
-	fc := client("a")
+	fc := h.client("a")
 	fc.zones = []platform.Zone{zone("z1", "example.com"), zone("z2", "other.com")}
 	fc.records["z1"] = []platform.Record{{ID: "r1", Name: "WWW.example.com.", Type: "A", Content: "1.2.3.4", TTL: 300}}
 	fc.records["z2"] = []platform.Record{{ID: "r2", Name: "other.com", Type: "MX", Content: "mx.other.com", TTL: 300}}
@@ -566,16 +628,16 @@ func TestZoneRecordsCachesPerZone(t *testing.T) {
 	}
 }
 
-func TestSyncProfile(t *testing.T) {
+func TestSyncAccount(t *testing.T) {
 	h := newHarness(t, app.Flags{}, nil)
-	fc := client("a")
+	fc := h.client("a")
 	fc.zones = []platform.Zone{zone("z1", "example.com")}
 	fc.records["z1"] = []platform.Record{{ID: "r1", Name: "example.com", Type: "A", Content: "1.1.1.1"}}
 	fc.domains = []platform.Domain{{Name: "example.com"}}
 
-	reports, err := h.rt.SyncProfile(ctx, "a", nil)
+	reports, err := h.rt.SyncAccount(ctx, ref("a", platform.NameCom), nil)
 	if err != nil {
-		t.Fatalf("SyncProfile: %v", err)
+		t.Fatalf("SyncAccount: %v", err)
 	}
 	if len(reports) != 3 {
 		t.Fatalf("reports = %+v", reports)
@@ -595,33 +657,19 @@ func TestSyncProfile(t *testing.T) {
 		t.Errorf("stats = %+v", stats)
 	}
 	// Unsupported types are skipped silently.
-	reports, err = h.rt.SyncProfile(ctx, "a", []platform.ResourceType{platform.ResInstance})
+	reports, err = h.rt.SyncAccount(ctx, ref("a", platform.NameCom), []platform.ResourceType{platform.ResInstance})
 	if err != nil || len(reports) != 0 {
 		t.Errorf("unsupported type: %+v, %v", reports, err)
 	}
-	// An unauthorized error aborts the profile and is reported.
+	// An unauthorized error aborts the account and is reported.
 	fc.syncErr = platform.ErrUnauthorized
-	reports, err = h.rt.SyncProfile(ctx, "a", nil)
+	reports, err = h.rt.SyncAccount(ctx, ref("a", platform.NameCom), nil)
 	if !errors.Is(err, platform.ErrUnauthorized) || len(reports) != 1 || reports[0].Error == "" {
 		t.Errorf("unauthorized sync: %+v, %v", reports, err)
 	}
 	// The previous inventory contents survive a failed sync.
 	if rows, _ := h.db().List(ctx, inventory.Query{Profile: "a", Type: platform.ResZone}); len(rows) != 1 {
 		t.Errorf("failed sync wiped the cache: %+v", rows)
-	}
-}
-
-func TestDomainProfiles(t *testing.T) {
-	h := newHarness(t, app.Flags{}, func(c *config.Config) {
-		c.Profiles["aws"] = &config.Profile{Platform: platform.AWS}
-	})
-	got, err := h.rt.DomainProfiles()
-	if err != nil {
-		t.Fatal(err)
-	}
-	// aws is not registered in this binary and is skipped.
-	if strings.Join(got, ",") != "a,b,c" {
-		t.Errorf("DomainProfiles = %v", got)
 	}
 }
 
@@ -693,11 +741,11 @@ func TestResolveDomainDoesNotReindexWhenSomeProfilesAreIndexed(t *testing.T) {
 	if !errors.Is(err, app.ErrDomainUnknown) {
 		t.Fatalf("err = %v, want ErrDomainUnknown", err)
 	}
-	if !strings.Contains(err.Error(), "b, c") || !strings.Contains(err.Error(), "--refresh") {
-		t.Errorf("error should name the unindexed profiles and suggest --refresh: %v", err)
+	if !strings.Contains(err.Error(), "account(s) namecom/b, godaddy/c not indexed yet") || !strings.Contains(err.Error(), "--refresh") {
+		t.Errorf("error should name the unindexed accounts and suggest --refresh: %v", err)
 	}
 	for _, p := range []string{"a", "b", "c"} {
-		if n := client(p).count("Sync"); n != 0 {
+		if n := h.client(p).count("Sync"); n != 0 {
 			t.Errorf("profile %s synced %d times, want none", p, n)
 		}
 	}
@@ -708,10 +756,10 @@ func TestResolveDomainDoesNotReindexWhenSomeProfilesAreIndexed(t *testing.T) {
 
 func TestResolveDomainProfileFlagWrongPlatform(t *testing.T) {
 	h := newHarness(t, app.Flags{Profile: "a"}, func(c *config.Config) {
-		c.Profiles["a"] = &config.Profile{Platform: platform.Cloudflare} // not registered here: manages nothing
+		c.Profiles["a"] = profileOn(platform.Cloudflare) // not registered here: manages nothing
 	})
 	_, err := h.rt.ResolveDomain(ctx, "example.com", platform.ResDomain)
-	if !errors.Is(err, app.ErrDomainUnknown) || !strings.Contains(err.Error(), `profile "a" cannot manage domains`) || strings.Contains(err.Error(), "auth login") {
+	if !errors.Is(err, app.ErrDomainUnknown) || !strings.Contains(err.Error(), "no account selected by --profile / --platform is able to manage domains") || strings.Contains(err.Error(), "auth login") {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -724,7 +772,15 @@ func TestResolveDomainSameProfileDuplicateZonesAmbiguous(t *testing.T) {
 	if !errors.As(err, &amb) {
 		t.Fatalf("two zones of one profile must be ambiguous, got %v", err)
 	}
-	if len(amb.Candidates) != 2 || !strings.Contains(amb.Candidates[0], "z-dup-1") || !strings.Contains(amb.Candidates[1], "z-dup-2") {
+	if len(amb.Candidates) != 2 || amb.Candidates[0] != "namecom/a (zone z-dup-1)" || amb.Candidates[1] != "namecom/a (zone z-dup-2)" {
 		t.Errorf("candidates = %v", amb.Candidates)
+	}
+	// Neither flag can tell two zones of one account apart.
+	if strings.Contains(amb.Hint, "--profile") || strings.Contains(amb.Hint, "--platform") || !strings.Contains(amb.Hint, "resource id") {
+		t.Errorf("hint = %q", amb.Hint)
+	}
+	h.rt.Flags.Profile, h.rt.Flags.Platform = "a", "namecom"
+	if _, err := h.rt.ResolveDomain(ctx, "www.dup.com", platform.ResZone); !errors.As(err, &amb) {
+		t.Errorf("--profile and --platform cannot pick between two zones of one account: %v", err)
 	}
 }

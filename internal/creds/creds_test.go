@@ -12,6 +12,63 @@ import (
 	"github.com/gofika/polyctl/internal/creds"
 )
 
+func TestKey(t *testing.T) {
+	if got := creds.Key("acme", "cloudflare"); got != "acme/cloudflare" {
+		t.Errorf("Key = %q, want acme/cloudflare", got)
+	}
+	// Keys of one profile differ per platform and never equal the bare
+	// profile name used by the legacy layout.
+	a, b := creds.Key("acme", "cloudflare"), creds.Key("acme", "aws")
+	if a == b || a == "acme" || b == "acme" {
+		t.Errorf("keys collide: %q, %q", a, b)
+	}
+}
+
+// Accounts of one profile are stored independently, next to a secret still
+// kept under the bare profile name by the legacy layout.
+func TestFileStoreKeepsAccountsOfAProfileApart(t *testing.T) {
+	f := creds.NewFile(t.TempDir())
+	cf, aws := creds.Key("acme", "cloudflare"), creds.Key("acme", "aws")
+	if err := f.Set("acme", map[string]string{"token": "legacy"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Set(cf, map[string]string{"token": "cf"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Set(aws, map[string]string{"access_key": "ak"}); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]map[string]string{
+		"acme": {"token": "legacy"},
+		cf:     {"token": "cf"},
+		aws:    {"access_key": "ak"},
+	} {
+		got, err := f.Get(key)
+		if err != nil {
+			t.Fatalf("Get(%q): %v", key, err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("Get(%q) = %v, want %v", key, got, want)
+		}
+	}
+	if err := f.Delete(cf); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Get(cf); !errors.Is(err, creds.ErrNotFound) {
+		t.Errorf("Get after Delete = %v, want ErrNotFound", err)
+	}
+	if _, err := f.Get(aws); err != nil {
+		t.Errorf("Delete removed another account of the profile: %v", err)
+	}
+	if _, err := f.Get("acme"); err != nil {
+		t.Errorf("Delete removed the legacy key: %v", err)
+	}
+	// A reopened store reads the same file.
+	if got, err := creds.NewFile(filepath.Dir(f.Path)).Get(aws); err != nil || got["access_key"] != "ak" {
+		t.Errorf("reopened Get = %v, %v", got, err)
+	}
+}
+
 func TestFileStoreSetGetDelete(t *testing.T) {
 	dir := t.TempDir()
 	f := creds.NewFile(dir)

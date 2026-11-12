@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"time"
 
 	"github.com/gofika/polyctl/internal/browser"
@@ -25,12 +24,15 @@ import (
 type Flags struct {
 	ConfigPath string
 	Profile    string
-	Refresh    bool
-	Offline    bool
-	Output     string
-	Verbose    bool
-	NoBrowser  bool
-	Yes        bool
+	// Platform restricts domain routing (dns / domain commands) to one
+	// platform; it tells apart two accounts of one profile.
+	Platform  string
+	Refresh   bool
+	Offline   bool
+	Output    string
+	Verbose   bool
+	NoBrowser bool
+	Yes       bool
 }
 
 // Runtime is the shared command context.
@@ -170,7 +172,67 @@ func (rt *Runtime) Creds() (*creds.Multi, error) {
 		fmt.Fprintln(rt.Stderr, "warning: "+st.Warning)
 	}
 	rt.store = st
+	rt.migrateSecrets(cfg, st)
 	return st, nil
+}
+
+// migrateSecrets moves the secrets of accounts converted from the legacy
+// one-platform-per-profile layout from the bare profile name to their
+// profile/platform key, then rewrites the config in the current layout.
+// It is best effort: an account whose secret could not be moved keeps its
+// legacy_secret mark and is still readable through LoadProfile.
+func (rt *Runtime) migrateSecrets(cfg *config.Config, st *creds.Multi) {
+	changed := false
+	for _, ref := range cfg.Accounts("") {
+		a := cfg.Profiles[ref.Profile].Platforms[ref.Platform]
+		if !a.LegacySecret {
+			continue
+		}
+		if !st.Has(a.CredentialBackend) {
+			// The backend that holds the legacy secret is not reachable in
+			// this run (keyring unavailable): nothing can be moved or
+			// removed there, so keep the mark and retry on a later run.
+			continue
+		}
+		key := creds.Key(ref.Profile, string(ref.Platform))
+		_, err := st.Get(key)
+		switch {
+		case err == nil:
+			// Already under the new key (an interrupted migration, or a
+			// token refreshed since): never overwrite it with the old copy.
+		case errors.Is(err, creds.ErrNotFound):
+			secret, err := st.Get(ref.Profile)
+			if err != nil {
+				// Not found here does not prove there is nothing to move:
+				// the secret may sit in a backend this run cannot reach
+				// (keyring unavailable). Keep the mark and try again later.
+				if !errors.Is(err, creds.ErrNotFound) {
+					rt.Verbosef("migrate credentials of %s: %v", ref.Label(), err)
+				}
+				continue
+			}
+			if err := st.Set(key, secret); err != nil {
+				rt.Verbosef("migrate credentials of %s: %v", ref.Label(), err)
+				continue
+			}
+			a.CredentialBackend = st.Name()
+		default:
+			rt.Verbosef("migrate credentials of %s: %v", ref.Label(), err)
+			continue
+		}
+		if err := st.Delete(ref.Profile); err != nil && !errors.Is(err, creds.ErrNotFound) {
+			// Keep the mark so the removal is retried on a later run.
+			rt.Verbosef("remove legacy credentials of %s: %v", ref.Label(), err)
+			continue
+		}
+		a.LegacySecret = false
+		changed = true
+	}
+	if changed {
+		if err := cfg.Save(); err != nil {
+			rt.Verbosef("save migrated config: %v", err)
+		}
+	}
 }
 
 // InventoryPath returns the inventory database path: POLYCTL_INVENTORY_DB
@@ -217,13 +279,14 @@ func (rt *Runtime) LoginInput(profileName string, opts map[string]string, existi
 	}
 }
 
-// LoadProfile returns the profile with its secret attached.
-func (rt *Runtime) LoadProfile(name string) (platform.Profile, error) {
+// LoadProfile returns a profile's account on a platform with its secret
+// attached.
+func (rt *Runtime) LoadProfile(name string, id platform.ID) (platform.Profile, error) {
 	cfg, err := rt.Config()
 	if err != nil {
 		return platform.Profile{}, err
 	}
-	p, err := cfg.Profile(name)
+	a, err := cfg.Account(name, id)
 	if err != nil {
 		return platform.Profile{}, err
 	}
@@ -231,66 +294,77 @@ func (rt *Runtime) LoadProfile(name string) (platform.Profile, error) {
 	if err != nil {
 		return platform.Profile{}, err
 	}
-	secret, err := st.Get(name)
+	key := creds.Key(name, string(id))
+	secret, err := st.Get(key)
+	if errors.Is(err, creds.ErrNotFound) && a.LegacySecret {
+		secret, err = st.Get(name)
+	}
 	if err != nil {
 		if errors.Is(err, creds.ErrNotFound) {
-			return platform.Profile{}, fmt.Errorf("%w: no stored credentials for profile %q (run `polyctl auth login %s --profile %s`)", platform.ErrUnauthorized, name, p.Platform, name)
+			return platform.Profile{}, fmt.Errorf("%w: no stored %s credentials for profile %q (run `polyctl auth login %s --profile %s`)", platform.ErrUnauthorized, id, name, id, name)
 		}
 		return platform.Profile{}, err
 	}
-	return platform.Profile{Name: name, Platform: p.Platform, Metadata: p.Metadata, Secret: secret,
-		UpdateSecret: func(s map[string]string) error { return st.Set(name, s) }}, nil
+	return platform.Profile{Name: name, Platform: id, Metadata: a.Metadata, Secret: secret,
+		UpdateSecret: func(s map[string]string) error { return st.Set(key, s) }}, nil
 }
 
 // ProfileFor picks the profile to use for a platform:
-// --profile (validated against the platform) > current_profile if it matches
-// > the only profile on that platform > error listing candidates.
+// --profile (which must have an account on the platform) > current_profile
+// if it has one > the only profile that has one > error listing candidates.
 func (rt *Runtime) ProfileFor(id platform.ID) (string, error) {
 	cfg, err := rt.Config()
 	if err != nil {
 		return "", err
 	}
 	if rt.Flags.Profile != "" {
-		p, err := cfg.Profile(rt.Flags.Profile)
-		if err != nil {
-			return "", err
+		if _, err := cfg.Profile(rt.Flags.Profile); err != nil {
+			return "", fmt.Errorf("%w: %v", platform.ErrNotFound, err)
 		}
-		if p.Platform != id {
-			return "", fmt.Errorf("profile %q is a %s profile, but this command needs %s", rt.Flags.Profile, p.Platform, id)
+		if _, err := cfg.Account(rt.Flags.Profile, id); err != nil {
+			return "", fmt.Errorf("%w: %v", platform.ErrUnauthorized, err)
 		}
 		return rt.Flags.Profile, nil
 	}
 	if cfg.CurrentProfile != "" {
-		if p, ok := cfg.Profiles[cfg.CurrentProfile]; ok && p.Platform == id {
-			return cfg.CurrentProfile, nil
+		if p, ok := cfg.Profiles[cfg.CurrentProfile]; ok {
+			if _, ok := p.Platforms[id]; ok {
+				return cfg.CurrentProfile, nil
+			}
 		}
 	}
 	names := cfg.ProfilesFor(id)
 	switch len(names) {
 	case 0:
-		return "", fmt.Errorf("%w: no %s profile configured (run `polyctl auth login %s --profile <name>`)", platform.ErrUnauthorized, id, id)
+		return "", fmt.Errorf("%w: no %s account configured (run `polyctl auth login %s`)", platform.ErrUnauthorized, id, id)
 	case 1:
 		return names[0], nil
 	}
-	return "", &AmbiguousError{What: fmt.Sprintf("%s profile", id), Candidates: names}
+	return "", &AmbiguousError{What: fmt.Sprintf("profile for %s", id), Candidates: names}
 }
 
-// AmbiguousError is returned when more than one profile could serve a request.
+// AmbiguousError is returned when more than one account or resource could
+// serve a request. Hint says how to choose; it defaults to --profile.
 type AmbiguousError struct {
 	What       string
 	Candidates []string
+	Hint       string
 }
 
 func (e *AmbiguousError) Error() string {
-	return fmt.Sprintf("ambiguous %s: candidates are %v; pass --profile <name> to choose", e.What, e.Candidates)
+	hint := e.Hint
+	if hint == "" {
+		hint = "pass --profile <name> to choose"
+	}
+	return fmt.Sprintf("ambiguous %s: candidates are %v; %s", e.What, e.Candidates, hint)
 }
 
-// Open creates an authenticated client for a profile.
-func (rt *Runtime) Open(ctx context.Context, name string) (platform.Client, platform.Profile, error) {
+// Open creates an authenticated client for a profile's account on a platform.
+func (rt *Runtime) Open(ctx context.Context, name string, id platform.ID) (platform.Client, platform.Profile, error) {
 	if rt.Flags.Offline {
 		return nil, platform.Profile{}, ErrOffline
 	}
-	p, err := rt.LoadProfile(name)
+	p, err := rt.LoadProfile(name, id)
 	if err != nil {
 		return nil, p, err
 	}
@@ -311,7 +385,7 @@ func (rt *Runtime) OpenFor(ctx context.Context, id platform.ID) (platform.Client
 	if err != nil {
 		return nil, platform.Profile{}, err
 	}
-	return rt.Open(ctx, name)
+	return rt.Open(ctx, name, id)
 }
 
 // ErrOffline is returned when a network operation is attempted with --offline.
@@ -335,10 +409,11 @@ type SyncReport struct {
 	Duration time.Duration         `json:"-" yaml:"-"`
 }
 
-// SyncProfile fetches the given resource types (nil = all supported) from
-// the platform and replaces them in the inventory.
-func (rt *Runtime) SyncProfile(ctx context.Context, name string, types []platform.ResourceType) ([]SyncReport, error) {
-	client, p, err := rt.Open(ctx, name)
+// SyncAccount fetches the given resource types (nil = all supported) of one
+// account and replaces them in the inventory.
+func (rt *Runtime) SyncAccount(ctx context.Context, ref config.AccountRef, types []platform.ResourceType) ([]SyncReport, error) {
+	name := ref.Profile
+	client, p, err := rt.Open(ctx, name, ref.Platform)
 	if err != nil {
 		return nil, err
 	}
@@ -440,23 +515,69 @@ func (rt *Runtime) EnsureSet(ctx context.Context, s inventory.Set, fetch func(ct
 	return rows, !need, nil
 }
 
-// DomainProfiles returns the names of profiles whose provider can hold
-// zones or registered domains, sorted.
-func (rt *Runtime) DomainProfiles() ([]string, error) {
+// RoutePlatform returns the platform given with --platform on a dns or
+// domain command, or "" when the flag is not set.
+func (rt *Runtime) RoutePlatform() (platform.ID, error) {
+	if rt.Flags.Platform == "" {
+		return "", nil
+	}
+	id, err := platform.Parse(rt.Flags.Platform)
+	if err != nil {
+		return "", UsageErrf("%v", err)
+	}
+	return id, nil
+}
+
+// Accounts returns the configured accounts, restricted to --profile and to
+// the routing --platform when they are set (an unknown profile is an error).
+func (rt *Runtime) Accounts() ([]config.AccountRef, error) {
 	cfg, err := rt.Config()
 	if err != nil {
 		return nil, err
 	}
-	var out []string
-	for _, n := range cfg.ProfileNames() {
-		prov, err := platform.Get(cfg.Profiles[n].Platform)
+	if rt.Flags.Profile != "" {
+		if _, err := cfg.Profile(rt.Flags.Profile); err != nil {
+			return nil, fmt.Errorf("%w: %v", platform.ErrNotFound, err)
+		}
+	}
+	only, err := rt.RoutePlatform()
+	if err != nil {
+		return nil, err
+	}
+	var out []config.AccountRef
+	for _, ref := range cfg.Accounts(rt.Flags.Profile) {
+		if only == "" || ref.Platform == only {
+			out = append(out, ref)
+		}
+	}
+	return out, nil
+}
+
+// AccountsFor returns the accounts from Accounts whose provider supports at
+// least one of the given resource types.
+func (rt *Runtime) AccountsFor(kinds ...platform.ResourceType) ([]config.AccountRef, error) {
+	all, err := rt.Accounts()
+	if err != nil {
+		return nil, err
+	}
+	var out []config.AccountRef
+	for _, ref := range all {
+		prov, err := platform.Get(ref.Platform)
 		if err != nil {
 			continue
 		}
-		if platform.Supports(prov, platform.ResZone) || platform.Supports(prov, platform.ResDomain) {
-			out = append(out, n)
+		for _, k := range kinds {
+			if platform.Supports(prov, k) {
+				out = append(out, ref)
+				break
+			}
 		}
 	}
-	sort.Strings(out)
 	return out, nil
+}
+
+// DomainAccounts returns the accounts that can hold zones or registered
+// domains.
+func (rt *Runtime) DomainAccounts() ([]config.AccountRef, error) {
+	return rt.AccountsFor(platform.ResZone, platform.ResDomain)
 }

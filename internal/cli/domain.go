@@ -18,6 +18,7 @@ func newDomainCmd(rt *app.Runtime) *cobra.Command {
 		Use:   "domain",
 		Short: "Platform-neutral domain management (auto-routed by domain)",
 	}
+	addRouteFlags(rt, cmd)
 	ns := &cobra.Command{Use: "ns", Short: "Manage nameservers at the registrar"}
 	ns.AddCommand(newDomainNSSetCmd(rt), newDomainNSGetCmd(rt))
 	cmd.AddCommand(newDomainInfoCmd(rt), ns, newDomainWhichCmd(rt), newDomainIndexCmd(rt), newDomainListCmd(rt))
@@ -238,10 +239,14 @@ func newDomainNSSetCmd(rt *app.Runtime) *cobra.Command {
 func newDomainWhichCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:               "which <domain>",
-		Short:             "Show which profiles own a domain (registrar and DNS zone)",
+		Short:             "Show which accounts own a domain (registrar and DNS zone)",
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: completeDomains(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// which shows every owner; the flag is only validated.
+			if _, err := rt.RoutePlatform(); err != nil {
+				return err
+			}
 			db, err := rt.DB()
 			if err != nil {
 				return err
@@ -280,29 +285,29 @@ func newDomainWhichCmd(rt *app.Runtime) *cobra.Command {
 func newDomainIndexCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "index",
-		Short: "Scan every domain-capable profile and rebuild the domain index",
+		Short: "Scan every domain-capable account and rebuild the domain index",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if rt.Flags.Offline {
 				return app.ErrOffline
 			}
-			names, err := rt.DomainProfiles()
+			names, err := rt.DomainAccounts()
 			if err != nil {
 				return err
 			}
-			if rt.Flags.Profile != "" {
-				names = []string{rt.Flags.Profile}
-			}
 			if len(names) == 0 {
-				return fmt.Errorf("no domain-capable profiles configured; run `polyctl auth login`")
+				if rt.Flags.Profile != "" || rt.Flags.Platform != "" {
+					return fmt.Errorf("%w: no domain-capable account matches --profile / --platform", platform.ErrNotFound)
+				}
+				return fmt.Errorf("no domain-capable accounts configured; run `polyctl auth login`")
 			}
 			var reports []app.SyncReport
 			var firstErr error
 			for _, n := range names {
-				reps, err := rt.SyncProfile(cmd.Context(), n, []platform.ResourceType{platform.ResZone, platform.ResDomain})
+				reps, err := rt.SyncAccount(cmd.Context(), n, []platform.ResourceType{platform.ResZone, platform.ResDomain})
 				reports = append(reports, reps...)
 				if err != nil {
-					rt.Infof("warning: %s: %v", n, err)
+					rt.Infof("warning: %s: %v", n.Label(), err)
 					if firstErr == nil {
 						firstErr = err
 					}
@@ -316,21 +321,25 @@ func newDomainIndexCmd(rt *app.Runtime) *cobra.Command {
 func newDomainListCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List every indexed domain and zone across all profiles",
+		Short: "List every indexed domain and zone across all accounts",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			only, err := rt.RoutePlatform()
+			if err != nil {
+				return err
+			}
 			db, err := rt.DB()
 			if err != nil {
 				return err
 			}
 			if rt.Flags.Refresh {
-				names, err := rt.DomainProfiles()
+				names, err := rt.DomainAccounts()
 				if err != nil {
 					return err
 				}
 				for _, n := range names {
-					if _, err := rt.SyncProfile(cmd.Context(), n, []platform.ResourceType{platform.ResZone, platform.ResDomain}); err != nil {
-						rt.Infof("warning: %s: %v", n, err)
+					if _, err := rt.SyncAccount(cmd.Context(), n, []platform.ResourceType{platform.ResZone, platform.ResDomain}); err != nil {
+						rt.Infof("warning: %s: %v", n.Label(), err)
 					}
 				}
 			}
@@ -338,10 +347,10 @@ func newDomainListCmd(rt *app.Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if rt.Flags.Profile != "" {
+			if rt.Flags.Profile != "" || only != "" {
 				var f []inventory.IndexEntry
 				for _, e := range entries {
-					if e.Profile == rt.Flags.Profile {
+					if (rt.Flags.Profile == "" || e.Profile == rt.Flags.Profile) && (only == "" || e.Platform == only) {
 						f = append(f, e)
 					}
 				}

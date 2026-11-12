@@ -44,7 +44,7 @@ func openClient(rt *app.Runtime, ctx context.Context) (*client, platform.Profile
 
 // openNamed opens a specific profile (used inside EnsureSet fetch callbacks).
 func openNamed(rt *app.Runtime, ctx context.Context, name string) (*client, error) {
-	c, _, err := rt.Open(ctx, name)
+	c, _, err := rt.Open(ctx, name, platform.Aliyun)
 	if err != nil {
 		return nil, err
 	}
@@ -713,7 +713,7 @@ func resolveRegion(rt *app.Runtime, prof, region string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	p, err := cfg.Profile(prof)
+	p, err := cfg.Account(prof, platform.Aliyun)
 	if err != nil {
 		return "", err
 	}

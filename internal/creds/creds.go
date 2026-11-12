@@ -15,10 +15,15 @@ import (
 
 const service = "polyctl"
 
-// ErrNotFound is returned when no secret exists for a profile.
+// ErrNotFound is returned when no secret exists under a key.
 var ErrNotFound = errors.New("credentials not found")
 
-// Store persists secrets keyed by profile name.
+// Key is the store key of a profile's account on a platform. Profile names
+// cannot contain a slash, so the key is unambiguous and never collides with
+// the bare profile names used before profiles could hold several platforms.
+func Key(profile, platform string) string { return profile + "/" + platform }
+
+// Store persists secrets keyed by Key(profile, platform).
 type Store interface {
 	Name() string
 	Get(profile string) (map[string]string, error)
@@ -189,6 +194,20 @@ type Multi struct {
 }
 
 func (m *Multi) Name() string { return m.Primary.Name() }
+
+// Has reports whether a backend with this name is part of the store. An
+// empty name (backend unknown) counts as present.
+func (m *Multi) Has(backend string) bool {
+	if backend == "" || m.Primary.Name() == backend {
+		return true
+	}
+	for _, o := range m.Others {
+		if o.Name() == backend {
+			return true
+		}
+	}
+	return false
+}
 
 func (m *Multi) Get(profile string) (map[string]string, error) {
 	s, err := m.Primary.Get(profile)
