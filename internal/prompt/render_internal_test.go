@@ -29,11 +29,11 @@ func TestMultiSelectShowsEveryOption(t *testing.T) {
 		for n := 1; n <= 5; n++ {
 			opts := numbered(n)
 			var values []string
-			field, ticked := multiSelectField("Pick the rows to delete", huhOptions(opts, 80), &values, cols, 24)
+			field, ticks := multiSelectField("Pick the rows to delete", huhOptions(opts, 80), &values, cols, 24)
 			form := huh.NewForm(huh.NewGroup(field))
 			form.Init()
 			for _, reminded := range []bool{false, true} {
-				if reminded && ticked() {
+				if reminded && ticks.confirm() {
 					t.Fatal("an unticked list must not confirm")
 				}
 				form.Update(tea.WindowSizeMsg{Width: cols, Height: 24})
@@ -57,8 +57,8 @@ func TestLongListsFitShortTerminals(t *testing.T) {
 	opts := numbered(40)
 	for _, termRows := range []int{24, 14, 10, 8} {
 		var values []string
-		multi, ticked := multiSelectField("Pick many", huhOptions(opts, 80), &values, 80, termRows)
-		ticked()
+		multi, ticks := multiSelectField("Pick many", huhOptions(opts, 80), &values, 80, termRows)
+		ticks.confirm()
 
 		var value string
 		single := huh.NewSelect[string]().Title("Pick one").Options(huhOptions(opts, 80)...).Value(&value)
@@ -196,7 +196,7 @@ func TestHintsFitNarrowTerminals(t *testing.T) {
 				continue
 			}
 			// While the filter is typed Esc belongs to it.
-			syncFilterHint(field, km, false, false, false)
+			syncFilterHint(field, km, false, false, false, false)
 			hint = hintLine(press(form, cols, runeKey('/'), runeKey('a')))
 			if w := ansi.StringWidth(hint); w >= cols {
 				t.Errorf("%s on %d columns, filtering: the hint line takes %d columns: %q", name, cols, w, hint)
@@ -220,14 +220,14 @@ func TestHintsAfterApplyingAFilter(t *testing.T) {
 		km := keyMap()
 		form := newForm(field, km)
 		form.Init()
-		syncFilterHint(field, km, false, false, false)
+		syncFilterHint(field, km, false, false, false, false)
 		press(form, 80, runeKey('/'), runeKey('a'))
 		// What leaveFilterInput does with the key that closes the input.
 		field.Update(closing)
 		if !filterApplied(field, km) {
 			t.Fatalf("%s: the filter is not applied", closing)
 		}
-		syncFilterHint(field, km, false, true, false)
+		syncFilterHint(field, km, false, true, false, false)
 		hint := hintLine(press(form, 80))
 		for _, want := range []string{"enter confirm", "esc clear filter"} {
 			if !strings.Contains(hint, want) {
@@ -267,5 +267,84 @@ func TestConfirmSelectionVisibleWithoutColour(t *testing.T) {
 	}
 	if !strings.Contains(views[true], "\x1b[4") {
 		t.Errorf("the selected button is not underlined: %q", views[true])
+	}
+}
+
+// The hint line must not advertise a key that does something else in the
+// filter input: space and ctrl+a go to the text, and while the text matches
+// nothing Enter and the arrow keys are dropped.
+func TestHintsInTheFilterInput(t *testing.T) {
+	const cols = 100
+	var many []string
+	multi, _ := multiSelectField("Many", huhOptions(abc, 20), &many, cols, 24)
+	var one string
+	single := huh.NewSelect[string]().Title("One").Options(huhOptions(abc, 20)...).Value(&one)
+	for name, field := range map[string]huh.Field{"multi-select": multi, "select": single} {
+		km := keyMap()
+		form := newForm(field, km)
+		form.Init()
+		before := hintLine(press(form, cols))
+		for _, want := range []string{"enter confirm", "↑/↓ move"} {
+			if !strings.Contains(before, want) {
+				t.Fatalf("%s: hint lacks %q: %q", name, want, before)
+			}
+		}
+		syncFilterHint(field, km, false, false, false, true)
+		hint := hintLine(press(form, cols, runeKey('/'), runeKey('a')))
+		for _, bad := range []string{"space", "ctrl+a"} {
+			if strings.Contains(hint, bad) {
+				t.Errorf("%s, filter with matches: hint shows %q: %q", name, bad, hint)
+			}
+		}
+		for _, want := range []string{"esc set filter", "↑/↓ move"} {
+			if !strings.Contains(hint, want) {
+				t.Errorf("%s, filter with matches: hint lacks %q: %q", name, want, hint)
+			}
+		}
+		hint = hintLine(press(form, cols, runeKey('z'), runeKey('z')))
+		for _, bad := range []string{"enter", "move", "space", "ctrl+a"} {
+			if strings.Contains(hint, bad) {
+				t.Errorf("%s, filter without a match: hint shows %q: %q", name, bad, hint)
+			}
+		}
+		if !strings.Contains(hint, "esc set filter") {
+			t.Errorf("%s, filter without a match: hint = %q", name, hint)
+		}
+		// What leaveFilterInput does with the key that closes the input.
+		field.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+		syncFilterHint(field, km, false, filterApplied(field, km), true, false)
+		if after := hintLine(press(form, cols)); after != before {
+			t.Errorf("%s: hint after the filter input was closed = %q, want %q", name, after, before)
+		}
+	}
+}
+
+// The reminder that nothing is ticked must go once a row is ticked, and not
+// stay next to the tick until the next Enter.
+func TestTickReminderGoesWithTheFirstTick(t *testing.T) {
+	var values []string
+	field, ticks := multiSelectField("Pick", huhOptions(abc, 20), &values, 80, 24)
+	form := newForm(field, keyMap())
+	form.Init()
+	if ticks.confirm() {
+		t.Fatal("an unticked list must not confirm")
+	}
+	if view := press(form, 80); !strings.Contains(view, tickReminder) || !ticks.reminding {
+		t.Fatalf("no reminder after Enter on an unticked list:\n%s", view)
+	}
+	// A key that ticks nothing leaves it in place.
+	field.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	ticks.refresh()
+	if view := press(form, 80); !strings.Contains(view, tickReminder) {
+		t.Errorf("the reminder left without a tick:\n%s", view)
+	}
+	field.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+	ticks.refresh()
+	view := press(form, 80)
+	if strings.Contains(view, tickReminder) || !strings.Contains(view, tickHint) || ticks.reminding {
+		t.Errorf("the reminder stays next to a ticked row:\n%s", view)
+	}
+	if !strings.Contains(view, "✓") {
+		t.Errorf("no row is ticked:\n%s", view)
 	}
 }

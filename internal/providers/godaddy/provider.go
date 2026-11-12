@@ -105,7 +105,7 @@ func (*provider) Login(ctx context.Context, in platform.LoginInput) (*platform.L
 	}
 
 	if !cred.complete() {
-		io := prompt.New(in.Stdin, in.Stdout, in.Stderr)
+		io := prompt.New(in.Stdin, in.Stdout, in.Stderr).WithContext(ctx)
 		if method == methodPAT {
 			fmt.Fprintf(in.Stderr, "GoDaddy (%s) uses Personal Access Tokens; create a %s token at:\n  %s\n", env, env, keysURL)
 		} else {

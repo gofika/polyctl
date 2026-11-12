@@ -2,6 +2,7 @@ package app_test
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -676,9 +677,11 @@ func TestLegacySecretMigrationKeepsNewerSecret(t *testing.T) {
 	}
 }
 
-func TestLegacySecretMarkKeptWhenNoSecretIsFound(t *testing.T) {
-	// No secret at all: nothing is migrated, nothing is rewritten, and every
-	// later run looks again.
+func TestLegacySecretMarkWhenNoSecretIsFound(t *testing.T) {
+	// No secret at all. old/namecom names the file backend, which is in
+	// use and holds nothing: its mark goes. shop/godaddy does not say where
+	// its secret was stored, which may be a keyring this run does not use:
+	// its mark stays and every later run looks again.
 	rt, dir, stderr := legacyRuntime(t, app.Flags{Verbose: true}, nil)
 	cfgPath := filepath.Join(dir, "config.yaml")
 	if _, err := rt.Creds(); err != nil {
@@ -687,12 +690,19 @@ func TestLegacySecretMarkKeptWhenNoSecretIsFound(t *testing.T) {
 	cfg, _ := rt.Config()
 	for _, r := range cfg.Accounts("") {
 		a, _ := cfg.Account(r.Profile, r.Platform)
-		if want := r.Profile != "new"; a.LegacySecret != want {
+		if want := r.Profile == "shop"; a.LegacySecret != want {
 			t.Errorf("%s LegacySecret = %v, want %v", r, a.LegacySecret, want)
 		}
 	}
-	if raw, _ := os.ReadFile(cfgPath); string(raw) != legacyConfig {
-		t.Errorf("config must be left alone when nothing was migrated:\n%s", raw)
+	disk, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a, _ := disk.Account("old", platform.NameCom); a.LegacySecret {
+		t.Error("old/namecom is still marked legacy on disk")
+	}
+	if a, _ := disk.Account("shop", platform.GoDaddy); !a.LegacySecret {
+		t.Error("shop/godaddy lost its mark on disk")
 	}
 	if strings.Contains(stderr.String(), "migrate credentials") {
 		t.Errorf("a secret that is simply absent is not worth a log line: %q", stderr.String())
@@ -702,25 +712,34 @@ func TestLegacySecretMarkKeptWhenNoSecretIsFound(t *testing.T) {
 	}
 
 	// The secret shows up under the bare name later: the next run moves it.
-	if err := creds.NewFile(dir).Set("old", map[string]string{"token": "late"}); err != nil {
+	if err := creds.NewFile(dir).Set("shop", map[string]string{"token": "late"}); err != nil {
 		t.Fatal(err)
 	}
 	rt2 := app.New(app.Flags{ConfigPath: cfgPath}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	if err := rt2.Init(); err != nil {
 		t.Fatal(err)
 	}
-	if p, err := rt2.LoadProfile("old", platform.NameCom); err != nil || p.Secret["token"] != "late" {
+	if p, err := rt2.LoadProfile("shop", platform.GoDaddy); err != nil || p.Secret["token"] != "late" {
 		t.Fatalf("LoadProfile on the next run = %+v, %v", p, err)
 	}
-	disk, err := config.Load(cfgPath)
-	if err != nil {
+	if disk, err = config.Load(cfgPath); err != nil {
 		t.Fatal(err)
 	}
-	if a, _ := disk.Account("old", platform.NameCom); a.LegacySecret {
-		t.Error("old/namecom must lose its mark once its secret was moved")
+	if a, _ := disk.Account("shop", platform.GoDaddy); a.LegacySecret {
+		t.Error("shop/godaddy must lose its mark once its secret was moved")
 	}
-	if a, _ := disk.Account("shop", platform.GoDaddy); !a.LegacySecret {
-		t.Error("shop/godaddy still has no secret and must keep its mark")
+}
+
+// Confirm treats a question that was left as a no.
+func TestConfirmLeftIsNo(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rt := app.New(app.Flags{}, strings.NewReader("y\n"), &bytes.Buffer{}, &bytes.Buffer{})
+	if ok, err := rt.Confirm(ctx, "delete", true); ok || err != nil {
+		t.Errorf("Confirm on an interrupted command = %v, %v; want false, nil", ok, err)
+	}
+	if ok, err := rt.Confirm(context.Background(), "delete", false); !ok || err != nil {
+		t.Errorf("Confirm with y on stdin = %v, %v; want true, nil", ok, err)
 	}
 }
 

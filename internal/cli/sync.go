@@ -20,7 +20,8 @@ func newSyncCmd(rt *app.Runtime) *cobra.Command {
 		Long: `Fetch resources of every account of every profile (or those selected with
 --profile / --platform) and replace them in the local inventory. Resource types default to
 everything the platform supports; narrow with --type. A selection that names no
-account is a not-found error (exit code 4).`,
+account is a not-found error (exit code 4), and so is a sync with no account
+configured at all.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if rt.Flags.Offline {
@@ -79,9 +80,10 @@ account is a not-found error (exit code 4).`,
 	return cmd
 }
 
-// errNoSyncAccount says that the selection of `sync` names no account. It is
-// a not-found error, like the other commands' answer to a profile without an
-// account on the requested platform.
+// errNoSyncAccount says that the selection of `sync` names no account, or
+// that there is none at all. It is a not-found error, like the other
+// commands' answer to a profile without an account on the requested platform
+// and like `domain index` without accounts.
 func errNoSyncAccount(profile string, platforms []string) error {
 	on := ""
 	if len(platforms) > 0 {

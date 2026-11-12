@@ -68,7 +68,7 @@ func (*provider) ResourceTypes() []platform.ResourceType {
 
 // Login runs the interactive AccessKey flow (or imports from the aliyun CLI).
 func (p *provider) Login(ctx context.Context, in platform.LoginInput) (*platform.LoginResult, error) {
-	io := prompt.New(in.Stdin, in.Stdout, in.Stderr)
+	io := prompt.New(in.Stdin, in.Stdout, in.Stderr).WithContext(ctx)
 	region := in.Opt("region", "")
 	var keyID, keySecret string
 

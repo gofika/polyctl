@@ -4,10 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/config"
@@ -82,8 +86,12 @@ func TestAuthListShowsProfilesWithoutAccounts(t *testing.T) {
 			t.Fatalf("json rows = %v, want the account and the empty profile", rows)
 		}
 		acct, empty := rows[0], rows[1]
-		if acct["name"] != "a" || acct["platform"] != p1 || acct["current"] != false || acct["updated_at"] == nil {
+		if acct["name"] != "a" || acct["platform"] != p1 || acct["current"] != false {
 			t.Errorf("account row = %v", acct)
+		}
+		// The account has no timestamp: none is printed, as in YAML.
+		if _, ok := acct["updated_at"]; ok || strings.Contains(stdout, "0001-01-01") {
+			t.Errorf("json prints a zero timestamp: %s", stdout)
 		}
 		if empty["name"] != "hollow" || empty["current"] != true {
 			t.Errorf("empty profile row = %v", empty)
@@ -240,8 +248,14 @@ func TestFailedSaveIsUndoneInMemory(t *testing.T) {
 			restore := breakSaves(t, cfgPath)
 			err = change(rt)
 			restore()
-			if err == nil || !strings.Contains(err.Error(), "save config") {
+			// A removal notices before it removes anything.
+			if err == nil || !strings.Contains(err.Error(), "save config") && !strings.Contains(err.Error(), "read config") {
 				t.Fatalf("change with a config that cannot be saved = %v", err)
+			}
+			for _, key := range []string{creds.Key("a", p2), creds.Key("b", p2)} {
+				if token(t, dir, key) == "" {
+					t.Errorf("secret %s was removed although the account stays", key)
+				}
 			}
 			cfg, err := rt.Config()
 			if err != nil {
@@ -496,5 +510,250 @@ func TestAuthLoginKeepsConcurrentConfigChanges(t *testing.T) {
 	}
 	if a, err := cfg.Account("fresh", fakePlatform); err != nil || a.Metadata["account"] != "acct-fresh" {
 		t.Errorf("the new account was not saved: %+v, %v", a, err)
+	}
+}
+
+// `auth list` prints the same keys in JSON and YAML: an account without a
+// timestamp has no updated_at in either, and never the zero time.
+func TestAuthListOmitsMissingTimestamp(t *testing.T) {
+	_, cfgPath := setupMulti(t)
+	cfg := loadConfig(t, cfgPath)
+	stamp := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	cfg.Profiles["a"].Platforms[fakePlatform].UpdatedAt = stamp
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	jsonOut, _, err := run(t, cfgPath, "auth", "list", "-o", "json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	yamlOut, _, err := run(t, cfgPath, "auth", "list", "-o", "yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fromJSON, fromYAML []map[string]any
+	if err := json.Unmarshal([]byte(jsonOut), &fromJSON); err != nil {
+		t.Fatalf("json %q: %v", jsonOut, err)
+	}
+	if err := yaml.Unmarshal([]byte(yamlOut), &fromYAML); err != nil {
+		t.Fatalf("yaml %q: %v", yamlOut, err)
+	}
+	if len(fromJSON) != 3 || len(fromYAML) != 3 {
+		t.Fatalf("rows: json %d, yaml %d; want 3", len(fromJSON), len(fromYAML))
+	}
+	for i, row := range fromJSON {
+		_, inJSON := row["updated_at"]
+		_, inYAML := fromYAML[i]["updated_at"]
+		if want := i == 0; inJSON != want || inYAML != want {
+			t.Errorf("row %d (%v/%v): updated_at in json %v, in yaml %v; want %v", i, row["name"], row["platform"], inJSON, inYAML, want)
+		}
+		if len(row) != len(fromYAML[i]) {
+			t.Errorf("row %d: json keys %v, yaml keys %v", i, row, fromYAML[i])
+		}
+	}
+	if got := fromJSON[0]["updated_at"]; got != stamp.Format(time.RFC3339) {
+		t.Errorf("updated_at = %v, want %s", got, stamp.Format(time.RFC3339))
+	}
+	for format, out := range map[string]string{"json": jsonOut, "yaml": yamlOut} {
+		if strings.Contains(out, "0001-01-01") {
+			t.Errorf("%s prints the zero time:\n%s", format, out)
+		}
+	}
+}
+
+// `domain which` lists every owner whatever --profile says, but a profile
+// that does not exist is an error and not silently ignored.
+func TestDomainWhichValidatesProfile(t *testing.T) {
+	dir, cfgPath := setupMulti(t)
+	seedZone(t, dir, config.AccountRef{Profile: "a", Platform: fakePlatform}, "one.example")
+	for _, extra := range [][]string{nil, {"--offline"}} {
+		for _, domain := range []string{"one.example", "missing.example"} {
+			args := append([]string{"domain", "which", domain, "--profile", "nosuch"}, extra...)
+			code, stdout, stderr := mainRun(cfgPath, args...)
+			if code != ExitNotFound || !strings.Contains(stderr, `profile "nosuch" not found`) || stdout != "" {
+				t.Errorf("%v: exit %d, stdout %q, stderr %q; want the unknown profile reported", args, code, stdout, stderr)
+			}
+		}
+		args := append([]string{"domain", "which", "one.example", "--platform", "bogus"}, extra...)
+		if code, _, stderr := mainRun(cfgPath, args...); code != ExitUsage {
+			t.Errorf("%v: exit %d (stderr %q), want a usage error", args, code, stderr)
+		}
+	}
+	// A profile that exists narrows nothing: the owner in another profile
+	// is still listed.
+	stdout, _, err := run(t, cfgPath, "domain", "which", "one.example", "--profile", "b", "--offline")
+	if err != nil || !strings.Contains(stdout, "one.example") {
+		t.Errorf("domain which --profile b = %q, %v", stdout, err)
+	}
+}
+
+// With nothing configured the two bulk commands give the same answer: not
+// found, like every other command that has no account to work on.
+func TestBulkCommandsWithoutAccounts(t *testing.T) {
+	_, cfgPath := setup(t, false)
+	for _, args := range [][]string{{"sync"}, {"domain", "index"}} {
+		code, stdout, stderr := mainRun(cfgPath, args...)
+		if code != ExitNotFound || stdout != "" || !strings.Contains(stderr, "accounts configured") || !strings.Contains(stderr, "polyctl auth login <platform>") {
+			t.Errorf("%v without accounts: exit %d, stdout %q, stderr %q", args, code, stdout, stderr)
+		}
+	}
+}
+
+// otherProcessSaves changes the config file the way another polyctl process
+// would while this one is running.
+func otherProcessSaves(t *testing.T, cfgPath string, change func(*config.Config)) {
+	t.Helper()
+	cfg := loadConfig(t, cfgPath)
+	change(cfg)
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A removal from a stale copy of the config must stop before it removes
+// anything: the save at its end would be refused, with the secret and the
+// cached resources already gone and the account still listed.
+func TestRemoveAccountChecksForChangesFirst(t *testing.T) {
+	dir, cfgPath := setupMulti(t)
+	ref := config.AccountRef{Profile: "a", Platform: fakePlatform2}
+	seedZone(t, dir, ref, "two.example")
+	rt := app.New(app.Flags{ConfigPath: cfgPath}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	defer rt.Close()
+	if _, err := rt.Creds(); err != nil {
+		t.Fatal(err)
+	}
+	otherProcessSaves(t, cfgPath, func(cfg *config.Config) { cfg.CurrentProfile = "b" })
+
+	err := removeAccount(context.Background(), rt, ref, false)
+	if !errors.Is(err, config.ErrChanged) || !strings.Contains(err.Error(), "nothing was removed") || strings.Contains(err.Error(), "nothing was saved") {
+		t.Fatalf("removeAccount on a stale config = %v", err)
+	}
+	if token(t, dir, creds.Key("a", p2)) == "" {
+		t.Error("the secret was removed")
+	}
+	if got := inventoryOwners(t, dir); !strings.Contains(got, "a/"+p2) {
+		t.Errorf("the cached resources were purged: owners %q", got)
+	}
+	cfg := loadConfig(t, cfgPath)
+	if got := accountNames(cfg); got != "a/"+p1+" a/"+p2+" b/"+p2 || cfg.CurrentProfile != "b" {
+		t.Errorf("config on disk: accounts %q, current %q", got, cfg.CurrentProfile)
+	}
+
+	// With the config read again the same removal goes through.
+	if _, err := rt.ReloadConfig(); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeAccount(context.Background(), rt, ref, false); err != nil {
+		t.Fatal(err)
+	}
+	cfg = loadConfig(t, cfgPath)
+	if got := accountNames(cfg); got != "a/"+p1+" b/"+p2 || cfg.CurrentProfile != "b" || token(t, dir, creds.Key("a", p2)) != "" {
+		t.Errorf("after the retry: accounts %q, current %q", got, cfg.CurrentProfile)
+	}
+}
+
+// `auth logout --profile` started on a copy of the config that another
+// process has replaced since (two commands started together) removes from
+// the file as it is now.
+func TestAuthLogoutOnAConfigChangedSinceStart(t *testing.T) {
+	dir, cfgPath := setupMulti(t)
+	var out, errb bytes.Buffer
+	rt := app.New(app.Flags{ConfigPath: cfgPath}, strings.NewReader(""), &out, &errb)
+	defer rt.Close()
+	if _, err := rt.Config(); err != nil {
+		t.Fatal(err)
+	}
+	otherProcessSaves(t, cfgPath, func(cfg *config.Config) {
+		cfg.Profiles["added"] = &config.Profile{Platforms: map[platform.ID]*config.Account{}}
+	})
+	root := NewRoot(rt)
+	root.SetArgs([]string{"--config", cfgPath, "auth", "logout", "--profile", "a"})
+	root.SetOut(&out)
+	root.SetErr(&errb)
+	if err := root.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("auth logout: %v (stderr %q)", err, errb.String())
+	}
+	cfg := loadConfig(t, cfgPath)
+	if got := accountNames(cfg); got != "b/"+p2 || cfg.Profiles["added"] == nil {
+		t.Errorf("accounts %q, profiles %v; want a removed and the other process's profile kept", got, cfg.ProfileNames())
+	}
+	if token(t, dir, creds.Key("a", p1)) != "" || token(t, dir, creds.Key("a", p2)) != "" {
+		t.Error("a secret of the removed profile is left")
+	}
+}
+
+// While the questions of an interactive removal are open another polyctl
+// process may save the config. The removal then works on the file as it is:
+// that change is kept, what was chosen and still exists is removed, and
+// nothing is half removed by a refused save.
+func TestInteractiveRemovalAfterAChangeDuringThePrompts(t *testing.T) {
+	dir, cfgPath := setupMulti(t)
+	addHollow(t, cfgPath, false)
+	change := func() {
+		otherProcessSaves(t, cfgPath, func(cfg *config.Config) {
+			cfg.CurrentProfile = "b"
+			// One chosen account and the chosen empty profile are gone.
+			delete(cfg.Profiles["a"].Platforms, fakePlatform)
+			delete(cfg.Profiles, "hollow")
+			cfg.Profiles["added"] = &config.Profile{Platforms: map[platform.ID]*config.Account{}}
+		})
+	}
+	_, stderr, err, _ := runPick(t, cfgPath, []any{
+		[]string{"a/" + p1, "a/" + p2, "b/" + p2, "hollow/"},
+		true,
+		then{do: change, answer: false},
+	}, "auth", "logout")
+	if err != nil {
+		t.Fatalf("auth logout: %v (stderr %q)", err, stderr)
+	}
+	for _, want := range []string{
+		"the " + p1 + ` account of profile "a" is no longer configured; skipped`,
+		p2 + ` account removed from profile "a"`,
+		p2 + ` account removed from profile "b"`,
+		`profile "hollow" no longer exists; skipped`,
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr lacks %q: %q", want, stderr)
+		}
+	}
+	cfg := loadConfig(t, cfgPath)
+	if got := accountNames(cfg); got != "" || cfg.Profiles["added"] == nil || len(cfg.Profiles) != 1 {
+		t.Errorf("accounts %q, profiles %v; want only the profile the other process added", got, cfg.ProfileNames())
+	}
+	for _, key := range []string{creds.Key("a", p2), creds.Key("b", p2)} {
+		if token(t, dir, key) != "" {
+			t.Errorf("secret %s is left", key)
+		}
+	}
+}
+
+// An account of the pre-0.2 layout that has no secret anywhere the backend
+// on record could hold one has nothing left to move: the mark goes, and the
+// profile can be renamed like any other account without a secret.
+func TestAuthRenameLegacyAccountWithoutSecret(t *testing.T) {
+	dir, cfgPath := setup(t, false)
+	legacy := "current_profile: lost\nprofiles:\n  lost:\n    platform: " + p1 + "\n    credential_backend: file\n    metadata:\n      account: acct-lost\n"
+	if err := os.WriteFile(cfgPath, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, stderr := mainRun(cfgPath, "auth", "status", "--offline"); code != ExitAuth {
+		t.Fatalf("auth status without a secret: exit %d (stderr %q)", code, stderr)
+	}
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "legacy_secret") || !strings.Contains(string(raw), "platforms:") {
+		t.Errorf("config after the first run that opened the store:\n%s", raw)
+	}
+	if code, _, stderr := mainRun(cfgPath, "auth", "rename", "lost", "found"); code != ExitOK || !strings.Contains(stderr, `profile "lost" renamed to "found"`) {
+		t.Fatalf("auth rename: exit %d (stderr %q)", code, stderr)
+	}
+	cfg := loadConfig(t, cfgPath)
+	if got := accountNames(cfg); got != "found/"+p1 || cfg.CurrentProfile != "found" || cfg.Profiles["found"].Platforms[fakePlatform].LegacySecret {
+		t.Errorf("accounts %q, current %q", got, cfg.CurrentProfile)
+	}
+	if token(t, dir, creds.Key("found", p1)) != "" || token(t, dir, "lost") != "" {
+		t.Error("a secret appeared")
 	}
 }

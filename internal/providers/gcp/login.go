@@ -43,7 +43,7 @@ func clientOptions(ts oauth2.TokenSource) []option.ClientOption {
 
 // Login runs the interactive authentication flow for the selected method.
 func (p *provider) Login(ctx context.Context, in platform.LoginInput) (*platform.LoginResult, error) {
-	pio := prompt.New(in.Stdin, in.Stdout, in.Stderr)
+	pio := prompt.New(in.Stdin, in.Stdout, in.Stderr).WithContext(ctx)
 	method := strings.ToLower(in.Opt("method", ""))
 	if method == "" && in.Existing != nil {
 		method = in.Existing["method"]

@@ -59,7 +59,9 @@ func newAuthLoginCmd(rt *app.Runtime) *cobra.Command {
 			"profile, or to a profile named \"default\" when no profile is current (or the\n" +
 			"current one no longer exists). When the platform is already configured in\n" +
 			"another profile only, --profile is required.\n\n" +
-			"On a terminal the platform may be left out: it is then chosen from a list.\n\nLogin flows:\n" + loginHelp() +
+			"On a terminal the platform may be left out: it is then chosen from a list.\n" +
+			"Ctrl-C, or Ctrl-D on an empty line, leaves a question of the login flow:\n" +
+			"nothing is stored then.\n\nLogin flows:\n" + loginHelp() +
 			"\nPlatform-specific options are passed with --set key=value (see each platform's\n" +
 			"section in the README). A secret option (token, key, secret, client_secret, ...)\n" +
 			"may be given as --set key=- to read the value from stdin instead of argv.",
@@ -115,7 +117,7 @@ func newAuthLoginCmd(rt *app.Runtime) *cobra.Command {
 				}
 				if secretOptionKeys[k] && v != "" {
 					if v == "-" {
-						if v, err = rt.Prompt().RequiredSecret(k); err != nil {
+						if v, err = rt.Prompt().WithContext(cmd.Context()).RequiredSecret(k); err != nil {
 							return err
 						}
 					} else {
@@ -292,8 +294,14 @@ func profileRows(cfg *config.Config) []profileRow {
 		}
 		for _, id := range prof.PlatformIDs() {
 			a := prof.Platforms[id]
-			updated := a.UpdatedAt
-			rows = append(rows, profileRow{Name: n, Platform: id, Current: current, Backend: a.CredentialBackend, Metadata: a.Metadata, UpdatedAt: &updated})
+			// Only a real timestamp: a pointer to the zero time is left out
+			// of YAML but printed by JSON as year 1.
+			var updated *time.Time
+			if !a.UpdatedAt.IsZero() {
+				u := a.UpdatedAt
+				updated = &u
+			}
+			rows = append(rows, profileRow{Name: n, Platform: id, Current: current, Backend: a.CredentialBackend, Metadata: a.Metadata, UpdatedAt: updated})
 		}
 	}
 	return rows
@@ -542,27 +550,48 @@ func newAuthLogoutCmd(rt *app.Runtime) *cobra.Command {
 				}
 				return removeInteractive(cmd.Context(), rt, only, keep)
 			}
-			cfg, err := rt.Config()
-			if err != nil {
-				return err
-			}
-			prof, err := cfg.Profile(name)
-			if err != nil {
-				return fmt.Errorf("%w: %v", platform.ErrNotFound, err)
-			}
-			ids := prof.PlatformIDs()
-			if len(args) == 1 {
-				id, err := platform.Parse(args[0])
+			var cfg *config.Config
+			var ids []platform.ID
+			// resolve names what to remove in the config as loaded now.
+			resolve := func() error {
+				var err error
+				if cfg, err = rt.Config(); err != nil {
+					return err
+				}
+				prof, err := cfg.Profile(name)
 				if err != nil {
-					return usageErr("%v", err)
+					return fmt.Errorf("%w: %v", platform.ErrNotFound, err)
 				}
-				if _, ok := prof.Platforms[id]; !ok {
-					return fmt.Errorf("%w: profile %q has no %s account", platform.ErrNotFound, name, id)
+				ids = prof.PlatformIDs()
+				if len(args) == 1 {
+					id, err := platform.Parse(args[0])
+					if err != nil {
+						return usageErr("%v", err)
+					}
+					if _, ok := prof.Platforms[id]; !ok {
+						return fmt.Errorf("%w: profile %q has no %s account", platform.ErrNotFound, name, id)
+					}
+					ids = []platform.ID{id}
 				}
-				ids = []platform.ID{id}
+				return nil
+			}
+			if err := resolve(); err != nil {
+				return err
 			}
 			if _, err := rt.Creds(); err != nil {
 				return err
+			}
+			if errors.Is(cfg.Unchanged(), config.ErrChanged) {
+				// Another polyctl process saved the config since this one
+				// started (two commands run together after an upgrade:
+				// the other one moved the secrets). Remove from the file
+				// as it is now.
+				if _, err := rt.ReloadConfig(); err != nil {
+					return err
+				}
+				if err := resolve(); err != nil {
+					return err
+				}
 			}
 			if len(ids) == 0 {
 				if err := removeEmptyProfile(rt, name); err != nil {
@@ -613,6 +642,9 @@ func removeEmptyProfile(rt *app.Runtime, name string) error {
 // removeAccount removes one account: its cached resources (unless
 // keepInventory), its secret and its config entry, and the profile itself
 // when that was its last account. The config is saved before returning.
+// Nothing is removed when the config file is no longer the one in memory:
+// the save at the end would be refused, after the steps that cannot be
+// undone.
 func removeAccount(ctx context.Context, rt *app.Runtime, ref config.AccountRef, keepInventory bool) error {
 	name, id := ref.Profile, ref.Platform
 	cfg, err := rt.Config()
@@ -631,9 +663,15 @@ func removeAccount(ctx context.Context, rt *app.Runtime, ref config.AccountRef, 
 	if err != nil {
 		return err
 	}
+	if err := cfg.Unchanged(); err != nil {
+		if errors.Is(err, config.ErrChanged) {
+			return fmt.Errorf("%w; nothing was removed, run the command again", err)
+		}
+		return fmt.Errorf("read config: %w", err)
+	}
 	// Order matters: the inventory first, the secret next and
-	// the config entry right after it, so a failure never
-	// leaves the config listing an account whose secret is gone.
+	// the config entry right after it, so that as little as possible can
+	// fail between removing the secret and the account that names it.
 	if !keepInventory {
 		db, err := rt.DB()
 		if err != nil {
@@ -674,7 +712,13 @@ func removeAccount(ctx context.Context, rt *app.Runtime, ref config.AccountRef, 
 		prof.Platforms[id] = a
 		cfg.Profiles[name] = prof
 		cfg.CurrentProfile = prevCurrent
-		return fmt.Errorf("save config: %w (the %s credentials of profile %q were already removed; run the command again)", err, id, name)
+		if errors.Is(err, config.ErrChanged) {
+			// Changed between the check above and the save. Not the text of
+			// Save, which says that nothing was saved: something was removed.
+			return fmt.Errorf("%w (%s): the %s credentials of profile %q were already removed, but the account is still listed; run the command again to finish",
+				config.ErrChanged, cfg.Path(), id, name)
+		}
+		return fmt.Errorf("save config: %w (the %s credentials of profile %q were already removed, but the account is still listed; run the command again to finish)", err, id, name)
 	}
 	return nil
 }

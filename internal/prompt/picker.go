@@ -5,6 +5,8 @@ import (
 	"io"
 	"os"
 	"sort"
+	"sync"
+	"sync/atomic"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
@@ -57,12 +59,98 @@ func NewPicker(in io.Reader, errw io.Writer) Picker {
 	if errw == nil {
 		errw = os.Stderr
 	}
-	return &terminalPicker{in: in, out: errw}
+	return &terminalPicker{in: in, out: errw, dropTypeAhead: IsTerminal(in)}
 }
 
 type terminalPicker struct {
 	in  io.Reader
 	out io.Writer
+	// dropTypeAhead says that keys pressed before a yes/no question is on
+	// screen are not answers to it. Only a terminal has such input to drop;
+	// a pipe keeps every byte.
+	dropTypeAhead bool
+}
+
+// drawGate tells when a prompt is on screen. The program draws a frame some
+// milliseconds after it starts reading keys (it enters raw mode first, and
+// frames are written on a timer), so a key can arrive before the question it
+// would answer is visible.
+type drawGate struct {
+	// viewed is set once the program asked the field for its view: the next
+	// write to the terminal carries the frame, or directly precedes it.
+	viewed atomic.Bool
+	once   sync.Once
+	// drawn is closed when that write was made.
+	drawn chan struct{}
+	// done is closed when the prompt ended.
+	done chan struct{}
+	// flush drops the keys the terminal still holds at that moment.
+	flush func()
+}
+
+// drawnMsg follows the keys that were read before the prompt was drawn.
+type drawnMsg struct{}
+
+func newDrawGate(in io.Reader) *drawGate {
+	g := &drawGate{drawn: make(chan struct{}), done: make(chan struct{}), flush: func() {}}
+	if f, ok := in.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+		g.flush = func() { discardInput(f) }
+	}
+	return g
+}
+
+// wrote is called after every write to the terminal.
+func (g *drawGate) wrote() {
+	if !g.viewed.Load() {
+		return
+	}
+	g.once.Do(func() {
+		g.flush()
+		close(g.drawn)
+	})
+}
+
+// wait is a command that reports the first frame. Its message is queued
+// behind the keys read until then, so those are told apart from the keys
+// pressed with the question in view.
+func (g *drawGate) wait() tea.Msg {
+	select {
+	case <-g.drawn:
+		return drawnMsg{}
+	case <-g.done:
+		return nil
+	}
+}
+
+// output returns w with every write reported to the gate. A file stays a
+// file to the program, which asks it for the terminal's size and colours.
+func (g *drawGate) output(w io.Writer) io.Writer {
+	if f, ok := w.(*os.File); ok {
+		return gatedFile{File: f, gate: g}
+	}
+	return gatedWriter{Writer: w, gate: g}
+}
+
+type gatedWriter struct {
+	io.Writer
+	gate *drawGate
+}
+
+func (w gatedWriter) Write(b []byte) (int, error) {
+	n, err := w.Writer.Write(b)
+	w.gate.wrote()
+	return n, err
+}
+
+type gatedFile struct {
+	*os.File
+	gate *drawGate
+}
+
+func (w gatedFile) Write(b []byte) (int, error) {
+	n, err := w.File.Write(b)
+	w.gate.wrote()
+	return n, err
 }
 
 // filterer is implemented by the fields that have a "/" filter.
@@ -93,13 +181,28 @@ func keyMap() *huh.KeyMap {
 type hinted struct {
 	huh.Field
 	width int
+	// gate, when not nil, is told that the field was drawn.
+	gate    *drawGate
+	waiting bool
 }
 
 // Update keeps the wrapper in the form: the form stores the model a field
-// returns.
+// returns. The first update of a gated field also starts the wait for its
+// first frame.
 func (h *hinted) Update(msg tea.Msg) (huh.Model, tea.Cmd) {
 	_, cmd := h.Field.Update(msg)
+	if h.gate != nil && !h.waiting {
+		h.waiting = true
+		cmd = tea.Batch(cmd, h.gate.wait)
+	}
 	return h, cmd
+}
+
+func (h *hinted) View() string {
+	if h.gate != nil {
+		h.gate.viewed.Store(true)
+	}
+	return h.Field.View()
 }
 
 func (h *hinted) WithWidth(width int) huh.Field {
@@ -108,8 +211,33 @@ func (h *hinted) WithWidth(width int) huh.Field {
 	return h
 }
 
+// KeyBinds leaves out the keys that do something else in the field's current
+// state. In the filter input space and ctrl+a go to the text; while the text
+// matches no option there is nothing to confirm or to move to, and run drops
+// those keys.
 func (h *hinted) KeyBinds() []key.Binding {
-	return fitHints(orderHints(h.Field.KeyBinds()), h.width)
+	binds := h.Field.KeyBinds()
+	if f, ok := h.Field.(filterer); ok && f.GetFiltering() {
+		noMatch := false
+		if hv, ok := h.Field.(hoverer); ok {
+			_, any := hv.Hovered()
+			noMatch = !any
+		}
+		kept := make([]key.Binding, 0, len(binds))
+		for _, b := range binds {
+			switch b.Help().Key {
+			case "space", "ctrl+a":
+				continue
+			case "enter", "↑", "↓":
+				if noMatch {
+					continue
+				}
+			}
+			kept = append(kept, b)
+		}
+		binds = kept
+	}
+	return fitHints(orderHints(binds), h.width)
 }
 
 // orderHints returns the bindings that are switched on with Enter and Esc
@@ -166,6 +294,10 @@ func fitHints(binds []key.Binding, width int) []key.Binding {
 	return binds
 }
 
+// selectUpKeys are the keys that move up in a select outside its filter
+// input (the library's defaults).
+var selectUpKeys = huh.NewDefaultKeyMap().Select.Up.Keys()
+
 const (
 	leaveHint  = "confirm • esc cancel"
 	filterHint = "confirm" // Esc belongs to the filter: the library's own hint says how
@@ -176,12 +308,25 @@ const (
 // Esc acts on the filter, so "esc cancel" must not be shown. Applying a key
 // map resets the bindings the field switches on and off by itself, so they
 // are set to the field's current state (filtering, applied) first.
-func syncFilterHint(field huh.Field, km *huh.KeyMap, filtering, applied, escLeaves bool) {
+//
+// editing says that the key opens the filter input. The keys that edit its
+// text must not move the list as well: the half-page keys (ctrl+u and ctrl+d
+// delete text there) are switched off and ctrl+k (delete to the end of the
+// line) no longer moves up, until the input is closed again.
+func syncFilterHint(field huh.Field, km *huh.KeyMap, filtering, applied, escLeaves, editing bool) {
 	hint := filterHint
 	if escLeaves {
 		hint = leaveHint
 	}
 	s, m := &km.Select, &km.MultiSelect
+	for _, b := range []*key.Binding{&s.HalfPageUp, &s.HalfPageDown, &m.HalfPageUp, &m.HalfPageDown} {
+		b.SetEnabled(!editing)
+	}
+	if editing {
+		s.Up.SetKeys("up", "ctrl+p")
+	} else {
+		s.Up.SetKeys(selectUpKeys...)
+	}
 	s.Submit.SetHelp("enter", hint)
 	s.SetFilter.SetEnabled(filtering)
 	s.Filter.SetEnabled(!filtering)
@@ -215,13 +360,21 @@ func filterApplied(field huh.Field, km *huh.KeyMap) bool {
 
 // run shows one field and maps an abort to ErrAborted. shortcuts maps a key
 // to an option value: pressing the key outside the filter input answers the
-// prompt with that value, which is returned as the first result. mayConfirm,
-// when not nil, is asked before Enter confirms; when it returns false the
+// prompt with that value, which is returned as the first result. ticks, when
+// not nil (multi-select), is asked before Enter confirms; when it refuses the
 // key is dropped and the prompt stays open. enterSetsFilter says that Enter
 // in the filter input only applies the filter (multi-select); in a select it
-// also confirms the highlighted match.
-func (p *terminalPicker) run(field huh.Field, shortcuts map[string]string, mayConfirm func() bool, enterSetsFilter bool) (string, error) {
+// also confirms the highlighted match. gate, when not nil, makes the prompt
+// drop the keys pressed before it was drawn (Ctrl-C still leaves it).
+func (p *terminalPicker) run(field huh.Field, shortcuts map[string]string, ticks *tickGuard, enterSetsFilter bool, gate *drawGate) (string, error) {
 	km := keyMap()
+	out := p.out
+	// unseen is set until the prompt is on screen.
+	unseen := gate != nil
+	if gate != nil {
+		out = gate.output(out)
+		defer close(gate.done)
+	}
 	// submitted is set when Enter reaches the field. The form handles the
 	// submission asynchronously, so keys still in the input buffer would
 	// otherwise change the answer after it was confirmed (a "y" typed right
@@ -242,7 +395,7 @@ func (p *terminalPicker) run(field huh.Field, shortcuts map[string]string, mayCo
 		// The key map is applied again in both outcomes: closing the filter
 		// input makes a multi-select switch its next and previous bindings
 		// back on, and Tab would then confirm the list unchecked.
-		syncFilterHint(field, km, false, filtered, !filtered)
+		syncFilterHint(field, km, false, filtered, !filtered, false)
 		return p.sizeMsg()
 	}
 	shortcut, viaShortcut := "", false
@@ -255,7 +408,20 @@ func (p *terminalPicker) run(field huh.Field, shortcuts map[string]string, mayCo
 		}
 		return k
 	}
-	form := newForm(field, km).
+	// tickOr handles a key that ticks rows while the reminder that nothing
+	// is ticked is on screen: the field gets the key at once, so that the
+	// reminder goes away with the first tick and not on a later key. The
+	// size message that replaces the key makes the form draw the new state.
+	// Any other time the key is passed on.
+	tickOr := func(k tea.KeyPressMsg) tea.Msg {
+		if ticks == nil || !ticks.reminding {
+			return shortcutOr(k, false)
+		}
+		field.Update(k)
+		ticks.refresh()
+		return p.sizeMsg()
+	}
+	form := newGatedForm(field, km, gate).
 		WithProgramOptions(tea.WithFilter(func(_ tea.Model, msg tea.Msg) tea.Msg {
 			f, canFilter := field.(filterer)
 			filtering := canFilter && f.GetFiltering()
@@ -269,11 +435,23 @@ func (p *terminalPicker) run(field huh.Field, shortcuts map[string]string, mayCo
 			if size, ok := msg.(tea.WindowSizeMsg); ok {
 				return knownSize(size)
 			}
+			if _, ok := msg.(drawnMsg); ok {
+				unseen = false
+				return nil
+			}
 			k, isKey := msg.(tea.KeyPressMsg)
 			if !isKey {
 				return msg
 			}
 			if viaShortcut {
+				return nil
+			}
+			if unseen {
+				// Pressed before the question could be read: not an answer
+				// to it.
+				if k.String() == "ctrl+c" {
+					return msg
+				}
 				return nil
 			}
 			if submitted {
@@ -291,13 +469,26 @@ func (p *terminalPicker) run(field huh.Field, shortcuts map[string]string, mayCo
 				noMatch = !any
 			}
 			switch k.String() {
-			case "up", "down", "ctrl+p", "ctrl+n", "ctrl+k", "ctrl+j", "ctrl+u", "ctrl+d":
+			case "up", "down", "ctrl+p", "ctrl+n", "ctrl+j":
 				if noMatch {
 					// With nothing to move to, the lists put their cursor
 					// before the first row: a multi-select then panics on
 					// the next toggle, a select confirms a stale value.
 					return nil
 				}
+			case "ctrl+a":
+				if filtering {
+					// Start of the line in the filter text. A multi-select
+					// would tick every match as well; Home is the same
+					// editing key without that second meaning.
+					return tea.KeyPressMsg{Code: tea.KeyHome}
+				}
+				return tickOr(k)
+			case "space", "x":
+				if filtering {
+					return msg // typed into the filter
+				}
+				return tickOr(k)
 			case "y", "Y", "n", "N":
 				// Only Enter answers a yes/no question; these keys move the
 				// selection. Answering at once would let the Enter typed
@@ -319,7 +510,7 @@ func (p *terminalPicker) run(field huh.Field, shortcuts map[string]string, mayCo
 					// prompt stays in the filter input.
 					return nil
 				}
-				if !filtering && mayConfirm != nil && !mayConfirm() {
+				if !filtering && ticks != nil && !ticks.confirm() {
 					// Enter is dropped; a size message makes the form lay
 					// itself out again, which shows the changed hint.
 					return p.sizeMsg()
@@ -332,14 +523,14 @@ func (p *terminalPicker) run(field huh.Field, shortcuts map[string]string, mayCo
 				}
 				if filtered {
 					// Clears the applied filter; Esc leaves again after it.
-					syncFilterHint(field, km, false, true, true)
+					syncFilterHint(field, km, false, true, true, false)
 					filtered = false
 					return msg
 				}
 				return tea.InterruptMsg{}
 			case "/":
 				if canFilter && !filtering {
-					syncFilterHint(field, km, false, filtered, false)
+					syncFilterHint(field, km, false, filtered, false, true)
 				}
 			default:
 				return shortcutOr(k, filtering)
@@ -347,7 +538,7 @@ func (p *terminalPicker) run(field huh.Field, shortcuts map[string]string, mayCo
 			return msg
 		})).
 		WithInput(p.in).
-		WithOutput(p.out)
+		WithOutput(out)
 	err := mapAbort(form.Run())
 	if viaShortcut {
 		return shortcut, nil
@@ -365,7 +556,13 @@ func (p *terminalPicker) run(field huh.Field, shortcuts map[string]string, mayCo
 
 // newForm returns the one-field form of a prompt.
 func newForm(field huh.Field, km *huh.KeyMap) *huh.Form {
-	return huh.NewForm(huh.NewGroup(&hinted{Field: field})).WithTheme(huh.ThemeFunc(theme)).WithKeyMap(km)
+	return newGatedForm(field, km, nil)
+}
+
+// newGatedForm is newForm with a gate that is told when the field is drawn
+// (nil for none).
+func newGatedForm(field huh.Field, km *huh.KeyMap, gate *drawGate) *huh.Form {
+	return huh.NewForm(huh.NewGroup(&hinted{Field: field, gate: gate})).WithTheme(huh.ThemeFunc(theme)).WithKeyMap(km)
 }
 
 // theme is the library's default theme with the selected button of a yes/no
@@ -521,7 +718,7 @@ func (p *terminalPicker) Select(title string, opts []Option, def string) (string
 			shortcuts[o.Key] = o.Value
 		}
 	}
-	picked, err := p.run(field, shortcuts, nil, false)
+	picked, err := p.run(field, shortcuts, nil, false, nil)
 	if err != nil {
 		return "", err
 	}
@@ -537,8 +734,8 @@ func (p *terminalPicker) MultiSelect(title string, opts []Option) ([]string, err
 	}
 	var values []string
 	cols, termRows := p.termSize()
-	field, ticked := multiSelectField(title, huhOptions(opts, p.labelWidth(multiSelectPrefix)), &values, cols, termRows)
-	if _, err := p.run(field, nil, ticked, true); err != nil {
+	field, ticks := multiSelectField(title, huhOptions(opts, p.labelWidth(multiSelectPrefix)), &values, cols, termRows)
+	if _, err := p.run(field, nil, ticks, true, nil); err != nil {
 		return nil, err
 	}
 	return orderValues(opts, values), nil
@@ -549,11 +746,47 @@ const (
 	tickReminder = "Nothing ticked: press space on a row first."
 )
 
+// tickGuard keeps a multi-select from being confirmed with nothing ticked.
+// Enter on an unticked list is nearly always a slip (the highlighted row is
+// not selected): the description then says what to do, until a row is ticked.
+type tickGuard struct {
+	// reminding is set while the description shows tickReminder.
+	reminding bool
+	ticked    func() bool
+	describe  func(text string)
+}
+
+// confirm reports whether Enter may confirm the list, and shows the
+// reminder when it may not.
+func (g *tickGuard) confirm() bool {
+	if g.ticked() {
+		g.remind(false)
+		return true
+	}
+	g.remind(true)
+	return false
+}
+
+// refresh withdraws the reminder once a row is ticked: it would state
+// something false next to the tick.
+func (g *tickGuard) refresh() {
+	if g.reminding && g.ticked() {
+		g.remind(false)
+	}
+}
+
+func (g *tickGuard) remind(on bool) {
+	g.reminding = on
+	if on {
+		g.describe(tickReminder)
+	} else {
+		g.describe(tickHint)
+	}
+}
+
 // multiSelectField builds the multi-select field for a terminal of cols by
-// termRows, and the check run before Enter confirms. Enter on an unticked
-// list is nearly always a slip (the highlighted row is not selected): the
-// check then fails and the description says what to do.
-func multiSelectField(title string, opts []huh.Option[string], values *[]string, cols, termRows int) (*huh.MultiSelect[string], func() bool) {
+// termRows, and the guard asked before Enter confirms.
+func multiSelectField(title string, opts []huh.Option[string], values *[]string, cols, termRows int) (*huh.MultiSelect[string], *tickGuard) {
 	field := huh.NewMultiSelect[string]().Title(title).Options(opts...).Value(values)
 	// The height counts the title and description rows too, however many
 	// rows they wrap to; without an explicit one short lists are cut off.
@@ -561,25 +794,32 @@ func multiSelectField(title string, opts []huh.Option[string], values *[]string,
 	// it never hides an option.
 	titleRows := textRows(title, cols)
 	rows := visibleRows(len(opts), termRows, titleRows+max(textRows(tickHint, cols), textRows(tickReminder, cols)))
-	describe := func(text string) {
-		field.Description(text)
-		field.Height(rows + titleRows + textRows(text, cols))
+	guard := &tickGuard{
+		ticked: func() bool {
+			v, ok := field.GetValue().([]string)
+			return ok && len(v) > 0
+		},
+		describe: func(text string) {
+			field.Description(text)
+			field.Height(rows + titleRows + textRows(text, cols))
+		},
 	}
-	describe(tickHint)
-	ticked := func() bool {
-		if v, ok := field.GetValue().([]string); ok && len(v) > 0 {
-			describe(tickHint)
-			return true
-		}
-		describe(tickReminder)
-		return false
-	}
-	return field, ticked
+	guard.remind(false)
+	return field, guard
 }
 
 func (p *terminalPicker) Confirm(title string, def bool) (bool, error) {
 	value := def
-	if _, err := p.run(huh.NewConfirm().Title(title).Value(&value), nil, nil, false); err != nil {
+	// What was typed before the question appeared is not an answer to it: a
+	// "y" and Enter typed ahead would confirm it unseen. The keys are dropped
+	// up to the moment the question is drawn, not only up to the start of
+	// the prompt: drawing takes long enough for pasted or scripted input to
+	// arrive in between.
+	var gate *drawGate
+	if p.dropTypeAhead {
+		gate = newDrawGate(p.in)
+	}
+	if _, err := p.run(huh.NewConfirm().Title(title).Value(&value), nil, nil, false, gate); err != nil {
 		return false, err
 	}
 	return value, nil
@@ -591,7 +831,7 @@ func (p *terminalPicker) Input(title, def string, validate func(string) error) (
 	if validate != nil {
 		field.Validate(validate)
 	}
-	if _, err := p.run(field, nil, nil, false); err != nil {
+	if _, err := p.run(field, nil, nil, false, nil); err != nil {
 		return "", err
 	}
 	return value, nil

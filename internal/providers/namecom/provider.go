@@ -61,7 +61,7 @@ func (*provider) ResourceTypes() []platform.ResourceType {
 // Login collects a username and API token (interactively or from --set
 // options), verifies them against GET /v4/hello and returns the profile.
 func (*provider) Login(ctx context.Context, in platform.LoginInput) (*platform.LoginResult, error) {
-	io := prompt.New(in.Stdin, in.Stdout, in.Stderr)
+	io := prompt.New(in.Stdin, in.Stdout, in.Stderr).WithContext(ctx)
 
 	env, err := normalizeEnv(in.Opt("env", in.Existing[metaEnv]))
 	if err != nil {

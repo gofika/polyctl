@@ -218,7 +218,21 @@ func removeInteractive(ctx context.Context, rt *app.Runtime, only platform.ID, k
 			return err
 		}
 	}
+	// The questions may have waited for long, and opening the credential
+	// store can rewrite the config (secrets moved from the pre-0.2 layout).
+	// Remove from the file as it is now: what another polyctl process saved
+	// meanwhile is kept, and the saves below are not refused as stale.
+	if _, err := rt.Creds(); err != nil {
+		return err
+	}
+	if cfg, err = rt.ReloadConfig(); err != nil {
+		return err
+	}
 	for _, ref := range accounts {
+		if _, err := cfg.Account(ref.Profile, ref.Platform); err != nil {
+			rt.Infof("the %s account of profile %q is no longer configured; skipped", ref.Platform, ref.Profile)
+			continue
+		}
 		if err := removeAccount(ctx, rt, ref, keepInventory); err != nil {
 			return err
 		}
@@ -228,6 +242,14 @@ func removeInteractive(ctx context.Context, rt *app.Runtime, only platform.ID, k
 		}
 	}
 	for _, n := range empties {
+		switch prof, ok := cfg.Profiles[n]; {
+		case !ok:
+			rt.Infof("profile %q no longer exists; skipped", n)
+			continue
+		case len(prof.Platforms) > 0:
+			rt.Infof("profile %q has accounts now; skipped", n)
+			continue
+		}
 		if err := removeEmptyProfile(rt, n); err != nil {
 			return err
 		}
@@ -299,8 +321,18 @@ func renameProfile(ctx context.Context, rt *app.Runtime, oldName, newName string
 	ids := prof.PlatformIDs()
 	for _, id := range ids {
 		if a := prof.Platforms[id]; a.LegacySecret {
-			return fmt.Errorf("profile %q cannot be renamed yet: an entry for its %s credentials is still stored in the pre-0.2 layout and could not be moved or removed (credential backend %q); make that backend available, then retry",
-				oldName, id, a.LegacySecretBackend())
+			// Opening the store clears the mark when the secret was moved, and
+			// also when there is none. What is left is an entry that is out
+			// of reach, or one that could not be moved.
+			const stuck = "profile %q cannot be renamed yet: an entry for its %s credentials is still stored in the pre-0.2 layout and could not be moved or removed"
+			again := fmt.Sprintf("log in again with `polyctl auth login %s --profile %s`", id, oldName)
+			switch legacy := a.LegacySecretBackend(); {
+			case legacy == "":
+				return fmt.Errorf(stuck+": the config does not say which credential backend holds it, and not every backend is available in this run; %s, then retry", oldName, id, again)
+			case !store.Has(legacy):
+				return fmt.Errorf(stuck+" (credential backend %q); make that backend available, then retry", oldName, id, legacy)
+			}
+			return fmt.Errorf(stuck+"; run `polyctl auth status --offline -v` for the cause, or %s", oldName, id, again)
 		}
 		if a := prof.Platforms[id]; !store.Has(a.CredentialBackend) {
 			// Its secret cannot be read or moved now; renaming would
@@ -408,7 +440,8 @@ func newAuthManageCmd(rt *app.Runtime) *cobra.Command {
 			"and their accounts. Arrow keys (or j/k) move, space toggles in a multiple\n" +
 			"choice, \"/\" filters a list, enter confirms (in a yes/no question y and n\n" +
 			"select the answer, enter confirms it), Esc or Ctrl-C goes back (and leaves\n" +
-			"the menu from its top level).\n\n" +
+			"the menu from its top level). The questions of a login flow are left\n" +
+			"with Ctrl-C, or Ctrl-D on an empty line.\n\n" +
 			"The configuration is read again before every action, so changes made by\n" +
 			"other polyctl commands while the menu is open are kept.\n\n" +
 			"The menu is drawn on stderr and needs a terminal on stdin and stderr. In\n" +

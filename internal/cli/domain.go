@@ -249,13 +249,17 @@ func newDomainNSSetCmd(rt *app.Runtime) *cobra.Command {
 
 func newDomainWhichCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
-		Use:               "which <domain>",
-		Short:             "Show which accounts own a domain (registrar and DNS zone)",
+		Use:   "which <domain>",
+		Short: "Show which accounts own a domain (registrar and DNS zone)",
+		Long: "Show every account that owns a domain, as a registrar or as a DNS zone.\n" +
+			"--profile and --platform do not narrow the list; they are still checked, so\n" +
+			"an unknown profile or platform is an error.",
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: completeDomains(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// which shows every owner; the flag is only validated.
-			if _, err := rt.RoutePlatform(); err != nil {
+			// which shows every owner; the flags are only validated, so that
+			// a mistyped --profile or --platform is not silently ignored.
+			if _, err := rt.Accounts(); err != nil {
 				return err
 			}
 			db, err := rt.DB()
@@ -297,7 +301,11 @@ func newDomainIndexCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "index",
 		Short: "Scan every domain-capable account and rebuild the domain index",
-		Args:  cobra.NoArgs,
+		Long: "Fetch zones and registered domains from every domain-capable account (or\n" +
+			"those selected with --profile / --platform) and rebuild the domain index. A\n" +
+			"selection that names no such account is a not-found error (exit code 4), and\n" +
+			"so is an index with no such account configured at all.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if rt.Flags.Offline {
 				return app.ErrOffline
@@ -310,7 +318,9 @@ func newDomainIndexCmd(rt *app.Runtime) *cobra.Command {
 				if rt.Flags.Profile != "" || rt.Flags.Platform != "" {
 					return fmt.Errorf("%w: no domain-capable account matches --profile / --platform", platform.ErrNotFound)
 				}
-				return fmt.Errorf("no domain-capable accounts configured; run `polyctl auth login`")
+				// Not found, like every other answer to "nothing is
+				// configured" and like `sync` without accounts.
+				return fmt.Errorf("%w: no domain-capable accounts configured; run `polyctl auth login <platform>`", platform.ErrNotFound)
 			}
 			var reports []app.SyncReport
 			var firstErr error

@@ -351,11 +351,11 @@ func TestPickerMultiSelectFilter(t *testing.T) {
 func TestSyncFilterHint(t *testing.T) {
 	km := keyMap()
 	field := huh.NewSelect[string]().Options(huhOptions(abc, 80)...)
-	syncFilterHint(field, km, false, false, false)
+	syncFilterHint(field, km, false, false, false, false)
 	if h := km.Select.Submit.Help().Desc; strings.Contains(h, "esc") {
 		t.Errorf("hint while a filter is in use = %q, must not mention esc", h)
 	}
-	syncFilterHint(field, km, false, true, true)
+	syncFilterHint(field, km, false, true, true, false)
 	if h := km.Select.Submit.Help().Desc; !strings.Contains(h, "esc cancel") {
 		t.Errorf("hint after the filter was cleared = %q", h)
 	}
@@ -461,5 +461,180 @@ func TestPickerMultiSelectTabDoesNotConfirm(t *testing.T) {
 		if !errors.Is(err, ErrAborted) {
 			t.Errorf("%s: MultiSelect = %v, %v; want ErrAborted", name, got, err)
 		}
+	}
+}
+
+// The keys that edit the filter text must not move the list as well:
+// ctrl+u, ctrl+d and ctrl+k are editing keys there, and ctrl+a is the start
+// of the line, not "tick all".
+func TestPickerFilterEditingKeysDoNotMoveTheList(t *testing.T) {
+	const keyCtrlA, keyCtrlD, keyCtrlK, keyCtrlU = "\x01", "\x04", "\x0b", "\x15"
+	var many []Option
+	for i := 0; i < 30; i++ {
+		many = append(many, Option{Label: "option-" + string(rune('A'+i)), Value: string(rune('A' + i))})
+	}
+	tenDown := strings.Repeat(keyDown, 10)
+	sel := func(p Picker) (string, error) { return p.Select("Pick", many, "") }
+	for name, tc := range map[string]struct {
+		keys []string
+		want string
+	}{
+		// The cursor is on the eleventh row (K) and must stay there.
+		"ctrl+u deletes the text":            {[]string{tenDown, "/", "option", keyCtrlU, keyEnter}, "K"},
+		"ctrl+d at the end of the text":      {[]string{tenDown, "/", "option", keyCtrlD, keyEnter}, "K"},
+		"ctrl+k at the end of the text":      {[]string{tenDown, "/", "option", keyCtrlK, keyEnter}, "K"},
+		"ctrl+u on a filter without a match": {[]string{"/", "zzz", keyCtrlU, "option-c", keyEnter}, "C"},
+		// Outside the filter input they move as before.
+		"ctrl+k outside the filter": {[]string{keyDown + keyDown, keyCtrlK, keyEnter}, "B"},
+		"ctrl+k after the filter":   {[]string{"/", "option", "\x1b", keyDown + keyDown, keyCtrlK, keyEnter}, "B"},
+	} {
+		got, err := drive(t, tc.keys, sel)
+		if err != nil || got != tc.want {
+			t.Errorf("select, %s: keys %q = %q, %v; want %q", name, tc.keys, got, err, tc.want)
+		}
+	}
+	// Every label holds an "a". Ctrl+a in the filter input ticks nothing, so
+	// the space that follows ticks the first row; outside it still ticks
+	// all, and the space then unticks the first row.
+	multi := func(p Picker) ([]string, error) { return p.MultiSelect("Pick", abc) }
+	for name, tc := range map[string]struct {
+		keys []string
+		want []string
+	}{
+		"ctrl+a in the filter input":  {[]string{"/", "a", keyCtrlA, keyEnter, " ", keyEnter}, []string{"a"}},
+		"ctrl+a outside it":           {[]string{keyCtrlA, " ", keyEnter}, []string{"b", "c"}},
+		"ctrl+a on an applied filter": {[]string{"/", "a", keyEnter, keyCtrlA, " ", keyEnter}, []string{"b", "c"}},
+		"ctrl+a after the reminder":   {[]string{keyEnter, keyCtrlA, keyEnter}, []string{"a", "b", "c"}},
+		"space after the reminder":    {[]string{keyEnter, keyDown, " ", keyEnter}, []string{"b"}},
+	} {
+		got, err := drive(t, tc.keys, multi)
+		if err != nil || !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("multi-select, %s: keys %q = %v, %v; want %v", name, tc.keys, got, err, tc.want)
+		}
+	}
+}
+
+// heldOutput is a terminal that shows nothing until release is closed: its
+// first write blocks, as the first frame of a prompt does for the time the
+// program needs to start.
+type heldOutput struct {
+	syncBuffer
+	once    sync.Once
+	reached chan struct{} // closed when the first write arrived
+	release chan struct{}
+}
+
+func (h *heldOutput) Write(p []byte) (int, error) {
+	h.once.Do(func() { close(h.reached) })
+	<-h.release
+	return h.syncBuffer.Write(p)
+}
+
+func (h *heldOutput) shows(text string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return strings.Contains(h.b.String(), text)
+}
+
+// A yes/no question on a terminal takes no key pressed before it is drawn:
+// "y" then Enter sent while the program starts would confirm it unseen. Keys
+// pressed once it is on screen answer it as usual.
+func TestPickerConfirmDropsKeysPressedBeforeItIsDrawn(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		ahead, after  string
+		dropTypeAhead bool
+		want          bool
+	}{
+		{"typed ahead", "y" + keyEnter, keyEnter, true, false},
+		{"typed ahead, then answered", "y" + keyEnter, "y" + keyEnter, true, true},
+		{"typed ahead, then declined", keyEnter, "n" + keyEnter, true, false},
+		// Not a terminal: every byte of the input counts.
+		{"piped", "y", keyEnter, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pr, pw := io.Pipe()
+			defer pw.Close()
+			out := &heldOutput{reached: make(chan struct{}), release: make(chan struct{})}
+			type result struct {
+				v   bool
+				err error
+			}
+			done := make(chan result, 1)
+			go func() {
+				p := &terminalPicker{in: pr, out: out, dropTypeAhead: tc.dropTypeAhead}
+				v, err := p.Confirm("Sure?", false)
+				done <- result{v, err}
+			}()
+			select {
+			case <-out.reached:
+			case <-time.After(10 * time.Second):
+				close(out.release)
+				t.Fatal("the prompt never drew anything")
+			}
+			// The program is running and nothing is on screen yet.
+			if _, err := io.WriteString(pw, tc.ahead); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(150 * time.Millisecond)
+			select {
+			case r := <-done:
+				close(out.release)
+				t.Fatalf("answered before the question was drawn: %v, %v", r.v, r.err)
+			default:
+			}
+			close(out.release)
+			deadline := time.Now().Add(10 * time.Second)
+			for !out.shows("Sure?") {
+				if time.Now().After(deadline) {
+					t.Fatal("the question was never drawn")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			time.Sleep(60 * time.Millisecond)
+			if _, err := io.WriteString(pw, tc.after); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case r := <-done:
+				if r.err != nil || r.v != tc.want {
+					t.Errorf("Confirm = %v, %v; want %v", r.v, r.err, tc.want)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("the prompt did not finish")
+			}
+		})
+	}
+}
+
+// Ctrl-C leaves a yes/no question even before it is drawn.
+func TestPickerConfirmCtrlCBeforeItIsDrawn(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	out := &heldOutput{reached: make(chan struct{}), release: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() {
+		p := &terminalPicker{in: pr, out: out, dropTypeAhead: true}
+		_, err := p.Confirm("Sure?", true)
+		done <- err
+	}()
+	select {
+	case <-out.reached:
+	case <-time.After(10 * time.Second):
+		close(out.release)
+		t.Fatal("the prompt never drew anything")
+	}
+	if _, err := io.WriteString(pw, keyCtrlC); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	close(out.release)
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrAborted) {
+			t.Errorf("ctrl-c = %v, want ErrAborted", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the prompt did not finish")
 	}
 }

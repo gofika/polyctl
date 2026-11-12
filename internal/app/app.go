@@ -112,6 +112,17 @@ func (rt *Runtime) Infof(format string, args ...any) {
 // Prompt returns the interactive IO.
 func (rt *Runtime) Prompt() *prompt.IO { return prompt.New(rt.Stdin, rt.Stdout, rt.Stderr) }
 
+// Confirm asks a yes/no question on a line of its own, for commands that
+// work without a terminal too. Leaving the question (Ctrl-C, Ctrl-D, an
+// interrupted command) is a no.
+func (rt *Runtime) Confirm(ctx context.Context, label string, def bool) (bool, error) {
+	ok, err := rt.Prompt().WithContext(ctx).Confirm(label, def)
+	if errors.Is(err, prompt.ErrAborted) {
+		return false, nil
+	}
+	return ok, err
+}
+
 // Pick returns the Picker for arrow-key prompts: the injected one, or the
 // terminal implementation, which reads Stdin and draws on Stderr.
 func (rt *Runtime) Pick() prompt.Picker {
@@ -219,7 +230,9 @@ func (rt *Runtime) Creds() (*creds.Multi, error) {
 // one-platform-per-profile layout from the bare profile name to their
 // profile/platform key, then rewrites the config in the current layout.
 // It is best effort: an account whose secret could not be moved keeps its
-// legacy_secret mark and is still readable through LoadProfile.
+// legacy_secret mark and is still readable through LoadProfile. An account
+// that has no secret at all, in a backend that can be asked, loses the mark:
+// there is nothing to move and nothing that could be left behind.
 func (rt *Runtime) migrateSecrets(cfg *config.Config, st *creds.Multi) {
 	pending := false
 	for _, ref := range cfg.Accounts("") {
@@ -316,13 +329,23 @@ func (rt *Runtime) migrateSecret(ref config.AccountRef, a *config.Account, st *c
 		// token refreshed since): never overwrite it with the old copy.
 	case errors.Is(err, creds.ErrNotFound):
 		secret, err := st.Get(ref.Profile)
-		if err != nil {
-			// Not found here does not prove there is nothing to move:
-			// the secret may sit in a backend this run cannot reach
-			// (keyring unavailable). Keep the mark and try again later.
-			if !errors.Is(err, creds.ErrNotFound) {
-				rt.Verbosef("migrate credentials of %s: %v", ref.Label(), err)
+		if errors.Is(err, creds.ErrNotFound) {
+			// Not found by the store as a whole does not prove there is
+			// nothing to move: a backend that failed to answer counts as
+			// not found there, and when the backend of the old entry is
+			// not on record it may be one this run cannot reach. Only the
+			// backend itself saying so does: the account then simply has
+			// no secret (lost, or the config was copied without it), and
+			// keeping the mark would have every later run look again and
+			// `auth rename` refuse for an entry that does not exist.
+			if st.Lacks(a.LegacySecretBackend(), ref.Profile) && st.Backend(key) == "" {
+				a.ClearLegacySecret()
+				return true
 			}
+			return false
+		}
+		if err != nil {
+			rt.Verbosef("migrate credentials of %s: %v", ref.Label(), err)
 			return false
 		}
 		if err := st.Set(key, secret); err != nil {

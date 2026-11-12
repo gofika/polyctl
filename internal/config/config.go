@@ -288,15 +288,11 @@ func (c *Config) Save() error {
 	if err := os.MkdirAll(filepath.Dir(c.path), 0o700); err != nil {
 		return err
 	}
-	var now fileState
-	switch cur, err := os.ReadFile(c.path); {
-	case err == nil:
-		now = stateOf(cur)
-	case !errors.Is(err, os.ErrNotExist):
+	if err := c.Unchanged(); err != nil {
+		if errors.Is(err, ErrChanged) {
+			return fmt.Errorf("%w; nothing was saved, run the command again", err)
+		}
 		return err
-	}
-	if now != c.read {
-		return fmt.Errorf("%w (%s); nothing was saved, run the command again", ErrChanged, c.path)
 	}
 	b, err := yaml.Marshal(c)
 	if err != nil {
@@ -326,6 +322,24 @@ func (c *Config) Save() error {
 		return err
 	}
 	c.read = stateOf(b)
+	return nil
+}
+
+// Unchanged returns an error wrapping ErrChanged when the file no longer is
+// what this copy was loaded from or last saved as. Commands call it before a
+// step they cannot undo, so that a save that is going to be refused is known
+// while nothing has happened yet.
+func (c *Config) Unchanged() error {
+	var now fileState
+	switch cur, err := os.ReadFile(c.path); {
+	case err == nil:
+		now = stateOf(cur)
+	case !errors.Is(err, os.ErrNotExist):
+		return err
+	}
+	if now != c.read {
+		return fmt.Errorf("%w (%s)", ErrChanged, c.path)
+	}
 	return nil
 }
 

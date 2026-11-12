@@ -777,7 +777,7 @@ func newECSStopCmd(rt *app.Runtime) *cobra.Command {
 				return err
 			}
 			if !rt.Flags.Yes {
-				ok, err := rt.Prompt().Confirm(fmt.Sprintf("stop instance %s", args[0]), false)
+				ok, err := rt.Confirm(cmd.Context(), fmt.Sprintf("stop instance %s", args[0]), false)
 				if err != nil {
 					return err
 				}

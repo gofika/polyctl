@@ -645,6 +645,13 @@ func TestSaveRefusesToOverwriteLaterChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	first.CurrentProfile = "mine"
+	// Unchanged says so before anything is attempted.
+	if err := other.Unchanged(); err != nil {
+		t.Errorf("Unchanged on the copy that was saved last = %v", err)
+	}
+	if err := first.Unchanged(); !errors.Is(err, config.ErrChanged) || !strings.Contains(err.Error(), path) || strings.Contains(err.Error(), "nothing was saved") {
+		t.Errorf("Unchanged over a file created meanwhile = %v, want ErrChanged naming the file", err)
+	}
 	if err := first.Save(); !errors.Is(err, config.ErrChanged) || !strings.Contains(err.Error(), path) {
 		t.Fatalf("Save over a file created meanwhile = %v, want ErrChanged naming the file", err)
 	}

@@ -153,16 +153,18 @@ func TestMigrateSecretsFromSecondaryBackend(t *testing.T) {
 	}
 }
 
-func TestMigrateSecretsKeepsMarkWhenNoSecretIsFound(t *testing.T) {
+// No secret under either key in a backend that can be asked: there is
+// nothing to move and nothing that could be left behind, so the mark goes.
+func TestMigrateSecretsClearsMarkWhenNothingIsLeft(t *testing.T) {
 	e := newMigrateEnv(t)
 
 	e.rt.migrateSecrets(e.cfg, e.multi())
 
-	if !e.account().LegacySecret {
-		t.Error("a missing secret does not prove there is nothing to move: the mark must stay")
+	if e.account().LegacySecret || e.markedOnDisk() {
+		t.Error("an account without any secret keeps its mark")
 	}
-	if raw, _ := os.ReadFile(e.cfgPath); string(raw) != migrateLegacyConfig {
-		t.Errorf("config must not be rewritten when nothing was migrated:\n%s", raw)
+	if raw, _ := os.ReadFile(e.cfgPath); !strings.Contains(string(raw), "platforms:") {
+		t.Errorf("config was not rewritten in the current layout:\n%s", raw)
 	}
 	if tokenIn(t, e.primary, newKey) != "" || tokenIn(t, e.secondary, newKey) != "" {
 		t.Error("a secret appeared under the new key")
@@ -171,14 +173,38 @@ func TestMigrateSecretsKeepsMarkWhenNoSecretIsFound(t *testing.T) {
 	if e.stderr.Len() != 0 {
 		t.Errorf("unexpected verbose output %q", e.stderr.String())
 	}
+}
 
-	// The secret turns up later (its backend became reachable): the kept mark
-	// lets the next run finish the migration.
-	setToken(t, e.secondary, "old", "late")
-	e.rt.migrateSecrets(e.cfg, e.multi())
-	if tokenIn(t, e.primary, newKey) != "late" || e.account().LegacySecret || e.markedOnDisk() {
-		t.Errorf("late migration: new key %q, marked %v", tokenIn(t, e.primary, newKey), e.account().LegacySecret)
-	}
+// A backend that does not answer, or that is not part of the store, proves
+// nothing: the secret may be there. The mark stays and a later run that can
+// read it finishes the migration.
+func TestMigrateSecretsKeepsMarkWhenBackendCannotBeAsked(t *testing.T) {
+	t.Run("backend fails to answer", func(t *testing.T) {
+		e := newMigrateEnv(t)
+		broken := &creds.Multi{Primary: e.primary, Others: []creds.Store{failingStore{errors.New("cannot read")}}}
+		e.rt.migrateSecrets(e.cfg, broken)
+		if !e.account().LegacySecret {
+			t.Fatal("the mark was dropped although a backend could not be read")
+		}
+		if raw, _ := os.ReadFile(e.cfgPath); string(raw) != migrateLegacyConfig {
+			t.Errorf("config must not be rewritten when nothing was migrated:\n%s", raw)
+		}
+		// The backend answers again and holds the secret.
+		setToken(t, e.secondary, "old", "late")
+		e.rt.migrateSecrets(e.cfg, e.multi())
+		if tokenIn(t, e.primary, newKey) != "late" || e.account().LegacySecret || e.markedOnDisk() {
+			t.Errorf("late migration: new key %q, marked %v", tokenIn(t, e.primary, newKey), e.account().LegacySecret)
+		}
+	})
+	t.Run("backend not on record", func(t *testing.T) {
+		e := newMigrateEnv(t)
+		// Unknown backend: it may be the keyring, which this store lacks.
+		e.account().CredentialBackend = ""
+		e.rt.migrateSecrets(e.cfg, e.multi())
+		if !e.account().LegacySecret {
+			t.Error("the mark was dropped although the old entry may be in a backend out of reach")
+		}
+	})
 }
 
 func TestMigrateSecretsNeverOverwritesNewKey(t *testing.T) {

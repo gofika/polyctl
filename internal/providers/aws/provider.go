@@ -80,7 +80,7 @@ func (*provider) ResourceTypes() []platform.ResourceType {
 
 // Login runs one of the interactive authentication flows.
 func (p *provider) Login(ctx context.Context, in platform.LoginInput) (*platform.LoginResult, error) {
-	io := prompt.New(in.Stdin, in.Stdout, in.Stderr)
+	io := prompt.New(in.Stdin, in.Stdout, in.Stderr).WithContext(ctx)
 	method := in.Opt("method", "")
 	if method == "" && in.Existing != nil {
 		method = in.Existing[metaMethod]

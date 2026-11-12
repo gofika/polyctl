@@ -264,7 +264,7 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 			}
 			if len(matches) > 1 && !rt.Flags.Yes {
 				_ = output.RenderGrid(rt.Stderr, recordGrid(matches, t.Platform))
-				ok, err := rt.Prompt().Confirm(fmt.Sprintf("delete %d records", len(matches)), false)
+				ok, err := rt.Confirm(cmd.Context(), fmt.Sprintf("delete %d records", len(matches)), false)
 				if err != nil {
 					return err
 				}

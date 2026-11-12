@@ -79,7 +79,7 @@ func (*provider) ResourceTypes() []platform.ResourceType {
 // pipe the token on stdin. `--set token=...` still works for compatibility
 // (the CLI warns about argv exposure and accepts `--set token=-` for stdin).
 func (p *provider) Login(ctx context.Context, in platform.LoginInput) (*platform.LoginResult, error) {
-	io := prompt.New(in.Stdin, in.Stdout, in.Stderr)
+	io := prompt.New(in.Stdin, in.Stdout, in.Stderr).WithContext(ctx)
 	token := strings.TrimSpace(in.Opt("token", ""))
 	if token == "" {
 		if v := strings.TrimSpace(os.Getenv(tokenEnv)); v != "" {

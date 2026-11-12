@@ -249,6 +249,32 @@ func (m *Multi) Has(backend string) bool {
 	return false
 }
 
+// Lacks reports whether it is certain that the backend with this name holds
+// no secret under key: the backend is part of the store and says so itself.
+// A backend that is out of reach, or that fails to answer, proves nothing.
+// An empty name (backend unknown) stands for every backend polyctl has, all
+// of which must then be within reach.
+func (m *Multi) Lacks(backend, key string) bool {
+	if backend == "" {
+		for _, known := range []string{Keyring{}.Name(), (&File{}).Name()} {
+			if !m.Has(known) {
+				return false
+			}
+		}
+	}
+	asked := false
+	for _, s := range m.stores() {
+		if backend != "" && s.Name() != backend {
+			continue
+		}
+		asked = true
+		if _, err := s.Get(key); !errors.Is(err, ErrNotFound) {
+			return false
+		}
+	}
+	return asked
+}
+
 // Backend returns the name of the backend a Get of key is served from, or ""
 // when no backend holds it (or it cannot be read).
 func (m *Multi) Backend(key string) string {

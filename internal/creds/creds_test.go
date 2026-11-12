@@ -450,3 +450,42 @@ type named struct {
 }
 
 func (n named) Name() string { return n.name }
+
+// namedStore gives a store another backend name.
+type namedStore struct {
+	creds.Store
+	name string
+}
+
+func (s namedStore) Name() string { return s.name }
+
+// Lacks is true only when the backend itself says it has no such key.
+func TestMultiLacks(t *testing.T) {
+	file := creds.NewFile(t.TempDir())
+	if err := file.Set("held", map[string]string{"token": "x"}); err != nil {
+		t.Fatal(err)
+	}
+	fileOnly := &creds.Multi{Primary: file}
+	both := &creds.Multi{Primary: namedStore{creds.NewFile(t.TempDir()), "keyring"}, Others: []creds.Store{file}}
+	broken := &creds.Multi{Primary: namedStore{creds.NewFile(t.TempDir()), "keyring"}, Others: []creds.Store{errStore{errors.New("unreadable")}}}
+	for _, tc := range []struct {
+		name    string
+		m       *creds.Multi
+		backend string
+		key     string
+		want    bool
+	}{
+		{"absent from the named backend", fileOnly, "file", "missing", true},
+		{"held by the named backend", fileOnly, "file", "held", false},
+		{"backend not part of the store", fileOnly, "keyring", "missing", false},
+		{"unknown backend, not every backend in reach", fileOnly, "", "missing", false},
+		{"unknown backend, absent everywhere", both, "", "missing", true},
+		{"unknown backend, held by one", both, "", "held", false},
+		{"only the named backend is asked", both, "keyring", "held", true},
+		{"a backend that fails proves nothing", broken, errStore{}.Name(), "missing", false},
+	} {
+		if got := tc.m.Lacks(tc.backend, tc.key); got != tc.want {
+			t.Errorf("%s: Lacks(%q, %q) = %v, want %v", tc.name, tc.backend, tc.key, got, tc.want)
+		}
+	}
+}
