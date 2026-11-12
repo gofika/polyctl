@@ -84,7 +84,7 @@ func TestLoginNonInteractiveLegacyKey(t *testing.T) {
 	opened := ""
 	in := platform.LoginInput{
 		ProfileName: "gd",
-		Options:     map[string]string{"key": testKey, "secret": testSecret, "env": "ote", "base_url": srv.URL},
+		Options:     map[string]string{"api_key": testKey, "api_secret": testSecret, "env": "ote", "base_url": srv.URL},
 		Stdin:       strings.NewReader(""),
 		Stdout:      &bytes.Buffer{},
 		Stderr:      &stderr,
@@ -115,7 +115,7 @@ func TestLoginNonInteractiveLegacyKey(t *testing.T) {
 		t.Error("secret printed to stderr")
 	}
 	// Only one half of the pair is an error, not a prompt.
-	in.Options = map[string]string{"key": testKey, "env": "ote", "base_url": srv.URL}
+	in.Options = map[string]string{"api_key": testKey, "env": "ote", "base_url": srv.URL}
 	in.Stdin = strings.NewReader("")
 	if _, err := (&provider{}).Login(context.Background(), in); err == nil {
 		t.Error("a key without a secret (and no stdin) must fail")
@@ -272,8 +272,8 @@ func TestCommandTree(t *testing.T) {
 		t.Errorf("use: %s", cmd.Use)
 	}
 	want := map[string][]string{
-		"domain": {"list", "get", "ns", "lock", "unlock", "autorenew", "available"},
-		"dns":    {"list", "add", "replace", "delete"},
+		"domain": {"list", "get", "ns", "lock", "unlock", "autorenew", "check"},
+		"dns":    {"list", "add", "upsert", "delete"},
 	}
 	for name, subs := range want {
 		sub, _, err := cmd.Find([]string{name})
@@ -286,7 +286,7 @@ func TestCommandTree(t *testing.T) {
 			}
 		}
 	}
-	for _, path := range [][]string{{"dns", "add"}, {"dns", "replace"}, {"dns", "delete"}, {"dns", "list"}} {
+	for _, path := range [][]string{{"dns", "add"}, {"dns", "upsert"}, {"dns", "delete"}, {"dns", "list"}} {
 		c, _, _ := cmd.Find(path)
 		for _, flag := range []string{"type", "name"} {
 			if c.Flags().Lookup(flag) == nil {
@@ -294,8 +294,18 @@ func TestCommandTree(t *testing.T) {
 			}
 		}
 	}
-	if c, _, _ := cmd.Find([]string{"domain", "ns", "set"}); c == nil || c.Flags().Lookup("ns") == nil {
-		t.Error("domain ns set lacks --ns")
+	// Nameservers are positional, and the identity check sits at the top.
+	if c, _, _ := cmd.Find([]string{"domain", "ns", "set"}); c == nil || c.Flags().Lookup("ns") != nil || c.Use != "set <domain> <nameserver>..." {
+		t.Errorf("domain ns set: %+v", c)
+	}
+	if c, _, err := cmd.Find([]string{"whoami"}); err != nil || c.Name() != "whoami" {
+		t.Errorf("missing whoami: %v", err)
+	}
+	// The names that were replaced are gone, not aliased.
+	for _, path := range [][]string{{"domain", "available"}, {"dns", "replace"}} {
+		if c, _, _ := cmd.Find(path); c != nil && c.Name() == path[len(path)-1] {
+			t.Errorf("%v still exists", path)
+		}
 	}
 }
 
@@ -318,9 +328,9 @@ func TestLoginNonInteractiveNeverAsks(t *testing.T) {
 		wantNot string
 	}{
 		{"no token", map[string]string{}, []string{"--set token=-"}, "--set key"},
-		{"api key pair without values", map[string]string{"method": "api_key"}, []string{"--set key=<api key>", "--set secret=-"}, "--set token"},
-		{"api key without its secret", map[string]string{"key": testKey}, []string{"--set secret=-"}, "--set key="},
-		{"api secret without its key", map[string]string{"secret": testSecret}, []string{"--set key=<api key>"}, "--set secret="},
+		{"api key pair without values", map[string]string{"method": "api_key"}, []string{"--set api_key=<api key>", "--set api_secret=-"}, "--set token"},
+		{"api key without its secret", map[string]string{"api_key": testKey}, []string{"--set api_secret=-"}, "--set api_key="},
+		{"api secret without its key", map[string]string{"api_secret": testSecret}, []string{"--set api_key=<api key>"}, "--set api_secret="},
 	} {
 		tc.opts["base_url"], tc.opts["env"] = srv.URL, "ote"
 		var stderr bytes.Buffer
@@ -344,5 +354,79 @@ func TestLoginNonInteractiveNeverAsks(t *testing.T) {
 		if opened != 0 || stderr.Len() != 0 {
 			t.Errorf("%s: browser opened %d time(s), stderr %q; want neither", tc.name, opened, stderr.String())
 		}
+	}
+}
+
+// Login options have one spelling per value; the aliases polyctl 0.1.x
+// accepted are usage errors now. Metadata stored with such an alias still
+// loads.
+func TestLoginOptionValuesAreCanonical(t *testing.T) {
+	for _, opts := range []map[string]string{
+		{"env": "prod"}, {"env": "test"}, {"env": "staging"},
+		{"method": "token"}, {"method": "key"}, {"method": "sso-key"}, {"method": "sso_key"}, {"method": "oauth"},
+	} {
+		in := platform.LoginInput{Options: opts, Stdin: refusingReader{t}, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+		_, err := (&provider{}).Login(context.Background(), in)
+		want := "expected production or ote"
+		if opts["method"] != "" {
+			want = "expected pat or api_key"
+		}
+		if !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), want) {
+			t.Errorf("%v = %v; want a usage error with %q", opts, err, want)
+		}
+	}
+	// A credential given along with the method does not hide an unknown
+	// method, and a method that contradicts the credential is refused.
+	for _, tc := range []struct {
+		opts map[string]string
+		want string
+	}{
+		{map[string]string{"method": "key", "api_key": testKey, "api_secret": testSecret}, "expected pat or api_key"},
+		{map[string]string{"method": "keys", "token": testToken}, "expected pat or api_key"},
+		{map[string]string{"method": "token", "token": testToken}, "expected pat or api_key"},
+		{map[string]string{"method": "api_key", "token": testToken}, "--set method=api_key does not take --set token"},
+		{map[string]string{"method": "pat", "api_key": testKey, "api_secret": testSecret}, "--set method=pat does not take --set api_key"},
+		{map[string]string{"token": testToken, "api_key": testKey, "api_secret": testSecret}, "not both"},
+	} {
+		// base_url points nowhere: the login must fail before any request.
+		tc.opts["base_url"] = "http://127.0.0.1:1"
+		in := platform.LoginInput{Options: tc.opts, Stdin: refusingReader{t}, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+		if _, err := (&provider{}).Login(context.Background(), in); !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%v = %v; want a usage error with %q", tc.opts, err, tc.want)
+		}
+	}
+	// The old key names of the legacy pair are not login options any more:
+	// `auth login` refuses them by the list the provider declares.
+	for _, k := range []string{"key", "secret", "bogus"} {
+		if err := platform.CheckLoginOption(&provider{}, k); err == nil || !strings.Contains(err.Error(), "valid: method, token, api_key, api_secret, env, base_url") {
+			t.Errorf("CheckLoginOption(%q) = %v", k, err)
+		}
+	}
+	for _, k := range []string{"method", "token", "api_key", "api_secret", "env", "base_url"} {
+		if err := platform.CheckLoginOption(&provider{}, k); err != nil {
+			t.Errorf("CheckLoginOption(%q) = %v", k, err)
+		}
+	}
+	in := platform.LoginInput{Options: map[string]string{"key": testKey, "secret": testSecret}, Stdin: refusingReader{t}, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	if _, err := (&provider{}).Login(context.Background(), in); !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "--set token=-") {
+		t.Errorf("--set key/secret = %v; want the login to see no credential", err)
+	}
+
+	for in, want := range map[string]string{"": "", "production": envProduction, "prod": envProduction, "ote": envOTE, "test": envOTE, "OTE": envOTE} {
+		if got := storedEnv(in); got != want {
+			t.Errorf("storedEnv(%q) = %q, want %q", in, got, want)
+		}
+	}
+	for in, want := range map[string]string{"": "", "pat": methodPAT, "token": methodPAT, "api_key": methodAPIKey, "key": methodAPIKey, "sso-key": methodAPIKey, "sso_key": methodAPIKey} {
+		if got := storedMethod(in); got != want {
+			t.Errorf("storedMethod(%q) = %q, want %q", in, got, want)
+		}
+	}
+	// An account stored with the old env alias opens against the OTE API,
+	// and its key pair is read from the names 0.1.x stored it under.
+	c, err := (&provider{}).Open(context.Background(), platform.Profile{Name: "gd", Platform: platform.GoDaddy,
+		Metadata: map[string]string{"env": "test"}, Secret: map[string]string{"key": testKey, "secret": testSecret}})
+	if err != nil || c.(*client).env != envOTE || c.(*client).cred.method() != methodAPIKey {
+		t.Errorf("Open with stored env=test: %+v, %v", c, err)
 	}
 }

@@ -44,12 +44,12 @@ func zoneFromDomain(d alidns.DomainInDescribeDomains) platform.Zone {
 func recordFromAlidns(r alidns.Record) platform.Record {
 	zone := platform.NormalizeDomain(r.DomainName)
 	rec := platform.Record{
-		ID:      r.RecordId,
-		ZoneID:  zone,
-		Name:    platform.FQDN(r.RR, zone),
-		Type:    strings.ToUpper(r.Type),
-		Content: r.Value,
-		TTL:     int(r.TTL),
+		ID:     r.RecordId,
+		ZoneID: zone,
+		Name:   platform.FQDN(r.RR, zone),
+		Type:   strings.ToUpper(r.Type),
+		Value:  r.Value,
+		TTL:    int(r.TTL),
 		Extra: map[string]any{
 			"status": r.Status,
 			"line":   r.Line,
@@ -155,7 +155,7 @@ func (c *client) CreateRecord(ctx context.Context, zoneID string, r platform.Rec
 	req.DomainName = zone
 	req.RR = platform.RelativeName(r.Name, zone)
 	req.Type = strings.ToUpper(r.Type)
-	req.Value = r.Content
+	req.Value = r.Value
 	if r.TTL > 0 {
 		req.TTL = requests.NewInteger(r.TTL)
 	}
@@ -189,7 +189,7 @@ func (c *client) UpdateRecord(ctx context.Context, zoneID string, r platform.Rec
 	req.RecordId = r.ID
 	req.RR = platform.RelativeName(r.Name, zone)
 	req.Type = strings.ToUpper(r.Type)
-	req.Value = r.Content
+	req.Value = r.Value
 	ttl := r.TTL
 	if ttl <= 0 {
 		ttl = defaultRecordTTL
@@ -246,7 +246,7 @@ func (c *client) fetchRecord(ctx context.Context, zone, id string, in platform.R
 		return &rec, nil
 	}
 	rec := platform.Record{
-		ID: id, ZoneID: zone, Name: platform.FQDN(rr, zone), Type: typ, Content: in.Content, TTL: in.TTL,
+		ID: id, ZoneID: zone, Name: platform.FQDN(rr, zone), Type: typ, Value: in.Value, TTL: in.TTL,
 		Priority: in.Priority, Extra: map[string]any{},
 	}
 	if rec.TTL <= 0 {

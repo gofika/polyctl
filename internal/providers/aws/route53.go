@@ -138,7 +138,7 @@ func quoteTXT(typ, v string) string {
 }
 
 // unquoteTXT is the inverse of quoteTXT for values read from Route 53: the
-// quoted strings are unescaped and concatenated so Record.Content carries
+// quoted strings are unescaped and concatenated so Record.Value carries
 // the plain text like every other platform. Unquoted values are returned
 // as they are.
 func unquoteTXT(typ, v string) string {
@@ -202,9 +202,9 @@ func splitPriority(typ, value string) (*int, string) {
 // TXT quoted).
 func recordValue(r platform.Record) string {
 	if hasPriority(r.Type) && r.Priority != nil {
-		return fmt.Sprintf("%d %s", *r.Priority, strings.TrimSpace(r.Content))
+		return fmt.Sprintf("%d %s", *r.Priority, strings.TrimSpace(r.Value))
 	}
-	return quoteTXT(r.Type, r.Content)
+	return quoteTXT(r.Type, r.Value)
 }
 
 func extraString(extra map[string]any, key string) string {
@@ -283,13 +283,13 @@ func recordsFromSet(zoneID string, rs r53types.ResourceRecordSet) []platform.Rec
 		extra["alias_zone_id"] = awssdk.ToString(rs.AliasTarget.HostedZoneId)
 		extra["evaluate_target_health"] = rs.AliasTarget.EvaluateTargetHealth
 		return []platform.Record{{
-			ID:      encodeRecordID(zoneID, typ, name, setID, target),
-			ZoneID:  zoneID,
-			Name:    name,
-			Type:    typ,
-			Content: target,
-			TTL:     ttl,
-			Extra:   extra,
+			ID:     encodeRecordID(zoneID, typ, name, setID, target),
+			ZoneID: zoneID,
+			Name:   name,
+			Type:   typ,
+			Value:  target,
+			TTL:    ttl,
+			Extra:  extra,
 		}}
 	}
 	out := make([]platform.Record, 0, len(rs.ResourceRecords))
@@ -302,7 +302,7 @@ func recordsFromSet(zoneID string, rs r53types.ResourceRecordSet) []platform.Rec
 			ZoneID:   zoneID,
 			Name:     name,
 			Type:     typ,
-			Content:  content,
+			Value:    content,
 			TTL:      ttl,
 			Priority: prio,
 			Extra:    setExtras(rs),
@@ -586,8 +586,8 @@ func ttlFor(requested int, base *r53types.ResourceRecordSet) int {
 func (c *client) CreateRecord(ctx context.Context, zone string, r platform.Record) (*platform.Record, error) {
 	zone = zoneID(zone)
 	fqdn, typ, setID := platform.NormalizeDomain(r.Name), strings.ToUpper(r.Type), extraString(r.Extra, "set_identifier")
-	if fqdn == "" || typ == "" || strings.TrimSpace(r.Content) == "" {
-		return nil, errors.New("record name, type and content are required")
+	if fqdn == "" || typ == "" || strings.TrimSpace(r.Value) == "" {
+		return nil, errors.New("record name, type and value are required")
 	}
 	existing, err := c.findSet(ctx, zone, fqdn, typ, setID)
 	if err != nil {
@@ -601,11 +601,11 @@ func (c *client) CreateRecord(ctx context.Context, zone string, r platform.Recor
 		if targetZone == "" {
 			return nil, errors.New("alias records need extra.alias_zone_id (the hosted zone id of the target)")
 		}
-		rs := buildAliasSet(existing, fqdn, typ, setID, r.Content, targetZone, extraBool(r.Extra, "evaluate_target_health"))
+		rs := buildAliasSet(existing, fqdn, typ, setID, r.Value, targetZone, extraBool(r.Extra, "evaluate_target_health"))
 		if err := c.change(ctx, zone, upsert(rs)); err != nil {
 			return nil, err
 		}
-		return recordFor(zone, rs, r.Content), nil
+		return recordFor(zone, rs, r.Value), nil
 	}
 	if existing != nil && existing.AliasTarget != nil {
 		return nil, fmt.Errorf("%s %s is an alias record set; delete it before adding plain values", fqdn, typ)
@@ -622,7 +622,7 @@ func (c *client) CreateRecord(ctx context.Context, zone string, r platform.Recor
 	return recordFor(zone, rs, value), nil
 }
 
-// UpdateRecord replaces the value identified by r.ID with r's content
+// UpdateRecord replaces the value identified by r.ID with r's value
 // (moving it to another name/type when those changed).
 func (c *client) UpdateRecord(ctx context.Context, zone string, r platform.Record) (*platform.Record, error) {
 	zone = zoneID(zone)
@@ -659,7 +659,7 @@ func (c *client) UpdateRecord(ctx context.Context, zone string, r platform.Recor
 		if _, ok := r.Extra["evaluate_target_health"]; ok {
 			evaluate = extraBool(r.Extra, "evaluate_target_health")
 		}
-		rs := buildAliasSet(oldSet, newName, newType, newSetID, r.Content, targetZone, evaluate)
+		rs := buildAliasSet(oldSet, newName, newType, newSetID, r.Value, targetZone, evaluate)
 		changes := []r53types.Change{upsert(rs)}
 		if !sameKey {
 			changes = []r53types.Change{deletion(*oldSet), r53types.Change{Action: r53types.ChangeActionCreate, ResourceRecordSet: &rs}}
@@ -667,14 +667,14 @@ func (c *client) UpdateRecord(ctx context.Context, zone string, r platform.Recor
 		if err := c.change(ctx, zone, changes...); err != nil {
 			return nil, err
 		}
-		return recordFor(zone, rs, r.Content), nil
+		return recordFor(zone, rs, r.Value), nil
 	}
 
 	oldValues := setValues(oldSet)
 	if !containsValue(oldValues, oldValue) {
 		return nil, fmt.Errorf("%w: value %q of %s %s in zone %s", platform.ErrNotFound, oldValue, oldName, oldType, zone)
 	}
-	newValue := recordValue(platform.Record{Type: newType, Content: r.Content, Priority: r.Priority})
+	newValue := recordValue(platform.Record{Type: newType, Value: r.Value, Priority: r.Priority})
 	if sameKey {
 		values := make([]string, 0, len(oldValues))
 		for _, v := range oldValues {

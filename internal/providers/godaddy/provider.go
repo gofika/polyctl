@@ -23,6 +23,10 @@ func init() { platform.Register(&provider{}) }
 //	key    GoDaddy API key    } legacy sso-key pair (method "api_key",
 //	secret GoDaddy API secret } deprecated by GoDaddy for Domains)
 //
+// The pair is given at login as --set api_key=... --set api_secret=...
+// (optAPIKey, optAPISecret); the names it is stored under are the ones
+// polyctl 0.1.x wrote and have not changed, so stored accounts keep working.
+//
 // Metadata (config.yaml, non-sensitive):
 //
 //	env        "production" or "ote"
@@ -33,6 +37,8 @@ const (
 	secretToken  = "token"
 	secretKey    = "key"
 	secretSecret = "secret"
+	optAPIKey    = "api_key"
+	optAPISecret = "api_secret"
 	metaEnv      = "env"
 	metaMethod   = "method"
 	metaKeyPref  = "key_prefix"
@@ -52,7 +58,12 @@ func (*provider) ID() platform.ID     { return platform.GoDaddy }
 func (*provider) DisplayName() string { return "GoDaddy" }
 
 func (*provider) LoginHelp() string {
-	return "Personal Access Token created at " + keysURL + " (" + accessRequirement + "; use --set env=ote for the test environment). Non-interactive: --set token=- reads the token from stdin (legacy API key pair: --set key=<key> --set secret=-, which selects --set method=api_key by itself)"
+	return "Personal Access Token created at " + keysURL + " (" + accessRequirement + "; use --set env=ote for the test environment). Non-interactive: --set token=- reads the token from stdin (legacy API key pair: --set api_key=<key> --set api_secret=-, which selects --set method=api_key by itself)"
+}
+
+// LoginOptions lists the --set keys of the login (see LoginHelp).
+func (*provider) LoginOptions() []string {
+	return []string{metaMethod, secretToken, optAPIKey, optAPISecret, metaEnv, metaBaseURL}
 }
 
 func (*provider) ResourceTypes() []platform.ResourceType {
@@ -65,46 +76,54 @@ func (*provider) ResourceTypes() []platform.ResourceType {
 // nothing and reads nothing: a missing value is a usage error naming its
 // --set key.
 func (*provider) Login(ctx context.Context, in platform.LoginInput) (*platform.LoginResult, error) {
-	env := strings.ToLower(strings.TrimSpace(in.Opt(metaEnv, in.Existing[metaEnv])))
+	// What is given now is login input and has one spelling per value;
+	// what is kept from the previous login is stored metadata.
+	env := storedEnv(in.Existing[metaEnv])
+	if v := strings.ToLower(strings.TrimSpace(in.Opt(metaEnv, ""))); v != "" {
+		env = v
+	}
 	switch env {
 	case "":
 		env = envProduction
-	case "prod", "production":
-		env = envProduction
-	case "ote", "test":
-		env = envOTE
+	case envProduction, envOTE:
 	default:
-		return nil, fmt.Errorf("unknown GoDaddy environment %q (expected production or ote)", env)
+		return nil, app.UsageErrf("unknown GoDaddy environment %q (expected %s or %s)", env, envProduction, envOTE)
 	}
 	baseURL := strings.TrimRight(in.Opt(metaBaseURL, in.Existing[metaBaseURL]), "/")
 
 	cred := credentials{
 		token:  strings.TrimSpace(in.Opt(secretToken, "")),
-		key:    strings.TrimSpace(in.Opt(secretKey, "")),
-		secret: strings.TrimSpace(in.Opt(secretSecret, "")),
+		key:    strings.TrimSpace(in.Opt(optAPIKey, "")),
+		secret: strings.TrimSpace(in.Opt(optAPISecret, "")),
 	}
+	// The method given is validated before the credentials are looked at,
+	// so that an unknown value is never hidden by them; the credentials
+	// select the method only when none was given.
 	method := strings.ToLower(strings.TrimSpace(in.Opt(metaMethod, "")))
+	switch method {
+	case "", methodPAT, methodAPIKey:
+	default:
+		return nil, app.UsageErrf("unknown GoDaddy login method %q (expected %s or %s)", method, methodPAT, methodAPIKey)
+	}
+	hasPair := cred.key != "" || cred.secret != ""
 	switch {
+	case cred.token != "" && hasPair:
+		return nil, app.UsageErrf("godaddy login takes either --set %s (a Personal Access Token) or --set %s with --set %s (the legacy pair), not both", secretToken, optAPIKey, optAPISecret)
+	case method == methodAPIKey && cred.token != "":
+		return nil, app.UsageErrf("--set method=%s does not take --set %s: pass --set %s and --set %s, or leave the method out", methodAPIKey, secretToken, optAPIKey, optAPISecret)
+	case method == methodPAT && hasPair:
+		return nil, app.UsageErrf("--set method=%s does not take --set %s / --set %s: pass --set %s, or leave the method out", methodPAT, optAPIKey, optAPISecret, secretToken)
+	case method != "":
 	case cred.token != "":
 		method = methodPAT
-	case cred.key != "" || cred.secret != "":
+	case hasPair:
 		method = methodAPIKey
-	case method == "":
+	case storedMethod(in.Existing[metaMethod]) == methodAPIKey:
 		// Re-authenticating a legacy profile keeps its method unless the
 		// user asks otherwise; everything else defaults to a PAT.
-		if in.Existing[metaMethod] == methodAPIKey {
-			method = methodAPIKey
-		} else {
-			method = methodPAT
-		}
-	}
-	switch method {
-	case methodPAT, "token":
-		method = methodPAT
-	case methodAPIKey, "key", "sso-key", "sso_key":
 		method = methodAPIKey
 	default:
-		return nil, fmt.Errorf("unknown GoDaddy auth method %q (expected pat or api_key)", method)
+		method = methodPAT
 	}
 
 	if !cred.complete() && !in.Interactive {
@@ -113,10 +132,10 @@ func (*provider) Login(ctx context.Context, in platform.LoginInput) (*platform.L
 		}
 		var missing []string
 		if cred.key == "" {
-			missing = append(missing, "--set key=<api key>")
+			missing = append(missing, "--set api_key=<api key>")
 		}
 		if cred.secret == "" {
-			missing = append(missing, "--set secret=- (the API secret on stdin)")
+			missing = append(missing, "--set api_secret=- (the API secret on stdin)")
 		}
 		return nil, app.UsageErrf("godaddy login with an API key pair needs the key and its secret: pass %s", strings.Join(missing, " and "))
 	}
@@ -183,11 +202,40 @@ func (*provider) Open(ctx context.Context, p platform.Profile) (platform.Client,
 	if !cred.complete() {
 		return nil, fmt.Errorf("%w: profile %q has no GoDaddy Personal Access Token (or API key/secret) stored (run `polyctl auth login godaddy --profile %s`)", platform.ErrUnauthorized, p.Name, p.Name)
 	}
-	env := p.Meta(metaEnv)
+	env := storedEnv(p.Meta(metaEnv))
 	if env == "" {
 		env = envProduction
 	}
 	return newClient(p.Meta(metaBaseURL), env, cred), nil
+}
+
+// storedEnv reads the env metadata of a stored account. Besides production
+// and ote it accepts the spellings polyctl 0.1.x took as login input (prod,
+// test), so that a config.yaml carrying one of them still loads. They are
+// not accepted as input any more.
+func storedEnv(s string) string {
+	switch env := strings.ToLower(strings.TrimSpace(s)); env {
+	case "prod":
+		return envProduction
+	case "test":
+		return envOTE
+	default:
+		return env
+	}
+}
+
+// storedMethod reads the method metadata of a stored account, accepting
+// the input spellings of polyctl 0.1.x (token; key, sso-key, sso_key) for
+// the same reason as storedEnv.
+func storedMethod(s string) string {
+	switch m := strings.ToLower(strings.TrimSpace(s)); m {
+	case "token":
+		return methodPAT
+	case "key", "sso-key", "sso_key":
+		return methodAPIKey
+	default:
+		return m
+	}
 }
 
 // credentials is one of the two GoDaddy credential layouts. A token wins

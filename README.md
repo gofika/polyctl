@@ -5,7 +5,7 @@
 It does two things at once:
 
 - **Platform-neutral commands** (`polyctl dns ...`, `polyctl domain ...`) work on any domain regardless of where it lives. polyctl looks the domain up in a local index, finds the account that owns it and routes the call there.
-- **Platform-specific commands** (`polyctl cf ...`, `polyctl aws ...`, ...) expose each platform's native features with that platform's own vocabulary. Nothing is flattened to a lowest common denominator.
+- **Platform-specific commands** (`polyctl cloudflare ...`, `polyctl aws ...`, ...) expose each platform's native features with that platform's own vocabulary. Nothing is flattened to a lowest common denominator.
 
 Everything it learns about your accounts is cached in a local SQLite inventory, so reads are instant and work offline; writes always go to the platform and update the cache.
 
@@ -18,7 +18,7 @@ Everything it learns about your accounts is cached in a local SQLite inventory, 
 - Local inventory (`inventory.db`): per-resource-type TTLs, `--refresh` to force a fetch, `--offline` to forbid the network, `polyctl sync` to bulk-load.
 - `table` (default), `json` and `yaml` output for every command.
 - Distinct exit codes for usage, auth, not-found, ambiguous, offline and not-supported errors.
-- Shell completion for bash, zsh, fish and PowerShell, including profile, platform and domain-name completion.
+- Shell completion for bash, zsh, fish and PowerShell, including profile, platform, domain-name and record-id completion from the local inventory.
 
 ## Install
 
@@ -123,16 +123,16 @@ polyctl domain index
 # 4. Use platform-neutral commands; routing is automatic
 polyctl domain which example.com
 polyctl dns list example.com
-polyctl dns update example.com --type A --name www --value 203.0.113.10
-polyctl domain ns set example.com --ns ns1.cloudflare.com,ns2.cloudflare.com
+polyctl dns set example.com --type A --name www --value 203.0.113.10
+polyctl domain ns set example.com ns1.cloudflare.com ns2.cloudflare.com
 
 #    When several accounts know the domain, say which one you mean
 polyctl dns list example.com --platform cloudflare
 polyctl dns list example.com --profile acme --platform cloudflare
 
 # 5. Or talk to one platform directly
-polyctl aws ec2 list                  # the AWS account of the current profile
-polyctl cf zone list --profile acme   # the Cloudflare account of another profile
+polyctl aws ec2 instance list                 # the AWS account of the current profile
+polyctl cloudflare zone list --profile acme   # the Cloudflare account of another profile
 ```
 
 Status lines (`zone example.com via cloudflare/default`) go to **stderr**; results go to **stdout**, so `polyctl dns list example.com -o json | jq` works as expected.
@@ -152,26 +152,33 @@ All state lives in one directory, `~/.config/polyctl/` by default (created with 
 
 | Variable | Effect |
 | --- | --- |
-| `POLYCTL_CONFIG_DIR` | Use this directory instead of `~/.config/polyctl`. |
-| `POLYCTL_OUTPUT` | Default output format (`table`, `json`, `yaml`). Lower priority than `--output` and the `output:` key in `config.yaml`. |
+| `POLYCTL_CONFIG_DIR` | Use this directory instead of `~/.config/polyctl`: it holds `config.yaml`, the file credential store and `inventory.db`. `--config-dir` overrides it. |
+| `POLYCTL_OUTPUT` | Output format (`table`, `json`, `yaml`). `--output` overrides it; it overrides the `output:` key in `config.yaml`. |
 | `POLYCTL_CREDENTIAL_STORE` | Overrides `credential_store` in `config.yaml` (`auto`, `keyring`, `file`). |
 | `POLYCTL_INVENTORY_DB` | Path of the SQLite inventory file (default `<config dir>/inventory.db`). |
-| `POLYCTL_NO_INPUT` | `1`, `true` or `yes` forces the non-interactive flow, like `--no-input`: nothing is ever asked. `0`, `false`, `no` or empty leave it off; any other value is a usage error (exit code 2). See [Interactive and non-interactive use](#interactive-and-non-interactive-use). |
+| `POLYCTL_NON_INTERACTIVE` | `1`, `true` or `yes` forces the non-interactive flow, like `--non-interactive`: nothing is ever asked. `0`, `false`, `no` or empty leave it off; any other value is a usage error (exit code 2). See [Interactive and non-interactive use](#interactive-and-non-interactive-use). |
 
 | Global flag | Effect |
 | --- | --- |
-| `--config <file>` | Config file to use; its directory becomes the config directory. |
+| `--config-dir <dir>` | The configuration directory: the one that holds `config.yaml`, the file credential store (`credentials.json`) and `inventory.db`. The exact counterpart of `POLYCTL_CONFIG_DIR`, which it overrides. Created with mode `0700` when missing. |
 | `-p, --profile <name>` | Use this profile. Overrides the current profile and restricts automatic routing, `sync`, `domain index` and `auth status` to the accounts of this profile. For `auth login` it names the profile the account is added to. |
 | `--refresh` | Ignore the cache: fetch from the platform and update the inventory. |
 | `--offline` | Never touch the network; serve from the inventory only. Mutually exclusive with `--refresh`. |
-| `-o, --output <fmt>` | `table` (default), `json` or `yaml`. |
+| `-o, --output <fmt>` | `table` (default), `json` or `yaml`. Overrides `POLYCTL_OUTPUT` and `output:` in `config.yaml`. |
 | `-v, --verbose` | Extra diagnostics on stderr. |
-| `--no-browser` | During login, print URLs instead of opening a browser. Implied in the non-interactive flow, which never opens one. |
-| `-y, --yes` | Assume "yes" for confirmations (multi-record `dns delete`, `aliyun ecs stop`, the interactive `auth logout`, the removal inside `auth manage`), in both flows. In the non-interactive flow it is the only way to confirm: without it such a command is a usage error (exit code 2). It confirms, it does not choose: a missing argument is still asked for on a terminal, and still a usage error without one. |
-| `--no-input` | Force the non-interactive flow, also on a terminal: never ask, choose or confirm anything. Missing arguments and unconfirmed actions are usage errors (exit code 2) that name what to pass. Same as `POLYCTL_NO_INPUT=1`. With `--yes`: no question at all, and destructive actions proceed. |
+| `-y, --yes` | Assume "yes" for confirmations (multi-record `dns delete`, `aliyun ecs instance stop`, the interactive `auth logout`, the removal inside `auth manage`), in both flows. In the non-interactive flow it is the only way to confirm: without it such a command is a usage error (exit code 2). It confirms, it does not choose: a missing argument is still asked for on a terminal, and still a usage error without one. |
+| `--non-interactive` | Force the non-interactive flow, also on a terminal: never ask, choose or confirm anything. Missing arguments and unconfirmed actions are usage errors (exit code 2) that name what to pass. Same as `POLYCTL_NON_INTERACTIVE=1`, which the flag overrides: `--non-interactive=false` keeps a terminal interactive although the variable is set. With `--yes`: no question at all, and destructive actions proceed. |
 | `--version` | Print the build version. |
 
-The `dns` and `domain` command groups add one flag of their own, `--platform <platform>`, which restricts routing (and any indexing) to the accounts on that platform; see [Routing rules](#routing-rules). `sync` and `inventory list` have their own `--platform` filters, described under [Caching](#caching).
+Every setting follows one rule of precedence: **command-line flag > environment variable > `config.yaml` > built-in default**. So `--config-dir` beats `POLYCTL_CONFIG_DIR`, `--output` beats `POLYCTL_OUTPUT` beats `output:`, `POLYCTL_CREDENTIAL_STORE` beats `credential_store:`, and `--non-interactive` beats `POLYCTL_NON_INTERACTIVE`: either one switches the non-interactive flow on, and `--non-interactive=false` leaves the choice to the terminal check even when the variable is set. (Nothing makes a command interactive without a terminal on stdin and stderr.)
+
+Help never depends on a setting: `--help`, `polyctl help <command>`, bare `polyctl` and a bare command group (`polyctl dns`, `polyctl aws ec2`) print help and exit with code 0 without reading the configuration or creating the configuration directory. `polyctl help` followed by a word that names no command is a usage error (exit code 2), like the command itself.
+
+Flags that only some commands have are local to them:
+
+- `auth login` and `auth manage` take `--no-browser`: during a login, print URLs instead of opening a browser. It is implied in the non-interactive flow, which never opens one.
+- The `dns` and `domain` command groups take `--platform <platform>`, which routes to the account on that one platform (and restricts any indexing to it); see [Routing rules](#routing-rules).
+- `sync` and `inventory list` have a `--platform` of their own, a filter that takes a list of platforms; see [Caching](#caching).
 
 ### `config.yaml`
 
@@ -291,7 +298,7 @@ CREATE TABLE sync_state (              -- freshness of each synced set
 );
 ```
 
-`resources.data` keeps each object in its platform-native shape (serialised as JSON), so `-o json` on a cached read shows the same fields a live read would. `domain_index` is rebuilt from `zone` and `domain` resources on every sync; DNS records are never indexed, they are looked up through their zone. The file is safe to delete at any time: polyctl recreates it and re-fetches on demand.
+`resources.data` keeps each object in its platform-native shape (serialised as JSON), so `-o json` on a cached read shows the same fields a live read would. The version of that JSON is kept in SQLite's `user_version`; whenever a database is opened that still holds DNS records written by 0.1.x, their `content` field is renamed to `value`, so they keep their values without a new sync. `domain_index` is rebuilt from `zone` and `domain` resources on every sync; DNS records are never indexed, they are looked up through their zone. The file is safe to delete at any time: polyctl recreates it and re-fetches on demand.
 
 `polyctl inventory path` prints the database actually in use (`POLYCTL_INVENTORY_DB` when set, otherwise `<config dir>/inventory.db`).
 
@@ -308,9 +315,9 @@ The flow is decided once per command, in one place:
 | --- | --- |
 | stdin **and** stderr are terminals | interactive |
 | stdin or stderr is not a terminal (pipe, redirect, `</dev/null`, CI, cron) | non-interactive |
-| `--no-input`, or `POLYCTL_NO_INPUT` set to `1` / `true` / `yes` | non-interactive, also on a terminal |
+| `--non-interactive`, or `POLYCTL_NON_INTERACTIVE` set to `1` / `true` / `yes` | non-interactive, also on a terminal |
 
-`--yes` / `-y` means "assume yes for confirmations" in both flows. On a terminal it skips the confirmation questions only; a missing argument is still asked for. `--no-input --yes` together mean no question at all, and destructive actions proceed.
+`--yes` / `-y` means "assume yes for confirmations" in both flows. On a terminal it skips the confirmation questions only; a missing argument is still asked for. `--non-interactive --yes` together mean no question at all, and destructive actions proceed.
 
 In the non-interactive flow stdin is data, not a conversation: a piped `y` does not confirm anything and piped lines do not answer questions. stdin is read only where a command says so: `--set key=-` on `auth login` reads the value of that one key (one line per such key, in the order given, no label printed), and nothing else: no login reads a token from stdin on its own, so a pipe that stays open without data never blocks a command. Notes and errors are plain lines on stderr (no colours, no drawing), results go to stdout.
 
@@ -324,18 +331,18 @@ What each command asks, and what it needs instead:
 | `auth logout [platform]` | the accounts to remove (multiple choice), "Remove N entries?" and "Keep cached inventory?"; `--yes` skips the two confirmations | `--profile <name>` (naming the profile is the confirmation; `--keep-inventory` keeps the cache) |
 | `auth manage` | everything, in a menu | not available: use `auth list`, `auth use <profile>`, `auth login <platform>`, `auth status`, `auth rename <old> <new>`, `auth logout [platform] --profile <name>` |
 | `dns delete <domain>` matching several records | "delete N records in zone ... (y/N)" after listing them; `--yes` skips it | `--yes` (the matching records are still listed on stderr with the refusal) |
-| `aliyun ecs stop <instance-id>` | "stop instance ... (y/N)"; `--yes` skips it | `--yes` (refused before the account is opened) |
+| `aliyun ecs instance stop <instance-id>` | "stop instance ... (y/N)"; `--yes` skips it | `--yes` (refused before the account is opened) |
 | `auth login cloudflare` | the API token (after opening the token page); the account, when the token sees several | `CLOUDFLARE_API_TOKEN` or `--set token=-` (stdin is read only for `--set token=-`); `--set account_id=<id>` when the token sees several accounts |
 | `auth login namecom` | username and API token | `--set username=<user>` and `--set token=-` |
-| `auth login godaddy` | the Personal Access Token (or, with `--set method=api_key`, key and secret) | `--set token=-`, or `--set key=<key> --set secret=-` |
+| `auth login godaddy` | the Personal Access Token (or, with `--set method=api_key`, key and secret) | `--set token=-`, or `--set api_key=<key> --set api_secret=-` |
 | `auth login aws` | the method | `--set method=sso\|keys\|profile` |
 | `auth login aws --set method=keys` | access key id, secret access key, optional session token | `--set access_key_id=<id> --set secret_access_key=-` (and `--set session_token=-`), or `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` (+ `AWS_SESSION_TOKEN`) |
 | `auth login aws --set method=profile` | the AWS profile name (default `default`) | nothing: `--set aws_profile=<name>`, else the profile of the previous login, else `default` |
 | `auth login aws --set method=sso` | start URL, Identity Center region; then, after the browser approval, the account and the role when several are accessible | `--set start_url=<url>` (the region defaults to `us-east-1`, or `--set sso_region=`); `--set account_id=<id>` and `--set role_name=<name>` when several are accessible |
 | `auth login gcp` (`adc`) | the project, from the visible ones | nothing when the project is unambiguous (`--set project=<id>`, the previous login's, the ADC project, the only visible one); otherwise `--set project=<id>` |
-| `auth login gcp --set method=service-account` | the key file path; the project when the key names none | `--set key_file=<path>`; `--set project=<id>` when the key names none |
+| `auth login gcp --set method=service_account` | the key file path; the project when the key names none | `--set key_file=<path>`; `--set project=<id>` when the key names none |
 | `auth login gcp --set method=oauth` | client id and secret; the project | `--set client_id=<id> --set client_secret=- --set project=<id>` |
-| `auth login aliyun` | AccessKey ID and Secret, region | `--set access_key_id=<id> --set access_key_secret=-`, or `ALIBABA_CLOUD_ACCESS_KEY_ID` + `ALIBABA_CLOUD_ACCESS_KEY_SECRET`, or `--set from_cli=<profile>`; the region defaults to the previous login's, then `cn-hangzhou` |
+| `auth login aliyun` | AccessKey ID and Secret, region | `--set access_key_id=<id> --set access_key_secret=-`, or `ALIBABA_CLOUD_ACCESS_KEY_ID` + `ALIBABA_CLOUD_ACCESS_KEY_SECRET`, or `--set aliyun_profile=<profile>`; the region defaults to the previous login's, then `cn-hangzhou` |
 
 A re-authentication (`auth login` for an account the profile already has) reuses what the previous login recorded (username, start URL, account, role, project, region, method), so in the non-interactive flow usually only the secret has to be passed again.
 
@@ -344,17 +351,17 @@ Two login flows need a person in a browser but nothing typed into polyctl, so th
 - `auth login aws --set method=sso` prints the verification URL and code and polls until the device code expires (the lifetime AWS gives the code; 10 minutes when it names none). If the approved login can access several accounts or roles and `--set account_id` / `--set role_name` were not given, it then fails with a usage error that lists them, so pass both in scripts.
 - `auth login gcp --set method=oauth` prints the consent URL and waits up to 5 minutes for the browser to return to its loopback listener. On a terminal it waits until you press Ctrl-C.
 
-Every other command (`auth list`, `auth status`, `auth rename`, `sync`, `inventory`, `domain`, `dns list` / `update`, single-record `dns delete`, and the remaining platform-specific commands) asks nothing in either flow.
+Every other command (`auth list`, `auth status`, `auth rename`, `sync`, `inventory`, `domain`, `dns list` / `set` / `add`, single-record `dns delete`, and the remaining platform-specific commands) asks nothing in either flow.
 
 ```sh
 # scripts and CI: nothing is asked
 printf '%s\n' "$NAMECOM_TOKEN" | polyctl auth login namecom --profile acme --set username=acme --set token=-
 polyctl dns delete example.com --type A --name www --yes
-polyctl aliyun ecs stop i-0123456789 --yes
+polyctl aliyun ecs instance stop i-0123456789 --yes
 
 # the same guarantees on your own terminal
-polyctl --no-input auth use            # usage error: auth use: <profile> is required
-POLYCTL_NO_INPUT=1 polyctl dns delete example.com --type A --name www
+polyctl --non-interactive auth use            # usage error: auth use: <profile> is required
+POLYCTL_NON_INTERACTIVE=1 polyctl dns delete example.com --type A --name www
 #   usage error: confirmation required: pass --yes to proceed (would delete 2 records in zone example.com)
 ```
 
@@ -372,7 +379,7 @@ polyctl auth logout [platform] --profile <name> [--keep-inventory]
 polyctl auth manage
 ```
 
-- `auth login` runs the platform's login flow, stores the secret and writes the account's metadata to `config.yaml`. The account is added to `--profile` when given, otherwise to the current profile, otherwise (no profile is current, or `current_profile` names a profile that does not exist) to a profile named `default`; a profile that does not exist is created, and the target profile becomes current if none was. Logging in to a platform the profile already has re-authenticates that account and leaves the profile's other accounts alone. Without `--profile`, when the target profile has no account on the platform but another profile does, nothing is changed and the command fails with a usage error (exit code 2) that lists those profiles: pass `--profile <name>` to re-authenticate one of them, or `--profile <target>` to really add a second account on that platform. Platform-specific inputs are passed with `--set key=value` (repeatable); `--set key=-` reads the value of that key from stdin instead of the command line. Anything not given is asked in the interactive flow; in the non-interactive flow nothing is asked, no browser is opened, and a value or choice that is still missing is a usage error (exit code 2) naming the `--set` key (see [Interactive and non-interactive use](#interactive-and-non-interactive-use)). Every login flow verifies against the platform, so with `--offline` `auth login` fails with exit code 6 before anything is asked, read from stdin or stored. Platform names accept aliases (`cf`, `name.com`, `gd`, `google`, `alibaba`, ...).
+- `auth login` runs the platform's login flow, stores the secret and writes the account's metadata to `config.yaml`. The account is added to `--profile` when given, otherwise to the current profile, otherwise (no profile is current, or `current_profile` names a profile that does not exist) to a profile named `default`; a profile that does not exist is created, and the target profile becomes current if none was. Logging in to a platform the profile already has re-authenticates that account and leaves the profile's other accounts alone. Without `--profile`, when the target profile has no account on the platform but another profile does, nothing is changed and the command fails with a usage error (exit code 2) that lists those profiles: pass `--profile <name>` to re-authenticate one of them, or `--profile <target>` to really add a second account on that platform. Platform-specific inputs are passed with `--set key=value` (repeatable); `--set key=-` reads the value of that key from stdin instead of the command line. Anything not given is asked in the interactive flow; in the non-interactive flow nothing is asked, no browser is opened, and a value or choice that is still missing is a usage error (exit code 2) naming the `--set` key (see [Interactive and non-interactive use](#interactive-and-non-interactive-use)). Every login flow verifies against the platform, so with `--offline` `auth login` fails with exit code 6 before anything is asked, read from stdin or stored. Platform names accept aliases (`cf`, `name.com`, `gd`, `google`, `alibaba`, ...). `--set` takes the keys of that platform only (see [Login flows per platform](#login-flows-per-platform)); an unknown key is a usage error (exit code 2) listing the valid ones.
 - `auth list` shows one row per account: profile, platform, whether the profile is current (`*`), the credential backend and a summary of the metadata. A profile without accounts gets one row too, marked `(no accounts)`; in JSON and YAML that row has `name` and `current` only, no `platform`.
 - `auth use` sets `current_profile`; an unknown profile is an error (exit code 4). In the interactive flow, `auth use` without a name asks which profile; when no profile is configured there is nothing to pick, which is a `nothing to do` note and exit code 0. In the non-interactive flow the name is required (usage error, exit code 2).
 - `auth status` calls the platform of every account (or only those of `--profile`) to verify the stored credentials and prints the resolved identity (account, user, email, ARN, project...), one row per account. It exits with code 3 if any account fails. With `--offline` it only checks that credentials are present.
@@ -392,7 +399,7 @@ polyctl auth logout --profile acme-prod          # drop the whole profile
 
 ### Interactive management
 
-In the interactive flow, `polyctl auth manage` opens a menu for everything above (it is interactive only: without a terminal, with `--no-input` or with `POLYCTL_NO_INPUT=1` it is a usage error that names the commands to use instead). It prints the table of `auth list` (accounts, and profiles without accounts) and offers:
+In the interactive flow, `polyctl auth manage` opens a menu for everything above (it is interactive only: without a terminal, with `--non-interactive` or with `POLYCTL_NON_INTERACTIVE=1` it is a usage error that names the commands to use instead). It prints the table of `auth list` (accounts, and profiles without accounts) and offers:
 
 | Menu entry | What it does |
 | --- | --- |
@@ -421,7 +428,7 @@ polyctl auth logout cloudflare   # the same, listing Cloudflare accounts only
 
 The questions of a login flow (token, key, region, ...) can be left the same way: Ctrl-C, or Ctrl-D on an empty line, ends `auth login` with `cancelled` and exit code 0, stores nothing, and inside `auth manage` returns to the menu. A secret is never echoed, and the terminal is put back as it was. On Windows Ctrl-C at such a question interrupts the command, which also leaves `auth manage`.
 
-Prompts and menus are drawn on stderr, so stdout still carries results only. They appear only in the interactive flow, when both stdin and stderr are terminals and neither `--no-input` nor `POLYCTL_NO_INPUT` is set: in a pipe, a script or CI the same invocations fail with a usage error (exit code 2) that names the argument to pass, and `auth manage` says which commands to use instead. polyctl never waits for an answer there; see [Interactive and non-interactive use](#interactive-and-non-interactive-use).
+Prompts and menus are drawn on stderr, so stdout still carries results only. They appear only in the interactive flow, when both stdin and stderr are terminals and neither `--non-interactive` nor `POLYCTL_NON_INTERACTIVE` is set: in a pipe, a script or CI the same invocations fail with a usage error (exit code 2) that names the argument to pass, and `auth manage` says which commands to use instead. polyctl never waits for an answer there; see [Interactive and non-interactive use](#interactive-and-non-interactive-use).
 
 ### Upgrading from 0.1.x
 
@@ -433,9 +440,61 @@ In 0.1.x a profile was a single account on a single platform. From 0.2 on a prof
 - **`auth logout` takes an optional platform.** `polyctl auth logout --profile <name>` still removes the whole profile; `polyctl auth logout <platform> --profile <name>` removes one account of it.
 - **Merging is optional.** To gather converted one-platform profiles into one, log the platforms in again under a common `--profile` and remove the old profiles with `auth logout` (or tick them in `auth manage`). A converted profile that only has an unfortunate name, like `cloudflare`, does not need a new login: `polyctl auth rename cloudflare acme` keeps its account, secret and cached resources.
 
+**Renamed flags, variables, commands and fields.** The command line was tidied before it freezes at 1.0. Nothing below has an alias (apart from `cf`): an old spelling is an unknown flag or command and exits with code 2, so update scripts when you upgrade.
+
+Global flags and environment:
+
+- **Without a terminal polyctl no longer reads answers from stdin.** 0.1.x took every prompt (token, username, `y/N`) from a piped stdin; the non-interactive flow asks nothing and reads stdin only where a command line says so. A token or username piped to `auth login` is ignored: pass `--set token=-` (one line of stdin per `key=-`) together with `--set username=...`, `--set method=...` and whatever else the platform needs, so `echo "$TOKEN" | polyctl auth login cloudflare` becomes `echo "$TOKEN" | polyctl auth login cloudflare --set token=-`, and `auth login aws` needs `--set method=`. A piped `y` no longer confirms a multi-record `dns delete` or `aliyun ecs instance stop`: pass `--yes`. What is missing is a usage error (exit code 2) naming what to pass. See [Interactive and non-interactive use](#interactive-and-non-interactive-use).
+- New: `--non-interactive` and `POLYCTL_NON_INTERACTIVE=1` force that flow on a terminal as well. (Builds from `main` before 0.2.0 called them `--no-input` / `POLYCTL_NO_INPUT`; those spellings are gone.)
+- `--config <file>` is now `--config-dir <dir>`: it names the directory that holds `config.yaml`, the file credential store and `inventory.db`, exactly like `POLYCTL_CONFIG_DIR`, and overrides that variable. Replace `--config /path/to/config.yaml` with `--config-dir /path/to`; the file inside is always called `config.yaml`.
+- `POLYCTL_OUTPUT` now overrides `output:` in `config.yaml` (it used to be the other way round). Every setting is resolved flag > environment > config file > default.
+- `--no-browser` is a flag of `auth login` and `auth manage` only, no longer a global one: write it after the command (`polyctl auth login aws --no-browser`).
+- A word that names no subcommand of a group (`polyctl dns nosuch`, or any command removed below) is now a usage error with exit code 2; it used to print the group's help and exit with code 0. The same goes for `polyctl help dns nosuch`.
+
+Platform-neutral commands:
+
+- `dns update <domain> ...` is now `dns set <domain> ...` (create the record, or update the one with that name and type), and `dns update ... --add` is now `dns add <domain> ...` (always create one more record). The `--add` flag is gone.
+- `domain ns set <domain> --ns a,b` is now `domain ns set <domain> a b`: nameservers are arguments, at least one, and an argument may still be a comma-separated list (`a,b`). The `--ns` flag is gone, here and in the `namecom`, `godaddy`, `aliyun` and `aws` trees.
+- `--proxied true|false` is now a boolean flag: `--proxied` or `--proxied=false`. `--proxied false` with a space is a usage error that says so.
+- `inventory list --platform` and `--type` take lists (comma-separated or repeated), as on `sync`. A single value still works.
+- `domain which` now narrows its list with `--profile` / `--platform`; it used to accept and ignore them. Drop the flags to see every owner.
+- A record's data is `value` in the output as well: the table column `CONTENT` is now `VALUE`, and the `content` field of `-o json` / `-o yaml` records is now `value` (`jq '.records[].content'` becomes `jq '.records[].value'`). DNS records already cached in `inventory.db` are converted when the database is opened (also later, should a 0.1.x binary write to the same directory again); nothing has to be synced again.
+
+Platform-specific commands:
+
+| 0.1.x | now |
+| --- | --- |
+| `cf ...` | `cloudflare ...` (`cf` remains as an alias) |
+| `cf token verify` | `cloudflare whoami` |
+| `namecom hello` | `namecom whoami` |
+| `aws sts whoami` | `aws whoami` |
+| `aliyun sts whoami` | `aliyun whoami` |
+| (none) | `gcp whoami`, `godaddy whoami` |
+| `cf dns update <zone> --id <id>`, `cf dns delete <zone> --id <id>` | `cloudflare dns update <zone> <id>`, `cloudflare dns delete <zone> <id>` |
+| `namecom dns update <domain> --id <id>`, `namecom dns delete <domain> --id <id>` | `namecom dns update <domain> <id>`, `namecom dns delete <domain> <id>` |
+| `aliyun dns record update <domain> --id <id>`, `aliyun dns record delete <domain> --id <id>` | `aliyun dns record update <domain> <id>`, `aliyun dns record delete <domain> <id>` |
+| `aliyun dns record add` | `aliyun dns record create` |
+| `godaddy dns replace` | `godaddy dns upsert` |
+| `godaddy domain available` | `godaddy domain check` |
+| `aws route53domains domain list`, `aws route53domains domain get <domain>` | `aws route53domains list`, `aws route53domains get <domain>` |
+| `aws ec2 list\|start\|stop` | `aws ec2 instance list\|start\|stop` |
+| `gcp compute list\|start\|stop` | `gcp compute instance list\|start\|stop` |
+| `aliyun ecs list\|start\|stop` | `aliyun ecs instance list\|start\|stop` |
+| `<platform> ... ns set <domain> --ns a,b` | `<platform> ... ns set <domain> a b` |
+| `cf dns create\|update ... --proxied true\|false` | `cloudflare dns create\|update ... --proxied` / `--proxied=false` |
+
+`--id` stays a flag where it is an optional second way to address a record: `dns delete`, `godaddy dns delete` and `gcp dns record delete`. The output of the `whoami` commands has one shape on every platform now (`profile`, `platform`, `identity`), which differs from what `cf token verify`, `namecom hello` and the two `sts whoami` commands printed.
+
+Login options (`auth login --set key=value`):
+
+- A `--set` key the platform does not know is now a usage error (exit code 2) that lists the valid keys, before anything is read or asked; 0.1.x ignored it. That includes the two renamed keys below.
+- Alibaba Cloud: `from_cli=<profile>` is now `aliyun_profile=<profile>`.
+- GoDaddy legacy key pair: `key=` / `secret=` are now `api_key=` / `api_secret=`.
+- Option values have one spelling each; the undocumented aliases are usage errors now: GCP `method=adc|service_account|oauth` (not `service-account` or `sa`), GoDaddy `method=pat|api_key` (not `token`, `key`, `sso-key`, `sso_key`) and `env=production|ote` (not `prod`, `test`), name.com `env=production|test` (not `prod`, `dev`, `development`). Accounts that are already stored keep working: what `config.yaml` and the credential store hold is read as before.
+
 ### Login flows per platform
 
-Browser-based flows open your default browser; pass `--no-browser` to print the URL instead (useful over SSH). What follows describes the interactive flow first. In the non-interactive flow no browser is opened, nothing is asked and nothing is read from a terminal: each platform's "Non-interactive" line says what to pass, and whatever is still missing is a usage error (exit code 2) naming the `--set` key. Any `--set key=-` reads that value from stdin, one line per key in the order given, which keeps secrets out of the process list and the shell history.
+Browser-based flows open your default browser; pass `--no-browser` to `auth login` (or `auth manage`) to print the URL instead (useful over SSH). What follows describes the interactive flow first. In the non-interactive flow no browser is opened, nothing is asked and nothing is read from a terminal: each platform's "Non-interactive" line says what to pass, and whatever is still missing is a usage error (exit code 2) naming the `--set` key. Any `--set key=-` reads that value from stdin, one line per key in the order given, which keeps secrets out of the process list and the shell history.
 
 #### Cloudflare
 
@@ -459,20 +518,20 @@ printf '%s\n' "$NAMECOM_TOKEN" | polyctl auth login namecom --profile acme --set
 polyctl auth login namecom --profile acme-test --set username=acme --set token=... --set env=test   # a second name.com account needs its own profile
 ```
 
-`env=test` (aliases `dev`, `development`) points the account at name.com's test environment (`api.dev.name.com`). That environment requires a token generated for it and your username with `-test` appended; polyctl adds the suffix automatically when it is missing. API access must be enabled in the account settings, and name.com may require your IP address to be whitelisted there.
+`env=test` points the account at name.com's test environment (`api.dev.name.com`). That environment requires a token generated for it and your username with `-test` appended; polyctl adds the suffix automatically when it is missing. `env` takes `production` (the default) or `test`; any other value is a usage error. API access must be enabled in the account settings, and name.com may require your IP address to be whitelisted there.
 
 #### GoDaddy
 
-Personal Access Token (PAT) created at <https://developer.godaddy.com/personal-access-token>. GoDaddy does not offer an OAuth flow for third-party CLIs, so polyctl opens that page and prompts for the token. The legacy API key + secret pair is still accepted (`--set key=... --set secret=...` or `--set method=api_key`) but GoDaddy has deprecated it for the Domains API. Non-interactive: `--set token=-` with the token on stdin (legacy pair: `--set key=<key> --set secret=-`); a missing value is a usage error.
+Personal Access Token (PAT) created at <https://developer.godaddy.com/personal-access-token>. GoDaddy does not offer an OAuth flow for third-party CLIs, so polyctl opens that page and prompts for the token. The legacy API key + secret pair is still accepted (`--set api_key=... --set api_secret=...`, which selects `--set method=api_key` by itself) but GoDaddy has deprecated it for the Domains API. Non-interactive: `--set token=-` with the token on stdin (legacy pair: `--set api_key=<key> --set api_secret=-`); a missing value is a usage error. `method` takes `pat` (the default) or `api_key`; any other value is a usage error, also when a credential is passed along, and so is a method that contradicts the credential given (`method=api_key` with `token=`, `method=pat` with `api_key=` / `api_secret=`) or a token together with the pair.
 
 ```sh
 polyctl auth login godaddy --profile acme
 printf '%s\n' "$GODADDY_TOKEN" | polyctl auth login godaddy --profile acme --set token=-   # scripts
 polyctl auth login godaddy --profile acme-ote --set token=... --set env=ote
-polyctl auth login godaddy --profile legacy --set key=... --set secret=...   # legacy API key pair
+polyctl auth login godaddy --profile legacy --set api_key=... --set api_secret=-   # legacy API key pair, the secret on stdin
 ```
 
-`env=ote` (alias `test`) targets the OTE environment at `api.ote-godaddy.com`. For production API access GoDaddy requires the account to hold at least one domain or be on a plan that grants API management access; paid operations need a billing method on file. Requests that fail this check return `403 ACCESS_DENIED`, which polyctl reports as an authentication failure (exit code 3) with a hint to use an OTE credential for development.
+`env=ote` targets the OTE environment at `api.ote-godaddy.com`; `env` takes `production` (the default) or `ote`, and any other value is a usage error. For production API access GoDaddy requires the account to hold at least one domain or be on a plan that grants API management access; paid operations need a billing method on file. Requests that fail this check return `403 ACCESS_DENIED`, which polyctl reports as an authentication failure (exit code 3) with a hint to use an OTE credential for development.
 
 #### AWS
 
@@ -498,47 +557,52 @@ polyctl auth login aws --profile legacy --set method=profile --set aws_profile=d
 | Method | What happens |
 | --- | --- |
 | `adc` (default) | Uses Application Default Credentials. If none exist polyctl prints the `gcloud auth application-default login` command to run (and opens the ADC documentation page), then exits with code 3; re-run `auth login` after completing it. (The page is not opened in the non-interactive flow.) |
-| `service-account` (alias `sa`; stored as `service_account`) | `--set key_file=<path>`; the service-account JSON key is read and its contents stored in the credential store. `--set project=` defaults to the key's `project_id`. Non-interactive: `--set key_file=` is required, and `--set project=` when the key names no project. |
+| `service_account` | `--set key_file=<path>`; the service-account JSON key is read and its contents stored in the credential store. `--set project=` defaults to the key's `project_id`. Non-interactive: `--set key_file=` is required, and `--set project=` when the key names no project. |
 | `oauth` | Your own OAuth client (`--set client_id=`, `--set client_secret=`); polyctl opens the consent screen, receives the code on a loopback listener and stores the refresh token. Non-interactive: `--set client_id=`, `--set client_secret=-` and `--set project=` are all required up front (a re-authentication keeps its project); the URL is printed without opening a browser and polyctl waits up to 5 minutes for the browser to return. |
+
+`--set method=` takes exactly `adc`, `service_account` or `oauth`; any other value is a usage error.
 
 `--set project=` sets the default project; when omitted polyctl lists the projects the credentials can see and asks you to choose. In the non-interactive flow nothing is asked: the project of the previous login, then the ADC project, then the only visible project is used (with a note); several visible projects and no default are a usage error that lists them.
 
 ```sh
 polyctl auth login gcp --profile acme --set project=acme-prod
-polyctl auth login gcp --profile acme-ci --set method=service-account --set key_file=./sa.json --set project=acme-ci
+polyctl auth login gcp --profile acme-ci --set method=service_account --set key_file=./sa.json --set project=acme-ci
 ```
 
 #### Alibaba Cloud
 
-RAM AccessKey pair from <https://ram.console.aliyun.com/manage/ak>. polyctl opens the page and prompts for the key id and secret, then for the region. Both can be passed with `--set access_key_id=<id> --set access_key_secret=-` or, when neither is given with `--set`, taken as a pair from `ALIBABA_CLOUD_ACCESS_KEY_ID` / `ALIBABA_CLOUD_ACCESS_KEY_SECRET`; then they are not asked for. Non-interactive: one of those, or `--set from_cli=`, is required, and the region is never asked for (`--set region=`, else the CLI profile's, else the previous login's, else `cn-hangzhou`).
+RAM AccessKey pair from <https://ram.console.aliyun.com/manage/ak>. polyctl opens the page and prompts for the key id and secret, then for the region. Both can be passed with `--set access_key_id=<id> --set access_key_secret=-` or, when neither is given with `--set`, taken as a pair from `ALIBABA_CLOUD_ACCESS_KEY_ID` / `ALIBABA_CLOUD_ACCESS_KEY_SECRET`; then they are not asked for. Non-interactive: one of those, or `--set aliyun_profile=`, is required, and the region is never asked for (`--set region=`, else the CLI profile's, else the previous login's, else `cn-hangzhou`).
 
 ```sh
 polyctl auth login aliyun --profile acme --set region=cn-hangzhou
 printf '%s\n' "$AK_SECRET" | polyctl auth login aliyun --profile ci --set access_key_id=LTAI... --set access_key_secret=-   # scripts
-polyctl auth login aliyun --profile acme --set from_cli=default       # import from an `aliyun` CLI profile
+polyctl auth login aliyun --profile acme --set aliyun_profile=default   # import from an `aliyun` CLI profile
 ```
 
-`--set from_cli=<name>` copies the AccessKey of an existing Alibaba Cloud CLI profile (`~/.aliyun/config.json`, or the file named by `ALIBABA_CLOUD_CLI_CONFIG`; `from_cli=current` picks the CLI's current profile; only AK-mode profiles can be imported) into the keyring. `--set region=` is the default region for ECS (default `cn-hangzhou`); Alidns is region-independent. `--set site=cn|intl` selects the Domain (registrar) API site: `cn` for aliyun.com accounts, `intl` for alibabacloud.com accounts; when omitted it is derived from the region (`cn-*` = `cn`, otherwise `intl`). Grant the RAM user `AliyunDNSFullAccess`, `AliyunDomainFullAccess` and/or `AliyunECSReadOnlyAccess` as needed.
+`--set aliyun_profile=<name>` names a profile of the Alibaba Cloud CLI (`~/.aliyun/config.json`, or the file named by `ALIBABA_CLOUD_CLI_CONFIG`; `aliyun_profile=current` picks the CLI's current profile; only AK-mode profiles can be imported). It is the counterpart of `aws_profile` with one difference: the AccessKey of that profile is copied into polyctl's credential store, not referenced, so later changes to the CLI profile are not picked up until the next login. `--set region=` is the default region for ECS (default `cn-hangzhou`); Alidns is region-independent. `--set site=cn|intl` selects the Domain (registrar) API site: `cn` for aliyun.com accounts, `intl` for alibabacloud.com accounts; when omitted it is derived from the region (`cn-*` = `cn`, otherwise `intl`). Grant the RAM user `AliyunDNSFullAccess`, `AliyunDomainFullAccess` and/or `AliyunECSReadOnlyAccess` as needed.
 
 ## Platform-neutral commands
 
-These commands take a domain name and route it to the account that owns it: a platform and a profile. Both command groups accept `--profile <name>` and `--platform <platform>` to narrow the choice; `--platform` takes the same names and aliases as `auth login`.
+These commands take a domain name and route it to the account that owns it: a platform and a profile. Both command groups accept `--profile <name>` and `--platform <platform>` to narrow the choice; `--platform` names one platform here (it routes to the account on that platform) and takes the same names and aliases as `auth login`.
 
 ### DNS
 
 ```text
 polyctl dns list   <domain> [--type A] [--name www]
-polyctl dns update <domain> --type <T> --value <V> [--name www|@] [--ttl 300] [--priority 10] [--proxied true|false] [--add]
+polyctl dns set    <domain> --type <T> --value <V> [--name www|@] [--ttl 300] [--priority 10] [--proxied[=false]]
+polyctl dns add    <domain> --type <T> --value <V> [--name www|@] [--ttl 300] [--priority 10] [--proxied[=false]]
 polyctl dns delete <domain> (--type <T> [--name www|@] [--value <V>] | --id <record-id>) [-y]
 ```
 
 Every `dns` command also takes `[--profile <name>] [--platform <platform>]`.
 
 - `<domain>` may be the zone apex or any name under it (`www.example.com` resolves to the `example.com` zone). `--name` is relative to the zone (`www`, `@`); when omitted, the record name is `<domain>` itself.
-- `dns update` is an upsert keyed on name + type: one existing record is updated (TTL, priority and proxy status are kept unless given), none means create, several means an error unless `--add` is passed, which always creates another record.
+- `dns set` creates or updates, keyed on name + type: one existing record is updated (TTL, priority and proxy status are kept unless given), none means create. Several existing records are an error that changes nothing and points to `dns add` and `dns delete`.
+- `dns add` always creates one more record and leaves the existing ones of that name and type alone; this is how round-robin `A` records or several `TXT` / `MX` records are built up.
+- A record's data is called its **value** everywhere: the `--value` flag, the `VALUE` table column and the `value` field of `-o json` / `-o yaml`, so what a command prints can be passed back to another.
 - In tables, a TTL that is a platform marker rather than a number of seconds is shown by name: `auto` (Cloudflare automatic TTL, `1` in the API), `alias` (Route 53 alias records, which use the target's TTL) and `default` (a GoDaddy record just written without `--ttl`). `-o json` and `-o yaml` keep the raw value.
-- `dns delete` with a selector that matches several records shows them and asks for confirmation (skip with `-y`). Answering no, or leaving the question, deletes nothing: the command prints `nothing to do: no record was deleted` and exits with code 0. In the non-interactive flow (no terminal, `--no-input`, `POLYCTL_NO_INPUT=1`) the question is never asked and stdin is not read: the records are shown, nothing is deleted, and the command fails with the usage error `confirmation required: pass --yes to proceed (would delete N records in zone <domain>)` (exit code 2) unless `-y` is given. A selector that matches no record is an error (exit code 4). `--value` narrows the match; `--id` deletes exactly one record by platform id.
-- `--proxied` applies to Cloudflare only; the `PROXIED` column appears for Cloudflare zones.
+- `dns delete` with a selector that matches several records shows them and asks for confirmation (skip with `-y`). Answering no, or leaving the question, deletes nothing: the command prints `nothing to do: no record was deleted` and exits with code 0. In the non-interactive flow (no terminal, `--non-interactive`, `POLYCTL_NON_INTERACTIVE=1`) the question is never asked and stdin is not read: the records are shown, nothing is deleted, and the command fails with the usage error `confirmation required: pass --yes to proceed (would delete N records in zone <domain>)` (exit code 2) unless `-y` is given. A selector that matches no record is an error (exit code 4). `--value` narrows the match; `--id` deletes exactly one record by platform id (here the id is an optional second way to address a record, so it is a flag).
+- `--proxied` applies to Cloudflare only and is a boolean flag: `--proxied` switches the proxy on, `--proxied=false` switches it off (the `=` is required: a boolean flag does not take its value from the next argument), and without it `dns set` keeps what the record has and `dns add` uses Cloudflare's default. The `PROXIED` column appears for Cloudflare zones.
 - After a successful write the record is upserted into (or removed from) the inventory, so the next `dns list` shows it without a refresh.
 
 ### Domains
@@ -546,7 +610,7 @@ Every `dns` command also takes `[--profile <name>] [--platform <platform>]`.
 ```text
 polyctl domain info  <domain>
 polyctl domain ns get <domain>
-polyctl domain ns set <domain> --ns ns1.example.net,ns2.example.net
+polyctl domain ns set <domain> <nameserver>...
 polyctl domain which <domain>
 polyctl domain index [--profile <name>] [--platform <platform>]
 polyctl domain list  [--refresh] [--profile <name>] [--platform <platform>]
@@ -555,8 +619,8 @@ polyctl domain list  [--refresh] [--profile <name>] [--platform <platform>]
 `domain info`, `ns get` and `ns set` also take `[--profile <name>] [--platform <platform>]`.
 
 - `domain info` combines the registrar view (status, expiry, auto-renew, lock, privacy, nameservers) with the DNS zone that serves the domain and the zone's nameservers; either half may be absent if only one kind of account knows the domain. `--platform` applies to both halves, so with it the half that lives on another platform is reported as a note on stderr.
-- `domain ns get` / `ns set` read and write the nameservers **at the registrar** (name.com, GoDaddy, Route 53 Domains, Alibaba Cloud Domains).
-- `domain which` prints every index entry for the domain and its parents: kind (`zone` or `domain`), platform, profile, resource id and when it was indexed. It is not narrowed by `--profile` / `--platform`, so this is the place to look when routing surprises you; the two flags are still checked, so an unknown profile (exit code 4) or platform (exit code 2) is reported and not ignored.
+- `domain ns get` / `ns set` read and write the nameservers **at the registrar** (name.com, GoDaddy, Route 53 Domains, Alibaba Cloud Domains). `ns set` takes the nameservers as arguments, at least one: `polyctl domain ns set example.com ns1.example.net ns2.example.net`. An argument may itself be a comma-separated list (`ns1.example.net,ns2.example.net`), which helps when pasting. The platform trees' `ns set` commands have the same shape.
+- `domain which` prints every index entry for the domain and its parents: kind (`zone` or `domain`), platform, profile, resource id and when it was indexed. Without `--profile` / `--platform` every owner is shown, so this is the place to look when routing surprises you. With them the list is narrowed to the owners in that profile and on that platform, as on `domain list`; a domain that has no owner under the selection is not found (exit code 4), and an unknown profile (exit code 4) or platform (exit code 2) is reported as such.
 - `domain index` fetches zones and registered domains from every domain-capable account of every profile and rebuilds the index; `--profile` and `--platform` limit it to the matching accounts. `domain list` prints the index, narrowed by `--profile` / `--platform` when given (`--refresh` re-indexes first). For both, an unknown `--profile` is an error (exit code 4). A `--profile` / `--platform` selection that names no domain-capable account is not: `domain list` lists nothing, and `domain index` has nothing to index, as it has when no domain-capable account is configured at all. It then prints an empty report on stdout (the table header, or `[]` with `-o json`) and a `nothing to do: ...` note on stderr, and exits with code 0.
 
 ### Routing rules
@@ -599,47 +663,55 @@ TTLs are per resource type (`ttl:` in `config.yaml`, defaults `dns_record: 1h`, 
 ```text
 polyctl sync [--platform cloudflare,aws] [--profile <name>] [--type domain,zone,dns_record,instance]
 polyctl inventory stats
-polyctl inventory list [--platform <p>] [--type <t>] [--name <exact name>] [--profile <name>]
+polyctl inventory list [--platform cloudflare,aws] [--type domain,zone,dns_record,instance] [--name <exact name>] [--profile <name>]
 polyctl inventory path
 ```
 
 - `sync` fetches the selected resource types (default: everything each platform supports) for the selected accounts (default: every account of every profile; `--profile` keeps one profile's accounts, `--platform` keeps the given platforms) and **replaces** them in the inventory atomically, one set at a time. It prints a per-set report (count, duration, failures). An authentication failure stops the sync of that account. An unknown `--profile` is an error (exit code 4), an unknown platform or type a usage error (exit code 2). Having nothing to sync is not an error: when the selection names no account (a `--profile` without an account on the given `--platform`, or a platform nobody is logged in to), when no selected account supports the requested `--type`, or when no account is configured at all, `sync` prints an empty report on stdout (the table header, or `[]` with `-o json`) and a `nothing to do: ...` note on stderr, and exits with code 0.
-- `inventory stats` shows row counts and the synced/expiry time of each set; `inventory list` dumps cached rows; `inventory path` prints the database path.
+- `inventory stats` shows row counts and the synced/expiry time of each set; `inventory list` dumps cached rows, filtered by `--profile`, `--name` and by `--platform` / `--type`, which take lists exactly as on `sync` (comma-separated or repeated; an unknown platform or type is a usage error); `inventory path` prints the database path.
 
 ## Platform-specific commands
 
-Each platform has its own subtree under its short name: `cf`, `namecom`, `godaddy`, `aws`, `gcp`, `aliyun`. Profile selection for these commands is `--profile` (which must have an account on that platform, otherwise the command fails with exit code 3) > `current_profile` (if it has an account on that platform) > the only profile that has one > an error listing the candidates (exit code 5). They honour `--refresh` / `--offline` for list operations the same way the neutral commands do, and always write through to the platform.
+Each platform has its own subtree, named after its platform id: `cloudflare` (also available under the alias `cf`), `namecom`, `godaddy`, `aws`, `gcp`, `aliyun`. Profile selection for these commands is `--profile` (which must have an account on that platform, otherwise the command fails with exit code 3) > `current_profile` (if it has an account on that platform) > the only profile that has one > an error listing the candidates (exit code 5). They honour `--refresh` / `--offline` for list operations the same way the neutral commands do, and always write through to the platform.
 
-### Cloudflare (`polyctl cf`)
+The trees follow each platform's own model, but the same operation has the same verb and shape in all of them:
+
+- **`<platform> whoami`** verifies the account's credentials against the platform and shows the identity behind them. It exists at the top of all six trees and prints the same shape everywhere: `profile`, `platform` and `identity` (`account`, `user`, and an `extra` map with what else the platform reports). It needs the network (exit code 6 with `--offline`); credentials that no longer work exit with code 3.
+- **Registrar groups** have `list`, `get <domain>`, `ns get <domain>` and `ns set <domain> <nameserver>...`.
+- **Platforms that give every record an id** (Cloudflare, name.com, Alibaba Cloud) have `create`, `update <zone-or-domain> <record-id>` and `delete <zone-or-domain> <record-id>`. The record id is required there, so it is an argument.
+- **Platforms that address records by name and type** (Route 53, Cloud DNS, GoDaddy) have `upsert`, which sets the whole record set, and a `delete` that takes `--name` / `--type`. There `--id` is an optional second way to pick one record, so it stays a flag, as on the neutral `dns delete`.
+- **Compute services** name the resource: `<service> instance list|start|stop`.
+
+### Cloudflare (`polyctl cloudflare`, alias `polyctl cf`)
 
 ```text
-cf zone list                      cf zone get <zone|id>
-cf dns list <zone> [--type] [--name]
-cf dns create <zone> --type A --name www --value 203.0.113.10 [--ttl 1] [--proxied true|false] [--priority] [--comment]
-cf dns update <zone> --id <record-id> [--type] [--name] [--value ...] [--ttl ...] [--priority] [--proxied true|false] [--comment]
-cf dns delete <zone> --id <record-id>
-cf cache purge <zone> (--everything | --url <url>... | --host <h>... | --tag <t>... | --prefix <p>...)   # host/tag/prefix need Enterprise
-cf dev-mode <zone> [on|off]       # Development Mode (bypass cache for 3 hours)
-cf ssl-mode <zone> [off|flexible|full|strict]
-cf account list
-cf token verify
+cloudflare whoami                 # verifies the API token; shows its id, status and expiry
+cloudflare zone list              cloudflare zone get <zone|id>
+cloudflare dns list <zone> [--type] [--name]
+cloudflare dns create <zone> --type A --name www --value 203.0.113.10 [--ttl 1] [--proxied[=false]] [--priority] [--comment]
+cloudflare dns update <zone> <record-id> [--type] [--name] [--value ...] [--ttl ...] [--priority] [--proxied[=false]] [--comment]
+cloudflare dns delete <zone> <record-id>
+cloudflare cache purge <zone> (--everything | --url <url>... | --host <h>... | --tag <t>... | --prefix <p>...)   # host/tag/prefix need Enterprise
+cloudflare dev-mode <zone> [on|off]       # Development Mode (bypass cache for 3 hours)
+cloudflare ssl-mode <zone> [off|flexible|full|strict]
+cloudflare account list
 ```
 
-Inventory types: `zone`, `dns_record`. Record ids are the Cloudflare record ids; `proxied` is the orange cloud.
+Every command above can be written with `cf` in place of `cloudflare` (`polyctl cf zone list`). Inventory types: `zone`, `dns_record`. Record ids are the Cloudflare record ids; `proxied` is the orange cloud, a boolean flag: `--proxied` switches it on, `--proxied=false` off, and without the flag `dns update` keeps the current setting.
 
 ### name.com (`polyctl namecom`)
 
 ```text
+namecom whoami                    # GET /v4/hello: user name, environment, server time
 namecom domain list               namecom domain get <domain>
-namecom domain ns get <domain>    namecom domain ns set <domain> --ns ns1,ns2
+namecom domain ns get <domain>    namecom domain ns set <domain> <nameserver>...
 namecom domain lock <domain>      namecom domain unlock <domain>
 namecom domain autorenew <domain> on|off
-namecom domain check <domain>...  # availability and price
-namecom dns list <domain>
+namecom domain check <name>...  # availability and price
+namecom dns list <domain> [--type] [--name]
 namecom dns create <domain> --type A --name www --value 203.0.113.10 [--ttl 300] [--priority]
-namecom dns update <domain> --id <record-id> [--type] [--name] [--value] [--ttl] [--priority]
-namecom dns delete <domain> --id <record-id>
-namecom hello                     # API connectivity check (/v4/hello)
+namecom dns update <domain> <record-id> [--type] [--name] [--value] [--ttl] [--priority]
+namecom dns delete <domain> <record-id>
 ```
 
 Inventory types: `domain`, `zone`, `dns_record` (every name.com domain is also its own zone).
@@ -647,45 +719,47 @@ Inventory types: `domain`, `zone`, `dns_record` (every name.com domain is also i
 ### GoDaddy (`polyctl godaddy`)
 
 ```text
+godaddy whoami                    # verified by listing one domain: method, environment
 godaddy domain list [--status ACTIVE,EXPIRED]   godaddy domain get <domain>
-godaddy domain ns get <domain>    godaddy domain ns set <domain> --ns ns1,ns2
+godaddy domain ns get <domain>    godaddy domain ns set <domain> <nameserver>...
 godaddy domain lock <domain>      godaddy domain unlock <domain>
 godaddy domain autorenew <domain> on|off
-godaddy domain available <domain>...
+godaddy domain check <name>...  # availability and price
 godaddy dns list <domain> [--type] [--name]
-godaddy dns add <domain> --type A --name www --value 203.0.113.10 [--ttl 600] [--priority]
-godaddy dns replace <domain> --type A --name www --value <v> [--value <v>...] [--ttl] [--priority]   # replaces the whole name+type set
-godaddy dns delete <domain> (--type A --name www | --id <TYPE|name|data>)
+godaddy dns add <domain> --type A --name www --value 203.0.113.10 [--ttl 600] [--priority]             # one more record; the others stay
+godaddy dns upsert <domain> --type A --name www --value <v> [--value <v>...] [--ttl] [--priority]   # sets the whole name+type set
+godaddy dns delete <domain> (--type A --name www | --id <TYPE|name|value>)
 ```
 
-Inventory types: `domain`, `zone`, `dns_record`. GoDaddy has no per-record ids; records are addressed by type + name, and `replace` follows the API's "replace all records of this type and name" semantics. polyctl derives a stable synthetic id of the form `TYPE|name|data` (each part percent-encoded, e.g. `TXT|@|v=spf1%20include:_spf.example.com%20~all`) so the neutral `dns` commands and `godaddy dns delete --id` can target single records.
+Inventory types: `domain`, `zone`, `dns_record`. GoDaddy has no per-record ids; records are addressed by type + name. `upsert` creates the record set or replaces all of it (the API's "replace all records of this type and name"), like `record upsert` on Route 53 and Cloud DNS; `add` appends one record to the set. polyctl derives a stable synthetic id of the form `TYPE|name|value` (each part percent-encoded, e.g. `TXT|@|v=spf1%20include:_spf.example.com%20~all`) so the neutral `dns` commands and `godaddy dns delete --id` can target single records.
 
 ### AWS (`polyctl aws`)
 
 ```text
-aws sts whoami                                    # GetCallerIdentity
+aws whoami                                        # sts GetCallerIdentity: account, ARN, user id
 aws route53 zone list                             aws route53 zone get <zone-id|name>
 aws route53 record list <zone> [--type] [--name]
 aws route53 record upsert <zone> --type A --name www --value 203.0.113.10 [--value ...] [--ttl 300]
 aws route53 record delete <zone> --type A --name www               # deletes the whole record set
-aws route53domains domain list                    aws route53domains domain get <domain>
-aws route53domains ns set <domain> --ns ns1,ns2
-aws ec2 list [--region <r>]                       aws ec2 start <instance-id> [--region]     aws ec2 stop <instance-id> [--region] [--force]
+aws route53domains list                           aws route53domains get <domain>
+aws route53domains ns get <domain>                aws route53domains ns set <domain> <nameserver>...
+aws ec2 instance list [--region <r>]              aws ec2 instance start <instance-id> [--region]     aws ec2 instance stop <instance-id> [--region] [--force]
 ```
 
-Inventory types: `zone`, `dns_record`, `domain`, `instance`.
+Inventory types: `zone`, `dns_record`, `domain`, `instance`. `route53domains` is this tree's registrar group, the counterpart of `domain` in the other trees.
 
 Route 53 stores a *record set* (name + type) with several values. polyctl exposes **one record per value** both in the inventory and in `dns list`, with a synthetic id of the form `<zone-id>|<TYPE>|<name>|<set-identifier>|<value>` (each part URL-encoded); updating or deleting one of them rewrites the whole record set with that value changed or removed. `record upsert` with several `--value` flags writes the set in one call.
 
 ### GCP (`polyctl gcp`)
 
 ```text
+gcp whoami                        # the profile's project, account and login method
 gcp project list                  gcp project current
 gcp dns zone list                 gcp dns zone get <managed-zone>
 gcp dns record list <zone> [--type] [--name]
 gcp dns record upsert <zone> --type A --name www --value 203.0.113.10 [--value ...] [--ttl 300]
 gcp dns record delete <zone> (--type A --name www [--value <v>] [--priority] | --id <zone|TYPE|name|value>)
-gcp compute list                                  gcp compute start <instance> [--zone <z>] [--wait]     gcp compute stop <instance> [--zone <z>] [--wait]
+gcp compute instance list                         gcp compute instance start <instance> [--zone <z>] [--wait]     gcp compute instance stop <instance> [--zone <z>] [--wait]
 ```
 
 Inventory types: `zone`, `dns_record`, `instance`. Cloud DNS record sets are split one record per value exactly like Route 53 (see above); writes are applied as a single atomic change.
@@ -693,18 +767,18 @@ Inventory types: `zone`, `dns_record`, `instance`. Cloud DNS record sets are spl
 ### Alibaba Cloud (`polyctl aliyun`)
 
 ```text
-aliyun sts whoami                                 # GetCallerIdentity
+aliyun whoami                                     # sts GetCallerIdentity: account, ARN, identity type
 aliyun dns domain list                            # Alidns domains (zones)
 aliyun dns record list <domain> [--type] [--name]
-aliyun dns record add <domain> --type A --name www --value 203.0.113.10 [--ttl 600] [--priority] [--line default|telecom|unicom|mobile|oversea]
-aliyun dns record update <domain> --id <record-id> [--name] [--type] [--value] [--ttl] [--priority] [--line]
-aliyun dns record delete <domain> --id <record-id>
+aliyun dns record create <domain> --type A --name www --value 203.0.113.10 [--ttl 600] [--priority] [--line default|telecom|unicom|mobile|oversea]
+aliyun dns record update <domain> <record-id> [--name] [--type] [--value] [--ttl] [--priority] [--line]
+aliyun dns record delete <domain> <record-id>
 aliyun domain list                                aliyun domain get <domain>       # registered domains
-aliyun domain ns set <domain> --ns ns1,ns2
-aliyun ecs list [--region]                        aliyun ecs start <instance-id> [--region]     aliyun ecs stop <instance-id> [--region] [--force]
+aliyun domain ns get <domain>                     aliyun domain ns set <domain> <nameserver>...
+aliyun ecs instance list [--region]               aliyun ecs instance start <instance-id> [--region]     aliyun ecs instance stop <instance-id> [--region] [--force]
 ```
 
-`aliyun ecs stop` asks for confirmation on a terminal (default No; declining is a `nothing to do` note and exit code 0) unless `--yes` is given. In the non-interactive flow it never asks: without `--yes` it is a usage error (exit code 2) raised before the account is opened.
+`aliyun ecs instance stop` asks for confirmation on a terminal (default No; declining is a `nothing to do` note and exit code 0) unless `--yes` is given. In the non-interactive flow it never asks: without `--yes` it is a usage error (exit code 2) raised before the account is opened.
 
 Inventory types: `zone` (Alidns domains), `dns_record`, `domain` (registered domains), `instance`. Alidns stores the relative record name as `RR`; both the native `aliyun dns record` commands and the neutral `dns` commands expose it as `--name`. Records also carry a resolution line (`--line`), shown in the `LINE` column.
 
@@ -714,10 +788,10 @@ Inventory types: `zone` (Alidns domains), `dns_record`, `domain` (registered dom
 polyctl dns list example.com                 # table (default)
 polyctl dns list example.com -o json         # pretty-printed JSON
 polyctl dns list example.com -o yaml
-POLYCTL_OUTPUT=json polyctl auth list        # environment default
+POLYCTL_OUTPUT=json polyctl auth list        # from the environment
 ```
 
-Precedence: `--output` > `output:` in `config.yaml` > `POLYCTL_OUTPUT` > `table`.
+Precedence: `--output` > `POLYCTL_OUTPUT` > `output:` in `config.yaml` > `table`: flag, environment, config file, default, as for every setting.
 
 Tables are tab-aligned and contain only the most useful columns. JSON and YAML encode the full result, including routing information, for example:
 
@@ -726,7 +800,7 @@ Tables are tab-aligned and contain only the most useful columns. JSON and YAML e
   "target": { "platform": "cloudflare", "profile": "acme", "resource_type": "zone", "resource_id": "9a1...", "domain": "example.com" },
   "cached": true,
   "records": [
-    { "id": "f3c...", "zone_id": "9a1...", "name": "www.example.com", "type": "A", "content": "203.0.113.10", "ttl": 1, "proxied": true }
+    { "id": "f3c...", "zone_id": "9a1...", "name": "www.example.com", "type": "A", "value": "203.0.113.10", "ttl": 1, "proxied": true }
   ]
 }
 ```
@@ -737,9 +811,9 @@ Human-readable progress and notes always go to stderr, so stdout is safe to pipe
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Success. Also a menu or selection prompt left with Esc or Ctrl-C, a question of a login flow left with Ctrl-C or Ctrl-D, and a command that had nothing to do: no account to `sync` or `domain index` (none configured, none matching `--profile` / `--platform`, none supporting `--type`), no profile or account to pick from in `auth use` / `auth logout` / `auth manage`, a declined or left confirmation of `dns delete` or `aliyun ecs stop`. The prompts in this row exist in the interactive flow only. |
+| `0` | Success. Also a menu or selection prompt left with Esc or Ctrl-C, a question of a login flow left with Ctrl-C or Ctrl-D, and a command that had nothing to do: no account to `sync` or `domain index` (none configured, none matching `--profile` / `--platform`, none supporting `--type`), no profile or account to pick from in `auth use` / `auth logout` / `auth manage`, a declined or left confirmation of `dns delete` or `aliyun ecs instance stop`. The prompts in this row exist in the interactive flow only. |
 | `1` | Generic error (API failure, I/O error, a login that was not approved in time, `config.yaml` changed by another process while the command ran, ...). |
-| `2` | Usage error: bad flag combination, unknown platform or resource type, missing required flag or argument, an invalid or already used name for `auth rename`, invalid config, an invalid `POLYCTL_NO_INPUT` value, `auth login` without `--profile` for a platform that only other profiles have. Also everything the non-interactive flow cannot ask for: `auth manage`, a missing argument (`auth login` without a platform, `auth use` without a profile, `auth logout` without `--profile`), a confirmation without `--yes` (`dns delete` of several records, `aliyun ecs stop`), and a login value or choice that was not passed (the message names the `--set` key or environment variable). |
+| `2` | Usage error: bad flag combination, unknown flag or command (also below a command group: `polyctl dns nosuch`), unknown platform or resource type, missing required flag or argument, an unknown value of a login option (`--set env=`, `--set method=`), an invalid or already used name for `auth rename`, invalid config, an invalid `POLYCTL_NON_INTERACTIVE` value, `auth login` without `--profile` for a platform that only other profiles have. Also everything the non-interactive flow cannot ask for: `auth manage`, a missing argument (`auth login` without a platform, `auth use` without a profile, `auth logout` without `--profile`), a confirmation without `--yes` (`dns delete` of several records, `aliyun ecs instance stop`), and a login value or choice that was not passed (the message names the `--set` key or environment variable). |
 | `3` | Authentication: missing credentials, no account on the platform in the selected profile, rejected token, expired SSO session, `auth status` with a failing account. |
 | `4` | Not found: unknown domain / zone / record / profile, a `--profile` / `--platform` selection that names no account able to hold the requested domain (`dns list`, `domain info`, ...), `auth logout <platform>` for a platform the profile has no account on, or a set that was never synced in `--offline` mode. |
 | `5` | Ambiguous: the domain has more than one candidate account (pass `--profile` and/or `--platform`, as the message says), or the platform more than one candidate profile (pass `--profile`). |

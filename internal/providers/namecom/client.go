@@ -34,16 +34,35 @@ const apiTokenURL = "https://www.name.com/account/settings/api"
 // perPage is the maximum page size accepted by the list endpoints.
 const perPage = 1000
 
-// normalizeEnv maps user-supplied environment names onto the two known
-// environments; "" is the default production environment.
-func normalizeEnv(s string) (string, error) {
+// parseEnv reads the env login option (--set env=...). Each environment has
+// one spelling, production or test; "" is the default production
+// environment. Anything else is a usage error.
+func parseEnv(s string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "", envProduction, "prod":
+	case "", envProduction:
 		return envProduction, nil
-	case envTest, "dev", "development":
+	case envTest:
 		return envTest, nil
 	}
-	return "", fmt.Errorf("unknown name.com environment %q (expected production or test)", s)
+	return "", app.UsageErrf("unknown name.com environment %q (expected production or test)", s)
+}
+
+// storedEnv reads the env metadata of a stored account. Besides the two
+// names parseEnv knows it accepts the spellings polyctl 0.1.x took as login
+// input (prod, dev, development), so that a config.yaml carrying one of
+// them still loads. They are not accepted as input any more.
+func storedEnv(s string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "prod":
+		return envProduction, nil
+	case "dev", "development":
+		return envTest, nil
+	}
+	env, err := parseEnv(s)
+	if err != nil {
+		return "", fmt.Errorf("unknown name.com environment %q in the stored account (expected production or test)", s)
+	}
+	return env, nil
 }
 
 // Client is an authenticated name.com Core API v4 session. It implements
@@ -246,12 +265,12 @@ func toRecord(r apiRecord, domain string) platform.Record {
 		name = platform.FQDN(r.Host, domain)
 	}
 	rec := platform.Record{
-		ID:      strconv.FormatInt(r.ID, 10),
-		ZoneID:  domain,
-		Name:    name,
-		Type:    strings.ToUpper(r.Type),
-		Content: r.Answer,
-		TTL:     r.TTL,
+		ID:     strconv.FormatInt(r.ID, 10),
+		ZoneID: domain,
+		Name:   name,
+		Type:   strings.ToUpper(r.Type),
+		Value:  r.Answer,
+		TTL:    r.TTL,
 	}
 	if r.Priority != nil && hasPriority(rec.Type) {
 		p := *r.Priority
@@ -275,7 +294,7 @@ func fromRecord(r platform.Record, domain string) (apiRecordWrite, error) {
 	if host == "@" {
 		host = ""
 	}
-	w := apiRecordWrite{Host: host, Type: strings.ToUpper(r.Type), Answer: r.Content, TTL: r.TTL}
+	w := apiRecordWrite{Host: host, Type: strings.ToUpper(r.Type), Answer: r.Value, TTL: r.TTL}
 	if r.Priority != nil && hasPriority(w.Type) {
 		p := *r.Priority
 		w.Priority = &p

@@ -344,7 +344,7 @@ func (c *client) CreateRecord(ctx context.Context, zoneID string, r platform.Rec
 	return c.findRecord(ctx, encodeRecordID(zoneID, typ, fqdn, raw))
 }
 
-// UpdateRecord replaces the value identified by r.ID with r's content. When
+// UpdateRecord replaces the value identified by r.ID with r's value. When
 // the name or type changes the value moves between record sets.
 func (c *client) UpdateRecord(ctx context.Context, zoneID string, r platform.Record) (*platform.Record, error) {
 	oldZone, oldTyp, oldName, oldRaw, err := decodeRecordID(r.ID)

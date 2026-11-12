@@ -52,9 +52,10 @@ type fakeProvider struct {
 	name string
 }
 
-func (p *fakeProvider) ID() platform.ID     { return p.id }
-func (p *fakeProvider) DisplayName() string { return p.name }
-func (p *fakeProvider) LoginHelp() string   { return "fake login" }
+func (p *fakeProvider) ID() platform.ID        { return p.id }
+func (p *fakeProvider) DisplayName() string    { return p.name }
+func (p *fakeProvider) LoginHelp() string      { return "fake login" }
+func (p *fakeProvider) LoginOptions() []string { return nil }
 func (p *fakeProvider) ResourceTypes() []platform.ResourceType {
 	return []platform.ResourceType{platform.ResZone, platform.ResDNSRecord, platform.ResDomain}
 }

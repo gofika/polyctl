@@ -23,7 +23,7 @@ account (profile and platform) is looked up in the local domain index; pass
 the platform, --offline to never touch the network.`,
 	}
 	addRouteFlags(rt, cmd)
-	cmd.AddCommand(newDNSListCmd(rt), newDNSUpdateCmd(rt), newDNSDeleteCmd(rt))
+	cmd.AddCommand(newDNSListCmd(rt), newDNSSetCmd(rt), newDNSAddCmd(rt), newDNSDeleteCmd(rt))
 	return cmd
 }
 
@@ -37,18 +37,18 @@ type dnsResult struct {
 // recordGrid renders records of platform p; Cloudflare gets a PROXIED column.
 func recordGrid(recs []platform.Record, p platform.ID) output.Grid {
 	showProxied := p == platform.Cloudflare
-	headers := []string{"NAME", "TYPE", "CONTENT", "TTL"}
+	headers := []string{"NAME", "TYPE", "VALUE", "TTL"}
 	if showProxied {
 		headers = append(headers, "PROXIED")
 	}
 	headers = append(headers, "ID")
 	g := output.Grid{Headers: headers, Empty: "no records"}
 	for _, r := range recs {
-		content := r.Content
+		value := r.Value
 		if r.Priority != nil {
-			content = fmt.Sprintf("%d %s", *r.Priority, r.Content)
+			value = fmt.Sprintf("%d %s", *r.Priority, r.Value)
 		}
-		row := []string{r.Name, r.Type, content, platform.TTLLabel(p, r)}
+		row := []string{r.Name, r.Type, value, platform.TTLLabel(p, r)}
 		if showProxied {
 			row = append(row, output.Str(r.Proxied))
 		}
@@ -109,113 +109,143 @@ func cacheNote(cached bool) string {
 	return ""
 }
 
-func newDNSUpdateCmd(rt *app.Runtime) *cobra.Command {
-	var typ, name, value string
-	var ttl, priority int
-	var proxied string
-	var create bool
-	cmd := &cobra.Command{
-		Use:   "update <domain>",
-		Short: "Create or update a DNS record (upsert by name + type)",
+// newDNSSetCmd is `dns set`: create the record, or update the one that has
+// the same name and type.
+func newDNSSetCmd(rt *app.Runtime) *cobra.Command {
+	return newDNSWriteCmd(rt, false, &cobra.Command{
+		Use:   "set <domain>",
+		Short: "Create or update a DNS record (matched by name + type)",
 		Long: `Create or update a record in the zone serving <domain>.
 
 If exactly one record with the same name and type exists it is updated;
-if none exists it is created; if several exist the command fails unless
---add is given, which always creates an additional record.`,
-		Args:              cobra.ExactArgs(1),
-		ValidArgsFunction: completeDomains(rt),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if typ == "" || value == "" {
-				return usageErr("--type and --value are required")
+if none exists it is created. If several exist the command fails: use
+` + "`polyctl dns add`" + ` to create one more record of that name and type, or
+` + "`polyctl dns delete`" + ` to remove the ones that should go.
+
+--proxied (Cloudflare) is a boolean: --proxied switches the proxy on,
+--proxied=false switches it off, and without it an updated record keeps its
+current setting.`,
+	})
+}
+
+// newDNSAddCmd is `dns add`: always create one more record.
+func newDNSAddCmd(rt *app.Runtime) *cobra.Command {
+	return newDNSWriteCmd(rt, true, &cobra.Command{
+		Use:   "add <domain>",
+		Short: "Add a DNS record, keeping the existing ones of that name + type",
+		Long: `Create one more record in the zone serving <domain>. Records that already
+have the same name and type are left alone, which is how round-robin A
+records or several TXT or MX records are built up. To change an existing
+record use ` + "`polyctl dns set`" + `.
+
+--proxied (Cloudflare) is a boolean: --proxied switches the proxy on,
+--proxied=false switches it off, and without it the platform default applies.`,
+	})
+}
+
+// newDNSWriteCmd completes cmd as a record-writing command. With add it
+// always creates a record; without, it updates the one record that has the
+// same name and type and creates it when there is none.
+func newDNSWriteCmd(rt *app.Runtime, add bool, cmd *cobra.Command) *cobra.Command {
+	var typ, name, value string
+	var ttl, priority int
+	var proxied bool
+	cmd.Args = app.ProxiedArgs(cobra.ExactArgs(1))
+	cmd.ValidArgsFunction = completeDomains(rt)
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		if typ == "" || value == "" {
+			return usageErr("--type and --value are required")
+		}
+		typ = strings.ToUpper(typ)
+		t, err := rt.ResolveDomain(cmd.Context(), args[0], platform.ResZone)
+		if err != nil {
+			return err
+		}
+		if rt.Flags.Offline {
+			return app.ErrOffline
+		}
+		fqdn := platform.FQDN(name, t.Domain)
+		if name == "" {
+			fqdn = platform.NormalizeDomain(args[0])
+		}
+		dns, err := rt.OpenDNS(cmd.Context(), t)
+		if err != nil {
+			return err
+		}
+		existing, err := dns.ListRecords(cmd.Context(), t.ResourceID)
+		if err != nil {
+			return err
+		}
+		matches := app.MatchRecords(existing, fqdn, typ, "")
+		rec := platform.Record{ZoneID: t.ResourceID, Name: fqdn, Type: typ, Value: value, TTL: ttl}
+		if cmd.Flags().Changed("priority") {
+			p := priority
+			rec.Priority = &p
+		}
+		if cmd.Flags().Changed("proxied") {
+			b := proxied
+			rec.Proxied = &b
+		}
+		var out *platform.Record
+		oldID := ""
+		switch {
+		case add || len(matches) == 0:
+			out, err = dns.CreateRecord(cmd.Context(), t.ResourceID, rec)
+		case len(matches) == 1:
+			rec.ID = matches[0].ID
+			oldID = rec.ID
+			if rec.TTL == 0 {
+				rec.TTL = matches[0].TTL
 			}
-			typ = strings.ToUpper(typ)
-			t, err := rt.ResolveDomain(cmd.Context(), args[0], platform.ResZone)
-			if err != nil {
-				return err
+			if rec.Priority == nil {
+				rec.Priority = matches[0].Priority
 			}
-			if rt.Flags.Offline {
-				return app.ErrOffline
+			if rec.Proxied == nil {
+				rec.Proxied = matches[0].Proxied
 			}
-			fqdn := platform.FQDN(name, t.Domain)
-			if name == "" {
-				fqdn = platform.NormalizeDomain(args[0])
-			}
-			dns, err := rt.OpenDNS(cmd.Context(), t)
-			if err != nil {
-				return err
-			}
-			existing, err := dns.ListRecords(cmd.Context(), t.ResourceID)
-			if err != nil {
-				return err
-			}
-			matches := app.MatchRecords(existing, fqdn, typ, "")
-			rec := platform.Record{ZoneID: t.ResourceID, Name: fqdn, Type: typ, Content: value, TTL: ttl}
-			if cmd.Flags().Changed("priority") {
-				p := priority
-				rec.Priority = &p
-			}
-			switch proxied {
-			case "":
-			case "true", "false":
-				b := proxied == "true"
-				rec.Proxied = &b
-			default:
-				return usageErr("--proxied must be true or false")
-			}
-			var out *platform.Record
-			oldID := ""
-			switch {
-			case create || len(matches) == 0:
-				out, err = dns.CreateRecord(cmd.Context(), t.ResourceID, rec)
-			case len(matches) == 1:
-				rec.ID = matches[0].ID
-				oldID = rec.ID
-				if rec.TTL == 0 {
-					rec.TTL = matches[0].TTL
-				}
-				if rec.Priority == nil {
-					rec.Priority = matches[0].Priority
-				}
-				if rec.Proxied == nil {
-					rec.Proxied = matches[0].Proxied
-				}
-				rec.Extra = matches[0].Extra
-				out, err = dns.UpdateRecord(cmd.Context(), t.ResourceID, rec)
-			default:
-				return fmt.Errorf("%d records named %s %s exist; use --add to create another, or `polyctl dns delete` first", len(matches), fqdn, typ)
-			}
-			if err != nil {
-				return err
-			}
-			// Keep the local inventory in sync with the mutation. Platforms
-			// whose record ids encode the value (Route 53, Cloud DNS,
-			// GoDaddy) hand back a new id after an update, so the row under
-			// the old id must go or the cache lists both.
-			if db, err := rt.DB(); err == nil {
-				cfg, _ := rt.Config()
-				set := inventory.Set{Platform: t.Platform, Profile: t.Profile, Type: platform.ResDNSRecord}
-				if oldID != "" && out.ID != oldID {
-					if err := db.Delete(cmd.Context(), set, platform.ResDNSRecord, oldID); err != nil {
-						rt.Verbosef("inventory: %v", err)
-					}
-				}
-				if err := db.Upsert(cmd.Context(), set, app.RecordResources(t.ResourceID, t.Domain, []platform.Record{*out})[0], cfg.TTLFor(platform.ResDNSRecord)); err != nil {
+			rec.Extra = matches[0].Extra
+			out, err = dns.UpdateRecord(cmd.Context(), t.ResourceID, rec)
+		default:
+			return fmt.Errorf("%d records named %s %s exist; use `polyctl dns add` to create another, or `polyctl dns delete` first", len(matches), fqdn, typ)
+		}
+		if err != nil {
+			return err
+		}
+		// Keep the local inventory in sync with the mutation. Platforms
+		// whose record ids encode the value (Route 53, Cloud DNS,
+		// GoDaddy) hand back a new id after an update, so the row under
+		// the old id must go or the cache lists both.
+		if db, err := rt.DB(); err == nil {
+			cfg, _ := rt.Config()
+			set := inventory.Set{Platform: t.Platform, Profile: t.Profile, Type: platform.ResDNSRecord}
+			if oldID != "" && out.ID != oldID {
+				if err := db.Delete(cmd.Context(), set, platform.ResDNSRecord, oldID); err != nil {
 					rt.Verbosef("inventory: %v", err)
 				}
 			}
-			rt.Infof("%s %s %s -> %s via %s/%s", map[bool]string{true: "created", false: "updated"}[rec.ID == ""], out.Name, out.Type, out.Content, t.Platform, t.Profile)
-			return rt.Render(dnsResult{Target: t, Records: []platform.Record{*out}}, func() output.Grid {
-				return recordGrid([]platform.Record{*out}, t.Platform)
-			})
-		},
+			if err := db.Upsert(cmd.Context(), set, app.RecordResources(t.ResourceID, t.Domain, []platform.Record{*out})[0], cfg.TTLFor(platform.ResDNSRecord)); err != nil {
+				rt.Verbosef("inventory: %v", err)
+			}
+		}
+		rt.Infof("%s %s %s -> %s via %s/%s", map[bool]string{true: "created", false: "updated"}[rec.ID == ""], out.Name, out.Type, out.Value, t.Platform, t.Profile)
+		return rt.Render(dnsResult{Target: t, Records: []platform.Record{*out}}, func() output.Grid {
+			return recordGrid([]platform.Record{*out}, t.Platform)
+		})
+	}
+	ttlHelp := "TTL in seconds (0 = platform default / keep existing)"
+	if add {
+		ttlHelp = "TTL in seconds (0 = platform default)"
 	}
 	cmd.Flags().StringVar(&typ, "type", "", "record type (A, AAAA, CNAME, TXT, MX, ...)")
 	cmd.Flags().StringVar(&name, "name", "", "record name relative to the zone (www, @); default: <domain> itself")
-	cmd.Flags().StringVar(&value, "value", "", "record content")
-	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 = platform default / keep existing)")
+	cmd.Flags().StringVar(&value, "value", "", "record value")
+	cmd.Flags().IntVar(&ttl, "ttl", 0, ttlHelp)
 	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX/SRV records")
-	cmd.Flags().StringVar(&proxied, "proxied", "", "Cloudflare proxy status: true or false")
-	cmd.Flags().BoolVar(&create, "add", false, "always create a new record instead of updating an existing one")
+	proxiedHelp := "Cloudflare proxy status: --proxied or --proxied=false (default: keep the current value; the platform default for a new record)"
+	if add {
+		proxiedHelp = "Cloudflare proxy status: --proxied or --proxied=false (default: the platform default)"
+	}
+	cmd.Flags().BoolVar(&proxied, "proxied", false, proxiedHelp)
 	return cmd
 }
 
@@ -228,9 +258,9 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 			"one record with --id. A single match is deleted at once. Several matches are\n" +
 			"listed on stderr and, in the interactive flow, confirmed first (default no);\n" +
 			"--yes skips the question. In the non-interactive flow (no terminal,\n" +
-			"--no-input or POLYCTL_NO_INPUT=1) nothing is asked and stdin is not read:\n" +
-			"--yes is required to delete several records, and without it the command is\n" +
-			"a usage error (exit code 2) and nothing is deleted.",
+			"--non-interactive or POLYCTL_NON_INTERACTIVE=1) nothing is asked and stdin is\n" +
+			"not read: --yes is required to delete several records, and without it the\n" +
+			"command is a usage error (exit code 2) and nothing is deleted.",
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: completeDomains(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -289,14 +319,14 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 				if db != nil {
 					_ = db.Delete(cmd.Context(), inventory.Set{Platform: t.Platform, Profile: t.Profile}, platform.ResDNSRecord, r.ID)
 				}
-				rt.Infof("deleted %s %s %s via %s/%s", r.Name, r.Type, r.Content, t.Platform, t.Profile)
+				rt.Infof("deleted %s %s %s via %s/%s", r.Name, r.Type, r.Value, t.Platform, t.Profile)
 			}
 			return rt.Render(dnsResult{Target: t, Records: matches}, func() output.Grid { return output.Grid{} })
 		},
 	}
 	cmd.Flags().StringVar(&typ, "type", "", "record type")
 	cmd.Flags().StringVar(&name, "name", "", "record name relative to the zone (www, @); default: <domain> itself")
-	cmd.Flags().StringVar(&value, "value", "", "only delete records with this content")
+	cmd.Flags().StringVar(&value, "value", "", "only delete records with this value")
 	cmd.Flags().StringVar(&id, "id", "", "delete the record with this platform id")
 	return cmd
 }

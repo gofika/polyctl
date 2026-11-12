@@ -53,19 +53,34 @@ var oauthWait = 5 * time.Minute
 // choice is a usage error naming the --set key.
 func (p *provider) Login(ctx context.Context, in platform.LoginInput) (*platform.LoginResult, error) {
 	pio := in.IO(ctx)
-	method := strings.ToLower(in.Opt("method", ""))
+	method := strings.ToLower(strings.TrimSpace(in.Opt("method", "")))
 	if method == "" && in.Existing != nil {
-		method = in.Existing["method"]
+		// Kept from the previous login: stored metadata, not input.
+		method = storedMethod(in.Existing["method"])
 	}
 	switch method {
 	case "", methodADC:
 		return loginADC(ctx, in, pio)
-	case methodServiceAccount, "service-account", "sa":
+	case methodServiceAccount:
 		return loginServiceAccount(ctx, in, pio)
 	case methodOAuth:
 		return loginOAuth(ctx, in, pio)
 	}
-	return nil, fmt.Errorf("unknown login method %q (expected adc, service-account or oauth)", method)
+	return nil, app.UsageErrf("unknown gcp login method %q (expected %s, %s or %s)", method, methodADC, methodServiceAccount, methodOAuth)
+}
+
+// storedMethod reads the method metadata of a stored account. Besides the
+// three method names it accepts the spellings polyctl 0.1.x took as login
+// input for a service account (service-account, sa), so that a config.yaml
+// carrying one of them still loads. They are not accepted as input any
+// more.
+func storedMethod(s string) string {
+	switch m := strings.ToLower(strings.TrimSpace(s)); m {
+	case "service-account", "sa":
+		return methodServiceAccount
+	default:
+		return m
+	}
 }
 
 // loginADC uses Application Default Credentials; nothing sensitive is stored.

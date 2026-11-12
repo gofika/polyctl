@@ -63,7 +63,7 @@ func newHarness(t *testing.T, flags app.Flags, mutate func(*config.Config)) *har
 		}
 	}
 
-	flags.ConfigPath = cfgPath
+	flags.ConfigDir = filepath.Dir(cfgPath)
 	h := &harness{t: t, dir: dir, stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}}
 	h.rt = app.New(flags, strings.NewReader(""), h.stdout, h.stderr)
 	if err := h.rt.Init(); err != nil {
@@ -619,8 +619,8 @@ func TestZoneRecordsCachesPerZone(t *testing.T) {
 	h.seedZones("a", zone("z1", "example.com"), zone("z2", "other.com"))
 	fc := h.client("a")
 	fc.zones = []platform.Zone{zone("z1", "example.com"), zone("z2", "other.com")}
-	fc.records["z1"] = []platform.Record{{ID: "r1", Name: "WWW.example.com.", Type: "A", Content: "1.2.3.4", TTL: 300}}
-	fc.records["z2"] = []platform.Record{{ID: "r2", Name: "other.com", Type: "MX", Content: "mx.other.com", TTL: 300}}
+	fc.records["z1"] = []platform.Record{{ID: "r1", Name: "WWW.example.com.", Type: "A", Value: "1.2.3.4", TTL: 300}}
+	fc.records["z2"] = []platform.Record{{ID: "r2", Name: "other.com", Type: "MX", Value: "mx.other.com", TTL: 300}}
 
 	tgt, err := h.rt.ResolveDomain(ctx, "www.example.com", platform.ResZone)
 	if err != nil {
@@ -661,7 +661,7 @@ func TestSyncAccount(t *testing.T) {
 	h := newHarness(t, app.Flags{}, nil)
 	fc := h.client("a")
 	fc.zones = []platform.Zone{zone("z1", "example.com")}
-	fc.records["z1"] = []platform.Record{{ID: "r1", Name: "example.com", Type: "A", Content: "1.1.1.1"}}
+	fc.records["z1"] = []platform.Record{{ID: "r1", Name: "example.com", Type: "A", Value: "1.1.1.1"}}
 	fc.domains = []platform.Domain{{Name: "example.com"}}
 
 	reports, err := h.rt.SyncAccount(ctx, ref("a", platform.NameCom), nil)
@@ -704,10 +704,10 @@ func TestSyncAccount(t *testing.T) {
 
 func TestMatchRecords(t *testing.T) {
 	recs := []platform.Record{
-		{ID: "1", Name: "www.example.com", Type: "A", Content: "1.1.1.1"},
-		{ID: "2", Name: "WWW.example.com", Type: "AAAA", Content: "::1"},
-		{ID: "3", Name: "www.example.com", Type: "a", Content: "2.2.2.2"},
-		{ID: "4", Name: "example.com", Type: "A", Content: "1.1.1.1"},
+		{ID: "1", Name: "www.example.com", Type: "A", Value: "1.1.1.1"},
+		{ID: "2", Name: "WWW.example.com", Type: "AAAA", Value: "::1"},
+		{ID: "3", Name: "www.example.com", Type: "a", Value: "2.2.2.2"},
+		{ID: "4", Name: "example.com", Type: "A", Value: "1.1.1.1"},
 	}
 	ids := func(rs []platform.Record) string {
 		var out []string
@@ -751,11 +751,11 @@ func TestResourceConverters(t *testing.T) {
 func TestInitRejectsRefreshWithOffline(t *testing.T) {
 	registerFakes()
 	dir := t.TempDir()
-	rt := app.New(app.Flags{ConfigPath: filepath.Join(dir, "config.yaml"), Refresh: true, Offline: true}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	rt := app.New(app.Flags{ConfigDir: dir, Refresh: true, Offline: true}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	if err := rt.Init(); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
 		t.Fatalf("Init = %v", err)
 	}
-	rt = app.New(app.Flags{ConfigPath: filepath.Join(dir, "config.yaml"), Output: "xml"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	rt = app.New(app.Flags{ConfigDir: dir, Output: "xml"}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	if err := rt.Init(); err == nil || !strings.Contains(err.Error(), "unknown output format") {
 		t.Fatalf("Init with bad output = %v", err)
 	}

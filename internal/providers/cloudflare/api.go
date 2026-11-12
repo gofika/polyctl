@@ -446,7 +446,7 @@ func toRecord(r apiRecord) platform.Record {
 		ZoneID:   r.ZoneID,
 		Name:     platform.NormalizeDomain(r.Name),
 		Type:     strings.ToUpper(r.Type),
-		Content:  r.Content,
+		Value:    r.Content,
 		TTL:      r.TTL,
 		Priority: r.Priority,
 		Proxied:  r.Proxied,
@@ -464,7 +464,7 @@ func toBody(r platform.Record) recordBody {
 	b := recordBody{
 		Name:     platform.NormalizeDomain(r.Name),
 		Type:     strings.ToUpper(r.Type),
-		Content:  r.Content,
+		Content:  r.Value,
 		TTL:      r.TTL,
 		Priority: r.Priority,
 		Proxied:  r.Proxied,

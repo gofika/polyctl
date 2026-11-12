@@ -27,7 +27,9 @@ The profile is chosen with --profile, the current profile, or the only name.com
 profile configured. Listing commands serve the local inventory unless --refresh
 is given or the cached data has expired; --offline never touches the network.`,
 	}
-	cmd.AddCommand(newDomainCmd(rt), newDNSCmd(rt), newHelloCmd(rt))
+	cmd.AddCommand(
+		app.WhoamiCommand(rt, platform.NameCom, "On name.com this calls GET /v4/hello and reports the user name, the\nenvironment and the server time."),
+		newDomainCmd(rt), newDNSCmd(rt))
 	return cmd
 }
 
@@ -194,11 +196,11 @@ func domainKV(d *platform.Domain) output.Grid {
 }
 
 func recordGrid(recs []platform.Record) output.Grid {
-	g := output.Grid{Headers: []string{"NAME", "TYPE", "CONTENT", "TTL", "ID"}, Empty: "no records"}
+	g := output.Grid{Headers: []string{"NAME", "TYPE", "VALUE", "TTL", "ID"}, Empty: "no records"}
 	for _, r := range recs {
-		content := r.Content
+		content := r.Value
 		if r.Priority != nil {
-			content = fmt.Sprintf("%d %s", *r.Priority, r.Content)
+			content = fmt.Sprintf("%d %s", *r.Priority, r.Value)
 		}
 		g.Rows = append(g.Rows, []string{r.Name, r.Type, content, platform.TTLLabel(platform.NameCom, r), r.ID})
 	}
@@ -236,39 +238,6 @@ type recordsResult struct {
 	Cached  bool              `json:"cached" yaml:"cached"`
 	Domain  string            `json:"domain" yaml:"domain"`
 	Records []platform.Record `json:"records" yaml:"records"`
-}
-
-type helloResult struct {
-	Profile    string `json:"profile" yaml:"profile"`
-	Env        string `json:"env" yaml:"env"`
-	Username   string `json:"username" yaml:"username"`
-	ServerName string `json:"server_name,omitempty" yaml:"server_name,omitempty"`
-	ServerTime string `json:"server_time,omitempty" yaml:"server_time,omitempty"`
-	Motd       string `json:"motd,omitempty" yaml:"motd,omitempty"`
-}
-
-// --- hello ------------------------------------------------------------------
-
-func newHelloCmd(rt *app.Runtime) *cobra.Command {
-	return &cobra.Command{
-		Use:   "hello",
-		Short: "Call GET /v4/hello to verify credentials and show the server time",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			c, p, err := open(cmd.Context(), rt)
-			if err != nil {
-				return err
-			}
-			h, err := c.hello(cmd.Context())
-			if err != nil {
-				return err
-			}
-			res := helloResult{Profile: p.Name, Env: c.env, Username: h.Username, ServerName: h.ServerName, ServerTime: h.ServerTime, Motd: h.Motd}
-			return rt.Render(res, func() output.Grid {
-				return output.KV("PROFILE", res.Profile, "ENV", res.Env, "USERNAME", res.Username, "SERVER", res.ServerName, "SERVER TIME", res.ServerTime, "MOTD", res.Motd)
-			})
-		},
-	}
 }
 
 // --- domain -----------------------------------------------------------------
@@ -377,14 +346,16 @@ func newDomainNSGetCmd(rt *app.Runtime) *cobra.Command {
 }
 
 func newDomainNSSetCmd(rt *app.Runtime) *cobra.Command {
-	var ns []string
 	cmd := &cobra.Command{
-		Use:   "set <domain> --ns ns1.example.com,ns2.example.com",
-		Short: "Replace the nameservers of a domain",
-		Args:  cobra.ExactArgs(1),
+		Use:     "set <domain> <nameserver>...",
+		Short:   "Replace the nameservers of a domain",
+		Long:    "Replace the nameservers of <domain> with the ones given.\n" + app.NameserverHelp,
+		Example: "  polyctl namecom domain ns set example.com ns1.example.net ns2.example.net",
+		Args:    app.NameserverArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(ns) == 0 {
-				return app.UsageErrf("--ns is required")
+			ns, err := app.Nameservers(args[1:])
+			if err != nil {
+				return err
 			}
 			c, p, err := open(cmd.Context(), rt)
 			if err != nil {
@@ -406,7 +377,6 @@ func newDomainNSSetCmd(rt *app.Runtime) *cobra.Command {
 			})
 		},
 	}
-	cmd.Flags().StringSliceVar(&ns, "ns", nil, "nameservers (comma separated or repeated)")
 	return cmd
 }
 
@@ -573,9 +543,10 @@ func newDNSCreateCmd(rt *app.Runtime) *cobra.Command {
 	var typ, name, value string
 	var ttl, priority int
 	cmd := &cobra.Command{
-		Use:   "create <domain> --type A --name www --value 1.2.3.4",
-		Short: "Create a DNS record",
-		Args:  cobra.ExactArgs(1),
+		Use:     "create <domain>",
+		Example: "  polyctl namecom dns create example.com --type A --name www --value 1.2.3.4",
+		Short:   "Create a DNS record",
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if typ == "" || value == "" {
 				return app.UsageErrf("--type and --value are required")
@@ -585,7 +556,7 @@ func newDNSCreateCmd(rt *app.Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			rec := platform.Record{ZoneID: domain, Name: platform.FQDN(name, domain), Type: strings.ToUpper(typ), Content: value, TTL: ttl}
+			rec := platform.Record{ZoneID: domain, Name: platform.FQDN(name, domain), Type: strings.ToUpper(typ), Value: value, TTL: ttl}
 			if cmd.Flags().Changed("priority") {
 				pr := priority
 				rec.Priority = &pr
@@ -595,7 +566,7 @@ func newDNSCreateCmd(rt *app.Runtime) *cobra.Command {
 				return err
 			}
 			warnInventory(rt, storeRecord(cmd.Context(), rt, p.Name, domain, out))
-			rt.Infof("created %s %s -> %s (id %s) via namecom/%s", out.Name, out.Type, out.Content, out.ID, p.Name)
+			rt.Infof("created %s %s -> %s (id %s) via namecom/%s", out.Name, out.Type, out.Value, out.ID, p.Name)
 			return rt.Render(recordsResult{Profile: p.Name, Domain: domain, Records: []platform.Record{*out}}, func() output.Grid {
 				return recordGrid([]platform.Record{*out})
 			})
@@ -603,23 +574,23 @@ func newDNSCreateCmd(rt *app.Runtime) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&typ, "type", "", "record type (A, AAAA, CNAME, TXT, MX, SRV, NS, ...)")
 	cmd.Flags().StringVar(&name, "name", "", "record name relative to the domain (www, @); default: the apex")
-	cmd.Flags().StringVar(&value, "value", "", "record content")
+	cmd.Flags().StringVar(&value, "value", "", "record value")
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 = name.com default, minimum 300)")
 	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX/SRV records")
 	return cmd
 }
 
 func newDNSUpdateCmd(rt *app.Runtime) *cobra.Command {
-	var id, typ, name, value string
+	var typ, name, value string
 	var ttl, priority int
 	cmd := &cobra.Command{
-		Use:   "update <domain> --id <record-id> [--type] [--name] [--value] [--ttl] [--priority]",
-		Short: "Update an existing DNS record by id (unspecified fields are kept)",
-		Args:  cobra.ExactArgs(1),
+		Use:   "update <domain> <record-id>",
+		Short: "Update one DNS record (fields that are not given keep their value)",
+		Long: "Update the DNS record <record-id> of <domain>; the ids are shown by\n" +
+			"`polyctl namecom dns list`. Only the fields given are changed.",
+		Args: app.RecordIDArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if id == "" {
-				return app.UsageErrf("--id is required")
-			}
+			id := args[1]
 			domain := platform.NormalizeDomain(args[0])
 			c, p, err := open(cmd.Context(), rt)
 			if err != nil {
@@ -637,7 +608,7 @@ func newDNSUpdateCmd(rt *app.Runtime) *cobra.Command {
 				rec.Name = platform.FQDN(name, domain)
 			}
 			if cmd.Flags().Changed("value") {
-				rec.Content = value
+				rec.Value = value
 			}
 			if cmd.Flags().Changed("ttl") {
 				rec.TTL = ttl
@@ -651,31 +622,27 @@ func newDNSUpdateCmd(rt *app.Runtime) *cobra.Command {
 				return err
 			}
 			warnInventory(rt, storeRecord(cmd.Context(), rt, p.Name, domain, out))
-			rt.Infof("updated %s %s -> %s (id %s) via namecom/%s", out.Name, out.Type, out.Content, out.ID, p.Name)
+			rt.Infof("updated %s %s -> %s (id %s) via namecom/%s", out.Name, out.Type, out.Value, out.ID, p.Name)
 			return rt.Render(recordsResult{Profile: p.Name, Domain: domain, Records: []platform.Record{*out}}, func() output.Grid {
 				return recordGrid([]platform.Record{*out})
 			})
 		},
 	}
-	cmd.Flags().StringVar(&id, "id", "", "record id (see 'namecom dns list')")
 	cmd.Flags().StringVar(&typ, "type", "", "new record type")
 	cmd.Flags().StringVar(&name, "name", "", "new record name relative to the domain (www, @)")
-	cmd.Flags().StringVar(&value, "value", "", "new record content")
+	cmd.Flags().StringVar(&value, "value", "", "new record value")
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "new TTL in seconds (minimum 300)")
 	cmd.Flags().IntVar(&priority, "priority", 0, "new priority for MX/SRV records")
 	return cmd
 }
 
 func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
-	var id string
 	cmd := &cobra.Command{
-		Use:   "delete <domain> --id <record-id>",
-		Short: "Delete a DNS record by id",
-		Args:  cobra.ExactArgs(1),
+		Use:   "delete <domain> <record-id>",
+		Short: "Delete one DNS record (ids are shown by `polyctl namecom dns list`)",
+		Args:  app.RecordIDArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if id == "" {
-				return app.UsageErrf("--id is required")
-			}
+			id := args[1]
 			domain := platform.NormalizeDomain(args[0])
 			// Canonicalise the id once so the inventory delete and the output
 			// use the same form toRecord stores (e.g. " 123" / "0123" -> "123").
@@ -696,6 +663,5 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 			return rt.Render(map[string]string{"profile": p.Name, "domain": domain, "deleted_id": id}, func() output.Grid { return output.Grid{} })
 		},
 	}
-	cmd.Flags().StringVar(&id, "id", "", "record id (see 'namecom dns list')")
 	return cmd
 }

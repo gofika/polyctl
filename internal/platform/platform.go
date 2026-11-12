@@ -6,9 +6,11 @@ package platform
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/gofika/polyctl/internal/prompt"
 )
@@ -131,6 +133,18 @@ func (in LoginInput) MayOpenBrowser() bool {
 	return in.Interactive && !in.NoBrowser && in.OpenBrowser != nil
 }
 
+// CheckLoginOption reports a login option key p does not accept, naming the
+// keys it does.
+func CheckLoginOption(p Provider, key string) error {
+	valid := p.LoginOptions()
+	for _, k := range valid {
+		if k == key {
+			return nil
+		}
+	}
+	return fmt.Errorf("unknown login option %q for %s (valid: %s)", key, p.ID(), strings.Join(valid, ", "))
+}
+
 // Opt returns a login option or the default.
 func (in LoginInput) Opt(key, def string) string {
 	if v, ok := in.Options[key]; ok && v != "" {
@@ -162,6 +176,10 @@ type Provider interface {
 	DisplayName() string
 	// LoginHelp is a short description of the login flow, shown in `auth login --help`.
 	LoginHelp() string
+	// LoginOptions lists the keys `auth login --set key=value` accepts for
+	// this platform. Any other key is a usage error, so that a misspelled
+	// or removed option is never silently ignored.
+	LoginOptions() []string
 	// Login runs the authentication flow (see LoginInput.Interactive).
 	Login(ctx context.Context, in LoginInput) (*LoginResult, error)
 	// Open creates an authenticated client for the profile.
@@ -229,11 +247,30 @@ type Record struct {
 	ZoneID   string         `json:"zone_id" yaml:"zone_id"`
 	Name     string         `json:"name" yaml:"name"`
 	Type     string         `json:"type" yaml:"type"`
-	Content  string         `json:"content" yaml:"content"`
+	Value    string         `json:"value" yaml:"value"`
 	TTL      int            `json:"ttl" yaml:"ttl"`
 	Priority *int           `json:"priority,omitempty" yaml:"priority,omitempty"`
 	Proxied  *bool          `json:"proxied,omitempty" yaml:"proxied,omitempty"`
 	Extra    map[string]any `json:"extra,omitempty" yaml:"extra,omitempty"`
+}
+
+// UnmarshalJSON reads a record, accepting the "content" key polyctl 0.1.x
+// stored a record's value under when "value" is absent. A cached inventory
+// row written by 0.1.x therefore never decodes to a record without a value.
+// Records are only ever written with "value".
+func (r *Record) UnmarshalJSON(b []byte) error {
+	type plain Record
+	aux := struct {
+		*plain
+		Content *string `json:"content"`
+	}{plain: (*plain)(r)}
+	if err := json.Unmarshal(b, &aux); err != nil {
+		return err
+	}
+	if r.Value == "" && aux.Content != nil {
+		r.Value = *aux.Content
+	}
+	return nil
 }
 
 // Domain is a registered domain.

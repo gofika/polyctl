@@ -79,7 +79,14 @@ func (c *client) Verify(ctx context.Context) (*platform.Identity, error) {
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return identityFromCaller(awssdk.ToString(out.Account), awssdk.ToString(out.Arn), awssdk.ToString(out.UserId)), nil
+	id := identityFromCaller(awssdk.ToString(out.Account), awssdk.ToString(out.Arn), awssdk.ToString(out.UserId))
+	if c.region != "" {
+		if id.Extra == nil {
+			id.Extra = map[string]string{}
+		}
+		id.Extra["region"] = c.region
+	}
+	return id, nil
 }
 
 // Sync fetches every resource of the given type.

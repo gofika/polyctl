@@ -19,6 +19,10 @@ import (
 // EnvConfigDir overrides the configuration directory when set.
 const EnvConfigDir = "POLYCTL_CONFIG_DIR"
 
+// FileName is the name of the config file inside the configuration
+// directory.
+const FileName = "config.yaml"
+
 // DefaultProfile is the profile `auth login` creates when none is named and
 // none is current.
 const DefaultProfile = "default"
@@ -245,7 +249,7 @@ func DefaultPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(d, "config.yaml"), nil
+	return filepath.Join(d, FileName), nil
 }
 
 // Load reads the config at path, returning an empty config if it does not exist.

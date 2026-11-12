@@ -18,7 +18,7 @@ import (
 // non-interactive flow, where nothing is ever asked. It is a usage error:
 // the caller left out a value it has to pass. Leaving a prompt in the
 // interactive flow is ErrAborted instead.
-var ErrNotInteractive = errors.New("input required, but polyctl is not running interactively (no terminal, --no-input or POLYCTL_NO_INPUT)")
+var ErrNotInteractive = errors.New("input required, but polyctl is not running interactively (no terminal, --non-interactive or POLYCTL_NON_INTERACTIVE)")
 
 // ErrNoValue is returned by ReadValue when stdin holds no value: it ended,
 // or its first line is empty.

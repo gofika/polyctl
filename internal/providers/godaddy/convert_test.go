@@ -17,11 +17,11 @@ func TestRecordFromAPI(t *testing.T) {
 		t.Errorf("apex A: %+v", a)
 	}
 	c := recordFromAPI(zone, apiRecord{Type: "cname", Name: "www", Data: "example.com", TTL: 3600})
-	if c.Name != "www.example.com" || c.Type != "CNAME" || c.Content != "example.com" || c.ID != "CNAME|www|example.com" {
+	if c.Name != "www.example.com" || c.Type != "CNAME" || c.Value != "example.com" || c.ID != "CNAME|www|example.com" {
 		t.Errorf("www CNAME: %+v", c)
 	}
 	mx := recordFromAPI(zone, apiRecord{Type: "MX", Name: "@", Data: "mail.example.com", TTL: 3600, Priority: intp(10)})
-	if mx.Priority == nil || *mx.Priority != 10 || mx.Content != "mail.example.com" {
+	if mx.Priority == nil || *mx.Priority != 10 || mx.Value != "mail.example.com" {
 		t.Errorf("MX priority must move to Priority: %+v", mx)
 	}
 	// A records can carry priority:0 in GoDaddy's output; it must not leak.
@@ -30,7 +30,7 @@ func TestRecordFromAPI(t *testing.T) {
 		t.Errorf("A record must not expose a priority: %+v", a2)
 	}
 	srv := recordFromAPI(zone, apiRecord{Type: "SRV", Name: "@", Data: "sip.example.com", TTL: 600, Priority: intp(5), Port: intp(5060), Weight: intp(20), Service: "_sip", Protocol: "_tcp"})
-	if srv.Name != "_sip._tcp.example.com" || srv.Content != "sip.example.com" || srv.ID != "SRV|@|sip.example.com" {
+	if srv.Name != "_sip._tcp.example.com" || srv.Value != "sip.example.com" || srv.ID != "SRV|@|sip.example.com" {
 		t.Errorf("SRV: %+v", srv)
 	}
 	if srv.Extra["port"] != 5060 || srv.Extra["weight"] != 20 || srv.Extra["service"] != "_sip" {
@@ -44,41 +44,41 @@ func TestRecordFromAPI(t *testing.T) {
 
 func TestRecordToAPI(t *testing.T) {
 	zone := "example.com"
-	r, err := recordToAPI(zone, platform.Record{Name: "www.example.com", Type: "a", Content: "1.2.3.4", TTL: 600})
+	r, err := recordToAPI(zone, platform.Record{Name: "www.example.com", Type: "a", Value: "1.2.3.4", TTL: 600})
 	if err != nil || r.Type != "A" || r.Name != "www" || r.Data != "1.2.3.4" || r.TTL != 600 || r.Priority != nil {
 		t.Errorf("www A: %+v %v", r, err)
 	}
-	r, err = recordToAPI(zone, platform.Record{Name: "example.com", Type: "TXT", Content: "hello world"})
+	r, err = recordToAPI(zone, platform.Record{Name: "example.com", Type: "TXT", Value: "hello world"})
 	if err != nil || r.Name != "@" {
 		t.Errorf("apex: %+v %v", r, err)
 	}
-	r, err = recordToAPI(zone, platform.Record{Name: "example.com.", Type: "MX", Content: "mail.example.com", Priority: intp(20)})
+	r, err = recordToAPI(zone, platform.Record{Name: "example.com.", Type: "MX", Value: "mail.example.com", Priority: intp(20)})
 	if err != nil || r.Name != "@" || r.Priority == nil || *r.Priority != 20 {
 		t.Errorf("MX: %+v %v", r, err)
 	}
-	r, err = recordToAPI(zone, platform.Record{Name: "example.com", Type: "MX", Content: "mail.example.com"})
+	r, err = recordToAPI(zone, platform.Record{Name: "example.com", Type: "MX", Value: "mail.example.com"})
 	if err != nil || r.Priority == nil || *r.Priority != 0 {
 		t.Errorf("MX default priority: %+v %v", r, err)
 	}
-	if _, err := recordToAPI(zone, platform.Record{Name: "x.example.com", Type: "", Content: "1"}); err == nil {
+	if _, err := recordToAPI(zone, platform.Record{Name: "x.example.com", Type: "", Value: "1"}); err == nil {
 		t.Error("missing type must fail")
 	}
-	if _, err := recordToAPI(zone, platform.Record{Name: "x.example.com", Type: "A", Content: ""}); err == nil {
+	if _, err := recordToAPI(zone, platform.Record{Name: "x.example.com", Type: "A", Value: ""}); err == nil {
 		t.Error("missing content must fail")
 	}
 	// SRV with extras that went through JSON (numbers become float64).
 	var extra map[string]any
 	_ = json.Unmarshal([]byte(`{"port":5060,"weight":10,"service":"_sip","protocol":"_tcp"}`), &extra)
-	r, err = recordToAPI(zone, platform.Record{Name: "_sip._tcp.example.com", Type: "SRV", Content: "sip.example.com", Priority: intp(1), Extra: extra})
+	r, err = recordToAPI(zone, platform.Record{Name: "_sip._tcp.example.com", Type: "SRV", Value: "sip.example.com", Priority: intp(1), Extra: extra})
 	if err != nil || r.Name != "@" || r.Service != "_sip" || r.Protocol != "_tcp" || r.Port == nil || *r.Port != 5060 || r.Weight == nil || *r.Weight != 10 {
 		t.Errorf("SRV from extra: %+v %v", r, err)
 	}
 	// SRV with the service/protocol only in the name.
-	r, err = recordToAPI(zone, platform.Record{Name: "_sip._tcp.host.example.com", Type: "SRV", Content: "sip.example.com", Extra: map[string]any{"port": 5060}})
+	r, err = recordToAPI(zone, platform.Record{Name: "_sip._tcp.host.example.com", Type: "SRV", Value: "sip.example.com", Extra: map[string]any{"port": 5060}})
 	if err != nil || r.Name != "host" || r.Service != "_sip" || r.Protocol != "_tcp" {
 		t.Errorf("SRV from name: %+v %v", r, err)
 	}
-	if _, err := recordToAPI(zone, platform.Record{Name: "_sip._tcp.example.com", Type: "SRV", Content: "x"}); err == nil {
+	if _, err := recordToAPI(zone, platform.Record{Name: "_sip._tcp.example.com", Type: "SRV", Value: "x"}); err == nil {
 		t.Error("SRV without port must fail")
 	}
 }

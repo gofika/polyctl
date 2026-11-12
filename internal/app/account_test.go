@@ -200,8 +200,8 @@ func TestResolveDomainRoutesInsideOneProfile(t *testing.T) {
 	h.seedZonesFor(ref("proj", platform.NameCom), zone("z-nc", "proj-dns.com"))
 	h.seedZonesFor(ref("proj", platform.GoDaddy), zone("z-gd", "proj-shop.com"), zone("z-gd-sub", "eu.proj-dns.com"))
 	nc, gd := clientFor("proj", platform.NameCom), clientFor("proj", platform.GoDaddy)
-	nc.records["z-nc"] = []platform.Record{{ID: "r1", Name: "www.proj-dns.com", Type: "A", Content: "1.1.1.1"}}
-	gd.records["z-gd"] = []platform.Record{{ID: "r2", Name: "www.proj-shop.com", Type: "A", Content: "2.2.2.2"}}
+	nc.records["z-nc"] = []platform.Record{{ID: "r1", Name: "www.proj-dns.com", Type: "A", Value: "1.1.1.1"}}
+	gd.records["z-gd"] = []platform.Record{{ID: "r2", Name: "www.proj-shop.com", Type: "A", Value: "2.2.2.2"}}
 
 	cases := []struct {
 		domain string
@@ -443,7 +443,7 @@ func legacyRuntime(t *testing.T, flags app.Flags, secrets map[string]string) (*a
 			t.Fatal(err)
 		}
 	}
-	flags.ConfigPath = cfgPath
+	flags.ConfigDir = filepath.Dir(cfgPath)
 	stderr := &bytes.Buffer{}
 	rt := app.New(flags, strings.NewReader(""), &bytes.Buffer{}, stderr)
 	if err := rt.Init(); err != nil {
@@ -551,7 +551,7 @@ func TestLegacySecretMigration(t *testing.T) {
 
 	// A second run on the migrated files is a no-op.
 	before, _ := os.ReadFile(cfgPath)
-	rt2 := app.New(app.Flags{ConfigPath: cfgPath}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	rt2 := app.New(app.Flags{ConfigDir: filepath.Dir(cfgPath)}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	if err := rt2.Init(); err != nil {
 		t.Fatal(err)
 	}
@@ -640,7 +640,7 @@ func TestLegacySecretFallbackWhenMigrationFails(t *testing.T) {
 	if err := os.Remove(lock); err != nil {
 		t.Fatal(err)
 	}
-	rt2 := app.New(app.Flags{ConfigPath: cfgPath}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	rt2 := app.New(app.Flags{ConfigDir: filepath.Dir(cfgPath)}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	if err := rt2.Init(); err != nil {
 		t.Fatal(err)
 	}
@@ -717,7 +717,7 @@ func TestLegacySecretMarkWhenNoSecretIsFound(t *testing.T) {
 	if err := creds.NewFile(dir).Set("shop", map[string]string{"token": "late"}); err != nil {
 		t.Fatal(err)
 	}
-	rt2 := app.New(app.Flags{ConfigPath: cfgPath}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	rt2 := app.New(app.Flags{ConfigDir: filepath.Dir(cfgPath)}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	if err := rt2.Init(); err != nil {
 		t.Fatal(err)
 	}
@@ -766,7 +766,7 @@ func (r *unreadStdin) Read([]byte) (int, error) {
 
 // Confirm treats a question that was left as a no.
 func TestConfirmLeftIsNo(t *testing.T) {
-	t.Setenv(app.EnvNoInput, "")
+	t.Setenv(app.EnvNonInteractive, "")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	rt := app.New(app.Flags{}, strings.NewReader("y\n"), &bytes.Buffer{}, &bytes.Buffer{})
@@ -780,7 +780,7 @@ func TestConfirmLeftIsNo(t *testing.T) {
 }
 
 // The flow is decided in one place: a terminal on stdin and stderr (here the
-// injected picker), unless --no-input or POLYCTL_NO_INPUT forces it off.
+// injected picker), unless --non-interactive or POLYCTL_NON_INTERACTIVE forces it off.
 func TestInteractiveDecision(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -792,8 +792,8 @@ func TestInteractiveDecision(t *testing.T) {
 	}{
 		{name: "terminal", terminal: true, want: true},
 		{name: "no terminal"},
-		{name: "terminal, --no-input", terminal: true, flag: true},
-		{name: "no terminal, --no-input", flag: true},
+		{name: "terminal, --non-interactive", terminal: true, flag: true},
+		{name: "no terminal, --non-interactive", flag: true},
 		{name: "terminal, env 1", terminal: true, env: "1"},
 		{name: "terminal, env true", terminal: true, env: "true"},
 		{name: "terminal, env YES", terminal: true, env: "YES"},
@@ -808,10 +808,10 @@ func TestInteractiveDecision(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			t.Setenv(config.EnvConfigDir, dir)
-			t.Setenv(app.EnvNoInput, tc.env)
+			t.Setenv(app.EnvNonInteractive, tc.env)
 			stdin, stub := &unreadStdin{}, &terminalStub{}
 			var stderr bytes.Buffer
-			rt := app.New(app.Flags{NoInput: tc.flag}, stdin, &bytes.Buffer{}, &stderr)
+			rt := app.New(app.Flags{NonInteractive: tc.flag}, stdin, &bytes.Buffer{}, &stderr)
 			if tc.terminal {
 				rt.Picker = stub
 			}
@@ -824,7 +824,7 @@ func TestInteractiveDecision(t *testing.T) {
 			if (err != nil) != tc.initErr {
 				t.Fatalf("Init = %v, want an error: %v", err, tc.initErr)
 			}
-			if tc.initErr && (!strings.Contains(err.Error(), app.EnvNoInput) || !strings.Contains(err.Error(), tc.env)) {
+			if tc.initErr && (!strings.Contains(err.Error(), app.EnvNonInteractive) || !strings.Contains(err.Error(), tc.env)) {
 				t.Errorf("Init error does not name the variable and its value: %v", err)
 			}
 			if got := rt.Prompt().Interactive(); got != tc.want {
@@ -883,7 +883,7 @@ func TestInteractiveDecision(t *testing.T) {
 
 // --yes skips the question in the interactive flow as well.
 func TestConfirmYesAsksNothing(t *testing.T) {
-	t.Setenv(app.EnvNoInput, "")
+	t.Setenv(app.EnvNonInteractive, "")
 	stdin := &unreadStdin{}
 	var stderr bytes.Buffer
 	rt := app.New(app.Flags{Yes: true}, stdin, &bytes.Buffer{}, &stderr)
@@ -896,7 +896,7 @@ func TestConfirmYesAsksNothing(t *testing.T) {
 // `--set key=-` values: one line each from one shared reader, silently, in
 // the non-interactive flow; a prompt in the interactive one.
 func TestStdinValue(t *testing.T) {
-	t.Setenv(app.EnvNoInput, "")
+	t.Setenv(app.EnvNonInteractive, "")
 	ctx := context.Background()
 	var stderr bytes.Buffer
 	rt := app.New(app.Flags{}, strings.NewReader("first\nsecond\n"), &bytes.Buffer{}, &stderr)
@@ -1124,7 +1124,7 @@ func TestLegacySecretMigrationInParallel(t *testing.T) {
 	}
 	var rts []*app.Runtime
 	for i := 0; i < processes; i++ {
-		rt := app.New(app.Flags{ConfigPath: cfgPath}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+		rt := app.New(app.Flags{ConfigDir: filepath.Dir(cfgPath)}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 		if err := rt.Init(); err != nil {
 			t.Fatal(err)
 		}
@@ -1176,7 +1176,7 @@ func TestLegacySecretMigrationKeepsLaterConfigChanges(t *testing.T) {
 	cfgPath := filepath.Join(dir, "config.yaml")
 
 	// Another process migrates and then adds an account.
-	other := app.New(app.Flags{ConfigPath: cfgPath}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	other := app.New(app.Flags{ConfigDir: filepath.Dir(cfgPath)}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	if err := other.Init(); err != nil {
 		t.Fatal(err)
 	}
@@ -1251,7 +1251,7 @@ func TestUpdateSecretRecordsTheBackend(t *testing.T) {
 	if err := file.Set("p/namecom", map[string]string{"token": "old"}); err != nil {
 		t.Fatal(err)
 	}
-	rt := app.New(app.Flags{ConfigPath: cfgPath}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	rt := app.New(app.Flags{ConfigDir: filepath.Dir(cfgPath)}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	if err := rt.Init(); err != nil {
 		t.Fatal(err)
 	}

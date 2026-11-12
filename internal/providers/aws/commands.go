@@ -19,12 +19,15 @@ func Command(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "aws",
 		Short: "Amazon Web Services native commands",
-		Long: `Native Amazon Web Services commands: STS identity, Route 53 hosted zones and
-records, Route 53 Domains registrations and EC2 instances. The profile is
-chosen with --profile (or the current profile); listing commands read the local
-inventory unless --refresh is given or the cached data has expired.`,
+		Long: `Native Amazon Web Services commands: the identity check, Route 53 hosted
+zones and records, Route 53 Domains registrations and EC2 instances. The
+profile is chosen with --profile (or the current profile); listing commands
+read the local inventory unless --refresh is given or the cached data has
+expired.`,
 	}
-	cmd.AddCommand(stsCmd(rt), route53Cmd(rt), route53domainsCmd(rt), ec2Cmd(rt))
+	cmd.AddCommand(
+		app.WhoamiCommand(rt, platform.AWS, "On AWS this calls sts GetCallerIdentity and reports the account, the ARN, the\nuser id and the profile's region."),
+		route53Cmd(rt), route53domainsCmd(rt), ec2Cmd(rt))
 	return cmd
 }
 
@@ -39,45 +42,6 @@ func openClient(ctx context.Context, rt *app.Runtime) (*client, platform.Profile
 		return nil, prof, fmt.Errorf("unexpected AWS client type %T", c)
 	}
 	return ac, prof, nil
-}
-
-// ---------------------------------------------------------------- sts
-
-type whoami struct {
-	Profile  string             `json:"profile" yaml:"profile"`
-	Region   string             `json:"region" yaml:"region"`
-	Identity *platform.Identity `json:"identity" yaml:"identity"`
-}
-
-func stsCmd(rt *app.Runtime) *cobra.Command {
-	cmd := &cobra.Command{Use: "sts", Short: "Security Token Service"}
-	cmd.AddCommand(&cobra.Command{
-		Use:   "whoami",
-		Short: "Show the identity behind the current credentials (sts GetCallerIdentity)",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if rt.Flags.Offline {
-				return app.ErrOffline
-			}
-			c, prof, err := openClient(cmd.Context(), rt)
-			if err != nil {
-				return err
-			}
-			id, err := c.Verify(cmd.Context())
-			if err != nil {
-				return err
-			}
-			w := whoami{Profile: prof.Name, Region: c.region, Identity: id}
-			return rt.Render(w, func() output.Grid {
-				pairs := []string{"PROFILE", w.Profile, "ACCOUNT", id.Account, "ARN", id.User, "REGION", w.Region}
-				if uid := id.Extra["user_id"]; uid != "" {
-					pairs = append(pairs, "USER_ID", uid)
-				}
-				return output.KV(pairs...)
-			})
-		},
-	})
-	return cmd
 }
 
 // ------------------------------------------------------------ route53
@@ -210,11 +174,11 @@ type recordResult struct {
 }
 
 func recordGrid(recs []platform.Record) output.Grid {
-	g := output.Grid{Headers: []string{"NAME", "TYPE", "CONTENT", "TTL", "SET", "ID"}, Empty: "no records"}
+	g := output.Grid{Headers: []string{"NAME", "TYPE", "VALUE", "TTL", "SET", "ID"}, Empty: "no records"}
 	for _, r := range recs {
-		content := r.Content
+		content := r.Value
 		if r.Priority != nil {
-			content = fmt.Sprintf("%d %s", *r.Priority, r.Content)
+			content = fmt.Sprintf("%d %s", *r.Priority, r.Value)
 		}
 		if extraBool(r.Extra, "alias") {
 			content = "ALIAS " + content
@@ -232,7 +196,7 @@ func sortRecords(recs []platform.Record) {
 		if recs[i].Type != recs[j].Type {
 			return recs[i].Type < recs[j].Type
 		}
-		return recs[i].Content < recs[j].Content
+		return recs[i].Value < recs[j].Value
 	})
 }
 
@@ -526,12 +490,13 @@ func domainKV(d *platform.Domain) output.Grid {
 }
 
 func route53domainsCmd(rt *app.Runtime) *cobra.Command {
-	cmd := &cobra.Command{Use: "route53domains", Short: "Route 53 Domains (registrar)"}
-	domain := &cobra.Command{Use: "domain", Short: "Registered domains"}
-	domain.AddCommand(domainListCmd(rt), domainGetCmd(rt))
+	// route53domains is this tree's registrar group, like `domain` in the
+	// namecom, godaddy and aliyun trees: list, get and ns get|set sit
+	// directly below it.
+	cmd := &cobra.Command{Use: "route53domains", Short: "Route 53 Domains: registered domains and their nameservers"}
 	ns := &cobra.Command{Use: "ns", Short: "Nameservers of a registered domain"}
 	ns.AddCommand(nsGetCmd(rt), nsSetCmd(rt))
-	cmd.AddCommand(domain, ns)
+	cmd.AddCommand(domainListCmd(rt), domainGetCmd(rt), ns)
 	return cmd
 }
 
@@ -677,14 +642,16 @@ func domainGetCmd(rt *app.Runtime) *cobra.Command {
 }
 
 func nsSetCmd(rt *app.Runtime) *cobra.Command {
-	var ns []string
 	cmd := &cobra.Command{
-		Use:   "set <domain>",
-		Short: "Replace the nameservers of a registered domain",
-		Args:  cobra.ExactArgs(1),
+		Use:     "set <domain> <nameserver>...",
+		Short:   "Replace the nameservers of a registered domain",
+		Long:    "Replace the nameservers of <domain> with the ones given.\n" + app.NameserverHelp,
+		Example: "  polyctl aws route53domains ns set example.com ns1.example.net ns2.example.net",
+		Args:    app.NameserverArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(ns) == 0 {
-				return app.UsageErrf("--ns is required")
+			ns, err := app.Nameservers(args[1:])
+			if err != nil {
+				return err
 			}
 			if rt.Flags.Offline {
 				return app.ErrOffline
@@ -708,7 +675,6 @@ func nsSetCmd(rt *app.Runtime) *cobra.Command {
 			return rt.Render(d, func() output.Grid { return domainKV(d) })
 		},
 	}
-	cmd.Flags().StringSliceVar(&ns, "ns", nil, "comma-separated nameservers (ns1.example.com,ns2.example.com)")
 	return cmd
 }
 
@@ -730,8 +696,10 @@ func instanceGrid(instances []instanceInfo) output.Grid {
 }
 
 func ec2Cmd(rt *app.Runtime) *cobra.Command {
-	cmd := &cobra.Command{Use: "ec2", Short: "EC2 instances"}
-	cmd.AddCommand(ec2ListCmd(rt), ec2StateCmd(rt, "start"), ec2StateCmd(rt, "stop"))
+	cmd := &cobra.Command{Use: "ec2", Short: "Elastic Compute Cloud"}
+	instance := &cobra.Command{Use: "instance", Short: "EC2 instances"}
+	instance.AddCommand(ec2ListCmd(rt), ec2StateCmd(rt, "start"), ec2StateCmd(rt, "stop"))
+	cmd.AddCommand(instance)
 	return cmd
 }
 

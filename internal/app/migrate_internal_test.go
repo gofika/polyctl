@@ -66,7 +66,7 @@ func newMigrateEnv(t *testing.T) *migrateEnv {
 	}
 	e := &migrateEnv{t: t, cfgPath: cfgPath, stderr: &bytes.Buffer{},
 		primary: creds.NewFile(t.TempDir()), secondary: creds.NewFile(t.TempDir())}
-	e.rt = New(Flags{ConfigPath: cfgPath, Verbose: true}, strings.NewReader(""), &bytes.Buffer{}, e.stderr)
+	e.rt = New(Flags{ConfigDir: filepath.Dir(cfgPath), Verbose: true}, strings.NewReader(""), &bytes.Buffer{}, e.stderr)
 	cfg, err := e.rt.Config()
 	if err != nil {
 		t.Fatal(err)

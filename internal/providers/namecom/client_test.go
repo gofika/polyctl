@@ -307,7 +307,7 @@ func TestListRecordsConversionAndPagination(t *testing.T) {
 	if recs[1].Name != "www.example.com" || recs[1].Type != "CNAME" {
 		t.Errorf("sub record mapped wrongly: %+v", recs[1])
 	}
-	if recs[2].Priority == nil || *recs[2].Priority != 10 || recs[2].Content != "mail.example.com" {
+	if recs[2].Priority == nil || *recs[2].Priority != 10 || recs[2].Value != "mail.example.com" {
 		t.Errorf("MX priority not mapped: %+v", recs[2])
 	}
 }
@@ -318,7 +318,7 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 	c := testClient(srv)
 	ctx := context.Background()
 
-	out, err := c.CreateRecord(ctx, "example.com", platform.Record{Name: "example.com", Type: "a", Content: "1.1.1.1", TTL: 300})
+	out, err := c.CreateRecord(ctx, "example.com", platform.Record{Name: "example.com", Type: "a", Value: "1.1.1.1", TTL: 300})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,7 +329,7 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 		t.Errorf("unexpected created record: %+v", out)
 	}
 
-	out2, err := c.CreateRecord(ctx, "example.com", platform.Record{Name: "mail.sub.example.com", Type: "MX", Content: "mx.example.com", Priority: intp(20)})
+	out2, err := c.CreateRecord(ctx, "example.com", platform.Record{Name: "mail.sub.example.com", Type: "MX", Value: "mx.example.com", Priority: intp(20)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,14 +340,14 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 		t.Errorf("unexpected MX record: %+v", out2)
 	}
 
-	upd, err := c.UpdateRecord(ctx, "example.com", platform.Record{ID: out.ID, Name: "www.example.com", Type: "A", Content: "2.2.2.2", TTL: 600})
+	upd, err := c.UpdateRecord(ctx, "example.com", platform.Record{ID: out.ID, Name: "www.example.com", Type: "A", Value: "2.2.2.2", TTL: 600})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if fs.lastMethod != http.MethodPut || fs.lastPath != "/v4/domains/example.com/records/"+out.ID {
 		t.Errorf("unexpected update call %s %s", fs.lastMethod, fs.lastPath)
 	}
-	if upd.ID != out.ID || upd.Name != "www.example.com" || upd.Content != "2.2.2.2" || upd.TTL != 600 {
+	if upd.ID != out.ID || upd.Name != "www.example.com" || upd.Value != "2.2.2.2" || upd.TTL != 600 {
 		t.Errorf("unexpected updated record: %+v", upd)
 	}
 
@@ -362,7 +362,7 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 		t.Errorf("delete did not remove record: %+v", recs)
 	}
 
-	if _, err := c.CreateRecord(ctx, "example.com", platform.Record{Name: "www.other.com", Type: "A", Content: "1.1.1.1"}); err == nil {
+	if _, err := c.CreateRecord(ctx, "example.com", platform.Record{Name: "www.other.com", Type: "A", Value: "1.1.1.1"}); err == nil {
 		t.Error("record outside zone must be rejected")
 	}
 	if err := c.DeleteRecord(ctx, "example.com", "abc"); !errors.Is(err, platform.ErrNotFound) {
@@ -582,7 +582,7 @@ func TestLoginNonInteractiveAndInteractive(t *testing.T) {
 	opened := ""
 	errBuf.Reset()
 	res, err = p.Login(ctx, platform.LoginInput{
-		Options:     map[string]string{"env": "dev"},
+		Options:     map[string]string{"env": "test"},
 		Interactive: true,
 		Stdin:       strings.NewReader(testUser + "\n" + testToken + "\n"),
 		Stdout:      &strings.Builder{},
@@ -653,24 +653,33 @@ func TestConversions(t *testing.T) {
 	if r.Name != "www.example.com" || r.Priority != nil {
 		t.Errorf("priority must only apply to MX/SRV: %+v", r)
 	}
-	w, err := fromRecord(platform.Record{Name: "@", Type: "txt", Content: "x"}, "example.com")
+	w, err := fromRecord(platform.Record{Name: "@", Type: "txt", Value: "x"}, "example.com")
 	if err != nil || w.Host != "" || w.Type != "TXT" {
 		t.Errorf("'@' should become empty host: %+v %v", w, err)
 	}
-	w, err = fromRecord(platform.Record{Name: "a.b.example.com.", Type: "SRV", Content: "x", Priority: intp(1)}, "example.com")
+	w, err = fromRecord(platform.Record{Name: "a.b.example.com.", Type: "SRV", Value: "x", Priority: intp(1)}, "example.com")
 	if err != nil || w.Host != "a.b" || w.Priority == nil {
 		t.Errorf("relative host: %+v %v", w, err)
 	}
-	for _, in := range []string{"", "prod", "Production"} {
-		if e, err := normalizeEnv(in); err != nil || e != envProduction {
-			t.Errorf("normalizeEnv(%q) = %q, %v", in, e, err)
+	// Login input: one spelling per environment (case does not matter).
+	for in, want := range map[string]string{"": envProduction, "production": envProduction, "Production": envProduction, "test": envTest, " TEST ": envTest} {
+		if e, err := parseEnv(in); err != nil || e != want {
+			t.Errorf("parseEnv(%q) = %q, %v; want %q", in, e, err, want)
 		}
 	}
-	if e, _ := normalizeEnv("test"); e != envTest {
-		t.Errorf("normalizeEnv(test) = %q", e)
+	for _, in := range []string{"prod", "dev", "development", "staging"} {
+		if _, err := parseEnv(in); !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "expected production or test") {
+			t.Errorf("parseEnv(%q) = %v; want a usage error listing the valid values", in, err)
+		}
 	}
-	if _, err := normalizeEnv("staging"); err == nil {
-		t.Error("unknown env must be rejected")
+	// Stored metadata: what 0.1.x accepted as input still loads.
+	for in, want := range map[string]string{"": envProduction, "production": envProduction, "prod": envProduction, "test": envTest, "dev": envTest, "development": envTest} {
+		if e, err := storedEnv(in); err != nil || e != want {
+			t.Errorf("storedEnv(%q) = %q, %v; want %q", in, e, err, want)
+		}
+	}
+	if _, err := storedEnv("staging"); err == nil {
+		t.Error("an unknown stored env must be rejected")
 	}
 }
 

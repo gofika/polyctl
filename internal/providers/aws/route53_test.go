@@ -258,21 +258,21 @@ func TestTXTQuoting(t *testing.T) {
 	f := newFakeRoute53()
 	c := testClient(f)
 	ctx := context.Background()
-	rec, err := c.CreateRecord(ctx, "Z1", platform.Record{Name: "example.com", Type: "TXT", Content: "v=spf1 -all"})
+	rec, err := c.CreateRecord(ctx, "Z1", platform.Record{Name: "example.com", Type: "TXT", Value: "v=spf1 -all"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := f.values("Z1", "example.com.", "TXT"); strings.Join(got, ",") != `"v=spf1 -all"` {
 		t.Fatalf("stored TXT must be quoted: %v", got)
 	}
-	if rec.Content != "v=spf1 -all" || rec.ID != encodeRecordID("Z1", "TXT", "example.com", "", `"v=spf1 -all"`) {
+	if rec.Value != "v=spf1 -all" || rec.ID != encodeRecordID("Z1", "TXT", "example.com", "", `"v=spf1 -all"`) {
 		t.Fatalf("unexpected TXT record %+v", rec)
 	}
 	recs, err := c.ListRecords(ctx, "Z1")
-	if err != nil || len(recs) != 1 || recs[0].Content != "v=spf1 -all" {
+	if err != nil || len(recs) != 1 || recs[0].Value != "v=spf1 -all" {
 		t.Fatalf("listed TXT must be plain: %v %+v", err, recs)
 	}
-	upd, err := c.UpdateRecord(ctx, "Z1", platform.Record{ID: rec.ID, Name: "example.com", Type: "TXT", Content: "v=spf1 include:_spf.example.com -all"})
+	upd, err := c.UpdateRecord(ctx, "Z1", platform.Record{ID: rec.ID, Name: "example.com", Type: "TXT", Value: "v=spf1 include:_spf.example.com -all"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +292,7 @@ func TestTXTQuoting(t *testing.T) {
 	if got := f.values("Z1", "_dmarc.example.com.", "TXT"); strings.Join(got, ",") != `"v=DMARC1; p=none","pre-quoted"` {
 		t.Fatalf("replaced TXT set must be quoted: %v", got)
 	}
-	if len(replaced) != 2 || replaced[0].Content != "v=DMARC1; p=none" || replaced[1].Content != "pre-quoted" {
+	if len(replaced) != 2 || replaced[0].Value != "v=DMARC1; p=none" || replaced[1].Value != "pre-quoted" {
 		t.Fatalf("unexpected replaced records %+v", replaced)
 	}
 }
@@ -317,7 +317,7 @@ func TestRecordsFromSet(t *testing.T) {
 	if len(recs) != 2 {
 		t.Fatalf("expected 2 records, got %d", len(recs))
 	}
-	if recs[0].Priority == nil || *recs[0].Priority != 10 || recs[0].Content != "mail.example.com" || recs[0].TTL != 3600 {
+	if recs[0].Priority == nil || *recs[0].Priority != 10 || recs[0].Value != "mail.example.com" || recs[0].TTL != 3600 {
 		t.Fatalf("unexpected MX record %+v", recs[0])
 	}
 	if recs[0].Name != "example.com" || recs[0].ID != encodeRecordID("Z1", "MX", "example.com", "", "10 mail.example.com") {
@@ -326,16 +326,16 @@ func TestRecordsFromSet(t *testing.T) {
 
 	srv := valueSet("_sip._tcp.example.com.", "SRV", 60, "10 60 5060 sip.example.com")
 	s := recordsFromSet("Z1", srv)[0]
-	if s.Priority == nil || *s.Priority != 10 || s.Content != "60 5060 sip.example.com" {
+	if s.Priority == nil || *s.Priority != 10 || s.Value != "60 5060 sip.example.com" {
 		t.Fatalf("unexpected SRV record %+v", s)
 	}
 
 	txt := valueSet("example.com.", "TXT", 300, `"v=spf1 -all"`, `"part one" "part two"`)
 	txtRecs := recordsFromSet("Z1", txt)
-	if got := txtRecs[0].Content; got != "v=spf1 -all" {
+	if got := txtRecs[0].Value; got != "v=spf1 -all" {
 		t.Fatalf("TXT content must be unquoted, got %q", got)
 	}
-	if got := txtRecs[1].Content; got != "part onepart two" {
+	if got := txtRecs[1].Value; got != "part onepart two" {
 		t.Fatalf("multi-string TXT content must be joined, got %q", got)
 	}
 	if txtRecs[0].ID != encodeRecordID("Z1", "TXT", "example.com", "", `"v=spf1 -all"`) {
@@ -347,7 +347,7 @@ func TestRecordsFromSet(t *testing.T) {
 		AliasTarget: &r53types.AliasTarget{DNSName: awssdk.String("d123.cloudfront.net."), HostedZoneId: awssdk.String("Z2FDTNDATAQYW2"), EvaluateTargetHealth: true},
 	}
 	a := recordsFromSet("Z1", alias)
-	if len(a) != 1 || a[0].Content != "d123.cloudfront.net" || !extraBool(a[0].Extra, "alias") || extraString(a[0].Extra, "alias_zone_id") != "Z2FDTNDATAQYW2" {
+	if len(a) != 1 || a[0].Value != "d123.cloudfront.net" || !extraBool(a[0].Extra, "alias") || extraString(a[0].Extra, "alias_zone_id") != "Z2FDTNDATAQYW2" {
 		t.Fatalf("unexpected alias record %+v", a)
 	}
 	if a[0].Extra["evaluate_target_health"] != true {
@@ -446,7 +446,7 @@ func TestUpdateWeightedRecordRename(t *testing.T) {
 	if err != nil || len(recs) != 1 {
 		t.Fatalf("list: %v %+v", err, recs)
 	}
-	moved, err := c.UpdateRecord(ctx, "Z1", platform.Record{ID: recs[0].ID, Name: "api2.example.com", Type: "A", Content: "1.1.1.1", Extra: recs[0].Extra})
+	moved, err := c.UpdateRecord(ctx, "Z1", platform.Record{ID: recs[0].ID, Name: "api2.example.com", Type: "A", Value: "1.1.1.1", Extra: recs[0].Extra})
 	if err != nil {
 		t.Fatalf("rename of a weighted record failed: %v", err)
 	}
@@ -503,44 +503,44 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 	ctx := context.Background()
 
 	// Create adds a value to the existing set and keeps its TTL.
-	rec, err := c.CreateRecord(ctx, "Z1", platform.Record{Name: "www.example.com", Type: "a", Content: "2.2.2.2"})
+	rec, err := c.CreateRecord(ctx, "Z1", platform.Record{Name: "www.example.com", Type: "a", Value: "2.2.2.2"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := f.values("Z1", "www.example.com.", "A"); strings.Join(got, ",") != "1.1.1.1,2.2.2.2" {
 		t.Fatalf("values after create: %v", got)
 	}
-	if rec.TTL != 600 || rec.Content != "2.2.2.2" || rec.ID != encodeRecordID("Z1", "A", "www.example.com", "", "2.2.2.2") {
+	if rec.TTL != 600 || rec.Value != "2.2.2.2" || rec.ID != encodeRecordID("Z1", "A", "www.example.com", "", "2.2.2.2") {
 		t.Fatalf("unexpected created record %+v", rec)
 	}
 
 	// Create of a brand-new MX set uses the priority and default TTL.
 	p := 10
-	mx, err := c.CreateRecord(ctx, "Z1", platform.Record{Name: "example.com", Type: "MX", Content: "mail.example.com", Priority: &p})
+	mx, err := c.CreateRecord(ctx, "Z1", platform.Record{Name: "example.com", Type: "MX", Value: "mail.example.com", Priority: &p})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := f.values("Z1", "example.com.", "MX"); strings.Join(got, ",") != "10 mail.example.com" {
 		t.Fatalf("MX values: %v", got)
 	}
-	if mx.TTL != defaultTTL || mx.Priority == nil || *mx.Priority != 10 || mx.Content != "mail.example.com" {
+	if mx.TTL != defaultTTL || mx.Priority == nil || *mx.Priority != 10 || mx.Value != "mail.example.com" {
 		t.Fatalf("unexpected MX record %+v", mx)
 	}
 
 	// Update replaces one value in place.
-	upd, err := c.UpdateRecord(ctx, "Z1", platform.Record{ID: rec.ID, Name: "www.example.com", Type: "A", Content: "9.9.9.9", TTL: 60})
+	upd, err := c.UpdateRecord(ctx, "Z1", platform.Record{ID: rec.ID, Name: "www.example.com", Type: "A", Value: "9.9.9.9", TTL: 60})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := f.values("Z1", "www.example.com.", "A"); strings.Join(got, ",") != "1.1.1.1,9.9.9.9" {
 		t.Fatalf("values after update: %v", got)
 	}
-	if upd.TTL != 60 || upd.Content != "9.9.9.9" {
+	if upd.TTL != 60 || upd.Value != "9.9.9.9" {
 		t.Fatalf("unexpected updated record %+v", upd)
 	}
 
 	// Update that moves the value to another name: old set keeps the rest, new set is created.
-	moved, err := c.UpdateRecord(ctx, "Z1", platform.Record{ID: upd.ID, Name: "api.example.com", Type: "A", Content: "9.9.9.9"})
+	moved, err := c.UpdateRecord(ctx, "Z1", platform.Record{ID: upd.ID, Name: "api.example.com", Type: "A", Value: "9.9.9.9"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -556,7 +556,7 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 
 	// Moving the last value deletes the old set entirely.
 	last := f.values("Z1", "www.example.com.", "A")[0]
-	if _, err := c.UpdateRecord(ctx, "Z1", platform.Record{ID: encodeRecordID("Z1", "A", "www.example.com", "", last), Name: "api.example.com", Type: "A", Content: last}); err != nil {
+	if _, err := c.UpdateRecord(ctx, "Z1", platform.Record{ID: encodeRecordID("Z1", "A", "www.example.com", "", last), Name: "api.example.com", Type: "A", Value: last}); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.values("Z1", "www.example.com.", "A"); got != nil {
@@ -605,27 +605,27 @@ func TestAliasRecords(t *testing.T) {
 	f := newFakeRoute53()
 	c := testClient(f)
 	ctx := context.Background()
-	rec, err := c.CreateRecord(ctx, "Z1", platform.Record{Name: "example.com", Type: "A", Content: "d1.cloudfront.net",
+	rec, err := c.CreateRecord(ctx, "Z1", platform.Record{Name: "example.com", Type: "A", Value: "d1.cloudfront.net",
 		Extra: map[string]any{"alias": true, "alias_zone_id": "Z2FDTNDATAQYW2"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !extraBool(rec.Extra, "alias") || rec.Content != "d1.cloudfront.net" {
+	if !extraBool(rec.Extra, "alias") || rec.Value != "d1.cloudfront.net" {
 		t.Fatalf("unexpected alias record %+v", rec)
 	}
 	if rs := f.sets["Z1"][0]; rs.AliasTarget == nil || awssdk.ToString(rs.AliasTarget.DNSName) != "d1.cloudfront.net." || rs.TTL != nil {
 		t.Fatalf("alias set not stored properly: %+v", rs)
 	}
 	// Plain values cannot be added to an alias set.
-	if _, err := c.CreateRecord(ctx, "Z1", platform.Record{Name: "example.com", Type: "A", Content: "1.1.1.1"}); err == nil {
+	if _, err := c.CreateRecord(ctx, "Z1", platform.Record{Name: "example.com", Type: "A", Value: "1.1.1.1"}); err == nil {
 		t.Fatal("expected an error adding a plain value to an alias set")
 	}
 	// Update keeps the alias target zone when not given.
-	upd, err := c.UpdateRecord(ctx, "Z1", platform.Record{ID: rec.ID, Name: "example.com", Type: "A", Content: "d2.cloudfront.net", Extra: rec.Extra})
+	upd, err := c.UpdateRecord(ctx, "Z1", platform.Record{ID: rec.ID, Name: "example.com", Type: "A", Value: "d2.cloudfront.net", Extra: rec.Extra})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if upd.Content != "d2.cloudfront.net" || extraString(upd.Extra, "alias_zone_id") != "Z2FDTNDATAQYW2" {
+	if upd.Value != "d2.cloudfront.net" || extraString(upd.Extra, "alias_zone_id") != "Z2FDTNDATAQYW2" {
 		t.Fatalf("unexpected updated alias %+v", upd)
 	}
 	// Delete removes the whole set.
@@ -645,7 +645,7 @@ func TestReplaceAndDeleteSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(recs) != 1 || recs[0].Content != "3.3.3.3" || recs[0].TTL != 600 {
+	if len(recs) != 1 || recs[0].Value != "3.3.3.3" || recs[0].TTL != 600 {
 		t.Fatalf("unexpected replaced set %+v", recs)
 	}
 	deleted, err := c.DeleteSet(context.Background(), "Z1", "www.example.com", "A")

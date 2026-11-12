@@ -1,6 +1,6 @@
 // Package cloudflare implements the Cloudflare provider: API-token login,
 // zone and DNS record management through the v4 REST API, inventory sync
-// and the `polyctl cf` native command tree.
+// and the `polyctl cloudflare` native command tree.
 package cloudflare
 
 import (
@@ -68,13 +68,20 @@ func (*provider) DisplayName() string { return "Cloudflare" }
 func (*provider) LoginHelp() string {
 	return "API token created in the dashboard (non-interactive: export " + tokenEnv + " or pass --set token=- with the token on stdin; --set account_id=<id> pins an account, and is required there when the token sees several)"
 }
+
+// LoginOptions lists the --set keys of the login (see LoginHelp).
+func (*provider) LoginOptions() []string {
+	return []string{"token", metaAccountID}
+}
+
 func (*provider) ResourceTypes() []platform.ResourceType {
 	return []platform.ResourceType{platform.ResZone, platform.ResDNSRecord}
 }
 
-// Login obtains and verifies an API token. Cloudflare has no public OAuth
-// flow for third-party CLIs, so the user creates a token in the dashboard
-// and pastes it here. The token comes from --set token (the CLI warns about
+// Login obtains and verifies an API token. polyctl authenticates to
+// Cloudflare with API tokens only and does not implement Cloudflare's OAuth
+// flow yet, so the user creates a token in the dashboard and pastes it
+// here. The token comes from --set token (the CLI warns about
 // argv exposure and accepts `--set token=-` for stdin), then from
 // CLOUDFLARE_API_TOKEN. After that the interactive flow asks for it; the
 // non-interactive flow fails with a usage error. It does not fall back to

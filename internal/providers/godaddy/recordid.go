@@ -26,7 +26,7 @@ func EncodeRecordID(typ, name, data string) string {
 }
 
 // ErrBadRecordID is returned for ids not produced by EncodeRecordID.
-var ErrBadRecordID = errors.New("invalid GoDaddy record id (expected TYPE|name|data)")
+var ErrBadRecordID = errors.New("invalid GoDaddy record id (expected TYPE|name|value)")
 
 // DecodeRecordID splits an id produced by EncodeRecordID.
 func DecodeRecordID(id string) (typ, name, data string, err error) {

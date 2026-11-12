@@ -60,7 +60,7 @@ func newHarness(t *testing.T, flags app.Flags) *harness {
 	if err := creds.NewFile(dir).Set(creds.Key("ali", string(platform.Aliyun)), map[string]string{secretKeyID: "LTAItestkeyid000", secretKeySecret: "testsecret"}); err != nil {
 		t.Fatal(err)
 	}
-	flags.ConfigPath = cfgPath
+	flags.ConfigDir = filepath.Dir(cfgPath)
 	if flags.Output == "" {
 		flags.Output = "json"
 	}
@@ -195,7 +195,7 @@ func TestECSListScopesToProfileRegion(t *testing.T) {
 	})
 	var out instanceList
 
-	if err := h.run("ecs", "list", "--region", "cn-beijing"); err != nil {
+	if err := h.run("ecs", "instance", "list", "--region", "cn-beijing"); err != nil {
 		t.Fatal(err)
 	}
 	h.jsonOut(&out)
@@ -205,7 +205,7 @@ func TestECSListScopesToProfileRegion(t *testing.T) {
 
 	// Without --region: the profile region only, labelled as such, even
 	// though cn-beijing instances are cached for the profile.
-	if err := h.run("ecs", "list"); err != nil {
+	if err := h.run("ecs", "instance", "list"); err != nil {
 		t.Fatal(err)
 	}
 	h.jsonOut(&out)
@@ -218,7 +218,7 @@ func TestECSListScopesToProfileRegion(t *testing.T) {
 
 	// Second run is served from the region-scoped cache.
 	n := len(h.api.callsFor("DescribeInstances"))
-	if err := h.run("ecs", "list"); err != nil {
+	if err := h.run("ecs", "instance", "list"); err != nil {
 		t.Fatal(err)
 	}
 	h.jsonOut(&out)
@@ -238,7 +238,7 @@ func TestECSListScopesToProfileRegion(t *testing.T) {
 		t.Fatal(err)
 	}
 	n = len(h.api.callsFor("DescribeInstances"))
-	if err := h.run("ecs", "list"); err != nil {
+	if err := h.run("ecs", "instance", "list"); err != nil {
 		t.Fatal(err)
 	}
 	h.jsonOut(&out)
@@ -323,7 +323,7 @@ func TestDomainNSSetDoesNotCacheOnPendingTask(t *testing.T) {
 		gets++
 		return 200, map[string]any{"DomainName": "d1.example", "DomainStatus": "3", "DnsList": map[string]any{"Dns": []string{"old1.x", "old2.x"}}}
 	})
-	err := h.run("domain", "ns", "set", "d1.example", "--ns", "ns1.example.net,ns2.example.net")
+	err := h.run("domain", "ns", "set", "d1.example", "ns1.example.net", "ns2.example.net")
 	if !errors.Is(err, ErrTaskPending) {
 		t.Fatalf("pending task = %v, want ErrTaskPending", err)
 	}
@@ -343,7 +343,7 @@ func TestDomainNSSetDoesNotCacheOnPendingTask(t *testing.T) {
 		gets++
 		return 200, map[string]any{"DomainName": "d1.example", "DomainStatus": "3", "DnsList": map[string]any{"Dns": []string{"ns1.example.net", "ns2.example.net"}}}
 	})
-	if err := h.run("domain", "ns", "set", "d1.example", "--ns", "ns1.example.net,ns2.example.net"); err != nil {
+	if err := h.run("domain", "ns", "set", "d1.example", "ns1.example.net", "ns2.example.net"); err != nil {
 		t.Fatal(err)
 	}
 	var out platform.Domain
@@ -361,12 +361,12 @@ func TestDomainNSSetDoesNotCacheOnPendingTask(t *testing.T) {
 // note on stderr and a nil error, which is exit code 0. The question belongs
 // to the interactive flow.
 func TestECSStopDeclinedIsNotAnError(t *testing.T) {
-	t.Setenv(app.EnvNoInput, "") // not the developer's setting
+	t.Setenv(app.EnvNonInteractive, "") // not the developer's setting
 	for _, answer := range []string{"n\n", "\n"} {
 		h := newHarness(t, app.Flags{})
 		h.rt.Picker = terminalStub{t}
 		h.rt.Stdin = strings.NewReader(answer)
-		if err := h.run("ecs", "stop", "i-1"); err != nil {
+		if err := h.run("ecs", "instance", "stop", "i-1"); err != nil {
 			t.Errorf("answer %q: ecs stop = %v, want no error", answer, err)
 		}
 		stderr := h.stderr.String()
@@ -394,7 +394,7 @@ func TestECSStopFlows(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		flags    app.Flags
-		env      string // POLYCTL_NO_INPUT
+		env      string // POLYCTL_NON_INTERACTIVE
 		terminal bool   // a terminal is attached (the injected picker)
 		stdin    string // only read by the interactive flow
 		stopped  bool
@@ -405,13 +405,13 @@ func TestECSStopFlows(t *testing.T) {
 		{name: "interactive, --yes", flags: app.Flags{Yes: true}, terminal: true, stopped: true},
 		{name: "no terminal", refused: true},
 		{name: "no terminal, --yes", flags: app.Flags{Yes: true}, stopped: true},
-		{name: "--no-input on a terminal", flags: app.Flags{NoInput: true}, terminal: true, refused: true},
-		{name: "--no-input --yes on a terminal", flags: app.Flags{NoInput: true, Yes: true}, terminal: true, stopped: true},
-		{name: "POLYCTL_NO_INPUT on a terminal", env: "1", terminal: true, refused: true},
-		{name: "POLYCTL_NO_INPUT with --yes", env: "true", flags: app.Flags{Yes: true}, terminal: true, stopped: true},
+		{name: "--non-interactive on a terminal", flags: app.Flags{NonInteractive: true}, terminal: true, refused: true},
+		{name: "--non-interactive --yes on a terminal", flags: app.Flags{NonInteractive: true, Yes: true}, terminal: true, stopped: true},
+		{name: "POLYCTL_NON_INTERACTIVE on a terminal", env: "1", terminal: true, refused: true},
+		{name: "POLYCTL_NON_INTERACTIVE with --yes", env: "true", flags: app.Flags{Yes: true}, terminal: true, stopped: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv(app.EnvNoInput, tc.env)
+			t.Setenv(app.EnvNonInteractive, tc.env)
 			h := newHarness(t, tc.flags)
 			stoppable(h)
 			if tc.terminal {
@@ -421,7 +421,7 @@ func TestECSStopFlows(t *testing.T) {
 			if tc.asked {
 				h.rt.Stdin = strings.NewReader(tc.stdin)
 			}
-			err := h.run("ecs", "stop", "i-1")
+			err := h.run("ecs", "instance", "stop", "i-1")
 			stderr := h.stderr.String()
 			if asked := strings.Contains(stderr, "(y/N)"); asked != tc.asked {
 				t.Errorf("question asked = %v, want %v (stderr %q)", asked, tc.asked, stderr)

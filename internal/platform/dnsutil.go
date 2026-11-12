@@ -1,6 +1,8 @@
 package platform
 
 import (
+	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -89,4 +91,26 @@ func extraFlag(extra map[string]any, key string) bool {
 		return v == "true"
 	}
 	return false
+}
+
+// Nameservers turns the positional <nameserver>... arguments of an
+// `ns set` command into a list of normalized host names. Each argument may
+// itself be a comma-separated list, so a pasted "ns1.example.com,ns2.example.com"
+// works as well as two arguments. An empty entry is an error, and so is an
+// empty list.
+func Nameservers(args []string) ([]string, error) {
+	var out []string
+	for _, a := range args {
+		for _, n := range strings.Split(a, ",") {
+			n = NormalizeDomain(n)
+			if n == "" {
+				return nil, fmt.Errorf("empty nameserver in %q", a)
+			}
+			out = append(out, n)
+		}
+	}
+	if len(out) == 0 {
+		return nil, errors.New("at least one nameserver is required")
+	}
+	return out, nil
 }

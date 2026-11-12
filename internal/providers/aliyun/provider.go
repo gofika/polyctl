@@ -59,14 +59,25 @@ func (*provider) LoginHelp() string {
 AliyunDNSFullAccess / AliyunDomainFullAccess / AliyunECSReadOnlyAccess (as needed) and prompts
 for the AccessKey ID and Secret. Options: --set region=<id> (default ` + DefaultRegion + `),
 --set site=cn|intl to force the registrar site (default: cn for cn-* regions, intl otherwise),
---set from_cli=<profile> to import the key from ~/.aliyun/config.json (aliyun CLI).
+--set aliyun_profile=<profile> to import the AccessKey of that aliyun CLI profile
+(~/.aliyun/config.json); the key is copied into polyctl's credential store.
 Non-interactive: --set access_key_id=... --set access_key_secret=- (the secret on stdin),
-or ` + envKeyID + ` / ` + envKeySecret + `, or --set from_cli=<profile>.`
+or ` + envKeyID + ` / ` + envKeySecret + `, or --set aliyun_profile=<profile>.`
+}
+
+// LoginOptions lists the --set keys of the login (see LoginHelp).
+func (*provider) LoginOptions() []string {
+	return []string{secretKeyID, secretKeySecret, metaRegion, metaSite, optCLIProfile}
 }
 
 func (*provider) ResourceTypes() []platform.ResourceType {
 	return []platform.ResourceType{platform.ResZone, platform.ResDNSRecord, platform.ResDomain, platform.ResInstance}
 }
+
+// optCLIProfile is the login option that names an aliyun CLI profile to
+// import the AccessKey from. It mirrors aws_profile of the aws login, with
+// one difference the help spells out: the key is copied, not referenced.
+const optCLIProfile = "aliyun_profile"
 
 // Environment variables read for the AccessKey, the names the Alibaba Cloud
 // SDKs and CLI use.
@@ -76,7 +87,7 @@ const (
 )
 
 // Login runs the AccessKey flow (or imports from the aliyun CLI). The key
-// comes from --set from_cli, from --set access_key_id / access_key_secret,
+// comes from --set aliyun_profile, from --set access_key_id / access_key_secret,
 // then from the environment. After that the interactive flow asks for what
 // is missing; the non-interactive flow asks nothing: a missing value is a
 // usage error, and the region falls back to its default.
@@ -86,7 +97,7 @@ func (p *provider) Login(ctx context.Context, in platform.LoginInput) (*platform
 	keyID := strings.TrimSpace(in.Opt(secretKeyID, ""))
 	keySecret := strings.TrimSpace(in.Opt(secretKeySecret, ""))
 
-	if cliProfile := in.Opt("from_cli", ""); cliProfile != "" {
+	if cliProfile := in.Opt(optCLIProfile, ""); cliProfile != "" {
 		cp, err := loadCLIProfile(cliConfigPath(), cliProfile)
 		if err != nil {
 			return nil, err
@@ -109,7 +120,7 @@ func (p *provider) Login(ctx context.Context, in platform.LoginInput) (*platform
 		if keySecret == "" {
 			missing = append(missing, "--set access_key_secret=- (the secret on stdin)")
 		}
-		return nil, app.UsageErrf("aliyun login needs an AccessKey: pass %s, or set %s and %s, or import one with --set from_cli=<profile>",
+		return nil, app.UsageErrf("aliyun login needs an AccessKey: pass %s, or set %s and %s, or import one with --set aliyun_profile=<profile>",
 			strings.Join(missing, " and "), envKeyID, envKeySecret)
 	}
 	if keyID == "" || keySecret == "" {

@@ -3,8 +3,10 @@ package inventory_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,7 +40,7 @@ func domainRes(name string) platform.Resource {
 }
 
 func recRes(id, zoneID, zoneName, name, content string) platform.Resource {
-	r := platform.Record{ID: id, ZoneID: zoneID, Name: name, Type: "A", Content: content, TTL: 300}
+	r := platform.Record{ID: id, ZoneID: zoneID, Name: name, Type: "A", Value: content, TTL: 300}
 	return platform.Resource{Type: platform.ResDNSRecord, ID: id, Name: name, ParentID: zoneID, Domain: zoneName, Data: r}
 }
 
@@ -638,5 +640,110 @@ func TestRenameProfileIsAtomic(t *testing.T) {
 	}
 	if got := mustList(t, db, inventory.Query{Profile: "c"}); len(got) != 1 || got[0].ID != "z9" {
 		t.Errorf("rows of the new name after the failure = %+v", got)
+	}
+}
+
+// A database written by polyctl 0.1.x stores a DNS record's data under
+// "content". Opening it renames the field once, so cached records keep
+// their value instead of decoding to an empty one.
+func TestOpenRenamesLegacyRecordContent(t *testing.T) {
+	db, path := openDB(t)
+	mustReplace(t, db, scoped("p", platform.ResDNSRecord, "z1"), time.Hour,
+		recRes("r1", "z1", "example.com", "www.example.com", "1.2.3.4"),
+		recRes("r2", "z1", "example.com", "api.example.com", "5.6.7.8"))
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Put the database back into the 0.1.x state: r1 in the old layout,
+	// r2 untouched, and no data version.
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`UPDATE resources SET data = '{"id":"r1","zone_id":"z1","name":"www.example.com","type":"A","content":"1.2.3.4","ttl":300}' WHERE resource_id = 'r1'`,
+		`PRAGMA user_version = 0`,
+	} {
+		if _, err := raw.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	for pass := 1; pass <= 2; pass++ { // the second open must change nothing
+		db, err = inventory.Open(path)
+		if err != nil {
+			t.Fatalf("Open (pass %d): %v", pass, err)
+		}
+		rows, err := db.List(ctx, inventory.Query{Type: platform.ResDNSRecord})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]string{}
+		for _, r := range rows {
+			var rec platform.Record
+			if err := r.Decode(&rec); err != nil {
+				t.Fatal(err)
+			}
+			got[rec.ID] = rec.Value
+			if strings.Contains(string(r.Data), `"content"`) {
+				t.Errorf("pass %d: %s still stores the old field: %s", pass, r.ID, r.Data)
+			}
+		}
+		if got["r1"] != "1.2.3.4" || got["r2"] != "5.6.7.8" || len(got) != 2 {
+			t.Errorf("pass %d: values = %v", pass, got)
+		}
+		if err := db.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A polyctl 0.1.x sharing the directory writes the old layout into a
+	// database that is already at the current data version. The next open
+	// rewrites that row too, and a row read before any rewrite still
+	// decodes to its value.
+	const legacy = `{"id":"r3","zone_id":"z1","name":"old.example.com","type":"A","content":"9.9.9.9","ttl":300}`
+	var rec platform.Record
+	if err := json.Unmarshal([]byte(legacy), &rec); err != nil || rec.Value != "9.9.9.9" {
+		t.Errorf("legacy row decodes to %+v, %v; want the value 9.9.9.9", rec, err)
+	}
+	raw, err = sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var version int
+	if err := raw.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version < 1 {
+		t.Fatalf("user_version = %d, %v; want it set by the first open", version, err)
+	}
+	if _, err := raw.Exec(`UPDATE resources SET resource_id = 'r3', data = ? WHERE resource_id = 'r2'`, legacy); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if db, err = inventory.Open(path); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	rows, err := db.List(ctx, inventory.Query{Type: platform.ResDNSRecord})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, r := range rows {
+		if r.ID != "r3" {
+			continue
+		}
+		found = true
+		var rec platform.Record
+		if err := r.Decode(&rec); err != nil || rec.Value != "9.9.9.9" || strings.Contains(string(r.Data), `"content"`) {
+			t.Errorf("row written after the migration: %+v, %v, data %s", rec, err, r.Data)
+		}
+	}
+	if !found {
+		t.Errorf("r3 not listed: %+v", rows)
 	}
 }

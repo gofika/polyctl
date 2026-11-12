@@ -85,12 +85,12 @@ func recordFromAPI(zone string, r apiRecord) platform.Record {
 		name = "@"
 	}
 	out := platform.Record{
-		ID:      EncodeRecordID(typ, name, r.Data),
-		ZoneID:  zone,
-		Name:    platform.FQDN(name, zone),
-		Type:    typ,
-		Content: r.Data,
-		TTL:     r.TTL,
+		ID:     EncodeRecordID(typ, name, r.Data),
+		ZoneID: zone,
+		Name:   platform.FQDN(name, zone),
+		Type:   typ,
+		Value:  r.Data,
+		TTL:    r.TTL,
 	}
 	if r.Priority != nil && (typ == "MX" || typ == "SRV") {
 		p := *r.Priority
@@ -133,8 +133,8 @@ func recordToAPI(zone string, r platform.Record) (apiRecord, error) {
 	if typ == "" {
 		return apiRecord{}, fmt.Errorf("record type is required")
 	}
-	if strings.TrimSpace(r.Content) == "" {
-		return apiRecord{}, fmt.Errorf("record content is required")
+	if strings.TrimSpace(r.Value) == "" {
+		return apiRecord{}, fmt.Errorf("record value is required")
 	}
 	if r.TTL < 0 {
 		return apiRecord{}, fmt.Errorf("record ttl must not be negative")
@@ -142,7 +142,7 @@ func recordToAPI(zone string, r platform.Record) (apiRecord, error) {
 	out := apiRecord{
 		Type: typ,
 		Name: platform.RelativeName(r.Name, zone),
-		Data: r.Content,
+		Data: r.Value,
 		TTL:  r.TTL,
 	}
 	if r.Priority != nil {

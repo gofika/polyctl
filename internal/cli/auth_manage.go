@@ -29,9 +29,9 @@ func oneArgOrInteractive(rt *app.Runtime, missing func() error) cobra.Positional
 				return nil
 			}
 			// cobra validates arguments before Init runs. An invalid
-			// POLYCTL_NO_INPUT is why nothing can be asked here: report
+			// POLYCTL_NON_INTERACTIVE is why nothing can be asked here: report
 			// that, not the missing argument it leads to.
-			if err := app.CheckNoInputEnv(); err != nil {
+			if err := app.CheckNonInteractiveEnv(); err != nil {
 				return usageErr("%v", err)
 			}
 			return missing()
@@ -472,7 +472,7 @@ func renameProfile(ctx context.Context, rt *app.Runtime, oldName, newName string
 }
 
 func newAuthManageCmd(rt *app.Runtime) *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "manage",
 		Short: "Manage profiles and accounts in an interactive menu",
 		Long: "Open an interactive menu to view, add, verify, rename and remove profiles\n" +
@@ -484,17 +484,19 @@ func newAuthManageCmd(rt *app.Runtime) *cobra.Command {
 			"The configuration is read again before every action, so changes made by\n" +
 			"other polyctl commands while the menu is open are kept.\n\n" +
 			"The menu is drawn on stderr and belongs to the interactive flow only: it\n" +
-			"needs a terminal on stdin and stderr and is refused with --no-input or\n" +
-			"POLYCTL_NO_INPUT=1 (usage error, exit code 2). In scripts use auth list,\n" +
-			"auth use, auth login, auth status, auth rename and auth logout instead.",
+			"needs a terminal on stdin and stderr and is refused with --non-interactive\n" +
+			"or POLYCTL_NON_INTERACTIVE=1 (usage error, exit code 2). In scripts use auth\n" +
+			"list, auth use, auth login, auth status, auth rename and auth logout instead.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !rt.Interactive() {
-				return usageErr("auth manage is interactive only (it needs a terminal on stdin and stderr, without --no-input); use `polyctl auth list`, `auth use <profile>`, `auth login <platform>`, `auth status`, `auth rename <old> <new>` or `auth logout [platform] --profile <name>` instead")
+				return usageErr("auth manage is interactive only (it needs a terminal on stdin and stderr, without --non-interactive); use `polyctl auth list`, `auth use <profile>`, `auth login <platform>`, `auth status`, `auth rename <old> <new>` or `auth logout [platform] --profile <name>` instead")
 			}
 			return runManage(cmd.Context(), rt)
 		},
 	}
+	addNoBrowserFlag(rt, cmd)
+	return cmd
 }
 
 // Menu actions of `auth manage`.

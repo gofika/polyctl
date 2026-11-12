@@ -46,7 +46,7 @@ func runFlow(t *testing.T, ctx context.Context, cfgPath string, picker *scripted
 		rt.Picker = picker
 	}
 	root := NewRoot(rt)
-	root.SetArgs(append([]string{"--config", cfgPath}, args...))
+	root.SetArgs(append([]string{"--config-dir", filepath.Dir(cfgPath)}, args...))
 	root.SetIn(stdin)
 	root.SetOut(&out)
 	root.SetErr(&errb)
@@ -120,8 +120,8 @@ func setupTwoRecords(t *testing.T) (string, string) {
 	t.Helper()
 	dir, cfgPath := setup(t, true)
 	recs := []platform.Record{
-		{ID: "r1", ZoneID: "z1", Name: "www." + flowZone, Type: "A", Content: "1.2.3.4"},
-		{ID: "r2", ZoneID: "z1", Name: "www." + flowZone, Type: "A", Content: "5.6.7.8"},
+		{ID: "r1", ZoneID: "z1", Name: "www." + flowZone, Type: "A", Value: "1.2.3.4"},
+		{ID: "r2", ZoneID: "z1", Name: "www." + flowZone, Type: "A", Value: "5.6.7.8"},
 	}
 	zones := []platform.Zone{{ID: "z1", Name: flowZone}}
 	seed(t, dir, zones, map[string][]platform.Record{"z1": recs})
@@ -299,7 +299,7 @@ func flowCases() []flowCase {
 		{
 			// Refused before the account is opened: needs neither one nor
 			// the network. The interactive rows are in the aliyun package.
-			name: "aliyun ecs stop: confirmation", setup: setupOne, args: []string{"aliyun", "ecs", "stop", "i-1"},
+			name: "aliyun ecs stop: confirmation", setup: setupOne, args: []string{"aliyun", "ecs", "instance", "stop", "i-1"},
 			piped: "y\n", wantCode: ExitUsage, wantMsg: []string{"confirmation required: pass --yes to proceed", "would stop instance i-1"},
 		},
 
@@ -313,7 +313,7 @@ func flowCases() []flowCase {
 		refusedLogin("auth login gcp service account: key file", []string{"--set key_file="}, "gcp", "--set", "method=service_account"),
 		refusedLogin("auth login gcp oauth: client and project", []string{"--set client_id=<id>", "--set client_secret=-", "--set project=<id>"}, "gcp", "--set", "method=oauth"),
 		refusedLogin("auth login gcp oauth: project", []string{"--set project=<id>"}, "gcp", "--set", "method=oauth", "--set", "client_id=id", "--set", "client_secret=s"),
-		refusedLogin("auth login aliyun: access key", []string{"--set access_key_id=<id>", "--set access_key_secret=-", "ALIBABA_CLOUD_ACCESS_KEY_ID", "--set from_cli=<profile>"}, "aliyun"),
+		refusedLogin("auth login aliyun: access key", []string{"--set access_key_id=<id>", "--set access_key_secret=-", "ALIBABA_CLOUD_ACCESS_KEY_ID", "--set aliyun_profile=<profile>"}, "aliyun"),
 		refusedLogin("auth login aliyun: secret", []string{"--set access_key_secret=-"}, "aliyun", "--set", "access_key_id=LTAIone"),
 		refusedLogin("auth login namecom: username and token", []string{"--set username=<user>", "--set token=-"}, "namecom"),
 		refusedLogin("auth login namecom: token", []string{"--set token=-"}, "namecom", "--set", "username=alice"),
@@ -335,7 +335,7 @@ func clearLoginEnv(t *testing.T) {
 // TestFlowMatrix runs every command that can ask something in three
 // situations: the interactive flow, the non-interactive flow because there
 // is no terminal, and the non-interactive flow forced on a terminal with
-// --no-input and with POLYCTL_NO_INPUT.
+// --non-interactive and with POLYCTL_NON_INTERACTIVE.
 func TestFlowMatrix(t *testing.T) {
 	// A non-interactive situation: how the flow is forced, and whether a
 	// terminal (the picker) is present all the same.
@@ -347,9 +347,9 @@ func TestFlowMatrix(t *testing.T) {
 	}
 	situations := []situation{
 		{name: "no terminal"},
-		{name: "--no-input on a terminal", terminal: true, flag: []string{"--no-input"}},
-		{name: "POLYCTL_NO_INPUT=1 on a terminal", terminal: true, env: "1"},
-		{name: "POLYCTL_NO_INPUT=true without a terminal", env: "true"},
+		{name: "--non-interactive on a terminal", terminal: true, flag: []string{"--non-interactive"}},
+		{name: "POLYCTL_NON_INTERACTIVE=1 on a terminal", terminal: true, env: "1"},
+		{name: "POLYCTL_NON_INTERACTIVE=true without a terminal", env: "true"},
 	}
 	for _, tc := range flowCases() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -369,7 +369,7 @@ func TestFlowMatrix(t *testing.T) {
 				t.Run(sit.name, func(t *testing.T) {
 					clearLoginEnv(t)
 					dir, cfgPath := tc.setup(t)
-					t.Setenv(app.EnvNoInput, sit.env)
+					t.Setenv(app.EnvNonInteractive, sit.env)
 					// The picker has no answers: any question fails the test.
 					var p *scriptedPicker
 					if sit.terminal {
@@ -442,15 +442,15 @@ func TestFlowMatrix(t *testing.T) {
 	}
 }
 
-// --no-input and --yes together: no question at all, and the destructive
+// --non-interactive and --yes together: no question at all, and the destructive
 // action proceeds, on a terminal too.
-func TestNoInputWithYesAsksNothing(t *testing.T) {
+func TestNonInteractiveWithYesAsksNothing(t *testing.T) {
 	_, cfgPath := setupTwoRecords(t)
 	p := &scriptedPicker{t: t}
 	stdin := &countingReader{r: strings.NewReader("n\n")}
-	r := runFlow(t, context.Background(), cfgPath, p, stdin, "dns", "delete", flowZone, "--type", "A", "--name", "www", "--no-input", "--yes")
+	r := runFlow(t, context.Background(), cfgPath, p, stdin, "dns", "delete", flowZone, "--type", "A", "--name", "www", "--non-interactive", "--yes")
 	if r.err != nil || client("a").count("DeleteRecord") != 2 || len(p.asked) != 0 || stdin.reads != 0 || strings.Contains(r.stderr, "(y/N)") {
-		t.Errorf("--no-input --yes: %v, %d deletes, prompts %v, %d stdin reads, stderr %q", r.err, client("a").count("DeleteRecord"), p.titles(), stdin.reads, r.stderr)
+		t.Errorf("--non-interactive --yes: %v, %d deletes, prompts %v, %d stdin reads, stderr %q", r.err, client("a").count("DeleteRecord"), p.titles(), stdin.reads, r.stderr)
 	}
 }
 
@@ -459,7 +459,7 @@ func TestNoInputWithYesAsksNothing(t *testing.T) {
 func TestLoginReadsSeveralStdinValues(t *testing.T) {
 	dir, cfgPath := setup(t, false)
 	var out, errb bytes.Buffer
-	code := Main([]string{"--config", cfgPath, "auth", "login", p1, "--set", "account=-", "--set", "token=-"}, strings.NewReader("acct-piped\ntoken-piped\n"), &out, &errb)
+	code := Main([]string{"--config-dir", filepath.Dir(cfgPath), "auth", "login", p1, "--set", "account=-", "--set", "token=-"}, strings.NewReader("acct-piped\ntoken-piped\n"), &out, &errb)
 	if code != ExitOK {
 		t.Fatalf("exit %d (stderr %q)", code, errb.String())
 	}
@@ -474,17 +474,17 @@ func TestLoginReadsSeveralStdinValues(t *testing.T) {
 	// One value short: the usage error names the key that got none.
 	out.Reset()
 	errb.Reset()
-	code = Main([]string{"--config", cfgPath, "auth", "login", p1, "--profile", "x", "--set", "account=-", "--set", "token=-"}, strings.NewReader("only-one\n"), &out, &errb)
+	code = Main([]string{"--config-dir", filepath.Dir(cfgPath), "auth", "login", p1, "--profile", "x", "--set", "account=-", "--set", "token=-"}, strings.NewReader("only-one\n"), &out, &errb)
 	if code != ExitUsage || !strings.Contains(errb.String(), "--set token=-") || token(t, dir, creds.Key("x", p1)) != "" {
 		t.Errorf("one value short: exit %d (stderr %q)", code, errb.String())
 	}
 }
 
-// An invalid POLYCTL_NO_INPUT is a usage error, whatever the command; until
+// An invalid POLYCTL_NON_INTERACTIVE is a usage error, whatever the command; until
 // it is fixed nothing is asked.
-func TestNoInputEnvInvalid(t *testing.T) {
+func TestNonInteractiveEnvInvalid(t *testing.T) {
 	_, cfgPath := setupMulti(t)
-	t.Setenv(app.EnvNoInput, "maybe")
+	t.Setenv(app.EnvNonInteractive, "maybe")
 	for _, args := range [][]string{{"auth", "list"}, {"auth", "login"}, {"auth", "use"}, {"auth", "manage"}} {
 		p := &scriptedPicker{t: t}
 		r := runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), args...)
@@ -498,7 +498,7 @@ func TestNoInputEnvInvalid(t *testing.T) {
 	for _, args := range [][]string{{"auth", "list"}, {"auth", "login"}, {"auth", "use"}} {
 		for _, p := range []*scriptedPicker{nil, {t: t}} {
 			r := runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), args...)
-			if r.code != ExitUsage || r.err == nil || !strings.Contains(r.err.Error(), app.EnvNoInput) || !strings.Contains(r.err.Error(), `"maybe"`) || strings.Contains(r.err.Error(), "is required") {
+			if r.code != ExitUsage || r.err == nil || !strings.Contains(r.err.Error(), app.EnvNonInteractive) || !strings.Contains(r.err.Error(), `"maybe"`) || strings.Contains(r.err.Error(), "is required") {
 				t.Errorf("%v (picker %v): exit %d, the error does not name the variable and its value: %v", args, p != nil, r.code, r.err)
 			}
 		}
@@ -506,39 +506,39 @@ func TestNoInputEnvInvalid(t *testing.T) {
 	// Help and shell completion ask nothing: the bad value does not break them.
 	for _, args := range [][]string{{"help", "auth"}, {"completion", "zsh"}, {cobra.ShellCompRequestCmd, "auth", "use", ""}, {cobra.ShellCompNoDescRequestCmd, "auth", "use", ""}} {
 		if r := runFlow(t, context.Background(), cfgPath, nil, strings.NewReader(""), args...); r.err != nil || r.code != 0 {
-			t.Errorf("%v with an invalid %s: exit %d (%v); want it to work", args, app.EnvNoInput, r.code, r.err)
+			t.Errorf("%v with an invalid %s: exit %d (%v); want it to work", args, app.EnvNonInteractive, r.code, r.err)
 		}
 	}
 	// The values that switch it off leave the interactive flow alone.
 	for _, off := range []string{"0", "false", "no", ""} {
-		t.Setenv(app.EnvNoInput, off)
+		t.Setenv(app.EnvNonInteractive, off)
 		p := &scriptedPicker{t: t, answers: []any{"b"}}
 		if r := runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), "auth", "use"); r.err != nil || len(p.asked) != 1 {
-			t.Errorf("POLYCTL_NO_INPUT=%q: %v, prompts %v; want the profile asked for", off, r.err, p.titles())
+			t.Errorf("POLYCTL_NON_INTERACTIVE=%q: %v, prompts %v; want the profile asked for", off, r.err, p.titles())
 		}
 	}
 }
 
 // The global flag is documented where every command shows it.
-func TestNoInputFlagInHelp(t *testing.T) {
+func TestNonInteractiveFlagInHelp(t *testing.T) {
 	_, cfgPath := setup(t, false)
 	stdout, _, err := run(t, cfgPath, "auth", "login", "--help")
-	if err != nil || !strings.Contains(stdout, "--no-input") || !strings.Contains(stdout, app.EnvNoInput) {
-		t.Errorf("auth login --help does not show --no-input: %v\n%s", err, stdout)
+	if err != nil || !strings.Contains(stdout, "--non-interactive") || !strings.Contains(stdout, app.EnvNonInteractive) {
+		t.Errorf("auth login --help does not show --non-interactive: %v\n%s", err, stdout)
 	}
 }
 
 // Only a credential on the command line draws the argv warning. GoDaddy's
 // legacy key id is not one: the documented scripted form
-// `--set key=<key> --set secret=-` must not be warned against.
+// `--set api_key=<key> --set api_secret=-` must not be warned against.
 func TestSetWarningOnlyForSecrets(t *testing.T) {
 	_, cfgPath := setup(t, false)
-	r := runFlow(t, context.Background(), cfgPath, nil, strings.NewReader("s3cret\n"), "auth", "login", p1, "--set", "key=KEYID", "--set", "secret=-")
+	r := runFlow(t, context.Background(), cfgPath, nil, strings.NewReader("s3cret\n"), "auth", "login", p1, "--set", "api_key=KEYID", "--set", "api_secret=-")
 	if r.err != nil || strings.Contains(r.stderr, "warning: --set") {
-		t.Errorf("--set key=<key> --set secret=-: %v, stderr %q; want no warning", r.err, r.stderr)
+		t.Errorf("--set api_key=<key> --set api_secret=-: %v, stderr %q; want no warning", r.err, r.stderr)
 	}
-	r = runFlow(t, context.Background(), cfgPath, nil, strings.NewReader(""), "auth", "login", p1, "--set", "key=KEYID", "--set", "secret=s3cret")
-	if r.err != nil || !strings.Contains(r.stderr, "warning: --set secret=...") || strings.Contains(r.stderr, "warning: --set key=...") {
-		t.Errorf("--set secret=<value>: %v, stderr %q; want a warning for secret only", r.err, r.stderr)
+	r = runFlow(t, context.Background(), cfgPath, nil, strings.NewReader(""), "auth", "login", p1, "--set", "api_key=KEYID", "--set", "api_secret=s3cret")
+	if r.err != nil || !strings.Contains(r.stderr, "warning: --set api_secret=...") || strings.Contains(r.stderr, "warning: --set api_key=...") {
+		t.Errorf("--set api_secret=<value>: %v, stderr %q; want a warning for api_secret only", r.err, r.stderr)
 	}
 }

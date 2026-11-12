@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -361,7 +362,7 @@ func TestListRecordsMapping(t *testing.T) {
 	if mx == nil {
 		t.Fatal("MX record missing")
 	}
-	if mx.Name != "example.com" || mx.Content != "mail.example.com" || mx.TTL != 3600 {
+	if mx.Name != "example.com" || mx.Value != "mail.example.com" || mx.TTL != 3600 {
 		t.Fatalf("mx: %+v", *mx)
 	}
 	if mx.Priority == nil || *mx.Priority != 10 {
@@ -389,7 +390,7 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 
 	prio := 20
 	px := true
-	in := platform.Record{Name: "www.example.com", Type: "a", Content: "1.2.3.4", TTL: 0, Priority: &prio, Proxied: &px, Extra: map[string]any{"comment": "hello", "tags": []any{"x"}}}
+	in := platform.Record{Name: "www.example.com", Type: "a", Value: "1.2.3.4", TTL: 0, Priority: &prio, Proxied: &px, Extra: map[string]any{"comment": "hello", "tags": []any{"x"}}}
 	out, err := c.CreateRecord(ctx, "zone1", in)
 	if err != nil {
 		t.Fatal(err)
@@ -423,12 +424,12 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 		t.Fatal("created record not listed")
 	}
 	rt := *cur
-	rt.Content = "9.9.9.9"
+	rt.Value = "9.9.9.9"
 	out1, err := c.UpdateRecord(ctx, "zone1", rt)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out1.Content != "9.9.9.9" || out1.Proxied == nil || !*out1.Proxied || out1.Extra["comment"] != "hello" {
+	if out1.Value != "9.9.9.9" || out1.Proxied == nil || !*out1.Proxied || out1.Extra["comment"] != "hello" {
 		t.Fatalf("round trip lost fields: %+v", *out1)
 	}
 	if tags, ok := out1.Extra["tags"].([]string); !ok || len(tags) != 1 || tags[0] != "x" {
@@ -440,12 +441,12 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 
 	// Update without optional fields: priority/proxied/comment are omitted
 	// and, since PUT overwrites, the record loses them.
-	up := platform.Record{ID: out.ID, Name: "www.example.com", Type: "A", Content: "5.6.7.8", TTL: 120}
+	up := platform.Record{ID: out.ID, Name: "www.example.com", Type: "A", Value: "5.6.7.8", TTL: 120}
 	out2, err := c.UpdateRecord(ctx, "zone1", up)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out2.Content != "5.6.7.8" || out2.TTL != 120 || out2.Priority != nil || out2.Extra["comment"] != nil {
+	if out2.Value != "5.6.7.8" || out2.TTL != 120 || out2.Priority != nil || out2.Extra["comment"] != nil {
 		t.Fatalf("out2: %+v", *out2)
 	}
 	for _, k := range []string{"priority", "proxied", "comment", "tags", "data"} {
@@ -922,11 +923,11 @@ func TestLoginToleratesMissingAccountRead(t *testing.T) {
 
 func TestToBodyAndToRecord(t *testing.T) {
 	px := false
-	b := toBody(platform.Record{Name: "Sub.Example.COM.", Type: "txt", Content: "v=spf1", TTL: 0, Proxied: &px, Extra: map[string]any{"tags": []string{"a", "b"}}})
+	b := toBody(platform.Record{Name: "Sub.Example.COM.", Type: "txt", Value: "v=spf1", TTL: 0, Proxied: &px, Extra: map[string]any{"tags": []string{"a", "b"}}})
 	if b.Name != "sub.example.com" || b.Type != "TXT" || b.TTL != 1 || b.Proxied == nil || *b.Proxied || len(b.Tags) != 2 || b.Comment != nil {
 		t.Fatalf("body: %+v", b)
 	}
-	b = toBody(platform.Record{Name: "a.example.com", Type: "A", Content: "1.1.1.1", TTL: 300})
+	b = toBody(platform.Record{Name: "a.example.com", Type: "A", Value: "1.1.1.1", TTL: 300})
 	if b.TTL != 300 || b.Priority != nil || b.Proxied != nil {
 		t.Fatalf("body: %+v", b)
 	}
@@ -945,13 +946,13 @@ func TestToBodyAndToRecord(t *testing.T) {
 	if b.Data != nil || b.Content != "1.1.1.1" {
 		t.Fatalf("A record must not send data: %+v", b)
 	}
-	caa := toBody(platform.Record{Name: "example.com", Type: "caa", Content: "0 issue letsencrypt.org", TTL: 1, Extra: map[string]any{"data": map[string]any{"flags": 0, "tag": "issue", "value": "letsencrypt.org"}}})
+	caa := toBody(platform.Record{Name: "example.com", Type: "caa", Value: "0 issue letsencrypt.org", TTL: 1, Extra: map[string]any{"data": map[string]any{"flags": 0, "tag": "issue", "value": "letsencrypt.org"}}})
 	got, _ := json.Marshal(caa)
 	if caa.Content != "" || caa.Data["tag"] != "issue" || strings.Contains(string(got), `"content"`) || !strings.Contains(string(got), `"data"`) {
 		t.Fatalf("CAA body: %s", got)
 	}
 	// Without data the formatted content is sent as before.
-	caa = toBody(platform.Record{Name: "example.com", Type: "CAA", Content: "0 issue letsencrypt.org", TTL: 1})
+	caa = toBody(platform.Record{Name: "example.com", Type: "CAA", Value: "0 issue letsencrypt.org", TTL: 1})
 	if caa.Content != "0 issue letsencrypt.org" || caa.Data != nil {
 		t.Fatalf("CAA body without data: %+v", caa)
 	}
@@ -1003,10 +1004,11 @@ func TestMatchZone(t *testing.T) {
 
 func TestCommandTree(t *testing.T) {
 	cmd := Command(nil)
-	if cmd.Use != "cf" {
-		t.Fatalf("use: %s", cmd.Use)
+	// The tree is named after the platform id; cf stays as its one alias.
+	if cmd.Use != "cloudflare" || !reflect.DeepEqual(cmd.Aliases, []string{"cf"}) {
+		t.Fatalf("use: %s, aliases: %v", cmd.Use, cmd.Aliases)
 	}
-	want := []string{"zone list", "zone get", "dns list", "dns create", "dns update", "dns delete", "cache purge", "dev-mode", "ssl-mode", "account list", "token verify"}
+	want := []string{"whoami", "zone list", "zone get", "dns list", "dns create", "dns update", "dns delete", "cache purge", "dev-mode", "ssl-mode", "account list"}
 	for _, w := range want {
 		c, _, err := cmd.Find(strings.Fields(w))
 		if err != nil || c == nil || c == cmd {
@@ -1023,8 +1025,28 @@ func TestCommandTree(t *testing.T) {
 			t.Errorf("dns create lacks --%s", flag)
 		}
 	}
-	if c, _, _ := cmd.Find([]string{"dns", "update"}); c.Flags().Lookup("id") == nil {
-		t.Error("dns update lacks --id")
+	// The record id is a required argument of update and delete, not a flag.
+	for _, verb := range []string{"update", "delete"} {
+		c, _, _ := cmd.Find([]string{"dns", verb})
+		if c.Flags().Lookup("id") != nil || c.Use != verb+" <zone> <record-id>" {
+			t.Errorf("dns %s: use %q, --id %v", verb, c.Use, c.Flags().Lookup("id") != nil)
+		}
+		if err := c.Args(c, []string{"example.com"}); !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "record id is required") {
+			t.Errorf("dns %s without the id = %v", verb, err)
+		}
+		if err := c.Args(c, []string{"example.com", "rec1"}); err != nil {
+			t.Errorf("dns %s <zone> <record-id> = %v", verb, err)
+		}
+	}
+	// --proxied is a boolean on create and update.
+	for _, verb := range []string{"create", "update"} {
+		c, _, _ := cmd.Find([]string{"dns", verb})
+		if f := c.Flags().Lookup("proxied"); f == nil || f.Value.Type() != "bool" {
+			t.Errorf("dns %s --proxied = %+v, want a boolean flag", verb, f)
+		}
+	}
+	if c, _, _ := cmd.Find([]string{"token"}); c != cmd {
+		t.Errorf("`token` still exists: %s", c.CommandPath())
 	}
 }
 

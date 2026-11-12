@@ -76,6 +76,12 @@ func (*provider) DisplayName() string { return "Amazon Web Services" }
 func (*provider) LoginHelp() string {
 	return "IAM Identity Center device login (--set method=sso, recommended), static access keys (--set method=keys) or a named profile from ~/.aws/config (--set method=profile --set aws_profile=<name>). Options: --set region=<default region>, --set start_url=..., --set sso_region=..., --set account_id=..., --set role_name=...; keys: --set access_key_id=... --set secret_access_key=- [--set session_token=-], or AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN. Non-interactive: --set method is required; sso needs --set start_url, prints the URL and code and waits for the approval, and needs --set account_id / --set role_name when several are accessible"
 }
+
+// LoginOptions lists the --set keys of the login (see LoginHelp).
+func (*provider) LoginOptions() []string {
+	return []string{"method", metaRegion, metaStartURL, metaSSORegion, metaAccountID, metaRoleName, metaAWSProfile, secretAccessKeyID, secretSecretAccessKey, secretSessionToken}
+}
+
 func (*provider) ResourceTypes() []platform.ResourceType {
 	return []platform.ResourceType{platform.ResZone, platform.ResDNSRecord, platform.ResDomain, platform.ResInstance}
 }

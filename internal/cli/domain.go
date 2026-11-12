@@ -194,21 +194,17 @@ func newDomainNSGetCmd(rt *app.Runtime) *cobra.Command {
 }
 
 func newDomainNSSetCmd(rt *app.Runtime) *cobra.Command {
-	var ns []string
 	cmd := &cobra.Command{
-		Use:               "set <domain> --ns ns1.example.com,ns2.example.com",
+		Use:               "set <domain> <nameserver>...",
 		Short:             "Set the nameservers at the registrar",
-		Args:              cobra.ExactArgs(1),
+		Long:              "Replace the nameservers of <domain> at its registrar with the ones given.\n" + app.NameserverHelp,
+		Example:           "  polyctl domain ns set example.com ns1.example.net ns2.example.net",
+		Args:              app.NameserverArgs,
 		ValidArgsFunction: completeDomains(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(ns) == 0 {
-				return usageErr("--ns is required")
-			}
-			for i := range ns {
-				ns[i] = platform.NormalizeDomain(ns[i])
-				if ns[i] == "" {
-					return usageErr("empty nameserver in --ns")
-				}
+			ns, err := app.Nameservers(args[1:])
+			if err != nil {
+				return err
 			}
 			t, err := rt.ResolveDomain(cmd.Context(), args[0], platform.ResDomain)
 			if err != nil {
@@ -243,7 +239,6 @@ func newDomainNSSetCmd(rt *app.Runtime) *cobra.Command {
 			})
 		},
 	}
-	cmd.Flags().StringSliceVar(&ns, "ns", nil, "comma-separated nameservers")
 	return cmd
 }
 
@@ -252,16 +247,21 @@ func newDomainWhichCmd(rt *app.Runtime) *cobra.Command {
 		Use:   "which <domain>",
 		Short: "Show which accounts own a domain (registrar and DNS zone)",
 		Long: "Show every account that owns a domain, as a registrar or as a DNS zone.\n" +
-			"--profile and --platform do not narrow the list; they are still checked, so\n" +
-			"an unknown profile or platform is an error.",
+			"--profile and --platform narrow the list to the owners in that profile and\n" +
+			"on that platform, as on domain list; without them every owner is shown.",
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: completeDomains(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// which shows every owner; the flags are only validated, so that
-			// a mistyped --profile or --platform is not silently ignored.
+			// Validates --profile and --platform, so that a mistyped one
+			// is an error and not an empty list.
 			if _, err := rt.Accounts(); err != nil {
 				return err
 			}
+			only, err := rt.RoutePlatform()
+			if err != nil {
+				return err
+			}
+			filtered := rt.Flags.Profile != "" || only != ""
 			db, err := rt.DB()
 			if err != nil {
 				return err
@@ -270,7 +270,20 @@ func newDomainWhichCmd(rt *app.Runtime) *cobra.Command {
 			if len(cands) == 0 {
 				return usageErr("invalid domain %q", args[0])
 			}
-			entries, err := db.LookupDomain(cmd.Context(), cands, "")
+			lookup := func() ([]inventory.IndexEntry, error) {
+				entries, err := db.LookupDomain(cmd.Context(), cands, "")
+				if err != nil || !filtered {
+					return entries, err
+				}
+				var f []inventory.IndexEntry
+				for _, e := range entries {
+					if (rt.Flags.Profile == "" || e.Profile == rt.Flags.Profile) && (only == "" || e.Platform == only) {
+						f = append(f, e)
+					}
+				}
+				return f, nil
+			}
+			entries, err := lookup()
 			if err != nil {
 				return err
 			}
@@ -278,12 +291,14 @@ func newDomainWhichCmd(rt *app.Runtime) *cobra.Command {
 				// Trigger auto-indexing through the resolver, then re-read.
 				_, _ = rt.ResolveDomain(cmd.Context(), args[0], platform.ResZone)
 				_, _ = rt.ResolveDomain(cmd.Context(), args[0], platform.ResDomain)
-				entries, err = db.LookupDomain(cmd.Context(), cands, "")
-				if err != nil {
+				if entries, err = lookup(); err != nil {
 					return err
 				}
 			}
 			if len(entries) == 0 {
+				if filtered {
+					return fmt.Errorf("%w: %q has no owner matching --profile / --platform", app.ErrDomainUnknown, args[0])
+				}
 				return fmt.Errorf("%w: %q", app.ErrDomainUnknown, args[0])
 			}
 			return rt.Render(entries, func() output.Grid {

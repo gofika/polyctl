@@ -183,7 +183,7 @@ func runPick(t *testing.T, cfgPath string, answers []any, args ...string) (stdou
 	rt := app.New(app.Flags{}, strings.NewReader(""), &out, &errb)
 	rt.Picker = p
 	root := NewRoot(rt)
-	root.SetArgs(append([]string{"--config", cfgPath}, args...))
+	root.SetArgs(append([]string{"--config-dir", filepath.Dir(cfgPath)}, args...))
 	root.SetIn(strings.NewReader(""))
 	root.SetOut(&out)
 	root.SetErr(&errb)
@@ -207,7 +207,7 @@ var (
 )
 
 func TestRuntimeInteractive(t *testing.T) {
-	t.Setenv(app.EnvNoInput, "")
+	t.Setenv(app.EnvNonInteractive, "")
 	rt := app.New(app.Flags{}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	if rt.Interactive() {
 		t.Error("buffers are not a terminal")
@@ -230,15 +230,15 @@ func TestRuntimeInteractive(t *testing.T) {
 	if !rt.Interactive() || rt.Pick() != prompt.Picker(fake) {
 		t.Error("an injected picker makes the runtime interactive and is the one returned")
 	}
-	// --no-input and POLYCTL_NO_INPUT win over a terminal.
-	rt.Flags.NoInput = true
+	// --non-interactive and POLYCTL_NON_INTERACTIVE win over a terminal.
+	rt.Flags.NonInteractive = true
 	if rt.Interactive() || rt.Pick() == prompt.Picker(fake) {
-		t.Error("--no-input must switch the interactive flow off, with a picker present too")
+		t.Error("--non-interactive must switch the interactive flow off, with a picker present too")
 	}
-	rt.Flags.NoInput = false
-	t.Setenv(app.EnvNoInput, "1")
+	rt.Flags.NonInteractive = false
+	t.Setenv(app.EnvNonInteractive, "1")
 	if rt.Interactive() || rt.Pick() == prompt.Picker(fake) {
-		t.Error("POLYCTL_NO_INPUT=1 must switch the interactive flow off, with a picker present too")
+		t.Error("POLYCTL_NON_INTERACTIVE=1 must switch the interactive flow off, with a picker present too")
 	}
 	if len(fake.asked) != 0 {
 		t.Errorf("the picker was asked: %v", fake.titles())
@@ -1072,7 +1072,7 @@ func TestAuthRenameRollsBack(t *testing.T) {
 func TestAuthRenameRollsBackWhenSaveFails(t *testing.T) {
 	dir, cfgPath := seedRename(t)
 	var out, errb bytes.Buffer
-	rt := app.New(app.Flags{ConfigPath: cfgPath}, strings.NewReader(""), &out, &errb)
+	rt := app.New(app.Flags{ConfigDir: filepath.Dir(cfgPath)}, strings.NewReader(""), &out, &errb)
 	defer rt.Close()
 	if _, err := rt.Config(); err != nil {
 		t.Fatal(err)
@@ -1414,7 +1414,7 @@ func TestAuthLoginOffline(t *testing.T) {
 	// A secret option is not read from stdin either.
 	var out, errb bytes.Buffer
 	stdin := strings.NewReader("s3cret\n")
-	code := Main([]string{"--config", cfgPath, "auth", "login", p1, "--profile", "b", "--set", "token=-", "--offline"}, stdin, &out, &errb)
+	code := Main([]string{"--config-dir", filepath.Dir(cfgPath), "auth", "login", p1, "--profile", "b", "--set", "token=-", "--offline"}, stdin, &out, &errb)
 	if code != ExitOffline || stdin.Len() != len("s3cret\n") || strings.Contains(errb.String(), "token") {
 		t.Errorf("auth login --set token=- --offline: exit %d, %d byte(s) of stdin left (stderr %q)", code, stdin.Len(), errb.String())
 	}

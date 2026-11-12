@@ -32,7 +32,7 @@ func setup(t *testing.T, profiles bool) (dir, cfgPath string) {
 	t.Setenv("POLYCTL_CREDENTIAL_STORE", "file")
 	t.Setenv("POLYCTL_INVENTORY_DB", "")
 	t.Setenv("POLYCTL_OUTPUT", "")
-	t.Setenv(app.EnvNoInput, "") // not the developer's setting
+	t.Setenv(app.EnvNonInteractive, "") // not the developer's setting
 	cfgPath = filepath.Join(dir, "config.yaml")
 	if !profiles {
 		return dir, cfgPath
@@ -88,7 +88,7 @@ func run(t *testing.T, cfgPath string, args ...string) (stdout, stderr string, e
 	var out, errb bytes.Buffer
 	rt := app.New(app.Flags{}, strings.NewReader(""), &out, &errb)
 	root := NewRoot(rt)
-	root.SetArgs(append([]string{"--config", cfgPath}, args...))
+	root.SetArgs(append([]string{"--config-dir", filepath.Dir(cfgPath)}, args...))
 	root.SetIn(strings.NewReader(""))
 	root.SetOut(&out)
 	root.SetErr(&errb)
@@ -100,7 +100,7 @@ func run(t *testing.T, cfgPath string, args ...string) (stdout, stderr string, e
 func TestAuthListNoConfig(t *testing.T) {
 	_, cfgPath := setup(t, false)
 	var out, errb bytes.Buffer
-	code := Main([]string{"--config", cfgPath, "auth", "list"}, strings.NewReader(""), &out, &errb)
+	code := Main([]string{"--config-dir", filepath.Dir(cfgPath), "auth", "list"}, strings.NewReader(""), &out, &errb)
 	if code != ExitOK {
 		t.Fatalf("exit %d, stderr %q", code, errb.String())
 	}
@@ -110,7 +110,7 @@ func TestAuthListNoConfig(t *testing.T) {
 
 	out.Reset()
 	errb.Reset()
-	code = Main([]string{"--config", cfgPath, "auth", "list", "-o", "json"}, strings.NewReader(""), &out, &errb)
+	code = Main([]string{"--config-dir", filepath.Dir(cfgPath), "auth", "list", "-o", "json"}, strings.NewReader(""), &out, &errb)
 	if code != ExitOK {
 		t.Fatalf("exit %d, stderr %q", code, errb.String())
 	}
@@ -191,8 +191,8 @@ func TestDNSListOfflineFromInventory(t *testing.T) {
 	dir, cfgPath := setup(t, true)
 	seed(t, dir, []platform.Zone{{ID: "z1", Name: "example.com"}}, map[string][]platform.Record{
 		"z1": {
-			{ID: "r1", Name: "www.example.com", Type: "A", Content: "1.2.3.4", TTL: 300},
-			{ID: "r2", Name: "example.com", Type: "MX", Content: "mx.example.com", TTL: 3600, Priority: intp(10)},
+			{ID: "r1", Name: "www.example.com", Type: "A", Value: "1.2.3.4", TTL: 300},
+			{ID: "r2", Name: "example.com", Type: "MX", Value: "mx.example.com", TTL: 3600, Priority: intp(10)},
 		},
 	})
 
@@ -234,20 +234,20 @@ func TestDNSListOfflineFromInventory(t *testing.T) {
 
 func intp(i int) *int { return &i }
 
-func TestDNSUpdateCreatesRecord(t *testing.T) {
+func TestDNSSetCreatesRecord(t *testing.T) {
 	dir, cfgPath := setup(t, true)
 	seed(t, dir, []platform.Zone{{ID: "z1", Name: "example.com"}}, nil)
 	fc := client("a")
 	fc.zones = []platform.Zone{{ID: "z1", Name: "example.com"}}
 
-	stdout, stderr, err := run(t, cfgPath, "dns", "update", "example.com", "--type", "A", "--name", "www", "--value", "1.2.3.4")
+	stdout, stderr, err := run(t, cfgPath, "dns", "set", "example.com", "--type", "A", "--name", "www", "--value", "1.2.3.4")
 	if err != nil {
-		t.Fatalf("dns update: %v (stderr %q)", err, stderr)
+		t.Fatalf("dns set: %v (stderr %q)", err, stderr)
 	}
 	if fc.count("ListRecords:z1") != 1 || fc.count("CreateRecord:www.example.com:A") != 1 || fc.count("UpdateRecord") != 0 {
 		t.Errorf("calls = %v", fc.calls)
 	}
-	if got := fc.records["z1"]; len(got) != 1 || got[0].Content != "1.2.3.4" || got[0].Name != "www.example.com" {
+	if got := fc.records["z1"]; len(got) != 1 || got[0].Value != "1.2.3.4" || got[0].Name != "www.example.com" {
 		t.Errorf("platform records = %+v", got)
 	}
 	if !strings.Contains(stderr, "created www.example.com A -> 1.2.3.4 via cloudflare/a") {
@@ -271,7 +271,7 @@ func TestDNSUpdateCreatesRecord(t *testing.T) {
 		t.Errorf("row = %+v", r)
 	}
 	var rec platform.Record
-	if err := r.Decode(&rec); err != nil || rec.Content != "1.2.3.4" || rec.Type != "A" || rec.ZoneID != "z1" {
+	if err := r.Decode(&rec); err != nil || rec.Value != "1.2.3.4" || rec.Type != "A" || rec.ZoneID != "z1" {
 		t.Errorf("decoded = %+v, %v", rec, err)
 	}
 	// Records never enter the domain index.
@@ -280,23 +280,23 @@ func TestDNSUpdateCreatesRecord(t *testing.T) {
 	}
 }
 
-func TestDNSUpdateExistingRecord(t *testing.T) {
+func TestDNSSetExistingRecord(t *testing.T) {
 	dir, cfgPath := setup(t, true)
-	existing := platform.Record{ID: "r7", ZoneID: "z1", Name: "www.example.com", Type: "A", Content: "9.9.9.9", TTL: 600}
+	existing := platform.Record{ID: "r7", ZoneID: "z1", Name: "www.example.com", Type: "A", Value: "9.9.9.9", TTL: 600}
 	seed(t, dir, []platform.Zone{{ID: "z1", Name: "example.com"}}, map[string][]platform.Record{"z1": {existing}})
 	fc := client("a")
 	fc.zones = []platform.Zone{{ID: "z1", Name: "example.com"}}
 	fc.records["z1"] = []platform.Record{existing}
 
-	_, stderr, err := run(t, cfgPath, "dns", "update", "www.example.com", "--type", "a", "--value", "1.2.3.4")
+	_, stderr, err := run(t, cfgPath, "dns", "set", "www.example.com", "--type", "a", "--value", "1.2.3.4")
 	if err != nil {
-		t.Fatalf("dns update: %v (stderr %q)", err, stderr)
+		t.Fatalf("dns set: %v (stderr %q)", err, stderr)
 	}
 	if fc.count("UpdateRecord:r7") != 1 || fc.count("CreateRecord") != 0 {
 		t.Errorf("calls = %v", fc.calls)
 	}
 	got := fc.records["z1"][0]
-	if got.Content != "1.2.3.4" || got.TTL != 600 || got.Type != "A" {
+	if got.Value != "1.2.3.4" || got.TTL != 600 || got.Type != "A" {
 		t.Errorf("updated record = %+v (TTL must be kept)", got)
 	}
 	if !strings.Contains(stderr, "updated www.example.com A -> 1.2.3.4") {
@@ -309,31 +309,43 @@ func TestDNSUpdateExistingRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	var rec platform.Record
-	if err := r.Decode(&rec); err != nil || rec.Content != "1.2.3.4" {
+	if err := r.Decode(&rec); err != nil || rec.Value != "1.2.3.4" {
 		t.Errorf("inventory record = %+v, %v", rec, err)
 	}
 
-	// Several matches refuse to guess unless --add is given.
-	fc.records["z1"] = append(fc.records["z1"], platform.Record{ID: "r8", Name: "www.example.com", Type: "A", Content: "8.8.8.8"})
-	_, _, err = run(t, cfgPath, "dns", "update", "example.com", "--type", "A", "--name", "www", "--value", "1.1.1.1")
-	if err == nil || !strings.Contains(err.Error(), "--add") {
-		t.Errorf("multiple matches = %v", err)
+	// Several matches refuse to guess; `dns add` creates one more record.
+	fc.records["z1"] = append(fc.records["z1"], platform.Record{ID: "r8", Name: "www.example.com", Type: "A", Value: "8.8.8.8"})
+	_, _, err = run(t, cfgPath, "dns", "set", "example.com", "--type", "A", "--name", "www", "--value", "1.1.1.1")
+	if err == nil || !strings.Contains(err.Error(), "`polyctl dns add`") || fc.count("CreateRecord") != 0 || fc.count("UpdateRecord") != 1 {
+		t.Errorf("multiple matches = %v calls=%v", err, fc.calls)
 	}
-	_, _, err = run(t, cfgPath, "dns", "update", "example.com", "--type", "A", "--name", "www", "--value", "1.1.1.1", "--add")
-	if err != nil || fc.count("CreateRecord") != 1 {
-		t.Errorf("--add: %v calls=%v", err, fc.calls)
+	_, _, err = run(t, cfgPath, "dns", "add", "example.com", "--type", "A", "--name", "www", "--value", "1.1.1.1")
+	if err != nil || fc.count("CreateRecord") != 1 || fc.count("UpdateRecord") != 1 {
+		t.Errorf("dns add: %v calls=%v", err, fc.calls)
+	}
+	// The old spellings are gone, not aliased.
+	for _, args := range [][]string{
+		{"dns", "update", "example.com", "--type", "A", "--value", "1.1.1.1"},
+		{"dns", "set", "example.com", "--type", "A", "--value", "1.1.1.1", "--add"},
+	} {
+		if _, _, err := run(t, cfgPath, args...); ExitCodeFor(err) != ExitUsage {
+			t.Errorf("%v = %v (exit %d), want a usage error", args, err, ExitCodeFor(err))
+		}
+	}
+	if fc.count("CreateRecord") != 1 || fc.count("UpdateRecord") != 1 {
+		t.Errorf("a removed spelling reached the platform: %v", fc.calls)
 	}
 }
 
-func TestDNSUpdateUsageAndOffline(t *testing.T) {
+func TestDNSSetUsageAndOffline(t *testing.T) {
 	dir, cfgPath := setup(t, true)
 	seed(t, dir, []platform.Zone{{ID: "z1", Name: "example.com"}}, nil)
 
-	_, _, err := run(t, cfgPath, "dns", "update", "example.com", "--name", "www")
+	_, _, err := run(t, cfgPath, "dns", "set", "example.com", "--name", "www")
 	if ExitCodeFor(err) != ExitUsage {
 		t.Errorf("missing --type/--value = %v (exit %d)", err, ExitCodeFor(err))
 	}
-	_, _, err = run(t, cfgPath, "dns", "update", "example.com", "--type", "A", "--value", "1.2.3.4", "--offline")
+	_, _, err = run(t, cfgPath, "dns", "set", "example.com", "--type", "A", "--value", "1.2.3.4", "--offline")
 	if !errors.Is(err, app.ErrOffline) || ExitCodeFor(err) != ExitOffline {
 		t.Errorf("--offline mutation = %v (exit %d)", err, ExitCodeFor(err))
 	}
@@ -348,7 +360,7 @@ func TestDNSUpdateUsageAndOffline(t *testing.T) {
 
 func TestDNSDeleteRecord(t *testing.T) {
 	dir, cfgPath := setup(t, true)
-	rec := platform.Record{ID: "r1", ZoneID: "z1", Name: "www.example.com", Type: "A", Content: "1.2.3.4"}
+	rec := platform.Record{ID: "r1", ZoneID: "z1", Name: "www.example.com", Type: "A", Value: "1.2.3.4"}
 	seed(t, dir, []platform.Zone{{ID: "z1", Name: "example.com"}}, map[string][]platform.Record{"z1": {rec}})
 	fc := client("a")
 	fc.zones = []platform.Zone{{ID: "z1", Name: "example.com"}}
@@ -405,7 +417,7 @@ func TestExitCodeFor(t *testing.T) {
 func TestRefreshAndOfflineAreExclusive(t *testing.T) {
 	_, cfgPath := setup(t, false)
 	var out, errb bytes.Buffer
-	code := Main([]string{"--config", cfgPath, "--refresh", "--offline", "auth", "list"}, strings.NewReader(""), &out, &errb)
+	code := Main([]string{"--config-dir", filepath.Dir(cfgPath), "--refresh", "--offline", "auth", "list"}, strings.NewReader(""), &out, &errb)
 	if code != ExitUsage {
 		t.Fatalf("exit %d, want %d (stderr %q)", code, ExitUsage, errb.String())
 	}
@@ -417,7 +429,7 @@ func TestRefreshAndOfflineAreExclusive(t *testing.T) {
 	}
 	// A bad output format is a usage error as well.
 	errb.Reset()
-	if code := Main([]string{"--config", cfgPath, "-o", "xml", "auth", "list"}, strings.NewReader(""), &out, &errb); code != ExitUsage {
+	if code := Main([]string{"--config-dir", filepath.Dir(cfgPath), "-o", "xml", "auth", "list"}, strings.NewReader(""), &out, &errb); code != ExitUsage {
 		t.Errorf("-o xml exit %d, want %d (%q)", code, ExitUsage, errb.String())
 	}
 }
@@ -486,9 +498,9 @@ func TestSyncCommand(t *testing.T) {
 	}
 }
 
-func TestDNSUpdateDropsOldInventoryRowWhenIDChanges(t *testing.T) {
+func TestDNSSetDropsOldInventoryRowWhenIDChanges(t *testing.T) {
 	dir, cfgPath := setup(t, true)
-	existing := platform.Record{ID: "r7", ZoneID: "z1", Name: "www.example.com", Type: "A", Content: "9.9.9.9", TTL: 600}
+	existing := platform.Record{ID: "r7", ZoneID: "z1", Name: "www.example.com", Type: "A", Value: "9.9.9.9", TTL: 600}
 	seed(t, dir, []platform.Zone{{ID: "z1", Name: "example.com"}}, map[string][]platform.Record{"z1": {existing}})
 	fc := client("a")
 	fc.zones = []platform.Zone{{ID: "z1", Name: "example.com"}}
@@ -496,9 +508,9 @@ func TestDNSUpdateDropsOldInventoryRowWhenIDChanges(t *testing.T) {
 	fc.nextID = 7
 	fc.newIDOnUpdate = true
 
-	_, stderr, err := run(t, cfgPath, "dns", "update", "www.example.com", "--type", "A", "--value", "1.2.3.4")
+	_, stderr, err := run(t, cfgPath, "dns", "set", "www.example.com", "--type", "A", "--value", "1.2.3.4")
 	if err != nil {
-		t.Fatalf("dns update: %v (stderr %q)", err, stderr)
+		t.Fatalf("dns set: %v (stderr %q)", err, stderr)
 	}
 	if fc.count("UpdateRecord:r7") != 1 || fc.records["z1"][0].ID != "r8" {
 		t.Fatalf("calls = %v records = %+v", fc.calls, fc.records["z1"])
@@ -518,7 +530,7 @@ func TestDNSUpdateDropsOldInventoryRowWhenIDChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	var res dnsResult
-	if err := json.Unmarshal([]byte(stdout), &res); err != nil || len(res.Records) != 1 || res.Records[0].ID != "r8" || res.Records[0].Content != "1.2.3.4" {
+	if err := json.Unmarshal([]byte(stdout), &res); err != nil || len(res.Records) != 1 || res.Records[0].ID != "r8" || res.Records[0].Value != "1.2.3.4" {
 		t.Errorf("cached list = %+v, %v", res.Records, err)
 	}
 }
@@ -526,16 +538,22 @@ func TestDNSUpdateDropsOldInventoryRowWhenIDChanges(t *testing.T) {
 func TestCobraErrorsAreUsageErrors(t *testing.T) {
 	_, cfgPath := setup(t, true)
 	cases := [][]string{
-		{"dns", "list"},                       // missing argument
-		{"dns", "list", "a.com", "b.com"},     // too many arguments
-		{"auth", "use"},                       // missing argument
-		{"auth", "list", "--bogus"},           // unknown flag
-		{"nosuchcmd"},                         // unknown command
-		{"auth", "login", "cloudflare", "-x"}, // unknown shorthand
+		{"dns", "list"},                        // missing argument
+		{"dns", "list", "a.com", "b.com"},      // too many arguments
+		{"auth", "use"},                        // missing argument
+		{"auth", "list", "--bogus"},            // unknown flag
+		{"nosuchcmd"},                          // unknown command
+		{"dns", "nosuchcmd"},                   // unknown command of a group
+		{"aws", "ec2", "list"},                 // a group takes no arguments
+		{"dns", "--bogus"},                     // unknown flag of a group
+		{"dns", "list", "a.com", "--no-input"}, // removed flag
+		{"auth", "list", "--no-browser"},       // not a global flag any more
+		{"--config", "x", "auth", "list"},      // removed flag
+		{"auth", "login", "cloudflare", "-x"},  // unknown shorthand
 	}
 	for _, args := range cases {
 		var out, errb bytes.Buffer
-		code := Main(append([]string{"--config", cfgPath}, args...), strings.NewReader(""), &out, &errb)
+		code := Main(append([]string{"--config-dir", filepath.Dir(cfgPath)}, args...), strings.NewReader(""), &out, &errb)
 		if code != ExitUsage {
 			t.Errorf("%v: exit %d, want %d (stderr %q)", args, code, ExitUsage, errb.String())
 		}
@@ -544,9 +562,16 @@ func TestCobraErrorsAreUsageErrors(t *testing.T) {
 		}
 	}
 	// Platform-specific trees get the same treatment.
-	_, _, err := run(t, cfgPath, "cf", "dns", "list")
-	if ExitCodeFor(err) != ExitUsage {
-		t.Errorf("cf dns list without zone = %v (exit %d)", err, ExitCodeFor(err))
+	// The Cloudflare tree answers to its platform id and to the cf alias.
+	for _, tree := range []string{"cloudflare", "cf"} {
+		_, _, err := run(t, cfgPath, tree, "dns", "list")
+		if ExitCodeFor(err) != ExitUsage || !strings.Contains(err.Error(), "accepts 1 arg") {
+			t.Errorf("%s dns list without zone = %v (exit %d)", tree, err, ExitCodeFor(err))
+		}
+	}
+	// A group without a subcommand still prints its help.
+	if stdout, _, err := run(t, cfgPath, "dns"); err != nil || !strings.Contains(stdout, "Available Commands:") {
+		t.Errorf("bare `dns` = %v\n%s", err, stdout)
 	}
 	// The global -p shorthand works on auth login/logout.
 	if _, _, err := run(t, cfgPath, "auth", "logout", "-p", "nope"); ExitCodeFor(err) != ExitNotFound {
@@ -665,7 +690,7 @@ func TestAuthStatusOfflineReportsUnverified(t *testing.T) {
 func TestAuthLoginSecretOptionFromStdin(t *testing.T) {
 	_, cfgPath := setup(t, false)
 	var out, errb bytes.Buffer
-	code := Main([]string{"--config", cfgPath, "auth", "login", string(fakePlatform), "--set", "token=-"}, strings.NewReader("from-stdin\n"), &out, &errb)
+	code := Main([]string{"--config-dir", filepath.Dir(cfgPath), "auth", "login", string(fakePlatform), "--set", "token=-"}, strings.NewReader("from-stdin\n"), &out, &errb)
 	if code != ExitOK {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
@@ -673,7 +698,7 @@ func TestAuthLoginSecretOptionFromStdin(t *testing.T) {
 		t.Errorf("stdin value must not trigger the argv warning: %s", errb.String())
 	}
 	errb.Reset()
-	code = Main([]string{"--config", cfgPath, "auth", "login", string(fakePlatform), "--set", "token=plain"}, strings.NewReader(""), &out, &errb)
+	code = Main([]string{"--config-dir", filepath.Dir(cfgPath), "auth", "login", string(fakePlatform), "--set", "token=plain"}, strings.NewReader(""), &out, &errb)
 	if code != ExitOK || !strings.Contains(errb.String(), "process listings") {
 		t.Errorf("exit %d, stderr %q: --set token=... must warn", code, errb.String())
 	}

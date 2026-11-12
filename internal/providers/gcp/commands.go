@@ -25,7 +25,9 @@ zones hold multi-value record sets, Compute Engine instances live in zones.
 Every command runs against the project stored in the selected profile's gcp account
 (pass --profile to pick another one).`,
 	}
-	cmd.AddCommand(newProjectCmd(rt), newDNSCmd(rt), newComputeCmd(rt))
+	cmd.AddCommand(
+		app.WhoamiCommand(rt, platform.GCP, "On Google Cloud this reads the profile's project (or, without that permission,\nits Cloud DNS zones) and reports the project, the signed-in account and the\nlogin method."),
+		newProjectCmd(rt), newDNSCmd(rt), newComputeCmd(rt))
 	return cmd
 }
 
@@ -307,11 +309,11 @@ type recordResult struct {
 }
 
 func recordGrid(recs []platform.Record) output.Grid {
-	g := output.Grid{Headers: []string{"NAME", "TYPE", "CONTENT", "TTL", "ID"}, Empty: "no records"}
+	g := output.Grid{Headers: []string{"NAME", "TYPE", "VALUE", "TTL", "ID"}, Empty: "no records"}
 	for _, r := range recs {
-		content := r.Content
+		content := r.Value
 		if r.Priority != nil {
-			content = fmt.Sprintf("%d %s", *r.Priority, r.Content)
+			content = fmt.Sprintf("%d %s", *r.Priority, r.Value)
 		}
 		g.Rows = append(g.Rows, []string{r.Name, r.Type, content, platform.TTLLabel(platform.GCP, r), r.ID})
 	}
@@ -326,7 +328,7 @@ func sortRecords(recs []platform.Record) {
 		if recs[i].Type != recs[j].Type {
 			return recs[i].Type < recs[j].Type
 		}
-		return recs[i].Content < recs[j].Content
+		return recs[i].Value < recs[j].Value
 	})
 }
 
@@ -450,7 +452,7 @@ Cloud DNS expects; TXT values are quoted automatically.`,
 			fqdn := platform.FQDN(name, z.Name)
 			raw := make([]string, 0, len(values))
 			for _, v := range values {
-				rec := platform.Record{Name: fqdn, Type: typ, Content: v}
+				rec := platform.Record{Name: fqdn, Type: typ, Value: v}
 				if cmd.Flags().Changed("priority") {
 					p := priority
 					rec.Priority = &p
@@ -492,7 +494,11 @@ func newRecordDeleteCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "delete <zone>",
 		Short: "Delete a record set (--name --type), one value of it (--value) or a record by --id",
-		Args:  cobra.ExactArgs(1),
+		Long: `Delete the record set of --name and --type, only one of its values (--value),
+or the record value given with --id. Cloud DNS addresses records by name and
+type, so the id is an optional second way to pick one value here, not a
+required argument.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if id == "" && (typ == "" || name == "") {
 				return app.UsageErrf("--name and --type (or --id) are required")
@@ -520,7 +526,7 @@ func newRecordDeleteCmd(rt *app.Runtime) *cobra.Command {
 				}
 				what = id
 			case value != "":
-				rec := platform.Record{Name: platform.FQDN(name, z.Name), Type: typ, Content: value}
+				rec := platform.Record{Name: platform.FQDN(name, z.Name), Type: typ, Value: value}
 				if cmd.Flags().Changed("priority") {
 					p := priority
 					rec.Priority = &p
@@ -557,8 +563,10 @@ func newRecordDeleteCmd(rt *app.Runtime) *cobra.Command {
 // ---------------------------------------------------------------- compute
 
 func newComputeCmd(rt *app.Runtime) *cobra.Command {
-	cmd := &cobra.Command{Use: "compute", Short: "Compute Engine instances"}
-	cmd.AddCommand(newComputeListCmd(rt), newComputePowerCmd(rt, "start"), newComputePowerCmd(rt, "stop"))
+	cmd := &cobra.Command{Use: "compute", Short: "Compute Engine"}
+	instance := &cobra.Command{Use: "instance", Short: "Compute Engine instances"}
+	instance.AddCommand(newComputeListCmd(rt), newComputePowerCmd(rt, "start"), newComputePowerCmd(rt, "stop"))
+	cmd.AddCommand(instance)
 	return cmd
 }
 

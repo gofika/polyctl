@@ -355,17 +355,17 @@ func TestListRecordsAndSync(t *testing.T) {
 		byID[r.ID] = r
 	}
 	mx := byID["example-zone|MX|example.com|10+mail.example.com."]
-	if mx.Content != "mail.example.com" || mx.Priority == nil || *mx.Priority != 10 || mx.TTL != 3600 {
+	if mx.Value != "mail.example.com" || mx.Priority == nil || *mx.Priority != 10 || mx.TTL != 3600 {
 		t.Errorf("MX: %+v", mx)
 	}
 	// TXT content is shown the way a user would type it; the raw quoted
 	// rrdata stays in Extra and in the id.
 	txt := byID[`example-zone|TXT|example.com|%22v%3Dspf1+-all%22`]
-	if txt.Content != `v=spf1 -all` || txt.Extra["rrdata"] != `"v=spf1 -all"` {
+	if txt.Value != `v=spf1 -all` || txt.Extra["rrdata"] != `"v=spf1 -all"` {
 		t.Errorf("TXT: %+v", txt)
 	}
 	geo := byID["example-zone|A|geo.example.com|routing-policy"]
-	if geo.Name != "geo.example.com" || geo.Content != routingPolicyContent || geo.TTL != 60 || geo.Extra["routing_policy"] == nil {
+	if geo.Name != "geo.example.com" || geo.Value != routingPolicyValue || geo.TTL != 60 || geo.Extra["routing_policy"] == nil {
 		t.Errorf("geo: %+v", geo)
 	}
 
@@ -405,11 +405,11 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 	ctx := context.Background()
 
 	// Create adds a value to the existing set, keeping the others and the TTL.
-	created, err := c.CreateRecord(ctx, "example-zone", platform.Record{Name: "www.example.com", Type: "a", Content: "3.3.3.3"})
+	created, err := c.CreateRecord(ctx, "example-zone", platform.Record{Name: "www.example.com", Type: "a", Value: "3.3.3.3"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.ID != "example-zone|A|www.example.com|3.3.3.3" || created.Content != "3.3.3.3" || created.TTL != 300 {
+	if created.ID != "example-zone|A|www.example.com|3.3.3.3" || created.Value != "3.3.3.3" || created.TTL != 300 {
 		t.Errorf("created: %+v", created)
 	}
 	ch := f.lastChange()
@@ -418,11 +418,11 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 	}
 
 	// Create of a brand-new set uses the default TTL and no deletion.
-	cn, err := c.CreateRecord(ctx, "example-zone", platform.Record{Name: "blog.example.com", Type: "CNAME", Content: "example.com"})
+	cn, err := c.CreateRecord(ctx, "example-zone", platform.Record{Name: "blog.example.com", Type: "CNAME", Value: "example.com"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cn.Content != "example.com" || cn.TTL != defaultTTL {
+	if cn.Value != "example.com" || cn.TTL != defaultTTL {
 		t.Errorf("cname: %+v", cn)
 	}
 	ch = f.lastChange()
@@ -432,7 +432,7 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 
 	// Creating an already-present value is a no-op.
 	before := f.countRequests("/changes")
-	if _, err := c.CreateRecord(ctx, "example-zone", platform.Record{Name: "www.example.com", Type: "A", Content: "1.1.1.1"}); err != nil {
+	if _, err := c.CreateRecord(ctx, "example-zone", platform.Record{Name: "www.example.com", Type: "A", Value: "1.1.1.1"}); err != nil {
 		t.Fatal(err)
 	}
 	if f.countRequests("/changes") != before {
@@ -440,7 +440,7 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 	}
 
 	// Update replaces one value in place and can change the TTL.
-	upd, err := c.UpdateRecord(ctx, "example-zone", platform.Record{ID: "example-zone|A|www.example.com|2.2.2.2", Name: "www.example.com", Type: "A", Content: "9.9.9.9", TTL: 60})
+	upd, err := c.UpdateRecord(ctx, "example-zone", platform.Record{ID: "example-zone|A|www.example.com|2.2.2.2", Name: "www.example.com", Type: "A", Value: "9.9.9.9", TTL: 60})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -452,7 +452,7 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 	}
 
 	// Update with a priority change on MX rewrites the rrdata.
-	mx, err := c.UpdateRecord(ctx, "example-zone", platform.Record{ID: "example-zone|MX|example.com|10+mail.example.com.", Name: "example.com", Type: "MX", Content: "mail.example.com", Priority: intp(20)})
+	mx, err := c.UpdateRecord(ctx, "example-zone", platform.Record{ID: "example-zone|MX|example.com|10+mail.example.com.", Name: "example.com", Type: "MX", Value: "mail.example.com", Priority: intp(20)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -461,7 +461,7 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 	}
 
 	// Update moving a value to another name creates a two-set change.
-	moved, err := c.UpdateRecord(ctx, "example-zone", platform.Record{ID: "example-zone|A|www.example.com|9.9.9.9", Name: "api.example.com", Type: "A", Content: "9.9.9.9"})
+	moved, err := c.UpdateRecord(ctx, "example-zone", platform.Record{ID: "example-zone|A|www.example.com|9.9.9.9", Name: "api.example.com", Type: "A", Value: "9.9.9.9"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -502,7 +502,7 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 	if err := c.DeleteRecord(ctx, "example-zone", "example-private|A|www.example.com|10.0.0.1"); err == nil || errors.Is(err, platform.ErrNotFound) {
 		t.Errorf("cross-zone delete: %v", err)
 	}
-	if _, err := c.UpdateRecord(ctx, "example-zone", platform.Record{ID: "example-private|A|www.example.com|10.0.0.1", Content: "10.0.0.2"}); err == nil {
+	if _, err := c.UpdateRecord(ctx, "example-zone", platform.Record{ID: "example-private|A|www.example.com|10.0.0.1", Value: "10.0.0.2"}); err == nil {
 		t.Error("cross-zone update should fail")
 	}
 	if f.countRequests("/changes") != before {
@@ -515,7 +515,7 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 	// Record sets driven by a routing policy are never rewritten: a create
 	// would replace the geo policy with a plain rrdata set.
 	before = f.countRequests("/changes")
-	if _, err := c.CreateRecord(ctx, "example-zone", platform.Record{Name: "geo.example.com", Type: "A", Content: "1.2.3.4"}); !errors.Is(err, platform.ErrNotSupported) {
+	if _, err := c.CreateRecord(ctx, "example-zone", platform.Record{Name: "geo.example.com", Type: "A", Value: "1.2.3.4"}); !errors.Is(err, platform.ErrNotSupported) {
 		t.Errorf("create on routing policy set: %v", err)
 	}
 	if err := c.SetRRSet(ctx, "example-zone", "geo.example.com", "A", 0, []string{"1.2.3.4"}); !errors.Is(err, platform.ErrNotSupported) {
@@ -524,7 +524,7 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 	if err := c.DeleteRecord(ctx, "example-zone", "example-zone|A|geo.example.com|routing-policy"); !errors.Is(err, platform.ErrNotSupported) {
 		t.Errorf("delete of routing policy record: %v", err)
 	}
-	if _, err := c.UpdateRecord(ctx, "example-zone", platform.Record{ID: "example-zone|A|geo.example.com|routing-policy", Content: "1.2.3.4"}); !errors.Is(err, platform.ErrNotSupported) {
+	if _, err := c.UpdateRecord(ctx, "example-zone", platform.Record{ID: "example-zone|A|geo.example.com|routing-policy", Value: "1.2.3.4"}); !errors.Is(err, platform.ErrNotSupported) {
 		t.Errorf("update of routing policy record: %v", err)
 	}
 	if f.countRequests("/changes") != before {
@@ -717,7 +717,7 @@ func TestLoginServiceAccount(t *testing.T) {
 	keyPath := writeServiceAccountKey(t, f, "proj")
 	p := &provider{}
 
-	in, _ := loginInput("", map[string]string{"method": "service-account", "key_file": keyPath})
+	in, _ := loginInput("", map[string]string{"method": "service_account", "key_file": keyPath})
 	res, err := p.Login(context.Background(), in)
 	if err != nil {
 		t.Fatal(err)
@@ -742,7 +742,7 @@ func TestLoginServiceAccount(t *testing.T) {
 
 	// The project prompt is used when the key has none; input comes from stdin.
 	noProj := writeServiceAccountKey(t, f, "")
-	in, errBuf := loginInput("proj\n", map[string]string{"method": "sa", "key_file": noProj})
+	in, errBuf := loginInput("proj\n", map[string]string{"method": "service_account", "key_file": noProj})
 	res, err = p.Login(context.Background(), in)
 	if err != nil {
 		t.Fatal(err)
@@ -757,7 +757,7 @@ func TestLoginServiceAccount(t *testing.T) {
 	f.status["/projects/proj/zones"] = http.StatusForbidden
 	f.status["/v1/projects/proj"] = http.StatusForbidden
 	f.mu.Unlock()
-	in, _ = loginInput("", map[string]string{"method": "service-account", "key_file": keyPath})
+	in, _ = loginInput("", map[string]string{"method": "service_account", "key_file": keyPath})
 	if _, err := p.Login(context.Background(), in); !errors.Is(err, platform.ErrUnauthorized) {
 		t.Errorf("denied login: %v", err)
 	}
@@ -765,9 +765,23 @@ func TestLoginServiceAccount(t *testing.T) {
 	// Bad key file.
 	bad := filepath.Join(t.TempDir(), "bad.json")
 	_ = os.WriteFile(bad, []byte(`{"type":"authorized_user"}`), 0o600)
-	in, _ = loginInput("", map[string]string{"method": "service-account", "key_file": bad})
+	in, _ = loginInput("", map[string]string{"method": "service_account", "key_file": bad})
 	if _, err := p.Login(context.Background(), in); err == nil {
 		t.Error("bad key file should fail")
+	}
+	// One spelling per method: the aliases 0.1.x accepted are unknown now.
+	for _, m := range []string{"service-account", "sa", "bogus"} {
+		in, _ = loginInput("", map[string]string{"method": m, "key_file": keyPath})
+		_, err := (&provider{}).Login(context.Background(), in)
+		if !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "expected adc, service_account or oauth") {
+			t.Errorf("method=%s = %v; want a usage error listing the valid methods", m, err)
+		}
+	}
+	// A stored account that carries such an alias still loads.
+	for in, want := range map[string]string{"service-account": methodServiceAccount, "sa": methodServiceAccount, "Service_Account": methodServiceAccount, "adc": methodADC, "": ""} {
+		if got := storedMethod(in); got != want {
+			t.Errorf("storedMethod(%q) = %q, want %q", in, got, want)
+		}
 	}
 	in, _ = loginInput("", map[string]string{"method": "bogus"})
 	if _, err := p.Login(context.Background(), in); err == nil {
@@ -899,12 +913,12 @@ func TestLoginNonInteractiveNeverAsks(t *testing.T) {
 	}
 
 	// service account: the key file, then the project.
-	in, errBuf := loginInput("", map[string]string{"method": "sa"})
+	in, errBuf := loginInput("", map[string]string{"method": "service_account"})
 	usage("sa without key_file", in, errBuf, "--set key_file=")
 	if errBuf.Len() != 0 {
 		t.Errorf("sa without key_file printed %q", errBuf.String())
 	}
-	in, errBuf = loginInput("", map[string]string{"method": "sa", "key_file": writeServiceAccountKey(t, f, "")})
+	in, errBuf = loginInput("", map[string]string{"method": "service_account", "key_file": writeServiceAccountKey(t, f, "")})
 	usage("sa key without a project", in, errBuf, "--set project=<id>")
 	if errBuf.Len() != 0 {
 		t.Errorf("sa key without a project printed %q", errBuf.String())

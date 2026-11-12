@@ -54,6 +54,12 @@ func testEnvUsername(env, username string) (string, bool) {
 	}
 	return username + testUserSuffix, true
 }
+
+// LoginOptions lists the --set keys of the login (see LoginHelp).
+func (*provider) LoginOptions() []string {
+	return []string{"username", "token", metaEnv}
+}
+
 func (*provider) ResourceTypes() []platform.ResourceType {
 	return []platform.ResourceType{platform.ResDomain, platform.ResZone, platform.ResDNSRecord}
 }
@@ -65,7 +71,12 @@ func (*provider) ResourceTypes() []platform.ResourceType {
 func (*provider) Login(ctx context.Context, in platform.LoginInput) (*platform.LoginResult, error) {
 	io := in.IO(ctx)
 
-	env, err := normalizeEnv(in.Opt("env", in.Existing[metaEnv]))
+	// An env given now is login input and has one spelling; the one kept
+	// from the previous login is stored metadata.
+	env, err := storedEnv(in.Existing[metaEnv])
+	if v, ok := in.Options["env"]; ok && strings.TrimSpace(v) != "" {
+		env, err = parseEnv(v)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -137,7 +148,7 @@ func (*provider) Login(ctx context.Context, in platform.LoginInput) (*platform.L
 
 // Open builds an authenticated client from a stored profile.
 func (*provider) Open(ctx context.Context, p platform.Profile) (platform.Client, error) {
-	env, err := normalizeEnv(p.Meta(metaEnv))
+	env, err := storedEnv(p.Meta(metaEnv))
 	if err != nil {
 		return nil, err
 	}

@@ -75,7 +75,73 @@ func Open(path string) (*DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate inventory db: %w", err)
 	}
+	if err := migrateData(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate inventory db: %w", err)
+	}
 	return &DB{sql: db, now: time.Now}, nil
+}
+
+// dataVersion is the version of the JSON stored in resources.data, kept in
+// PRAGMA user_version. Version 1 names a DNS record's data "value"; polyctl
+// 0.1.x wrote it as "content".
+const dataVersion = 1
+
+// renameRecordContent rewrites the DNS records cached by polyctl 0.1.x,
+// whose data was stored under "content", to the "value" field read today.
+// platform.Record reads either key, so the rewrite is about what is shown
+// as stored (inventory list -o json) and about one format on disk.
+const renameRecordContent = `
+UPDATE resources
+   SET data = json_remove(json_set(data, '$.value', json_extract(data, '$.content')), '$.content')
+ WHERE resource_type = 'dns_record'
+   AND json_valid(data)
+   AND json_type(data, '$.content') IS NOT NULL
+   AND json_type(data, '$.value') IS NULL`
+
+// hasRecordContent finds out, without writing, whether renameRecordContent
+// has anything to do.
+const hasRecordContent = `
+SELECT EXISTS (SELECT 1 FROM resources
+ WHERE resource_type = 'dns_record'
+   AND json_valid(data)
+   AND json_type(data, '$.content') IS NOT NULL
+   AND json_type(data, '$.value') IS NULL)`
+
+// migrateData brings the stored JSON up to dataVersion.
+//
+// The rewrite of DNS records is not tied to the version alone: a polyctl
+// 0.1.x that shares the config directory (both versions installed, a
+// rollback, a synced home directory) keeps writing "content" rows into a
+// database that is already at version 1. So every Open looks for such rows,
+// which is a read, and rewrites them when there are any. The version is
+// kept for format changes that cannot be detected this way.
+func migrateData(db *sql.DB) error {
+	var v int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil {
+		return err
+	}
+	var stale bool
+	if err := db.QueryRow(hasRecordContent).Scan(&stale); err != nil {
+		return err
+	}
+	if v >= dataVersion && !stale {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(renameRecordContent); err != nil {
+		return err
+	}
+	if v < dataVersion {
+		if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, dataVersion)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // Close closes the database.

@@ -55,10 +55,10 @@ func TestRecordsFromRRSet(t *testing.T) {
 	if r.ID != "zone-1|MX|example.com|10+mail.example.com." || r.ZoneID != "zone-1" || r.Name != "example.com" || r.Type != "MX" || r.TTL != 3600 {
 		t.Errorf("unexpected record %+v", r)
 	}
-	if r.Content != "mail.example.com" || r.Priority == nil || *r.Priority != 10 {
-		t.Errorf("MX content/priority: %q %v", r.Content, r.Priority)
+	if r.Value != "mail.example.com" || r.Priority == nil || *r.Priority != 10 {
+		t.Errorf("MX content/priority: %q %v", r.Value, r.Priority)
 	}
-	if recs[1].Content != "mail2.example.com" || *recs[1].Priority != 20 {
+	if recs[1].Value != "mail2.example.com" || *recs[1].Priority != 20 {
 		t.Errorf("second MX: %+v", recs[1])
 	}
 
@@ -78,8 +78,8 @@ func TestRecordsFromRRSet(t *testing.T) {
 	}
 	for _, c := range cases {
 		got := recordsFromRRSet("z", &dns.ResourceRecordSet{Name: "x.example.com.", Type: c.typ, Rrdatas: []string{c.raw}})[0]
-		if got.Content != c.content || !reflect.DeepEqual(got.Priority, c.prio) {
-			t.Errorf("%s %q: content %q prio %v", c.typ, c.raw, got.Content, got.Priority)
+		if got.Value != c.content || !reflect.DeepEqual(got.Priority, c.prio) {
+			t.Errorf("%s %q: content %q prio %v", c.typ, c.raw, got.Value, got.Priority)
 		}
 		if got.Extra["rrdata"] != c.raw {
 			t.Errorf("%s: extra rrdata %v", c.typ, got.Extra["rrdata"])
@@ -95,7 +95,7 @@ func TestRecordsFromRRSet(t *testing.T) {
 	if len(geo) != 1 {
 		t.Fatalf("routing policy set yielded %d records", len(geo))
 	}
-	if geo[0].ID != "z|A|geo.example.com|routing-policy" || geo[0].Content != routingPolicyContent || geo[0].TTL != 60 || geo[0].Extra["routing_policy"] != policy {
+	if geo[0].ID != "z|A|geo.example.com|routing-policy" || geo[0].Value != routingPolicyValue || geo[0].TTL != 60 || geo[0].Extra["routing_policy"] != policy {
 		t.Errorf("routing policy record: %+v", geo[0])
 	}
 }
@@ -133,19 +133,19 @@ func TestRRDataFromRecord(t *testing.T) {
 		want string
 		err  bool
 	}{
-		{"A", platform.Record{Type: "A", Content: "1.2.3.4"}, "1.2.3.4", false},
-		{"CNAME adds dot", platform.Record{Type: "cname", Content: "target.example.net"}, "target.example.net.", false},
-		{"CNAME keeps dot", platform.Record{Type: "CNAME", Content: "target.example.net."}, "target.example.net.", false},
-		{"NS", platform.Record{Type: "NS", Content: "ns1.example.net"}, "ns1.example.net.", false},
-		{"MX with priority", platform.Record{Type: "MX", Content: "mail.example.com", Priority: intp(10)}, "10 mail.example.com.", false},
-		{"MX inline priority", platform.Record{Type: "MX", Content: "20 mail.example.com."}, "20 mail.example.com.", false},
-		{"MX missing priority", platform.Record{Type: "MX", Content: "mail.example.com"}, "", true},
-		{"MX too many fields", platform.Record{Type: "MX", Content: "a b", Priority: intp(1)}, "", true},
-		{"SRV", platform.Record{Type: "SRV", Content: "5 5060 sip.example.com", Priority: intp(10)}, "10 5 5060 sip.example.com.", false},
-		{"SRV bad", platform.Record{Type: "SRV", Content: "5060 sip.example.com", Priority: intp(10)}, "", true},
-		{"TXT quotes", platform.Record{Type: "TXT", Content: `v=spf1 "x" ~all`}, `"v=spf1 \"x\" ~all"`, false},
-		{"TXT already quoted", platform.Record{Type: "TXT", Content: `"a" "b"`}, `"a" "b"`, false},
-		{"empty", platform.Record{Type: "A", Content: "  "}, "", true},
+		{"A", platform.Record{Type: "A", Value: "1.2.3.4"}, "1.2.3.4", false},
+		{"CNAME adds dot", platform.Record{Type: "cname", Value: "target.example.net"}, "target.example.net.", false},
+		{"CNAME keeps dot", platform.Record{Type: "CNAME", Value: "target.example.net."}, "target.example.net.", false},
+		{"NS", platform.Record{Type: "NS", Value: "ns1.example.net"}, "ns1.example.net.", false},
+		{"MX with priority", platform.Record{Type: "MX", Value: "mail.example.com", Priority: intp(10)}, "10 mail.example.com.", false},
+		{"MX inline priority", platform.Record{Type: "MX", Value: "20 mail.example.com."}, "20 mail.example.com.", false},
+		{"MX missing priority", platform.Record{Type: "MX", Value: "mail.example.com"}, "", true},
+		{"MX too many fields", platform.Record{Type: "MX", Value: "a b", Priority: intp(1)}, "", true},
+		{"SRV", platform.Record{Type: "SRV", Value: "5 5060 sip.example.com", Priority: intp(10)}, "10 5 5060 sip.example.com.", false},
+		{"SRV bad", platform.Record{Type: "SRV", Value: "5060 sip.example.com", Priority: intp(10)}, "", true},
+		{"TXT quotes", platform.Record{Type: "TXT", Value: `v=spf1 "x" ~all`}, `"v=spf1 \"x\" ~all"`, false},
+		{"TXT already quoted", platform.Record{Type: "TXT", Value: `"a" "b"`}, `"a" "b"`, false},
+		{"empty", platform.Record{Type: "A", Value: "  "}, "", true},
 	}
 	for _, c := range cases {
 		got, err := rrdataFromRecord(c.rec)
@@ -169,12 +169,12 @@ func TestRRDataRoundTrip(t *testing.T) {
 		{Name: "example.com.", Type: "AAAA", Rrdatas: []string{"2001:db8::1"}},
 	} {
 		rec := recordsFromRRSet("z", rs)[0]
-		if rs.Type == "TXT" && rs.Rrdatas[0] == `"v=spf1 -all"` && rec.Content != `v=spf1 -all` {
-			t.Errorf("TXT content should be unquoted for users: %q", rec.Content)
+		if rs.Type == "TXT" && rs.Rrdatas[0] == `"v=spf1 -all"` && rec.Value != `v=spf1 -all` {
+			t.Errorf("TXT content should be unquoted for users: %q", rec.Value)
 		}
 		// Content is what a user would pass on the command line; it must
 		// produce the same rrdata as the listing came from.
-		raw, err := rrdataFromRecord(platform.Record{Type: rec.Type, Content: rec.Content, Priority: rec.Priority})
+		raw, err := rrdataFromRecord(platform.Record{Type: rec.Type, Value: rec.Value, Priority: rec.Priority})
 		if err != nil {
 			t.Fatalf("%s: %v", rs.Type, err)
 		}

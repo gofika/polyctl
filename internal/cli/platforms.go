@@ -4,6 +4,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/gofika/polyctl/internal/app"
+	"github.com/gofika/polyctl/internal/platform"
 	"github.com/gofika/polyctl/internal/providers/aliyun"
 	"github.com/gofika/polyctl/internal/providers/aws"
 	"github.com/gofika/polyctl/internal/providers/cloudflare"
@@ -24,6 +25,9 @@ func platformCommands(rt *app.Runtime) []*cobra.Command {
 	}
 	for _, c := range cmds {
 		c.GroupID = "platforms"
+		if id, err := platform.Parse(c.Name()); err == nil {
+			app.CompletePlatformArgs(rt, id, c)
+		}
 	}
 	return cmds
 }

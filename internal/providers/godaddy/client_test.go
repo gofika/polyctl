@@ -130,7 +130,7 @@ func TestListRecordsPaginationAndNames(t *testing.T) {
 		t.Errorf("record 0: %+v", got[0])
 	}
 	mx := got[5]
-	if mx.Name != "example.com" || mx.Priority == nil || *mx.Priority != 10 || mx.Content != "mail.example.com" {
+	if mx.Name != "example.com" || mx.Priority == nil || *mx.Priority != 10 || mx.Value != "mail.example.com" {
 		t.Errorf("mx: %+v", mx)
 	}
 	// 6 records at 2 per page: three full pages plus the empty page that
@@ -260,7 +260,7 @@ func TestUpdateRecordRenameFailures(t *testing.T) {
 
 	// The add (PATCH) fails: the original record must survive untouched.
 	f.failPatch = true
-	_, err := c.UpdateRecord(ctx, "example.com", platform.Record{ID: "A|www|1.1.1.1", Name: "api.example.com", Type: "A", Content: "1.1.1.1", TTL: 600})
+	_, err := c.UpdateRecord(ctx, "example.com", platform.Record{ID: "A|www|1.1.1.1", Name: "api.example.com", Type: "A", Value: "1.1.1.1", TTL: 600})
 	if err == nil {
 		t.Fatal("expected the failed PATCH to be reported")
 	}
@@ -273,7 +273,7 @@ func TestUpdateRecordRenameFailures(t *testing.T) {
 
 	// A missing source record is reported before anything is written.
 	f.failPatch = false
-	if _, err := c.UpdateRecord(ctx, "example.com", platform.Record{ID: "A|www|9.9.9.9", Name: "api.example.com", Type: "A", Content: "9.9.9.9"}); !errors.Is(err, platform.ErrNotFound) {
+	if _, err := c.UpdateRecord(ctx, "example.com", platform.Record{ID: "A|www|9.9.9.9", Name: "api.example.com", Type: "A", Value: "9.9.9.9"}); !errors.Is(err, platform.ErrNotFound) {
 		t.Errorf("stale id on rename: %v", err)
 	}
 	if n := len(f.callsMatching("PATCH /v1/domains/example.com/records")); n != 1 {
@@ -284,7 +284,7 @@ func TestUpdateRecordRenameFailures(t *testing.T) {
 	// error tells the user how to delete the old one.
 	f.setRecords("example.com", apiRecord{Type: "A", Name: "www", Data: "1.1.1.1", TTL: 600}, apiRecord{Type: "A", Name: "www", Data: "1.1.1.2", TTL: 600})
 	f.failPut = true
-	_, err = c.UpdateRecord(ctx, "example.com", platform.Record{ID: "A|www|1.1.1.1", Name: "api.example.com", Type: "A", Content: "1.1.1.1", TTL: 600})
+	_, err = c.UpdateRecord(ctx, "example.com", platform.Record{ID: "A|www|1.1.1.1", Name: "api.example.com", Type: "A", Value: "1.1.1.1", TTL: 600})
 	if err == nil || !strings.Contains(err.Error(), "A|api|1.1.1.1") || !strings.Contains(err.Error(), `--id "A|www|1.1.1.1"`) {
 		t.Fatalf("removal failure must name both records: %v", err)
 	}
@@ -300,7 +300,7 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 	ctx := context.Background()
 
 	// Create: PATCH add, existing record kept.
-	created, err := c.CreateRecord(ctx, "example.com", platform.Record{Name: "www.example.com", Type: "a", Content: "2.2.2.2", TTL: 600})
+	created, err := c.CreateRecord(ctx, "example.com", platform.Record{Name: "www.example.com", Type: "a", Value: "2.2.2.2", TTL: 600})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +312,7 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 	}
 
 	// Update in place (same type+name): PUT with the entry swapped.
-	updated, err := c.UpdateRecord(ctx, "example.com", platform.Record{ID: created.ID, Name: "www.example.com", Type: "A", Content: "3.3.3.3", TTL: 900})
+	updated, err := c.UpdateRecord(ctx, "example.com", platform.Record{ID: created.ID, Name: "www.example.com", Type: "A", Value: "3.3.3.3", TTL: 900})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,7 +328,7 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 	}
 
 	// Update with a name change: old removed from its set, new added.
-	moved, err := c.UpdateRecord(ctx, "example.com", platform.Record{ID: updated.ID, Name: "api.example.com", Type: "A", Content: "3.3.3.3", TTL: 900})
+	moved, err := c.UpdateRecord(ctx, "example.com", platform.Record{ID: updated.ID, Name: "api.example.com", Type: "A", Value: "3.3.3.3", TTL: 900})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,10 +345,10 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 	}
 
 	// Update of an id whose data no longer exists.
-	if _, err := c.UpdateRecord(ctx, "example.com", platform.Record{ID: "A|www|9.9.9.9", Name: "www.example.com", Type: "A", Content: "1.1.1.1"}); !errors.Is(err, platform.ErrNotFound) {
+	if _, err := c.UpdateRecord(ctx, "example.com", platform.Record{ID: "A|www|9.9.9.9", Name: "www.example.com", Type: "A", Value: "1.1.1.1"}); !errors.Is(err, platform.ErrNotFound) {
 		t.Errorf("stale id: expected ErrNotFound, got %v", err)
 	}
-	if _, err := c.UpdateRecord(ctx, "example.com", platform.Record{ID: "garbage", Name: "www.example.com", Type: "A", Content: "1.1.1.1"}); !errors.Is(err, ErrBadRecordID) {
+	if _, err := c.UpdateRecord(ctx, "example.com", platform.Record{ID: "garbage", Name: "www.example.com", Type: "A", Value: "1.1.1.1"}); !errors.Is(err, ErrBadRecordID) {
 		t.Errorf("bad id: %v", err)
 	}
 
@@ -383,7 +383,7 @@ func TestReplaceAndDeleteSet(t *testing.T) {
 	f.setRecords("example.com", apiRecord{Type: "A", Name: "www", Data: "1.1.1.1"}, apiRecord{Type: "A", Name: "@", Data: "5.5.5.5"})
 	ctx := context.Background()
 
-	out, err := c.ReplaceRecords(ctx, "example.com", "a", "www", []platform.Record{{Content: "2.2.2.2", TTL: 600}, {Content: "3.3.3.3", TTL: 600}})
+	out, err := c.ReplaceRecords(ctx, "example.com", "a", "www", []platform.Record{{Value: "2.2.2.2", TTL: 600}, {Value: "3.3.3.3", TTL: 600}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -401,7 +401,7 @@ func TestReplaceAndDeleteSet(t *testing.T) {
 		t.Fatalf("after delete set: %+v", got)
 	}
 	// Apex: "@" must be used in the path.
-	if _, err := c.ReplaceRecords(ctx, "example.com", "TXT", "@", []platform.Record{{Content: "v=spf1 -all"}}); err != nil {
+	if _, err := c.ReplaceRecords(ctx, "example.com", "TXT", "@", []platform.Record{{Value: "v=spf1 -all"}}); err != nil {
 		t.Fatal(err)
 	}
 	if n := len(f.callsMatching("PUT /v1/domains/example.com/records/TXT/@")); n != 1 {

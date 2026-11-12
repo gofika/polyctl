@@ -23,8 +23,11 @@ import (
 
 // Flags are the global CLI flags.
 type Flags struct {
-	ConfigPath string
-	Profile    string
+	// ConfigDir is the directory that holds config.yaml, the file
+	// credential store and inventory.db (--config-dir). Empty means
+	// POLYCTL_CONFIG_DIR, then ~/.config/polyctl.
+	ConfigDir string
+	Profile   string
 	// Platform restricts domain routing (dns / domain commands) to one
 	// platform; it tells apart two accounts of one profile.
 	Platform  string
@@ -34,36 +37,44 @@ type Flags struct {
 	Verbose   bool
 	NoBrowser bool
 	Yes       bool
-	// NoInput forces the non-interactive flow, also on a terminal.
-	NoInput bool
+	// NonInteractive forces the non-interactive flow, also on a terminal.
+	NonInteractive bool
+	// NonInteractiveSet says --non-interactive was given, with either
+	// value: the flag then decides and POLYCTL_NON_INTERACTIVE is not
+	// consulted, as for every setting (flag, then environment).
+	NonInteractiveSet bool
 }
 
-// EnvNoInput is the environment variable that forces the non-interactive
-// flow, like --no-input.
-const EnvNoInput = "POLYCTL_NO_INPUT"
+// EnvNonInteractive is the environment variable that forces the non-interactive
+// flow, like --non-interactive.
+const EnvNonInteractive = "POLYCTL_NON_INTERACTIVE"
 
-// noInputEnv reads EnvNoInput: 1, true and yes switch it on, 0, false, no
+// nonInteractiveEnv reads EnvNonInteractive: 1, true and yes switch it on, 0, false, no
 // and an empty value switch it off (case does not matter). Anything else is
 // an error, and counts as on meanwhile: a command that cannot tell must not
 // ask.
-func noInputEnv() (bool, error) {
-	v := strings.TrimSpace(os.Getenv(EnvNoInput))
+func nonInteractiveEnv() (bool, error) {
+	v := strings.TrimSpace(os.Getenv(EnvNonInteractive))
 	switch strings.ToLower(v) {
 	case "", "0", "false", "no":
 		return false, nil
 	case "1", "true", "yes":
 		return true, nil
 	}
-	return true, fmt.Errorf("invalid %s value %q (expected 1, true or yes to switch it on; 0, false, no or empty to switch it off)", EnvNoInput, v)
+	return true, fmt.Errorf("invalid %s value %q (expected 1, true or yes to switch it on; 0, false, no or empty to switch it off)", EnvNonInteractive, v)
 }
 
-// CheckNoInputEnv reports an invalid EnvNoInput value. Init checks it for
+// CheckNonInteractiveEnv reports an invalid EnvNonInteractive value. Init checks it for
 // every command; argument validation that runs before Init calls it too, so
 // that the invalid value is what gets reported and not its consequence.
-func CheckNoInputEnv() error {
-	_, err := noInputEnv()
+func CheckNonInteractiveEnv() error {
+	_, err := nonInteractiveEnv()
 	return err
 }
+
+// EnvOutput is the environment variable that selects the output format. It
+// ranks below --output and above the output setting of config.yaml.
+const EnvOutput = "POLYCTL_OUTPUT"
 
 // Runtime is the shared command context.
 type Runtime struct {
@@ -74,10 +85,10 @@ type Runtime struct {
 	// Picker answers the arrow-key prompts. Nil means the terminal one;
 	// tests inject a scripted implementation.
 	Picker prompt.Picker
-	// SkipNoInputEnvCheck keeps Init from rejecting an invalid EnvNoInput
+	// SkipNonInteractiveEnvCheck keeps Init from rejecting an invalid EnvNonInteractive
 	// value. Help and shell completion set it: they ask nothing, and a
 	// mistyped variable must not take them down.
-	SkipNoInputEnvCheck bool
+	SkipNonInteractiveEnvCheck bool
 
 	cfg       *config.Config
 	store     *creds.Multi
@@ -101,20 +112,22 @@ func (rt *Runtime) Init() error {
 	if rt.Flags.Refresh && rt.Flags.Offline {
 		return errors.New("--refresh and --offline are mutually exclusive")
 	}
-	if !rt.SkipNoInputEnvCheck {
-		if err := CheckNoInputEnv(); err != nil {
+	if !rt.SkipNonInteractiveEnvCheck {
+		if err := CheckNonInteractiveEnv(); err != nil {
 			return err
 		}
 	}
 	if _, err := rt.Config(); err != nil {
 		return err
 	}
+	// Like every setting: flag, then environment, then config file, then
+	// the built-in default.
 	f := rt.Flags.Output
 	if f == "" {
-		f = rt.cfg.Output
+		f = os.Getenv(EnvOutput)
 	}
 	if f == "" {
-		f = os.Getenv("POLYCTL_OUTPUT")
+		f = rt.cfg.Output
 	}
 	format, err := output.ParseFormat(f)
 	if err != nil {
@@ -255,17 +268,21 @@ func (p refusingPicker) Input(title, _ string, _ func(string) error) (string, er
 // Interactive is the one place that decides the flow of a command. The
 // interactive flow, where questions may be asked, needs stdin and stderr to
 // be terminals (an injected Picker stands in for them in tests) and is
-// switched off by --no-input or POLYCTL_NO_INPUT. Everything else is the
+// switched off by --non-interactive or POLYCTL_NON_INTERACTIVE. Everything else is the
 // non-interactive flow: nothing is asked or confirmed and nothing is read
 // from a terminal, so scripts never block. No other code looks at the
 // streams to choose a behaviour; it asks here, or is handed the answer.
 func (rt *Runtime) Interactive() bool {
-	if rt.Flags.NoInput {
+	if rt.Flags.NonInteractive {
 		return false
 	}
-	// Read on every call: cobra validates arguments before Init runs.
-	if off, _ := noInputEnv(); off {
-		return false
+	// The flag wins over the variable: --non-interactive=false leaves the
+	// decision to the terminal check below. The variable is read on every
+	// call: cobra validates arguments before Init runs.
+	if !rt.Flags.NonInteractiveSet {
+		if off, _ := nonInteractiveEnv(); off {
+			return false
+		}
 	}
 	if rt.Picker != nil {
 		return true
@@ -278,8 +295,8 @@ func (rt *Runtime) ConfigDir() (string, error) {
 	if rt.configDir != "" {
 		return rt.configDir, nil
 	}
-	if rt.Flags.ConfigPath != "" {
-		rt.configDir = filepath.Dir(rt.Flags.ConfigPath)
+	if rt.Flags.ConfigDir != "" {
+		rt.configDir = rt.Flags.ConfigDir
 		return rt.configDir, os.MkdirAll(rt.configDir, 0o700)
 	}
 	d, err := config.Dir()
@@ -295,14 +312,11 @@ func (rt *Runtime) Config() (*config.Config, error) {
 	if rt.cfg != nil {
 		return rt.cfg, nil
 	}
-	path := rt.Flags.ConfigPath
-	if path == "" {
-		var err error
-		if path, err = config.DefaultPath(); err != nil {
-			return nil, err
-		}
+	dir, err := rt.ConfigDir()
+	if err != nil {
+		return nil, err
 	}
-	cfg, err := config.Load(path)
+	cfg, err := config.Load(filepath.Join(dir, config.FileName))
 	if err != nil {
 		return nil, err
 	}

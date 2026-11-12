@@ -167,13 +167,13 @@ func TestListRecordsFQDNAndPriority(t *testing.T) {
 	for _, r := range recs {
 		byID[r.ID] = r
 	}
-	if r := byID["1"]; r.Name != "example.com" || r.Type != "A" || r.Content != "1.2.3.4" || r.TTL != 600 || r.Priority != nil {
+	if r := byID["1"]; r.Name != "example.com" || r.Type != "A" || r.Value != "1.2.3.4" || r.TTL != 600 || r.Priority != nil {
 		t.Errorf("apex record mapped wrong: %+v", r)
 	}
 	if r := byID["2"]; r.Name != "www.example.com" || r.Extra["locked"] != true || r.ZoneID != "example.com" {
 		t.Errorf("www record mapped wrong: %+v", r)
 	}
-	if r := byID["3"]; r.Priority == nil || *r.Priority != 10 || r.Content != "mx.example.com" {
+	if r := byID["3"]; r.Priority == nil || *r.Priority != 10 || r.Value != "mx.example.com" {
 		t.Errorf("MX record should carry priority separately: %+v", r)
 	}
 	if r := byID["1050"]; r.Name != "h50.example.com" {
@@ -193,7 +193,7 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 	})
 	c := f.client()
 	prio := 20
-	out, err := c.CreateRecord(context.Background(), "example.com", platform.Record{Name: "example.com", Type: "mx", Content: "mx.example.com", Priority: &prio})
+	out, err := c.CreateRecord(context.Background(), "example.com", platform.Record{Name: "example.com", Type: "mx", Value: "mx.example.com", Priority: &prio})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +215,7 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 	f.on("DescribeDomainRecordInfo", func(q url.Values) (int, any) {
 		return 400, apiErr("DomainRecordNotBelongToUser", "simulated read failure")
 	})
-	out, err = c.UpdateRecord(context.Background(), "example.com", platform.Record{ID: "9001", Name: "www.example.com", Type: "A", Content: "5.6.7.8", Extra: map[string]any{"line": "telecom"}})
+	out, err = c.UpdateRecord(context.Background(), "example.com", platform.Record{ID: "9001", Name: "www.example.com", Type: "A", Value: "5.6.7.8", Extra: map[string]any{"line": "telecom"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -634,7 +634,7 @@ func TestLoginFromCLIVerifiesAndFillsMetadata(t *testing.T) {
 	t.Setenv("ALIBABA_CLOUD_CLI_CONFIG", writeCLIConfig(t, cliConfigJSON))
 	var stderr bytes.Buffer
 	res, err := (&provider{}).Login(context.Background(), platform.LoginInput{
-		ProfileName: "ali", Options: map[string]string{"from_cli": "work"},
+		ProfileName: "ali", Options: map[string]string{"aliyun_profile": "work"},
 		Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &stderr, NoBrowser: true,
 	})
 	if err != nil {
@@ -665,7 +665,7 @@ func TestLoginFromCLIVerifiesAndFillsMetadata(t *testing.T) {
 	}
 	// Region option wins over the CLI region.
 	res, err = (&provider{}).Login(context.Background(), platform.LoginInput{
-		Options: map[string]string{"from_cli": "default", "region": "us-west-1"},
+		Options: map[string]string{"aliyun_profile": "default", "region": "us-west-1"},
 		Stdin:   strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, NoBrowser: true,
 	})
 	if err != nil || res.Metadata[metaRegion] != "us-west-1" {
@@ -676,14 +676,14 @@ func TestLoginFromCLIVerifiesAndFillsMetadata(t *testing.T) {
 	}
 	// --set site=intl is validated and recorded.
 	res, err = (&provider{}).Login(context.Background(), platform.LoginInput{
-		Options: map[string]string{"from_cli": "default", "site": "INTL"},
+		Options: map[string]string{"aliyun_profile": "default", "site": "INTL"},
 		Stdin:   strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, NoBrowser: true,
 	})
 	if err != nil || res.Metadata[metaSite] != siteIntl {
 		t.Errorf("site option: %v, %v", res, err)
 	}
 	if _, err := (&provider{}).Login(context.Background(), platform.LoginInput{
-		Options: map[string]string{"from_cli": "default", "site": "eu"},
+		Options: map[string]string{"aliyun_profile": "default", "site": "eu"},
 		Stdin:   strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, NoBrowser: true,
 	}); err == nil {
 		t.Error("invalid site option should be rejected")
@@ -805,7 +805,7 @@ func TestLoginNonInteractiveNeverAsks(t *testing.T) {
 		want    []string
 		wantNot string
 	}{
-		{"nothing", nil, []string{"--set access_key_id=<id>", "--set access_key_secret=-", envKeyID, envKeySecret, "--set from_cli=<profile>"}, ""},
+		{"nothing", nil, []string{"--set access_key_id=<id>", "--set access_key_secret=-", envKeyID, envKeySecret, "--set aliyun_profile=<profile>"}, ""},
 		{"no secret", map[string]string{"access_key_id": "LTAIone"}, []string{"--set access_key_secret=-"}, "--set access_key_id"},
 		{"no id", map[string]string{"access_key_secret": "s"}, []string{"--set access_key_id=<id>"}, "--set access_key_secret"},
 	} {

@@ -79,6 +79,9 @@ type fakeProvider struct {
 func (p *fakeProvider) ID() platform.ID     { return p.id }
 func (p *fakeProvider) DisplayName() string { return p.name }
 func (*fakeProvider) LoginHelp() string     { return "fake login" }
+func (*fakeProvider) LoginOptions() []string {
+	return []string{"token", "account", "api_key", "api_secret"}
+}
 func (*fakeProvider) ResourceTypes() []platform.ResourceType {
 	return []platform.ResourceType{platform.ResZone, platform.ResDNSRecord, platform.ResDomain}
 }

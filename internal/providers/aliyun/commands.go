@@ -19,12 +19,14 @@ func Command(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "aliyun",
 		Short: "Alibaba Cloud native commands",
-		Long: `Alibaba Cloud native commands: STS identity, Alibaba Cloud DNS (alidns)
+		Long: `Alibaba Cloud native commands: the identity check, Alibaba Cloud DNS (alidns)
 domains and records, the domain registrar and ECS instances. The profile is
 chosen with --profile (or the current/only aliyun profile); listing commands
 read the local inventory unless --refresh is given or the data has expired.`,
 	}
-	cmd.AddCommand(newSTSCmd(rt), newDNSCmd(rt), newDomainCmd(rt), newECSCmd(rt))
+	cmd.AddCommand(
+		app.WhoamiCommand(rt, platform.Aliyun, "On Alibaba Cloud this calls sts GetCallerIdentity and reports the account,\nthe ARN and the identity type."),
+		newDNSCmd(rt), newDomainCmd(rt), newECSCmd(rt))
 	return cmd
 }
 
@@ -68,41 +70,6 @@ func mustPositive(flag string, v int) error {
 	return nil
 }
 
-// ---- sts -------------------------------------------------------------------
-
-func newSTSCmd(rt *app.Runtime) *cobra.Command {
-	cmd := &cobra.Command{Use: "sts", Short: "Security Token Service"}
-	cmd.AddCommand(&cobra.Command{
-		Use:   "whoami",
-		Short: "Show the identity behind the profile's AccessKey (GetCallerIdentity)",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			c, p, err := openClient(rt, cmd.Context())
-			if err != nil {
-				return err
-			}
-			id, err := c.Verify(cmd.Context())
-			if err != nil {
-				return err
-			}
-			rt.Infof("profile %s", p.Name)
-			return rt.Render(id, func() output.Grid {
-				pairs := []string{"ACCOUNT", id.Account, "ARN", id.User}
-				keys := make([]string, 0, len(id.Extra))
-				for k := range id.Extra {
-					keys = append(keys, k)
-				}
-				sort.Strings(keys)
-				for _, k := range keys {
-					pairs = append(pairs, strings.ToUpper(k), id.Extra[k])
-				}
-				return output.KV(pairs...)
-			})
-		},
-	})
-	return cmd
-}
-
 // ---- dns -------------------------------------------------------------------
 
 type zoneList struct {
@@ -123,7 +90,7 @@ func newDNSCmd(rt *app.Runtime) *cobra.Command {
 	domain := &cobra.Command{Use: "domain", Short: "DNS domains hosted on alidns"}
 	domain.AddCommand(newDNSDomainListCmd(rt))
 	record := &cobra.Command{Use: "record", Short: "Records of an alidns domain"}
-	record.AddCommand(newDNSRecordListCmd(rt), newDNSRecordAddCmd(rt), newDNSRecordUpdateCmd(rt), newDNSRecordDeleteCmd(rt))
+	record.AddCommand(newDNSRecordListCmd(rt), newDNSRecordCreateCmd(rt), newDNSRecordUpdateCmd(rt), newDNSRecordDeleteCmd(rt))
 	cmd.AddCommand(domain, record)
 	return cmd
 }
@@ -174,11 +141,11 @@ func newDNSDomainListCmd(rt *app.Runtime) *cobra.Command {
 }
 
 func recordGrid(recs []platform.Record) output.Grid {
-	g := output.Grid{Headers: []string{"NAME", "TYPE", "CONTENT", "TTL", "LINE", "STATUS", "ID"}, Empty: "no records"}
+	g := output.Grid{Headers: []string{"NAME", "TYPE", "VALUE", "TTL", "LINE", "STATUS", "ID"}, Empty: "no records"}
 	for _, r := range recs {
-		content := r.Content
+		content := r.Value
 		if r.Priority != nil {
-			content = fmt.Sprintf("%d %s", *r.Priority, r.Content)
+			content = fmt.Sprintf("%d %s", *r.Priority, r.Value)
 		}
 		g.Rows = append(g.Rows, []string{r.Name, r.Type, content, platform.TTLLabel(platform.Aliyun, r), output.Str(r.Extra["line"]), output.Str(r.Extra["status"]), r.ID})
 	}
@@ -259,12 +226,12 @@ func upsertRecord(rt *app.Runtime, ctx context.Context, prof, zone string, rec p
 		app.RecordResources(zone, zone, []platform.Record{rec})[0], cfg.TTLFor(platform.ResDNSRecord))
 }
 
-func newDNSRecordAddCmd(rt *app.Runtime) *cobra.Command {
+func newDNSRecordCreateCmd(rt *app.Runtime) *cobra.Command {
 	var typ, name, value, line string
 	var ttl, priority int
 	cmd := &cobra.Command{
-		Use:   "add <domain>",
-		Short: "Add a record to an alidns domain",
+		Use:   "create <domain>",
+		Short: "Create a record in an alidns domain",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if typ == "" || value == "" {
@@ -278,7 +245,7 @@ func newDNSRecordAddCmd(rt *app.Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			rec := platform.Record{ZoneID: zone, Name: platform.FQDN(name, zone), Type: strings.ToUpper(typ), Content: value, TTL: ttl}
+			rec := platform.Record{ZoneID: zone, Name: platform.FQDN(name, zone), Type: strings.ToUpper(typ), Value: value, TTL: ttl}
 			if cmd.Flags().Changed("priority") {
 				pr := priority
 				rec.Priority = &pr
@@ -291,7 +258,7 @@ func newDNSRecordAddCmd(rt *app.Runtime) *cobra.Command {
 				return err
 			}
 			upsertRecord(rt, cmd.Context(), p.Name, zone, *out)
-			rt.Infof("created %s %s -> %s (id %s) via aliyun/%s", out.Name, out.Type, out.Content, out.ID, p.Name)
+			rt.Infof("created %s %s -> %s (id %s) via aliyun/%s", out.Name, out.Type, out.Value, out.ID, p.Name)
 			return rt.Render(recordList{Profile: p.Name, Zone: zone, Records: []platform.Record{*out}}, func() output.Grid {
 				return recordGrid([]platform.Record{*out})
 			})
@@ -299,7 +266,7 @@ func newDNSRecordAddCmd(rt *app.Runtime) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&typ, "type", "", "record type (A, AAAA, CNAME, TXT, MX, ...)")
 	cmd.Flags().StringVar(&name, "name", "", "record name relative to the domain (www, @); default: the apex")
-	cmd.Flags().StringVar(&value, "value", "", "record content")
+	cmd.Flags().StringVar(&value, "value", "", "record value")
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 = alidns default, 600)")
 	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX records (1-50)")
 	cmd.Flags().StringVar(&line, "line", "", "resolution line (default, telecom, unicom, mobile, oversea, ...)")
@@ -307,16 +274,16 @@ func newDNSRecordAddCmd(rt *app.Runtime) *cobra.Command {
 }
 
 func newDNSRecordUpdateCmd(rt *app.Runtime) *cobra.Command {
-	var id, typ, name, value, line string
+	var typ, name, value, line string
 	var ttl, priority int
 	cmd := &cobra.Command{
-		Use:   "update <domain>",
-		Short: "Update the record with --id; unset fields keep their current value",
-		Args:  cobra.ExactArgs(1),
+		Use:   "update <domain> <record-id>",
+		Short: "Update one record (fields that are not given keep their value)",
+		Long: "Update the record <record-id> of <domain>; the ids are shown by\n" +
+			"`polyctl aliyun dns record list`. Only the fields given are changed.",
+		Args: app.RecordIDArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if id == "" {
-				return app.UsageErrf("--id is required")
-			}
+			id := args[1]
 			if err := mustPositive("ttl", ttl); err != nil {
 				return err
 			}
@@ -347,7 +314,7 @@ func newDNSRecordUpdateCmd(rt *app.Runtime) *cobra.Command {
 				rec.Name = platform.FQDN(name, zone)
 			}
 			if value != "" {
-				rec.Content = value
+				rec.Value = value
 			}
 			if cmd.Flags().Changed("ttl") {
 				rec.TTL = ttl
@@ -367,16 +334,15 @@ func newDNSRecordUpdateCmd(rt *app.Runtime) *cobra.Command {
 				return err
 			}
 			upsertRecord(rt, cmd.Context(), p.Name, zone, *out)
-			rt.Infof("updated %s %s -> %s (id %s) via aliyun/%s", out.Name, out.Type, out.Content, out.ID, p.Name)
+			rt.Infof("updated %s %s -> %s (id %s) via aliyun/%s", out.Name, out.Type, out.Value, out.ID, p.Name)
 			return rt.Render(recordList{Profile: p.Name, Zone: zone, Records: []platform.Record{*out}}, func() output.Grid {
 				return recordGrid([]platform.Record{*out})
 			})
 		},
 	}
-	cmd.Flags().StringVar(&id, "id", "", "record id (see 'aliyun dns record list')")
 	cmd.Flags().StringVar(&typ, "type", "", "new record type")
 	cmd.Flags().StringVar(&name, "name", "", "new record name relative to the domain (www, @)")
-	cmd.Flags().StringVar(&value, "value", "", "new record content")
+	cmd.Flags().StringVar(&value, "value", "", "new record value")
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "new TTL in seconds")
 	cmd.Flags().IntVar(&priority, "priority", 0, "new priority for MX records")
 	cmd.Flags().StringVar(&line, "line", "", "new resolution line")
@@ -384,15 +350,12 @@ func newDNSRecordUpdateCmd(rt *app.Runtime) *cobra.Command {
 }
 
 func newDNSRecordDeleteCmd(rt *app.Runtime) *cobra.Command {
-	var id string
 	cmd := &cobra.Command{
-		Use:   "delete <domain>",
-		Short: "Delete the record with --id",
-		Args:  cobra.ExactArgs(1),
+		Use:   "delete <domain> <record-id>",
+		Short: "Delete one record (ids are shown by `polyctl aliyun dns record list`)",
+		Args:  app.RecordIDArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if id == "" {
-				return app.UsageErrf("--id is required")
-			}
+			id := args[1]
 			zone := platform.NormalizeDomain(args[0])
 			c, p, err := openClient(rt, cmd.Context())
 			if err != nil {
@@ -408,7 +371,6 @@ func newDNSRecordDeleteCmd(rt *app.Runtime) *cobra.Command {
 			return rt.Render(map[string]string{"profile": p.Name, "zone": zone, "deleted": id}, func() output.Grid { return output.Grid{} })
 		},
 	}
-	cmd.Flags().StringVar(&id, "id", "", "record id (see 'aliyun dns record list')")
 	return cmd
 }
 
@@ -598,14 +560,16 @@ func newDomainGetCmd(rt *app.Runtime) *cobra.Command {
 }
 
 func newDomainNSSetCmd(rt *app.Runtime) *cobra.Command {
-	var ns []string
 	cmd := &cobra.Command{
-		Use:   "set <domain>",
-		Short: "Replace the nameservers of a registered domain",
-		Args:  cobra.ExactArgs(1),
+		Use:     "set <domain> <nameserver>...",
+		Short:   "Replace the nameservers of a registered domain",
+		Long:    "Replace the nameservers of <domain> with the ones given.\n" + app.NameserverHelp,
+		Example: "  polyctl aliyun domain ns set example.com ns1.example.net ns2.example.net",
+		Args:    app.NameserverArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(ns) == 0 {
-				return app.UsageErrf("--ns is required")
+			ns, err := app.Nameservers(args[1:])
+			if err != nil {
+				return err
 			}
 			c, p, err := openClient(rt, cmd.Context())
 			if err != nil {
@@ -628,7 +592,6 @@ func newDomainNSSetCmd(rt *app.Runtime) *cobra.Command {
 			return rt.Render(d, func() output.Grid { return domainKV(d) })
 		},
 	}
-	cmd.Flags().StringSliceVar(&ns, "ns", nil, "nameservers, comma separated (ns1.example.com,ns2.example.com)")
 	return cmd
 }
 
@@ -650,8 +613,10 @@ func instanceGrid(list []Instance) output.Grid {
 }
 
 func newECSCmd(rt *app.Runtime) *cobra.Command {
-	cmd := &cobra.Command{Use: "ecs", Short: "Elastic Compute Service instances"}
-	cmd.AddCommand(newECSListCmd(rt), newECSStartCmd(rt), newECSStopCmd(rt))
+	cmd := &cobra.Command{Use: "ecs", Short: "Elastic Compute Service"}
+	instance := &cobra.Command{Use: "instance", Short: "ECS instances"}
+	instance.AddCommand(newECSListCmd(rt), newECSStartCmd(rt), newECSStopCmd(rt))
+	cmd.AddCommand(instance)
 	return cmd
 }
 
@@ -771,7 +736,7 @@ func newECSStopCmd(rt *app.Runtime) *cobra.Command {
 		Short: "Stop a running ECS instance",
 		Long: "Stop a running ECS instance. In the interactive flow the stop is confirmed\n" +
 			"first (default no); --yes skips the question. In the non-interactive flow\n" +
-			"(no terminal, --no-input or POLYCTL_NO_INPUT=1) nothing is asked: --yes is\n" +
+			"(no terminal, --non-interactive or POLYCTL_NON_INTERACTIVE=1) nothing is asked:\n--yes is " +
 			"required, and without it the command is a usage error (exit code 2).",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

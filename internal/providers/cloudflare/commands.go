@@ -15,18 +15,25 @@ import (
 	"github.com/gofika/polyctl/internal/platform"
 )
 
-// Command returns the `polyctl cf` command tree.
+// Command returns the `polyctl cloudflare` command tree. The command is
+// named after the platform id, like every other tree; `cf` is kept as an
+// alias because the platform id itself accepts that short form.
 func Command(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "cf",
-		Short: "Cloudflare native commands",
+		Use:     "cloudflare",
+		Aliases: []string{"cf"},
+		Short:   "Cloudflare native commands (alias: cf)",
 		Long: `Cloudflare-specific operations: zones, DNS records, cache purge, development
-mode, SSL mode, accounts and token verification.
+mode, SSL mode, accounts and the identity check.
 
 <zone> arguments accept a zone name (example.com) or a zone id. Names are
-resolved through the local inventory first, then remotely.`,
+resolved through the local inventory first, then remotely.
+
+The tree is also available under its short name: polyctl cf ...`,
 	}
-	cmd.AddCommand(newZoneCmd(rt), newDNSCmd(rt), newCacheCmd(rt), newDevModeCmd(rt), newSSLModeCmd(rt), newAccountCmd(rt), newTokenCmd(rt))
+	cmd.AddCommand(
+		app.WhoamiCommand(rt, platform.Cloudflare, "On Cloudflare this verifies the API token and reports its id, status and\nexpiry, with the account the profile is pinned to."),
+		newZoneCmd(rt), newDNSCmd(rt), newCacheCmd(rt), newDevModeCmd(rt), newSSLModeCmd(rt), newAccountCmd(rt))
 	return cmd
 }
 
@@ -145,17 +152,6 @@ func cacheNote(cached bool) string {
 	return ""
 }
 
-func parseBool(flag, v string) (*bool, error) {
-	switch v {
-	case "":
-		return nil, nil
-	case "true", "false":
-		b := v == "true"
-		return &b, nil
-	}
-	return nil, fmt.Errorf("--%s must be true or false", flag)
-}
-
 // --- output shapes ---------------------------------------------------------
 
 type zoneListResult struct {
@@ -198,11 +194,11 @@ func zoneKV(z *platform.Zone) output.Grid {
 }
 
 func recordGrid(recs []platform.Record) output.Grid {
-	g := output.Grid{Headers: []string{"NAME", "TYPE", "CONTENT", "TTL", "PROXIED", "ID"}, Empty: "no records"}
+	g := output.Grid{Headers: []string{"NAME", "TYPE", "VALUE", "TTL", "PROXIED", "ID"}, Empty: "no records"}
 	for _, r := range recs {
-		content := r.Content
+		content := r.Value
 		if r.Priority != nil {
-			content = fmt.Sprintf("%d %s", *r.Priority, r.Content)
+			content = fmt.Sprintf("%d %s", *r.Priority, r.Value)
 		}
 		g.Rows = append(g.Rows, []string{r.Name, r.Type, content, platform.TTLLabel(platform.Cloudflare, r), output.Str(r.Proxied), r.ID})
 	}
@@ -363,12 +359,13 @@ func storeRecord(ctx context.Context, rt *app.Runtime, profile string, z *platfo
 }
 
 func newDNSCreateCmd(rt *app.Runtime) *cobra.Command {
-	var typ, name, value, proxied, comment string
+	var typ, name, value, comment string
 	var ttl, priority int
+	var proxied bool
 	cmd := &cobra.Command{
 		Use:               "create <zone>",
 		Short:             "Create a DNS record",
-		Args:              cobra.ExactArgs(1),
+		Args:              app.ProxiedArgs(cobra.ExactArgs(1)),
 		ValidArgsFunction: completeZones(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if typ == "" || value == "" {
@@ -376,10 +373,6 @@ func newDNSCreateCmd(rt *app.Runtime) *cobra.Command {
 			}
 			if rt.Flags.Offline {
 				return app.ErrOffline
-			}
-			px, err := parseBool("proxied", proxied)
-			if err != nil {
-				return err
 			}
 			z, profile, err := resolveZone(cmd.Context(), rt, args[0])
 			if err != nil {
@@ -389,7 +382,11 @@ func newDNSCreateCmd(rt *app.Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			rec := platform.Record{ZoneID: z.ID, Name: platform.FQDN(name, z.Name), Type: strings.ToUpper(typ), Content: value, TTL: ttl, Proxied: px}
+			rec := platform.Record{ZoneID: z.ID, Name: platform.FQDN(name, z.Name), Type: strings.ToUpper(typ), Value: value, TTL: ttl}
+			if cmd.Flags().Changed("proxied") {
+				px := proxied
+				rec.Proxied = &px
+			}
 			if cmd.Flags().Changed("priority") {
 				p := priority
 				rec.Priority = &p
@@ -402,38 +399,38 @@ func newDNSCreateCmd(rt *app.Runtime) *cobra.Command {
 				return err
 			}
 			storeRecord(cmd.Context(), rt, profile, z, *out)
-			rt.Infof("created %s %s -> %s in zone %s via cloudflare/%s", out.Name, out.Type, out.Content, z.Name, profile)
+			rt.Infof("created %s %s -> %s in zone %s via cloudflare/%s", out.Name, out.Type, out.Value, z.Name, profile)
 			return rt.Render(recordsResult{Profile: profile, Zone: z, Records: []platform.Record{*out}}, func() output.Grid { return recordGrid([]platform.Record{*out}) })
 		},
 	}
 	cmd.Flags().StringVar(&typ, "type", "", "record type (A, AAAA, CNAME, TXT, MX, ...)")
 	cmd.Flags().StringVar(&name, "name", "", "record name relative to the zone (www, @) or FQDN; default: the zone apex")
-	cmd.Flags().StringVar(&value, "value", "", "record content")
+	cmd.Flags().StringVar(&value, "value", "", "record value")
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 or 1 = automatic)")
 	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX/SRV/URI records")
-	cmd.Flags().StringVar(&proxied, "proxied", "", "proxy through Cloudflare: true or false")
+	cmd.Flags().BoolVar(&proxied, "proxied", false, "proxy through Cloudflare: --proxied or --proxied=false (default: Cloudflare's default)")
 	cmd.Flags().StringVar(&comment, "comment", "", "record comment")
 	return cmd
 }
 
 func newDNSUpdateCmd(rt *app.Runtime) *cobra.Command {
-	var id, typ, name, value, proxied, comment string
+	var typ, name, value, comment string
 	var ttl, priority int
+	var proxied bool
 	cmd := &cobra.Command{
-		Use:               "update <zone>",
-		Short:             "Update the DNS record identified by --id (unset fields keep their value)",
-		Args:              cobra.ExactArgs(1),
-		ValidArgsFunction: completeZones(rt),
+		Use:   "update <zone> <record-id>",
+		Short: "Update one DNS record (fields that are not given keep their value)",
+		Long: `Update the DNS record <record-id> of <zone>; the ids are shown by
+` + "`polyctl cloudflare dns list`" + `. Only the fields given are changed.
+
+--proxied is a boolean: --proxied switches the proxy on, --proxied=false
+switches it off, and without it the record keeps its current setting.`,
+		Args:              app.ProxiedArgs(app.RecordIDArgs),
+		ValidArgsFunction: app.CompleteRecordIDArgs(rt, platform.Cloudflare),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if id == "" {
-				return app.UsageErrf("--id is required")
-			}
+			id := args[1]
 			if rt.Flags.Offline {
 				return app.ErrOffline
-			}
-			px, err := parseBool("proxied", proxied)
-			if err != nil {
-				return err
 			}
 			z, profile, err := resolveZone(cmd.Context(), rt, args[0])
 			if err != nil {
@@ -470,7 +467,7 @@ func newDNSUpdateCmd(rt *app.Runtime) *cobra.Command {
 				rec.Name = platform.FQDN(name, z.Name)
 			}
 			if value != "" {
-				rec.Content = value
+				rec.Value = value
 				// The structured `data` of SRV/CAA/LOC/... records takes
 				// precedence over `content` on write; drop the stale copy so
 				// the new value is not silently ignored.
@@ -483,8 +480,9 @@ func newDNSUpdateCmd(rt *app.Runtime) *cobra.Command {
 				p := priority
 				rec.Priority = &p
 			}
-			if px != nil {
-				rec.Proxied = px
+			if cmd.Flags().Changed("proxied") {
+				px := proxied
+				rec.Proxied = &px
 			}
 			if cmd.Flags().Changed("comment") {
 				rec.Extra["comment"] = comment
@@ -494,32 +492,28 @@ func newDNSUpdateCmd(rt *app.Runtime) *cobra.Command {
 				return err
 			}
 			storeRecord(cmd.Context(), rt, profile, z, *out)
-			rt.Infof("updated %s %s -> %s in zone %s via cloudflare/%s", out.Name, out.Type, out.Content, z.Name, profile)
+			rt.Infof("updated %s %s -> %s in zone %s via cloudflare/%s", out.Name, out.Type, out.Value, z.Name, profile)
 			return rt.Render(recordsResult{Profile: profile, Zone: z, Records: []platform.Record{*out}}, func() output.Grid { return recordGrid([]platform.Record{*out}) })
 		},
 	}
-	cmd.Flags().StringVar(&id, "id", "", "record id (see 'cf dns list')")
 	cmd.Flags().StringVar(&typ, "type", "", "new record type")
 	cmd.Flags().StringVar(&name, "name", "", "new record name relative to the zone (www, @) or FQDN")
-	cmd.Flags().StringVar(&value, "value", "", "new record content")
+	cmd.Flags().StringVar(&value, "value", "", "new record value")
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "new TTL in seconds (0 or 1 = automatic)")
 	cmd.Flags().IntVar(&priority, "priority", 0, "new priority for MX/SRV/URI records")
-	cmd.Flags().StringVar(&proxied, "proxied", "", "proxy through Cloudflare: true or false")
+	cmd.Flags().BoolVar(&proxied, "proxied", false, "proxy through Cloudflare: --proxied or --proxied=false (default: keep the current setting)")
 	cmd.Flags().StringVar(&comment, "comment", "", "new record comment (empty string clears it)")
 	return cmd
 }
 
 func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
-	var id string
 	cmd := &cobra.Command{
-		Use:               "delete <zone>",
-		Short:             "Delete the DNS record identified by --id",
-		Args:              cobra.ExactArgs(1),
-		ValidArgsFunction: completeZones(rt),
+		Use:               "delete <zone> <record-id>",
+		Short:             "Delete one DNS record (ids are shown by `polyctl cloudflare dns list`)",
+		Args:              app.RecordIDArgs,
+		ValidArgsFunction: app.CompleteRecordIDArgs(rt, platform.Cloudflare),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if id == "" {
-				return app.UsageErrf("--id is required")
-			}
+			id := args[1]
 			if rt.Flags.Offline {
 				return app.ErrOffline
 			}
@@ -541,7 +535,6 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 			return rt.Render(map[string]string{"profile": profile, "zone_id": z.ID, "zone": z.Name, "deleted": id}, func() output.Grid { return output.Grid{} })
 		},
 	}
-	cmd.Flags().StringVar(&id, "id", "", "record id (see 'cf dns list')")
 	return cmd
 }
 
@@ -722,40 +715,6 @@ func newAccountCmd(rt *app.Runtime) *cobra.Command {
 					g.Rows = append(g.Rows, []string{a.Name, a.Type, a.ID, mark})
 				}
 				return g
-			})
-		},
-	})
-	return cmd
-}
-
-type tokenVerifyResult struct {
-	Profile string     `json:"profile" yaml:"profile"`
-	Token   *tokenInfo `json:"token" yaml:"token"`
-}
-
-func newTokenCmd(rt *app.Runtime) *cobra.Command {
-	cmd := &cobra.Command{Use: "token", Short: "API token"}
-	cmd.AddCommand(&cobra.Command{
-		Use:   "verify",
-		Short: "Verify the profile's API token",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if rt.Flags.Offline {
-				return app.ErrOffline
-			}
-			s, err := open(cmd.Context(), rt)
-			if err != nil {
-				return err
-			}
-			tok, err := s.client.api.verifyToken(cmd.Context())
-			if err != nil {
-				return err
-			}
-			if tok.Status != "active" {
-				rt.Infof("warning: token status is %q", tok.Status)
-			}
-			return rt.Render(tokenVerifyResult{Profile: s.profile, Token: tok}, func() output.Grid {
-				return output.KV("profile", s.profile, "token_id", tok.ID, "status", tok.Status, "expires_on", tok.ExpiresOn, "not_before", tok.NotBefore)
 			})
 		},
 	})

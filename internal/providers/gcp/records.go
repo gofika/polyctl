@@ -26,8 +26,8 @@ const defaultTTL = 300
 // that stands in for a record set driven by a routing policy.
 const routingPolicyMarker = "routing-policy"
 
-// routingPolicyContent is shown as Content of such a record.
-const routingPolicyContent = "<routing policy>"
+// routingPolicyValue is shown as the value of such a record.
+const routingPolicyValue = "<routing policy>"
 
 // encodeRecordID builds the per-value record identifier. zoneID is the
 // managed zone name, fqdn the record name without trailing dot and rrdata
@@ -86,13 +86,13 @@ func recordsFromRRSet(zoneID string, rs *dns.ResourceRecordSet) []platform.Recor
 	out := make([]platform.Record, 0, len(rs.Rrdatas)+1)
 	if rs.RoutingPolicy != nil {
 		out = append(out, platform.Record{
-			ID:      encodeRecordID(zoneID, typ, fqdn, routingPolicyMarker),
-			ZoneID:  zoneID,
-			Name:    fqdn,
-			Type:    typ,
-			TTL:     int(rs.Ttl),
-			Content: routingPolicyContent,
-			Extra:   map[string]any{"routing_policy": rs.RoutingPolicy},
+			ID:     encodeRecordID(zoneID, typ, fqdn, routingPolicyMarker),
+			ZoneID: zoneID,
+			Name:   fqdn,
+			Type:   typ,
+			TTL:    int(rs.Ttl),
+			Value:  routingPolicyValue,
+			Extra:  map[string]any{"routing_policy": rs.RoutingPolicy},
 		})
 	}
 	for _, v := range rs.Rrdatas {
@@ -104,13 +104,13 @@ func recordsFromRRSet(zoneID string, rs *dns.ResourceRecordSet) []platform.Recor
 			TTL:    int(rs.Ttl),
 			Extra:  map[string]any{"rrdata": v},
 		}
-		r.Content, r.Priority = splitRRData(typ, v)
+		r.Value, r.Priority = splitRRData(typ, v)
 		out = append(out, r)
 	}
 	return out
 }
 
-// splitRRData converts a raw rrdata value into Record.Content and Priority.
+// splitRRData converts a raw rrdata value into Record.Value and Priority.
 func splitRRData(typ, v string) (string, *int) {
 	switch strings.ToUpper(typ) {
 	case "MX", "SRV":
@@ -137,7 +137,7 @@ func splitRRData(typ, v string) (string, *int) {
 
 // unquoteTXT strips the outer quotes of a single-string TXT rrdata
 // (`"v=spf1 -all"` -> `v=spf1 -all`) and restores escaped quotes, so that
-// Content matches what a user types; quoteTXT is its inverse. Multi-string
+// Value matches what a user types; quoteTXT is its inverse. Multi-string
 // rrdatas (`"a" "b"`) and unquoted values are returned unchanged with ok
 // false.
 func unquoteTXT(v string) (string, bool) {
@@ -170,13 +170,13 @@ func unquoteTXT(v string) (string, bool) {
 	return b.String(), true
 }
 
-// rrdataFromRecord converts a Record (Content + Priority) into the raw value
+// rrdataFromRecord converts a Record (Value + Priority) into the raw value
 // Cloud DNS expects, re-adding trailing dots on hostnames and quoting TXT.
 func rrdataFromRecord(r platform.Record) (string, error) {
 	typ := strings.ToUpper(r.Type)
-	content := strings.TrimSpace(r.Content)
+	content := strings.TrimSpace(r.Value)
 	if content == "" {
-		return "", fmt.Errorf("record content is required")
+		return "", fmt.Errorf("record value is required")
 	}
 	switch typ {
 	case "MX", "SRV":
@@ -195,10 +195,10 @@ func rrdataFromRecord(r platform.Record) (string, error) {
 			return "", fmt.Errorf("%s records need --priority", typ)
 		}
 		if typ == "MX" && len(fields) != 1 {
-			return "", fmt.Errorf("MX content must be a single mail server hostname")
+			return "", fmt.Errorf("MX value must be a single mail server hostname")
 		}
 		if typ == "SRV" && len(fields) != 3 {
-			return "", fmt.Errorf("SRV content must be \"<weight> <port> <target>\"")
+			return "", fmt.Errorf("SRV value must be \"<weight> <port> <target>\"")
 		}
 		fields[len(fields)-1] = ensureDot(fields[len(fields)-1])
 		return fmt.Sprintf("%d %s", *prio, strings.Join(fields, " ")), nil

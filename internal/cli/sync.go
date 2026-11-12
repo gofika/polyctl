@@ -79,11 +79,19 @@ error.`,
 		},
 	}
 	cmd.Flags().StringSliceVar(&platforms, "platform", nil, "only sync these platforms (comma-separated)")
-	cmd.Flags().StringSliceVar(&types, "type", nil, "only sync these resource types: domain, zone, dns_record, instance")
-	_ = cmd.RegisterFlagCompletionFunc("platform", completePlatforms)
-	_ = cmd.RegisterFlagCompletionFunc("type", cobra.FixedCompletions([]string{"domain", "zone", "dns_record", "instance"}, cobra.ShellCompDirectiveNoFileComp))
+	cmd.Flags().StringSliceVar(&types, "type", nil, "only sync these resource types: "+resourceTypeNames)
+	_ = cmd.RegisterFlagCompletionFunc("platform", completePlatformList)
+	_ = cmd.RegisterFlagCompletionFunc("type", completeResourceTypes)
 	return cmd
 }
+
+// resourceTypeNames lists the values of the --type filter of sync and
+// inventory list, for their help.
+const resourceTypeNames = "domain, zone, dns_record, instance (comma-separated)"
+
+// completeResourceTypes completes the --type filter of sync and inventory
+// list.
+var completeResourceTypes = completeList(func() []string { return []string{"domain", "zone", "dns_record", "instance"} })
 
 // noSyncAccount is the note for a `sync` whose selection names no account,
 // or that has no account at all: nothing was synced, which is not a failure.
@@ -159,34 +167,46 @@ func newInventoryCmd(rt *app.Runtime) *cobra.Command {
 			})
 		},
 	})
-	var typ, plat, name string
+	var types, platforms []string
+	var name string
 	list := &cobra.Command{
 		Use:   "list",
 		Short: "List cached resources",
-		Args:  cobra.NoArgs,
+		Long: `List the resources cached in the local inventory, optionally narrowed with
+--profile, --platform, --type and --name. --platform and --type take lists,
+as on sync: repeat the flag or separate the values with commas.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			db, err := rt.DB()
 			if err != nil {
 				return err
 			}
-			q := inventory.Query{Profile: rt.Flags.Profile, Name: name}
-			if typ != "" {
-				t, err := platform.ParseResourceType(typ)
+			// Validate both lists before reading anything.
+			wantType := map[platform.ResourceType]bool{}
+			for _, s := range types {
+				t, err := platform.ParseResourceType(s)
 				if err != nil {
 					return usageErr("%v", err)
 				}
-				q.Type = t
+				wantType[t] = true
 			}
-			if plat != "" {
-				id, err := platform.Parse(plat)
+			wantPlatform := map[platform.ID]bool{}
+			for _, s := range platforms {
+				id, err := platform.Parse(s)
 				if err != nil {
 					return usageErr("%v", err)
 				}
-				q.Platform = id
+				wantPlatform[id] = true
 			}
-			rows, err := db.List(cmd.Context(), q)
+			all, err := db.List(cmd.Context(), inventory.Query{Profile: rt.Flags.Profile, Name: name})
 			if err != nil {
 				return err
+			}
+			rows := make([]inventory.Resource, 0, len(all))
+			for _, r := range all {
+				if (len(wantType) == 0 || wantType[r.Type]) && (len(wantPlatform) == 0 || wantPlatform[r.Platform]) {
+					rows = append(rows, r)
+				}
 			}
 			return rt.Render(rows, func() output.Grid {
 				g := output.Grid{Headers: []string{"PLATFORM", "PROFILE", "TYPE", "NAME", "ID", "UPDATED"}, Empty: "no cached resources"}
@@ -197,9 +217,11 @@ func newInventoryCmd(rt *app.Runtime) *cobra.Command {
 			})
 		},
 	}
-	list.Flags().StringVar(&typ, "type", "", "resource type filter")
-	list.Flags().StringVar(&plat, "platform", "", "platform filter")
-	list.Flags().StringVar(&name, "name", "", "exact name filter")
+	list.Flags().StringSliceVar(&platforms, "platform", nil, "only list these platforms (comma-separated)")
+	list.Flags().StringSliceVar(&types, "type", nil, "only list these resource types: "+resourceTypeNames)
+	list.Flags().StringVar(&name, "name", "", "only list resources with exactly this name")
+	_ = list.RegisterFlagCompletionFunc("platform", completePlatformList)
+	_ = list.RegisterFlagCompletionFunc("type", completeResourceTypes)
 	cmd.AddCommand(list)
 	cmd.AddCommand(&cobra.Command{
 		Use:   "path",

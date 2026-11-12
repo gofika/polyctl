@@ -242,7 +242,7 @@ func TestFailedSaveIsUndoneInMemory(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			rt := app.New(app.Flags{ConfigPath: cfgPath}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+			rt := app.New(app.Flags{ConfigDir: filepath.Dir(cfgPath)}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 			defer rt.Close()
 			if _, err := rt.Creds(); err != nil {
 				t.Fatal(err)
@@ -573,8 +573,9 @@ func TestAuthListOmitsMissingTimestamp(t *testing.T) {
 	}
 }
 
-// `domain which` lists every owner whatever --profile says, but a profile
-// that does not exist is an error and not silently ignored.
+// `domain which` narrows the owners with --profile and --platform, as
+// `domain list` does; a profile or platform that does not exist is an error
+// and not an empty list.
 func TestDomainWhichValidatesProfile(t *testing.T) {
 	dir, cfgPath := setupMulti(t)
 	seedZone(t, dir, config.AccountRef{Profile: "a", Platform: fakePlatform}, "one.example")
@@ -591,11 +592,25 @@ func TestDomainWhichValidatesProfile(t *testing.T) {
 			t.Errorf("%v: exit %d (stderr %q), want a usage error", args, code, stderr)
 		}
 	}
-	// A profile that exists narrows nothing: the owner in another profile
-	// is still listed.
-	stdout, _, err := run(t, cfgPath, "domain", "which", "one.example", "--profile", "b", "--offline")
+	// Without the flags every owner is shown.
+	stdout, _, err := run(t, cfgPath, "domain", "which", "one.example", "--offline")
 	if err != nil || !strings.Contains(stdout, "one.example") {
-		t.Errorf("domain which --profile b = %q, %v", stdout, err)
+		t.Errorf("domain which = %q, %v", stdout, err)
+	}
+	// --profile and --platform narrow the list: the owner's own profile
+	// and platform keep it, another profile or platform does not.
+	for _, sel := range [][]string{{"--profile", "a"}, {"--platform", string(fakePlatform)}, {"--profile", "a", "--platform", string(fakePlatform)}} {
+		args := append([]string{"domain", "which", "one.example", "--offline"}, sel...)
+		if stdout, _, err := run(t, cfgPath, args...); err != nil || !strings.Contains(stdout, "one.example") {
+			t.Errorf("%v = %q, %v; want the owner listed", args, stdout, err)
+		}
+	}
+	for _, sel := range [][]string{{"--profile", "b"}, {"--platform", p2}} {
+		args := append([]string{"domain", "which", "one.example", "--offline"}, sel...)
+		stdout, _, err := run(t, cfgPath, args...)
+		if !errors.Is(err, app.ErrDomainUnknown) || ExitCodeFor(err) != ExitNotFound || stdout != "" || !strings.Contains(err.Error(), "--profile / --platform") {
+			t.Errorf("%v = %q, %v; want no owner under that selection", args, stdout, err)
+		}
 	}
 }
 
@@ -734,7 +749,7 @@ func TestRemoveAccountChecksForChangesFirst(t *testing.T) {
 	dir, cfgPath := setupMulti(t)
 	ref := config.AccountRef{Profile: "a", Platform: fakePlatform2}
 	seedZone(t, dir, ref, "two.example")
-	rt := app.New(app.Flags{ConfigPath: cfgPath}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	rt := app.New(app.Flags{ConfigDir: filepath.Dir(cfgPath)}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
 	defer rt.Close()
 	if _, err := rt.Creds(); err != nil {
 		t.Fatal(err)
@@ -775,7 +790,7 @@ func TestRemoveAccountChecksForChangesFirst(t *testing.T) {
 func TestAuthLogoutOnAConfigChangedSinceStart(t *testing.T) {
 	dir, cfgPath := setupMulti(t)
 	var out, errb bytes.Buffer
-	rt := app.New(app.Flags{ConfigPath: cfgPath}, strings.NewReader(""), &out, &errb)
+	rt := app.New(app.Flags{ConfigDir: filepath.Dir(cfgPath)}, strings.NewReader(""), &out, &errb)
 	defer rt.Close()
 	if _, err := rt.Config(); err != nil {
 		t.Fatal(err)
@@ -784,7 +799,7 @@ func TestAuthLogoutOnAConfigChangedSinceStart(t *testing.T) {
 		cfg.Profiles["added"] = &config.Profile{Platforms: map[platform.ID]*config.Account{}}
 	})
 	root := NewRoot(rt)
-	root.SetArgs([]string{"--config", cfgPath, "auth", "logout", "--profile", "a"})
+	root.SetArgs([]string{"--config-dir", filepath.Dir(cfgPath), "auth", "logout", "--profile", "a"})
 	root.SetOut(&out)
 	root.SetErr(&errb)
 	if err := root.ExecuteContext(context.Background()); err != nil {
@@ -898,8 +913,8 @@ func (f readerFunc) Read(b []byte) (int, error) { return f(b) }
 func TestDNSDeleteDeclinedIsNotAnError(t *testing.T) {
 	dir, cfgPath := setup(t, true)
 	recs := []platform.Record{
-		{ID: "r1", ZoneID: "z1", Name: "www.example.com", Type: "A", Content: "1.2.3.4"},
-		{ID: "r2", ZoneID: "z1", Name: "www.example.com", Type: "A", Content: "5.6.7.8"},
+		{ID: "r1", ZoneID: "z1", Name: "www.example.com", Type: "A", Value: "1.2.3.4"},
+		{ID: "r2", ZoneID: "z1", Name: "www.example.com", Type: "A", Value: "5.6.7.8"},
 	}
 	seed(t, dir, []platform.Zone{{ID: "z1", Name: "example.com"}}, map[string][]platform.Record{"z1": recs})
 	fc := client("a")
@@ -952,7 +967,7 @@ func TestDNSDeleteDeclinedIsNotAnError(t *testing.T) {
 	// question, no read of stdin, a usage error that asks for --yes. A
 	// piped "y" is data, not an answer.)
 	var out, errb bytes.Buffer
-	code := Main(append([]string{"--config", cfgPath}, args...), strings.NewReader("y\n"), &out, &errb)
+	code := Main(append([]string{"--config-dir", filepath.Dir(cfgPath)}, args...), strings.NewReader("y\n"), &out, &errb)
 	if code != ExitUsage || !strings.Contains(errb.String(), "error: usage error: confirmation required: pass --yes to proceed (would delete 2 records in zone example.com)") || strings.Contains(errb.String(), "(y/N)") || deleted() {
 		t.Errorf("dns delete without a terminal: exit %d (stderr %q)", code, errb.String())
 	}

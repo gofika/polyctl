@@ -38,12 +38,12 @@ func loginHelp() string {
 // secretOptionKeys are --set keys whose value is a credential. Passing one
 // on the command line exposes it to process listings and shell history, so
 // polyctl warns and points at the "-" form, which reads the value from
-// stdin instead (any key may use that form). GoDaddy's legacy "key" is not
-// listed: it is the public half of the pair, and the documented scripted
-// form is --set key=<key> --set secret=-.
+// stdin instead (any key may use that form). GoDaddy's legacy "api_key" is
+// not listed: it is the public half of the pair, and the documented
+// scripted form is --set api_key=<key> --set api_secret=-.
 var secretOptionKeys = map[string]bool{
 	"token":             true,
-	"secret":            true,
+	"api_secret":        true,
 	"client_secret":     true,
 	"access_key_secret": true,
 	"secret_access_key": true,
@@ -63,19 +63,22 @@ func newAuthLoginCmd(rt *app.Runtime) *cobra.Command {
 			"profile, or to a profile named \"default\" when no profile is current (or the\n" +
 			"current one no longer exists). When the platform is already configured in\n" +
 			"another profile only, --profile is required.\n\n" +
-			"In the interactive flow (a terminal, without --no-input) the platform may be\n" +
-			"left out: it is then chosen from a list, and the login asks for what it\n" +
-			"needs. Ctrl-C, or Ctrl-D on an empty line, leaves a question of the login\n" +
-			"flow: nothing is stored then.\n\n" +
-			"In the non-interactive flow (no terminal on stdin and stderr, --no-input or\n" +
-			"POLYCTL_NO_INPUT=1) nothing is asked, no browser is opened and nothing is read\n" +
-			"from a terminal: the platform is required, values come from --set and the\n" +
-			"documented environment variables, and a value or choice that is still\n" +
-			"missing is a usage error (exit code 2) naming the --set key to pass.\n\n" +
+			"In the interactive flow (a terminal, without --non-interactive) the platform\n" +
+			"may be left out: it is then chosen from a list, and the login asks for what\n" +
+			"it needs. Ctrl-C, or Ctrl-D on an empty line, leaves a question of the login\n" +
+			"flow: nothing is stored then. Browser-based flows open the default browser;\n" +
+			"--no-browser prints the URL instead.\n\n" +
+			"In the non-interactive flow (no terminal on stdin and stderr,\n" +
+			"--non-interactive or POLYCTL_NON_INTERACTIVE=1) nothing is asked, no browser\n" +
+			"is opened and nothing is read from a terminal: the platform is required,\n" +
+			"values come from --set and the documented environment variables, and a value\n" +
+			"or choice that is still missing is a usage error (exit code 2) naming the\n" +
+			"--set key to pass.\n\n" +
 			"Login flows:\n" + loginHelp() +
 			"\nPlatform-specific options are passed with --set key=value (see each platform's\n" +
-			"section in the README). Any option may be given as --set key=- to read its\n" +
-			"value from stdin instead of argv, which secrets (token, secret,\n" +
+			"section in the README); a key the platform does not know is a usage error\n" +
+			"listing the valid ones. Any option may be given as --set key=- to read its\n" +
+			"value from stdin instead of argv, which secrets (token, api_secret,\n" +
 			"client_secret, ...) should: each one reads one line, in the order given.",
 		Args:              oneArgOrInteractive(rt, errPlatformRequired),
 		ValidArgsFunction: completePlatforms,
@@ -127,6 +130,12 @@ func newAuthLoginCmd(rt *app.Runtime) *cobra.Command {
 				if !ok {
 					return usageErr("--set expects key=value, got %q", s)
 				}
+				// Before anything is read or asked: an option the platform
+				// does not know must not be dropped silently, or the login
+				// would go on with other credentials than the ones named.
+				if err := platform.CheckLoginOption(prov, k); err != nil {
+					return usageErr("%v", err)
+				}
 				switch {
 				case v == "-":
 					// One line of stdin per key, in the order given.
@@ -142,7 +151,15 @@ func newAuthLoginCmd(rt *app.Runtime) *cobra.Command {
 		}),
 	}
 	cmd.Flags().StringArrayVar(&sets, "set", nil, "platform-specific login option key=value (repeatable; key=- reads the value, one line, from stdin)")
+	addNoBrowserFlag(rt, cmd)
 	return cmd
+}
+
+// addNoBrowserFlag adds --no-browser to a command that can run a login
+// flow. Only auth login and auth manage do, so the flag is theirs and not a
+// global one.
+func addNoBrowserFlag(rt *app.Runtime, cmd *cobra.Command) {
+	cmd.Flags().BoolVar(&rt.Flags.NoBrowser, "no-browser", false, "do not open a browser during login; print the URL instead")
 }
 
 // validateProfileName rejects names that cannot be a profile: the name is
@@ -370,8 +387,9 @@ func newAuthUseCmd(rt *app.Runtime) *cobra.Command {
 		Use:   "use <profile>",
 		Short: "Set the current profile",
 		Long: "Set the current profile. In the interactive flow (a terminal, without\n" +
-			"--no-input) the profile may be left out: it is then chosen from a list. In\n" +
-			"the non-interactive flow the profile is required (usage error, exit code 2).",
+			"--non-interactive) the profile may be left out: it is then chosen from a\n" +
+			"list. In the non-interactive flow the profile is required (usage error, exit\n" +
+			"code 2).",
 		Args: oneArgOrInteractive(rt, errProfileRequired),
 		ValidArgsFunction: func(cmd *cobra.Command, args []string, tc string) ([]string, cobra.ShellCompDirective) {
 			if len(args) > 0 {
@@ -535,8 +553,8 @@ func newAuthLogoutCmd(rt *app.Runtime) *cobra.Command {
 		Long: "Without a platform, remove the whole profile: every account in it and their\n" +
 			"stored credentials. With a platform, remove only that account; the profile is\n" +
 			"removed too when it was its last one.\n\n" +
-			"In the interactive flow (a terminal, without --no-input) --profile may be\n" +
-			"left out: the accounts to remove are then chosen from a list (only those on\n" +
+			"In the interactive flow (a terminal, without --non-interactive) --profile may\n" +
+			"be left out: the accounts to remove are then chosen from a list (only those on\n" +
 			"the platform, when one is given) and confirmed before anything is removed;\n" +
 			"--yes skips the confirmations. In the non-interactive flow --profile is\n" +
 			"required (usage error, exit code 2); naming the profile is the confirmation,\n" +
