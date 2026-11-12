@@ -301,3 +301,38 @@ func TestKeyMapHints(t *testing.T) {
 		t.Errorf("toggle hint key = %q, want space", k)
 	}
 }
+
+// In a multi-select Enter in the filter input only applies the filter: the
+// prompt stays open, rows can still be ticked, and Esc clears the filter
+// before it leaves.
+func TestPickerMultiSelectFilter(t *testing.T) {
+	const keyEsc = "\x1b"
+	got, err := drive(t, []string{"/", "be", keyEnter, " ", keyEnter}, func(p Picker) ([]string, error) { return p.MultiSelect("Pick", abc) })
+	if err != nil || !reflect.DeepEqual(got, []string{"b"}) {
+		t.Errorf("filter, enter, tick, enter = %v, %v; want [b]", got, err)
+	}
+	got, err = drive(t, []string{"/", "be", keyEnter, keyEsc, " ", keyEnter}, func(p Picker) ([]string, error) { return p.MultiSelect("Pick", abc) })
+	if err != nil || len(got) != 1 {
+		t.Errorf("filter, enter, esc (clear), tick, enter = %v, %v; want one value", got, err)
+	}
+	_, err = drive(t, []string{"/", "be", keyEnter, keyEsc, keyEsc}, func(p Picker) ([]string, error) { return p.MultiSelect("Pick", abc) })
+	if !errors.Is(err, ErrAborted) {
+		t.Errorf("esc after clearing the filter = %v, want ErrAborted", err)
+	}
+}
+
+func TestSyncFilterHint(t *testing.T) {
+	km := keyMap()
+	field := huh.NewSelect[string]().Options(huhOptions(abc, 80)...)
+	syncFilterHint(field, km, false, false, false)
+	if h := km.Select.Submit.Help().Desc; strings.Contains(h, "esc") {
+		t.Errorf("hint while a filter is in use = %q, must not mention esc", h)
+	}
+	syncFilterHint(field, km, false, true, true)
+	if h := km.Select.Submit.Help().Desc; !strings.Contains(h, "esc cancel") {
+		t.Errorf("hint after the filter was cleared = %q", h)
+	}
+	if !km.Select.ClearFilter.Enabled() || km.Select.SetFilter.Enabled() || !km.Select.Filter.Enabled() {
+		t.Error("bindings must mirror the state the field is in: filter applied, not being typed")
+	}
+}

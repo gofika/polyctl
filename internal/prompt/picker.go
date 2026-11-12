@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 
+	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 	"golang.org/x/term"
@@ -67,21 +68,56 @@ type filterer interface{ GetFiltering() bool }
 // and that name the toggle key people expect.
 func keyMap() *huh.KeyMap {
 	km := huh.NewDefaultKeyMap()
-	const leave = "confirm • esc cancel"
-	km.Select.Submit.SetHelp("enter", leave)
-	km.MultiSelect.Submit.SetHelp("enter", leave)
-	km.Confirm.Submit.SetHelp("enter", leave)
-	km.Input.Submit.SetHelp("enter", leave)
+	km.Select.Submit.SetHelp("enter", leaveHint)
+	km.MultiSelect.Submit.SetHelp("enter", leaveHint)
+	km.Confirm.Submit.SetHelp("enter", leaveHint)
+	km.Input.Submit.SetHelp("enter", leaveHint)
 	km.MultiSelect.Toggle.SetHelp("space", "toggle")
 	return km
+}
+
+const (
+	leaveHint  = "confirm • esc cancel"
+	filterHint = "confirm" // Esc belongs to the filter: the library's own hint says how
+)
+
+// syncFilterHint rewrites the Enter hint of a list field for the filter
+// state the key being handled leads to: while a filter is typed or applied
+// Esc acts on the filter, so "esc cancel" must not be shown. Applying a key
+// map resets the bindings the field switches on and off by itself, so they
+// are set to the field's current state (filtering, applied) first.
+func syncFilterHint(field huh.Field, km *huh.KeyMap, filtering, applied, escLeaves bool) {
+	hint := filterHint
+	if escLeaves {
+		hint = leaveHint
+	}
+	s, m := &km.Select, &km.MultiSelect
+	s.Submit.SetHelp("enter", hint)
+	s.SetFilter.SetEnabled(filtering)
+	s.Filter.SetEnabled(!filtering)
+	s.ClearFilter.SetEnabled(!filtering && applied)
+	m.Submit.SetHelp("enter", hint)
+	m.SetFilter.SetEnabled(filtering)
+	m.Filter.SetEnabled(!filtering)
+	m.ClearFilter.SetEnabled(!filtering && applied)
+	m.Submit.SetEnabled(!filtering)
+	// A prompt is a form with one field: there is no next or previous
+	// field, and the form had switched these off before.
+	for _, b := range []*key.Binding{&s.Next, &s.Prev, &m.Next, &m.Prev} {
+		b.SetEnabled(false)
+	}
+	field.WithKeyMap(km)
 }
 
 // run shows one field and maps an abort to ErrAborted. shortcuts maps a key
 // to an option value: pressing the key outside the filter input answers the
 // prompt with that value, which is returned as the first result. mayConfirm,
 // when not nil, is asked before Enter confirms; when it returns false the
-// key is dropped and the prompt stays open.
-func (p *terminalPicker) run(field huh.Field, shortcuts map[string]string, mayConfirm func() bool) (string, error) {
+// key is dropped and the prompt stays open. enterSetsFilter says that Enter
+// in the filter input only applies the filter (multi-select); in a select it
+// also confirms the highlighted match.
+func (p *terminalPicker) run(field huh.Field, shortcuts map[string]string, mayConfirm func() bool, enterSetsFilter bool) (string, error) {
+	km := keyMap()
 	// submitted is set when Enter reaches the field. The form handles the
 	// submission asynchronously, so keys still in the input buffer would
 	// otherwise change the answer after it was confirmed (a "y" typed right
@@ -109,8 +145,10 @@ func (p *terminalPicker) run(field huh.Field, shortcuts map[string]string, mayCo
 			filtering := canFilter && f.GetFiltering()
 			switch k.String() {
 			case "enter":
-				// Also while a filter is typed: there Enter applies the
-				// filter and submits the highlighted match.
+				if filtering && enterSetsFilter {
+					filtered = true
+					return msg
+				}
 				if !filtering && mayConfirm != nil && !mayConfirm() {
 					// Enter is dropped; a size message makes the form lay
 					// itself out again, which shows the changed hint.
@@ -124,10 +162,16 @@ func (p *terminalPicker) run(field huh.Field, shortcuts map[string]string, mayCo
 					return msg
 				}
 				if filtered {
+					// Clears the applied filter; Esc leaves again after it.
+					syncFilterHint(field, km, false, true, true)
 					filtered = false
-					return msg // clears the applied filter
+					return msg
 				}
 				return tea.InterruptMsg{}
+			case "/":
+				if canFilter && !filtering {
+					syncFilterHint(field, km, false, filtered, false)
+				}
 			default:
 				if v, ok := shortcuts[k.String()]; ok && !filtering {
 					shortcut, viaShortcut = v, true
@@ -136,7 +180,7 @@ func (p *terminalPicker) run(field huh.Field, shortcuts map[string]string, mayCo
 			}
 			return msg
 		})).
-		WithKeyMap(keyMap()).
+		WithKeyMap(km).
 		WithInput(p.in).
 		WithOutput(p.out)
 	err := mapAbort(form.Run())
@@ -260,7 +304,7 @@ func (p *terminalPicker) Select(title string, opts []Option, def string) (string
 			shortcuts[o.Key] = o.Value
 		}
 	}
-	picked, err := p.run(field, shortcuts, nil)
+	picked, err := p.run(field, shortcuts, nil, false)
 	if err != nil {
 		return "", err
 	}
@@ -295,7 +339,7 @@ func (p *terminalPicker) MultiSelect(title string, opts []Option) ([]string, err
 		rows = 12
 	}
 	field.Height(rows + 2)
-	if _, err := p.run(field, nil, ticked); err != nil {
+	if _, err := p.run(field, nil, ticked, true); err != nil {
 		return nil, err
 	}
 	return orderValues(opts, values), nil
@@ -303,7 +347,7 @@ func (p *terminalPicker) MultiSelect(title string, opts []Option) ([]string, err
 
 func (p *terminalPicker) Confirm(title string, def bool) (bool, error) {
 	value := def
-	if _, err := p.run(huh.NewConfirm().Title(title).Value(&value), nil, nil); err != nil {
+	if _, err := p.run(huh.NewConfirm().Title(title).Value(&value), nil, nil, false); err != nil {
 		return false, err
 	}
 	return value, nil
@@ -315,7 +359,7 @@ func (p *terminalPicker) Input(title, def string, validate func(string) error) (
 	if validate != nil {
 		field.Validate(validate)
 	}
-	if _, err := p.run(field, nil, nil); err != nil {
+	if _, err := p.run(field, nil, nil, false); err != nil {
 		return "", err
 	}
 	return value, nil
