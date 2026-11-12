@@ -98,7 +98,7 @@ polyctl completion fish > ~/.config/fish/completions/polyctl.fish
 polyctl completion powershell | Out-String | Invoke-Expression
 ```
 
-Completion is context-aware: `--profile` completes configured profiles, `auth login`, `auth logout` and `--platform` complete platform names, and the `<domain>` argument of `dns` / `domain` commands completes from the local domain index.
+Completion is context-aware: `--profile`, `auth use` and the first argument of `auth rename` complete configured profiles, `auth login`, `auth logout` and `--platform` complete platform names, and the `<domain>` argument of `dns` / `domain` commands completes from the local domain index.
 
 ## Quick start
 
@@ -165,7 +165,7 @@ All state lives in one directory, `~/.config/polyctl/` by default (created with 
 | `-o, --output <fmt>` | `table` (default), `json` or `yaml`. |
 | `-v, --verbose` | Extra diagnostics on stderr. |
 | `--no-browser` | During login, print URLs instead of opening a browser. |
-| `-y, --yes` | Assume "yes" on confirmation prompts (for example multi-record deletes). |
+| `-y, --yes` | Assume "yes" on confirmation prompts (for example multi-record deletes, or the interactive `auth logout`). |
 | `--version` | Print the build version. |
 
 The `dns` and `domain` command groups add one flag of their own, `--platform <platform>`, which restricts routing (and any indexing) to the accounts on that platform; see [Routing rules](#routing-rules). `sync` and `inventory list` have their own `--platform` filters, described under [Caching](#caching).
@@ -298,14 +298,17 @@ polyctl auth login <platform> [--profile <name>] [--set key=value ...]
 polyctl auth list
 polyctl auth use <profile>
 polyctl auth status [--profile <name>]
+polyctl auth rename <old> <new>
 polyctl auth logout [platform] --profile <name> [--keep-inventory]
+polyctl auth manage
 ```
 
-- `auth login` runs the platform's login flow, stores the secret and writes the account's metadata to `config.yaml`. The account is added to `--profile` when given, otherwise to the current profile, otherwise (no profile is current) to a profile named `default`; a profile that does not exist is created, and the target profile becomes current if none was. Logging in to a platform the profile already has re-authenticates that account and leaves the profile's other accounts alone. Without `--profile`, when the target profile has no account on the platform but another profile does, nothing is changed and the command fails with a usage error (exit code 2) that lists those profiles: pass `--profile <name>` to re-authenticate one of them, or `--profile <target>` to really add a second account on that platform. Platform-specific inputs are passed with `--set key=value` (repeatable); anything not given is asked interactively. Platform names accept aliases (`cf`, `name.com`, `gd`, `google`, `alibaba`, ...).
+- `auth login` runs the platform's login flow, stores the secret and writes the account's metadata to `config.yaml`. The account is added to `--profile` when given, otherwise to the current profile, otherwise (no profile is current) to a profile named `default`; a profile that does not exist is created, and the target profile becomes current if none was. Logging in to a platform the profile already has re-authenticates that account and leaves the profile's other accounts alone. Without `--profile`, when the target profile has no account on the platform but another profile does, nothing is changed and the command fails with a usage error (exit code 2) that lists those profiles: pass `--profile <name>` to re-authenticate one of them, or `--profile <target>` to really add a second account on that platform. Platform-specific inputs are passed with `--set key=value` (repeatable); anything not given is asked interactively. Every login flow verifies against the platform, so with `--offline` `auth login` fails with exit code 6 before anything is asked or stored. Platform names accept aliases (`cf`, `name.com`, `gd`, `google`, `alibaba`, ...).
 - `auth list` shows one row per account: profile, platform, whether the profile is current (`*`), the credential backend and a summary of the metadata.
 - `auth use` sets `current_profile`; an unknown profile is an error (exit code 4).
 - `auth status` calls the platform of every account (or only those of `--profile`) to verify the stored credentials and prints the resolved identity (account, user, email, ARN, project...), one row per account. It exits with code 3 if any account fails. With `--offline` it only checks that credentials are present.
-- `auth logout --profile <name>` removes the whole profile: every account in it, their secrets from every backend, and their cached resources from the inventory (keep those with `--keep-inventory`). `auth logout <platform> --profile <name>` removes only that account; the profile itself is removed when it was its last one. `--profile` is required, and the platform is optional. `config.yaml` is saved after each removed account. Removing the current profile leaves no current profile until the next `auth use` or `auth login`.
+- `auth rename <old> <new>` renames a profile. Its accounts, their secrets (copied to the `<new>/<platform>` keys before the old entries are deleted) and their cached resources move to the new name, and `current_profile` follows when it was the renamed profile. An unknown `<old>` is an error (exit code 4); a `<new>` that already exists, is empty or contains spaces or slashes is a usage error (exit code 2). If a step fails before `config.yaml` is saved, the copies are removed and the profile keeps its old name. A profile with an account still marked `legacy_secret` (see [Upgrading from 0.1.x](#upgrading-from-01x)) cannot be renamed until that secret has been moved. The rename is also refused, with nothing changed, when an account's `credential_backend` names a backend that is not available in this run (for example `keyring` while only the file store is in use), because its secret could not be moved.
+- `auth logout --profile <name>` removes the whole profile: every account in it, their secrets from every backend, and their cached resources from the inventory (keep those with `--keep-inventory`). `auth logout <platform> --profile <name>` removes only that account; the profile itself is removed when it was its last one. The platform is optional; `--profile` is required, except on a terminal, where leaving it out opens a list of accounts to choose from (see [Interactive management](#interactive-management)). `config.yaml` is saved after each removed account. When an account's `credential_backend` names a backend that is not available in this run, the account is still removed from `config.yaml`, with a warning that its credentials in that backend were not removed. Removing the current profile leaves no current profile until the next `auth use` or `auth login`.
 
 ```sh
 polyctl auth login cloudflare --profile acme     # creates the profile acme (and makes it current if no profile was)
@@ -313,9 +316,39 @@ polyctl auth login namecom    --profile acme     # adds a second platform to it
 polyctl auth use acme                            # later logins and platform commands default to acme
 polyctl auth login aws                           # added to acme, provided no other profile has an AWS account
 polyctl auth login aws --profile acme            # always unambiguous
-polyctl auth logout namecom --profile acme       # drop one account
-polyctl auth logout --profile acme               # drop the whole profile
+polyctl auth rename acme acme-prod               # same accounts, secrets and cache under a new name
+polyctl auth logout namecom --profile acme-prod  # drop one account
+polyctl auth logout --profile acme-prod          # drop the whole profile
 ```
+
+### Interactive management
+
+On a terminal, `polyctl auth manage` opens a menu for everything above. It prints the account table of `auth list` and offers:
+
+| Menu entry | What it does |
+| --- | --- |
+| View account details | Pick an account and see its profile, platform, credential store, whether credentials are present, creation and update times, every metadata key, and how many resources of each type are cached. Nothing is fetched from the platform. |
+| Switch current profile | `auth use`, with the profile picked from a list. |
+| Add an account (log in) | Pick a platform, then an existing profile or "New profile..." (you type the name), then the login flow of `auth login` runs. The profile is chosen explicitly, as with `--profile`. |
+| Verify credentials | Tick the accounts to check (none ticked = all) and get the table of `auth status`. |
+| Rename a profile | `auth rename`, with the profile picked from a list. |
+| Remove accounts or profiles | Tick any number of accounts across profiles. polyctl lists what will be removed (a profile goes when its last account does), asks for confirmation (default No), asks whether to keep the cached inventory (default No), then removes them the way `auth logout` does. |
+| Quit | Leave the menu. |
+
+Arrow keys or `j` / `k` move, space ticks an entry of a multiple choice, `/` filters a list, enter confirms. Esc or Ctrl-C leaves the current question and returns to the menu; at the top level it leaves the menu, with exit code 0. A failing action is reported and the menu stays open.
+
+Three commands ask for a missing argument the same way instead of failing:
+
+```sh
+polyctl auth use                 # pick the profile from a list
+polyctl auth login               # pick the platform, then the usual login
+polyctl auth logout              # tick the accounts to remove, then confirm
+polyctl auth logout cloudflare   # the same, listing Cloudflare accounts only
+```
+
+`--yes` skips the confirmations of the interactive `auth logout` (the cached inventory is then removed unless `--keep-inventory` is given). Leaving one of these prompts prints `cancelled`, changes nothing and exits with code 0.
+
+Prompts and menus are drawn on stderr, so stdout still carries results only. They appear only when both stdin and stderr are terminals: in a pipe, a script or CI the same invocations fail with the usage error (exit code 2) they always did, and `auth manage` says which commands to use instead. polyctl never waits for an answer there.
 
 ### Upgrading from 0.1.x
 
@@ -325,7 +358,7 @@ In 0.1.x a profile was a single account on a single platform. From 0.2 on a prof
 - **Secrets move to new keys.** They were stored under the bare profile name and now live under `<profile>/<platform>` (for example `cloudflare/cloudflare` for an old profile named `cloudflare`). The first command that opens the credential store copies each secret to its new key, deletes the old entry and rewrites `config.yaml` in the new layout. Until that has succeeded for an account, for example because its secret sits in a keyring this machine cannot reach right now, the account stays marked as legacy (`config.yaml` keeps the old layout, or shows `legacy_secret: true` once it has been rewritten), keeps reading the old entry, and the move is retried on later runs. `-v` prints any error met while moving a secret.
 - **`auth login <platform>` no longer names the profile after the platform.** In 0.1.x `polyctl auth login cloudflare` wrote the profile `cloudflare`; now it targets the current profile (or `default`). To re-authenticate a converted profile, pass its old name: `polyctl auth login cloudflare --profile cloudflare`. If you forget, polyctl does not quietly create a second account: when the platform is configured only in other profiles, the login stops with a usage error naming them.
 - **`auth logout` takes an optional platform.** `polyctl auth logout --profile <name>` still removes the whole profile; `polyctl auth logout <platform> --profile <name>` removes one account of it.
-- **Merging is optional.** To gather converted one-platform profiles into one, log the platforms in again under a common `--profile` and remove the old profiles with `auth logout`.
+- **Merging is optional.** To gather converted one-platform profiles into one, log the platforms in again under a common `--profile` and remove the old profiles with `auth logout` (or tick them in `auth manage`). A converted profile that only has an unfortunate name, like `cloudflare`, does not need a new login: `polyctl auth rename cloudflare acme` keeps its account, secret and cached resources.
 
 ### Login flows per platform
 
@@ -624,9 +657,9 @@ Human-readable progress and notes always go to stderr, so stdout is safe to pipe
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Success. |
+| `0` | Success. Also a menu or selection prompt left with Esc or Ctrl-C. |
 | `1` | Generic error (API failure, I/O error, aborted prompt, ...). |
-| `2` | Usage error: bad flag combination, unknown platform or resource type, missing required flag, invalid config, `auth login` without `--profile` for a platform that only other profiles have. |
+| `2` | Usage error: bad flag combination, unknown platform or resource type, missing required flag or argument, `auth manage` without a terminal, an invalid or already used name for `auth rename`, invalid config, `auth login` without `--profile` for a platform that only other profiles have. |
 | `3` | Authentication: missing credentials, no account on the platform in the selected profile, rejected token, expired SSO session, `auth status` with a failing account. |
 | `4` | Not found: unknown domain / zone / record / profile, or a set that was never synced in `--offline` mode. |
 | `5` | Ambiguous: the domain has more than one candidate account (pass `--profile` and/or `--platform`, as the message says), or the platform more than one candidate profile (pass `--profile`). |
@@ -649,10 +682,11 @@ internal/providers/
                              One package per platform: provider.go (login, client, sync) and commands.go (native commands)
 internal/config/             config.yaml loading/saving (profiles and their accounts), TTL defaults
 internal/creds/              Keyring store, 0600 file store, Multi (read from any, write to primary)
-internal/inventory/          SQLite schema, Replace/Upsert/Delete, domain lookup, stats
+internal/inventory/          SQLite schema, Replace/Upsert/Delete, Purge/RenameProfile, domain lookup, stats
 internal/output/             table / json / yaml rendering
 internal/httpx/              Small JSON REST client with retries (Cloudflare, name.com, GoDaddy)
-internal/prompt/             Line / secret / confirm prompts with TTY detection
+internal/prompt/             Line / secret / confirm prompts with TTY detection; Picker (arrow-key select, multi-select,
+                             confirm, input) drawn on stderr
 internal/browser/            Open a URL in the default browser (macOS, Windows, Linux)
 ```
 

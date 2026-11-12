@@ -1,0 +1,253 @@
+package prompt
+
+import (
+	"errors"
+	"io"
+	"os"
+
+	tea "charm.land/bubbletea/v2"
+	"charm.land/huh/v2"
+	"golang.org/x/term"
+)
+
+// ErrAborted is returned by a Picker when the user leaves a prompt with Esc
+// or Ctrl-C instead of answering it.
+var ErrAborted = errors.New("prompt aborted")
+
+// Option is one entry of a selection prompt: Label is shown, Value is
+// returned.
+type Option struct{ Label, Value string }
+
+// Picker asks questions on an interactive terminal. Commands depend on this
+// interface rather than on a terminal library, so tests can script the
+// answers.
+type Picker interface {
+	// Select returns the value of the chosen option. def preselects the
+	// option with that value.
+	Select(title string, opts []Option, def string) (string, error)
+	// MultiSelect returns the values of the chosen options, in option order.
+	MultiSelect(title string, opts []Option) ([]string, error)
+	// Confirm asks a yes/no question; def is the preselected answer.
+	Confirm(title string, def bool) (bool, error)
+	// Input asks for a line of text. validate, when not nil, must accept the
+	// value before it is returned.
+	Input(title, def string, validate func(string) error) (string, error)
+}
+
+// IsTerminal reports whether v is a file attached to a terminal.
+func IsTerminal(v any) bool {
+	f, ok := v.(*os.File)
+	return ok && term.IsTerminal(int(f.Fd()))
+}
+
+// NewPicker returns the terminal Picker: arrow keys (or j/k) move, space
+// toggles in a multi-select, "/" filters, enter confirms, Esc or Ctrl-C
+// aborts. It reads keys from in and draws on errw, never on stdout, which
+// carries command results only.
+func NewPicker(in io.Reader, errw io.Writer) Picker {
+	if in == nil {
+		in = os.Stdin
+	}
+	if errw == nil {
+		errw = os.Stderr
+	}
+	return &terminalPicker{in: in, out: errw}
+}
+
+type terminalPicker struct {
+	in  io.Reader
+	out io.Writer
+}
+
+// filterer is implemented by the fields that have a "/" filter.
+type filterer interface{ GetFiltering() bool }
+
+// run shows one field and maps an abort to ErrAborted.
+func (p *terminalPicker) run(field huh.Field) error {
+	// WithProgramOptions replaces the options set so far, so it comes first.
+	// submitted is set when Enter reaches the field. The form handles the
+	// submission asynchronously, so keys still in the input buffer would
+	// otherwise change the answer after it was confirmed (a "y" typed right
+	// after Enter on a No). It is cleared when the field rejected the value.
+	submitted := false
+	form := huh.NewForm(huh.NewGroup(field)).
+		WithProgramOptions(tea.WithFilter(func(_ tea.Model, msg tea.Msg) tea.Msg {
+			// Messages are filtered one at a time, after the previous one
+			// was handled, so a rejection is visible here.
+			if submitted && field.Error() != nil {
+				submitted = false
+			}
+			k, isKey := msg.(tea.KeyPressMsg)
+			if !isKey {
+				return msg
+			}
+			if submitted {
+				return nil
+			}
+			if f, ok := field.(filterer); k.String() == "enter" && !(ok && f.GetFiltering()) {
+				submitted = true
+			}
+			return escAborts(field, msg)
+		})).
+		WithInput(p.in).
+		WithOutput(p.out)
+	if err := mapAbort(form.Run()); err != nil {
+		return err
+	}
+	// A program ended from outside (SIGTERM, closed terminal) returns no
+	// error; only a submitted form carries an answer.
+	if form.State != huh.StateCompleted {
+		return ErrAborted
+	}
+	return nil
+}
+
+// labelWidth is how many columns an option label may take so that every
+// option stays on one row: a wrapped label hides other options.
+func (p *terminalPicker) labelWidth() int {
+	const fallback, margin, minimum = 80, 8, 20
+	w := fallback
+	if f, ok := p.out.(*os.File); ok {
+		if cols, _, err := term.GetSize(int(f.Fd())); err == nil && cols > 0 {
+			w = cols
+		}
+	}
+	if w -= margin; w < minimum {
+		w = minimum
+	}
+	return w
+}
+
+// truncate shortens s to at most n runes, ending in an ellipsis.
+func truncate(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n-1]) + "…"
+}
+
+// escAborts turns Esc into an interrupt, which ends the prompt like Ctrl-C.
+// While the filter of a field is being typed Esc keeps its meaning there
+// (leave the filter input).
+func escAborts(field huh.Field, msg tea.Msg) tea.Msg {
+	k, ok := msg.(tea.KeyPressMsg)
+	if !ok || k.String() != "esc" {
+		return msg
+	}
+	if f, ok := field.(filterer); ok && f.GetFiltering() {
+		return msg
+	}
+	return tea.InterruptMsg{}
+}
+
+// mapAbort converts the library's abort error to ErrAborted.
+func mapAbort(err error) error {
+	if errors.Is(err, huh.ErrUserAborted) {
+		return ErrAborted
+	}
+	return err
+}
+
+func huhOptions(opts []Option, width int) []huh.Option[string] {
+	out := make([]huh.Option[string], 0, len(opts))
+	for _, o := range opts {
+		out = append(out, huh.NewOption(truncate(o.Label, width), o.Value))
+	}
+	return out
+}
+
+// defaultValue returns def when it is the value of one of opts, otherwise
+// the value of the first option ("" when there is none).
+func defaultValue(opts []Option, def string) string {
+	for _, o := range opts {
+		if o.Value == def {
+			return def
+		}
+	}
+	if len(opts) > 0 {
+		return opts[0].Value
+	}
+	return ""
+}
+
+// orderValues returns the chosen values in the order of opts.
+func orderValues(opts []Option, chosen []string) []string {
+	picked := make(map[string]bool, len(chosen))
+	for _, v := range chosen {
+		picked[v] = true
+	}
+	var out []string
+	for _, o := range opts {
+		if picked[o.Value] {
+			out = append(out, o.Value)
+			delete(picked, o.Value)
+		}
+	}
+	return out
+}
+
+// listHeight caps long lists so they scroll instead of filling the screen.
+func listHeight(n int) int {
+	const maxRows = 12
+	if n > maxRows {
+		return maxRows
+	}
+	return 0
+}
+
+func (p *terminalPicker) Select(title string, opts []Option, def string) (string, error) {
+	if len(opts) == 0 {
+		return "", errors.New("nothing to choose from")
+	}
+	value := defaultValue(opts, def)
+	field := huh.NewSelect[string]().Title(title).Options(huhOptions(opts, p.labelWidth())...).Value(&value)
+	if h := listHeight(len(opts)); h > 0 {
+		field.Height(h)
+	}
+	if err := p.run(field); err != nil {
+		return "", err
+	}
+	return value, nil
+}
+
+func (p *terminalPicker) MultiSelect(title string, opts []Option) ([]string, error) {
+	if len(opts) == 0 {
+		return nil, errors.New("nothing to choose from")
+	}
+	var values []string
+	field := huh.NewMultiSelect[string]().Title(title).
+		Description("space toggles, enter confirms, esc cancels").
+		Options(huhOptions(opts, p.labelWidth())...).Value(&values)
+	// The height counts the title and description rows too; without an
+	// explicit one short lists are cut off.
+	rows := len(opts)
+	if rows > 12 {
+		rows = 12
+	}
+	field.Height(rows + 2)
+	if err := p.run(field); err != nil {
+		return nil, err
+	}
+	return orderValues(opts, values), nil
+}
+
+func (p *terminalPicker) Confirm(title string, def bool) (bool, error) {
+	value := def
+	if err := p.run(huh.NewConfirm().Title(title).Value(&value)); err != nil {
+		return false, err
+	}
+	return value, nil
+}
+
+func (p *terminalPicker) Input(title, def string, validate func(string) error) (string, error) {
+	value := def
+	field := huh.NewInput().Title(title).Value(&value)
+	if validate != nil {
+		field.Validate(validate)
+	}
+	if err := p.run(field); err != nil {
+		return "", err
+	}
+	return value, nil
+}

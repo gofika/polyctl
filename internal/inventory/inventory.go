@@ -401,6 +401,29 @@ func (d *DB) Purge(ctx context.Context, p platform.ID, profile string) error {
 	return nil
 }
 
+// RenameProfile moves everything stored for an account from one profile name
+// to another, in one transaction. Rows already stored under the new name for
+// that platform are stale leftovers and are removed first.
+func (d *DB) RenameProfile(ctx context.Context, p platform.ID, oldName, newName string) error {
+	if oldName == newName {
+		return nil
+	}
+	tx, err := d.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, t := range []string{"resources", "domain_index", "sync_state"} {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM `+t+` WHERE platform=? AND profile=?`, string(p), newName); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE `+t+` SET profile=? WHERE platform=? AND profile=?`, newName, string(p), oldName); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // Stats summarises the inventory per profile and type.
 type Stat struct {
 	Platform  platform.ID           `json:"platform" yaml:"platform"`

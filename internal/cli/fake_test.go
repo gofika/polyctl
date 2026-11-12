@@ -23,6 +23,8 @@ var (
 	registerOnce sync.Once
 	fakeMu       sync.Mutex
 	fakeClients  = map[string]*fakeClient{}
+	// fakeLogins counts the calls of the fake providers' Login.
+	fakeLogins int
 )
 
 func registerFake() {
@@ -36,6 +38,15 @@ func resetFake() {
 	fakeMu.Lock()
 	defer fakeMu.Unlock()
 	fakeClients = map[string]*fakeClient{}
+	fakeLogins = 0
+}
+
+// loginCalls returns how often a fake provider's Login ran since the last
+// reset.
+func loginCalls() int {
+	fakeMu.Lock()
+	defer fakeMu.Unlock()
+	return fakeLogins
 }
 
 // client returns the fake client backing a profile's account on
@@ -71,6 +82,9 @@ func (*fakeProvider) ResourceTypes() []platform.ResourceType {
 // Login stores the token option (default "fake") as the secret and records
 // the account option, falling back to the account of a previous login.
 func (p *fakeProvider) Login(ctx context.Context, in platform.LoginInput) (*platform.LoginResult, error) {
+	fakeMu.Lock()
+	fakeLogins++
+	fakeMu.Unlock()
 	token := in.Options["token"]
 	if token == "" {
 		token = "fake"

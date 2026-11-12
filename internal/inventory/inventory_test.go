@@ -541,3 +541,102 @@ func TestReplaceScopedClearsIndexRowsOfThatScope(t *testing.T) {
 		t.Errorf("another scope's index row was removed: %+v", entries)
 	}
 }
+
+func TestRenameProfile(t *testing.T) {
+	db, _ := openDB(t)
+	mustReplace(t, db, set("a", platform.ResZone), time.Hour, zoneRes("z1", "example.com"))
+	mustReplace(t, db, set("a", platform.ResDNSRecord), time.Hour, recRes("r1", "z1", "example.com", "www.example.com", "1.1.1.1"))
+	mustReplace(t, db, set("b", platform.ResZone), time.Hour, zoneRes("z2", "other.com"))
+	// Stale rows already stored under the new name, on the same platform.
+	mustReplace(t, db, set("c", platform.ResZone), time.Hour, zoneRes("z9", "stale.com"))
+	mustReplace(t, db, set("c", platform.ResDomain), time.Hour, domainRes("stale.com"))
+	// The same profile name on another platform must not be touched.
+	other := inventory.Set{Platform: platform.GoDaddy, Profile: "a", Type: platform.ResZone}
+	mustReplace(t, db, other, time.Hour, zoneRes("g1", "godaddy.example"))
+
+	if err := db.RenameProfile(ctx, platform.NameCom, "a", "c"); err != nil {
+		t.Fatalf("RenameProfile: %v", err)
+	}
+
+	if got := mustList(t, db, inventory.Query{Platform: platform.NameCom, Profile: "a"}); len(got) != 0 {
+		t.Errorf("rows left under the old name: %+v", got)
+	}
+	got := mustList(t, db, inventory.Query{Platform: platform.NameCom, Profile: "c"})
+	var ids []string
+	for _, r := range got {
+		ids = append(ids, r.ID)
+	}
+	if len(ids) != 2 || ids[0] != "r1" || ids[1] != "z1" {
+		t.Errorf("rows under the new name = %v, want the moved r1 and z1 without the stale ones", ids)
+	}
+	entries, err := db.IndexEntries(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var index []string
+	for _, e := range entries {
+		index = append(index, e.Domain+"="+string(e.Platform)+"/"+e.Profile)
+	}
+	want := []string{"example.com=namecom/c", "godaddy.example=godaddy/a", "other.com=namecom/b"}
+	if len(index) != len(want) {
+		t.Fatalf("index = %v, want %v", index, want)
+	}
+	for i := range want {
+		if index[i] != want[i] {
+			t.Errorf("index = %v, want %v", index, want)
+			break
+		}
+	}
+	for _, scope := range []string{"", "z1"} {
+		if st, _ := db.GetState(ctx, scoped("a", platform.ResDNSRecord, scope)); st != nil {
+			t.Errorf("sync state left under the old name for scope %q", scope)
+		}
+		if st, _ := db.GetState(ctx, scoped("c", platform.ResDNSRecord, scope)); st == nil {
+			t.Errorf("sync state not moved for scope %q", scope)
+		}
+	}
+	if st, _ := db.GetState(ctx, set("c", platform.ResDomain)); st != nil {
+		t.Error("stale sync state under the new name survived")
+	}
+	if st, _ := db.GetState(ctx, other); st == nil {
+		t.Error("the other platform lost its sync state")
+	}
+	if got := mustList(t, db, inventory.Query{Profile: "b"}); len(got) != 1 {
+		t.Errorf("another profile was touched: %+v", got)
+	}
+
+	// Renaming to the same name, or a profile without rows, changes nothing.
+	if err := db.RenameProfile(ctx, platform.NameCom, "c", "c"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RenameProfile(ctx, platform.NameCom, "missing", "d"); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustList(t, db, inventory.Query{Platform: platform.NameCom}); len(got) != 3 {
+		t.Errorf("rows after the no-op renames = %d, want 3", len(got))
+	}
+}
+
+func TestRenameProfileIsAtomic(t *testing.T) {
+	db, path := openDB(t)
+	mustReplace(t, db, set("a", platform.ResZone), time.Hour, zoneRes("z1", "example.com"))
+	mustReplace(t, db, set("c", platform.ResZone), time.Hour, zoneRes("z9", "stale.com"))
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	// resources is renamed first; the failure comes at the second table.
+	if _, err := raw.Exec(`CREATE TRIGGER block_rename BEFORE UPDATE ON domain_index BEGIN SELECT RAISE(ABORT, 'rename blocked'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RenameProfile(ctx, platform.NameCom, "a", "c"); err == nil {
+		t.Fatal("RenameProfile succeeded despite the failing table")
+	}
+	if got := mustList(t, db, inventory.Query{Profile: "a"}); len(got) != 1 || got[0].ID != "z1" {
+		t.Errorf("rows of the old name after the failure = %+v", got)
+	}
+	if got := mustList(t, db, inventory.Query{Profile: "c"}); len(got) != 1 || got[0].ID != "z9" {
+		t.Errorf("rows of the new name after the failure = %+v", got)
+	}
+}

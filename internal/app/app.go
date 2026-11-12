@@ -41,6 +41,9 @@ type Runtime struct {
 	Stdin  io.Reader
 	Stdout io.Writer
 	Stderr io.Writer
+	// Picker answers the arrow-key prompts. Nil means the terminal one;
+	// tests inject a scripted implementation.
+	Picker prompt.Picker
 
 	cfg       *config.Config
 	store     *creds.Multi
@@ -108,6 +111,25 @@ func (rt *Runtime) Infof(format string, args ...any) {
 
 // Prompt returns the interactive IO.
 func (rt *Runtime) Prompt() *prompt.IO { return prompt.New(rt.Stdin, rt.Stdout, rt.Stderr) }
+
+// Pick returns the Picker for arrow-key prompts: the injected one, or the
+// terminal implementation, which reads Stdin and draws on Stderr.
+func (rt *Runtime) Pick() prompt.Picker {
+	if rt.Picker != nil {
+		return rt.Picker
+	}
+	return prompt.NewPicker(rt.Stdin, rt.Stderr)
+}
+
+// Interactive reports whether the command may ask questions: both stdin and
+// stderr are terminals, or a Picker was injected. Commands must not prompt
+// for a missing argument when it is false, so scripts never block.
+func (rt *Runtime) Interactive() bool {
+	if rt.Picker != nil {
+		return true
+	}
+	return prompt.IsTerminal(rt.Stdin) && prompt.IsTerminal(rt.Stderr)
+}
 
 // ConfigDir returns the configuration directory.
 func (rt *Runtime) ConfigDir() (string, error) {
