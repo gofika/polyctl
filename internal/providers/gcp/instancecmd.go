@@ -582,11 +582,22 @@ type createOptions struct {
 	sshKeys, sshKeyFiles, tags                                          []string
 	spot, ipForward, staticIP, sshInstanceOnly                          bool
 	wf                                                                  app.WaitFlags
+	// size is the size --machine-type was resolved from (nil: a type).
+	size *machineChoice
+}
+
+// typeLabel is the machine type in the change report, with the size it
+// was resolved from.
+func (o *createOptions) typeLabel() string {
+	if o.size == nil {
+		return o.machineType
+	}
+	return o.machineType + " " + o.size.label()
 }
 
 // createDesc is the detail of the instance row of create.
 func createDesc(o *createOptions, bootGB int64, tags []string, users []string) string {
-	parts := []string{o.machineType, fmt.Sprintf("boot %dGB %s", bootGB, o.diskType)}
+	parts := []string{o.typeLabel(), fmt.Sprintf("boot %dGB %s", bootGB, o.diskType)}
 	if o.disk > 0 {
 		d := fmt.Sprintf("data %dGB", o.disk)
 		if o.dataDiskType != o.diskType {
@@ -619,7 +630,16 @@ with a lower-case letter (exit code 2 otherwise).
 
 --machine-type and --zone default to defaults.gcp.machine_type and zone in
 config.yaml; neither is a usage error. The machine type must exist in the
-zone (exit code 2). The image is --image (projects/<p>/global/images/<name>
+zone (exit code 2). It may also be a size <cores>H<memory>G (2H2G, 2H4G,
+4H4G, 1H0.5G), resolved in the zone on every run (in a dry run too, never
+remembered): the predefined E2 type of exactly that shape (2H1G e2-micro,
+2H2G e2-small, 2H4G e2-medium, 2H8G e2-standard-2, 4H4G e2-highcpu-4,
+2H16G e2-highmem-2, ...; the shared-core types first) when the zone has
+it, else the E2 custom type e2-custom-<cores>-<MiB> (an even number of 2
+to 32 vCPUs, 0.5 to 8 GiB per vCPU, at most 128 GiB, in multiples of 0.25
+GiB). The choice is printed on stderr ("2H4G -> e2-medium (us-central1-a,
+E2 predefined)") and shown in the change report. No fit is exit code 4
+with the nearest E2 size; a size of 0 vCPUs or 0 GiB is exit code 2. The image is --image (projects/<p>/global/images/<name>
 or .../family/<family>), or the latest x86_64 public image of --os (debian
 by default; ubuntu picks the newest LTS) and --os-version; nothing found is
 exit code 4. The boot disk ({name}-boot, --disk-type, pd-balanced by
@@ -660,7 +680,7 @@ by the next attempt.`,
 		},
 	}
 	f := cmd.Flags()
-	f.StringVar(&o.machineType, "machine-type", "", "machine type such as e2-standard-4 (default: defaults.gcp.machine_type)")
+	f.StringVar(&o.machineType, "machine-type", "", "machine type such as e2-standard-4, or a size <cores>H<memory>G such as 2H4G (default: defaults.gcp.machine_type)")
 	f.StringVar(&o.zone, "zone", "", "zone of the instance (default: defaults.gcp.zone)")
 	f.Int64Var(&o.disk, "disk", 0, "size in GB of an empty data disk to add (0: none)")
 	f.Int64Var(&o.bootDiskSize, "boot-disk-size", 0, "boot disk size in GB (default: the image's minimum)")
@@ -728,6 +748,9 @@ func runCreate(cmd *cobra.Command, rt *app.Runtime, o *createOptions, name strin
 	if strings.TrimSpace(o.serviceAccount) == "" {
 		return app.UsageErrf("--service-account is empty (pass an e-mail, or default)")
 	}
+	if _, _, err := platform.ParseTypeShorthand(o.machineType); err != nil {
+		return err
+	}
 	if rt.Flags.Offline {
 		return app.ErrOffline
 	}
@@ -736,6 +759,10 @@ func runCreate(cmd *cobra.Command, rt *app.Runtime, o *createOptions, name strin
 		return err
 	}
 	if o.machineType, err = rt.RequireSetting(profile, platform.GCP, "machine_type", "machine-type", o.machineType); err != nil {
+		return err
+	}
+	size, isSize, err := platform.ParseTypeShorthand(o.machineType)
+	if err != nil {
 		return err
 	}
 	if o.zone, err = rt.RequireSetting(profile, platform.GCP, "zone", "zone", o.zone); err != nil {
@@ -795,7 +822,15 @@ func runCreate(cmd *cobra.Command, rt *app.Runtime, o *createOptions, name strin
 	if existing != nil {
 		return fmt.Errorf("instance %s already exists in zone %s of project %s (%s): use `polyctl gcp compute instance get %s`, or choose another name", name, zone, c.project, existing.Status, name)
 	}
-	if _, err := c.machineType(ctx, zone, o.machineType); err != nil {
+	o.size = nil
+	if isSize {
+		ch, err := c.resolveMachineSize(ctx, zone, size)
+		if err != nil {
+			return err
+		}
+		rt.Infof("%s", ch.note())
+		o.machineType, o.size = ch.Type, &ch
+	} else if _, err := c.machineType(ctx, zone, o.machineType); err != nil {
 		return err
 	}
 	var img imageChoice

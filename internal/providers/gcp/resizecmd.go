@@ -2,6 +2,7 @@ package gcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -72,13 +73,25 @@ its old type.
 
 An address that changed anyway is reported on stderr. --wait-port then
 waits up to 5 minutes until that TCP port (22 for SSH) accepts connections
-(on the internal IP, or the external one).`,
+(on the internal IP, or the external one).
+
+--machine-type also takes a size <cores>H<memory>G (2H2G, 2H4G, 4H4G),
+resolved in the instance's zone before anything changes (in a dry run
+too, never remembered), as create resolves it: an instance whose machine
+type already has that shape is unchanged; otherwise the predefined E2 type
+of exactly that shape, else an E2 custom type. The choice is printed on
+stderr and shown in the change report; no fit is exit code 4, a size of
+0 vCPUs or 0 GiB exit code 2.`,
 		Example: "  polyctl gcp compute instance resize web-1 --machine-type e2-standard-8 --yes",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			if typ == "" {
 				return app.UsageErrf("--machine-type is required")
+			}
+			size, isSize, err := platform.ParseTypeShorthand(typ)
+			if err != nil {
+				return err
 			}
 			if timeout <= 0 {
 				return app.UsageErrf("--timeout must be a positive duration, got %s", timeout)
@@ -95,6 +108,24 @@ waits up to 5 minutes until that TCP port (22 for SSH) accepts connections
 			}
 			target := l.target()
 			cur, orig := lastSegment(l.inst.MachineType), l.inst.Status
+			typeDesc := typ
+			if isSize {
+				mt, err := l.c.machineType(ctx, l.zone, cur)
+				if err != nil && !errors.Is(err, platform.ErrInvalidInput) {
+					return err
+				}
+				if mt != nil && size.Matches(int(mt.GuestCpus), int(mt.MemoryMb)) {
+					rt.Infof("instance %s already is %s (%s)", l.name(), size, cur)
+					return rt.RenderReport(platform.Report{Target: target, DryRun: rt.DryRun(), Changes: []platform.Change{
+						{Resource: l.resource() + "/machine-type", Action: platform.Unchanged, Detail: cur + " (" + size.String() + ")"}}})
+				}
+				ch, err := l.c.resolveMachineSize(ctx, l.zone, size)
+				if err != nil {
+					return err
+				}
+				rt.Infof("%s", ch.note())
+				typ, typeDesc = ch.Type, ch.Type+" "+ch.label()
+			}
 			if cur == typ {
 				rt.Infof("instance %s already is %s", l.name(), typ)
 				return rt.RenderReport(platform.Report{Target: target, DryRun: rt.DryRun(), Changes: []platform.Change{
@@ -105,8 +136,10 @@ waits up to 5 minutes until that TCP port (22 for SSH) accepts connections
 			default:
 				return fmt.Errorf("instance %s is %s: resize it once it is RUNNING or TERMINATED", l.label(), orig)
 			}
-			if _, err := l.c.machineType(ctx, l.zone, typ); err != nil {
-				return err
+			if !isSize {
+				if _, err := l.c.machineType(ctx, l.zone, typ); err != nil {
+					return err
+				}
 			}
 			region := l.region()
 			origInt, origExt := ips(l.inst)
@@ -168,7 +201,7 @@ waits up to 5 minutes until that TCP port (22 for SSH) accepts connections
 					return platform.Change{Detail: "stop; " + in.Status}, nil
 				}})
 			}
-			plan.Add(platform.Step{Resource: l.resource() + "/machine-type", Action: platform.Updated, Desc: cur + " -> " + typ, Apply: func(ctx context.Context) (platform.Change, error) {
+			plan.Add(platform.Step{Resource: l.resource() + "/machine-type", Action: platform.Updated, Desc: cur + " -> " + typeDesc, Apply: func(ctx context.Context) (platform.Change, error) {
 				wctx, cancel, conv := deadline(ctx, timeout, l.resource(), "machine type "+typ)
 				defer cancel()
 				if err := l.c.setMachineType(wctx, l.zone, name, typ); err != nil {
@@ -237,7 +270,7 @@ waits up to 5 minutes until that TCP port (22 for SSH) accepts connections
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&typ, "machine-type", "", "new machine type (required)")
+	cmd.Flags().StringVar(&typ, "machine-type", "", "new machine type, or a size <cores>H<memory>G such as 2H4G (required)")
 	cmd.Flags().StringVar(&zone, "zone", "", "zone of the instance (default: from the inventory)")
 	cmd.Flags().BoolVar(&start, "start", false, "start the instance after the change (default: only when it was running; --start=false leaves it stopped)")
 	cmd.Flags().IntVar(&port, "wait-port", 0, "after the start, wait up to 5 minutes until this TCP port accepts connections (22 for SSH)")
