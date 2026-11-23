@@ -371,7 +371,8 @@ Records come from --record (repeatable) and/or --file:
 name is relative to the zone (www, @ for the apex, a.b) or a name in the zone
 (www.example.com, www.example.com.). The TTL (seconds, or auto) and proxied
 (true or false, Cloudflare only) are optional; left out, an existing record
-keeps what it has and a new one gets the platform default. A value that itself
+keeps what it has and a new one gets the platform default. auto is the
+automatic TTL on Cloudflare and the same as leaving the TTL out elsewhere. A value that itself
 ends in ":<number>", or an IPv6 address that could also be read with a TTL,
 cannot be written inline: use a records file. An MX record's priority goes in
 front of its value ("10 mail.example.com"), an SRV value is

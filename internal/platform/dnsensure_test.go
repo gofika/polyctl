@@ -218,6 +218,44 @@ func TestDNSEnsureTriStateProxiedAndTTL(t *testing.T) {
 	}
 }
 
+// ttl=auto is Cloudflare's automatic TTL (1) there and "not given"
+// elsewhere; ttl=0 outside Cloudflare would never be found as desired.
+func TestDNSEnsureAutoAndZeroTTL(t *testing.T) {
+	m := &patchDNS{memDNS{recs: []Record{{ID: "a", Name: "www.example.com", Type: "A", Value: "203.0.113.10", TTL: 300, Proxied: bp(false)}}}}
+	r := ensure(t, m, Cloudflare, false, false, "www:A:203.0.113.10:auto")
+	if r.err != nil || len(m.patches) != 1 || m.patches[0].TTL == nil || *m.patches[0].TTL != 1 || r.changes[0].Detail != "ttl 300 -> auto" {
+		t.Fatalf("cloudflare auto = %+v, %v, %v", r.changes, r.err, m.calls)
+	}
+	r = ensure(t, m, Cloudflare, false, false, "www:A:203.0.113.10:auto")
+	if r.err != nil || len(m.patches) != 1 {
+		t.Fatalf("cloudflare auto again = %+v, %v", r.changes, r.err)
+	}
+	fileSpecs, err := ParseRecordFile(strings.NewReader("records:\n  - {name: www, type: A, value: 203.0.113.10, ttl: auto}\n"))
+	if err != nil || !fileSpecs[0].TTLAuto || fileSpecs[0].TTL != nil {
+		t.Fatalf("file auto = %+v, %v", fileSpecs, err)
+	}
+	a := &memDNS{recs: []Record{{ID: "a", Name: "www.example.com", Type: "A", Value: "203.0.113.10", TTL: 300}}}
+	if r := ensure(t, a, AWS, false, false, "www:A:203.0.113.10:auto"); r.err != nil || a.writes() != 0 {
+		t.Fatalf("aws auto = %+v, %v", r.changes, r.err)
+	}
+	if r := ensure(t, a, AWS, false, false, "www:A:203.0.113.10:0"); !errors.Is(r.err, ErrInvalidInput) || a.writes() != 0 {
+		t.Fatalf("aws ttl 0 = %v", r.err)
+	}
+	if r := ensure(t, &memDNS{}, Cloudflare, false, false, "www:A:203.0.113.10:0"); r.err != nil {
+		t.Fatalf("cloudflare ttl 0 = %v", r.err)
+	}
+}
+
+func TestDNSEnsureURIAndZonedAddress(t *testing.T) {
+	m := &memDNS{recs: []Record{{ID: "u", Name: "_http._tcp.example.com", Type: "URI", Value: `1 "https://Example.com/Path"`, Priority: ip(10)}}}
+	if r := ensure(t, m, Cloudflare, false, false, "_http._tcp:URI:10 1 https://Example.com/Path"); r.err != nil || m.writes() != 0 {
+		t.Fatalf("URI = %+v, %v, %v", r.changes, r.err, m.calls)
+	}
+	if _, err := NormalizeRecordSpecs("example.com", Cloudflare, []RecordSpec{{Name: "v6", Type: "AAAA", Value: "fe80::1%eth0"}}, nil, nil); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("zoned address = %v", err)
+	}
+}
+
 func TestDNSEnsureProxiedOnOtherPlatforms(t *testing.T) {
 	m := &memDNS{}
 	r := ensure(t, m, AWS, false, false, "www:A:203.0.113.10:300:true", "api:A:203.0.113.11::false")

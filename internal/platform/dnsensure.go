@@ -143,6 +143,16 @@ func normalizeSpec(zone string, p ID, idx int, s RecordSpec, types []string, war
 	if types != nil && !slices.Contains(types, d.Type) {
 		return DesiredRecord{}, fmt.Errorf("%w: %s cannot write %s records (record %d)", ErrNotSupported, p, d.Type, idx)
 	}
+	switch {
+	case s.TTLAuto && d.TTL == nil && p == Cloudflare:
+		// "auto" is Cloudflare's automatic TTL, 1 in the API.
+		one := 1
+		d.TTL = &one
+	case d.TTL != nil && *d.TTL == 0 && p != Cloudflare:
+		// The providers read a TTL of 0 as "platform default", so the
+		// record would never be found as desired.
+		return DesiredRecord{}, invalid("%s: ttl 0 cannot be set on %s; give a number of seconds, or leave the TTL out to keep it", d.label(), p)
+	}
 	if d.Value, err = normalizeValue(&d, s.Value, warn); err != nil {
 		return DesiredRecord{}, invalid("%s: %v", d.label(), err)
 	}
@@ -248,7 +258,7 @@ func normalizeValue(d *DesiredRecord, v string, warn func(string, ...any)) (stri
 	switch d.Type {
 	case "A", "AAAA":
 		a, err := netip.ParseAddr(v)
-		if err != nil {
+		if err != nil || a.Zone() != "" {
 			return "", fmt.Errorf("value %q is not an address", v)
 		}
 		return a.String(), nil
@@ -341,6 +351,14 @@ func compareValue(typ, v string, priority *int) string {
 		return strings.Join(f, " ")
 	case "TXT", "SPF":
 		return JoinTXT(v)
+	case "URI":
+		// "<priority> <weight> <target>"; a platform may hand the priority
+		// back apart (Cloudflare) and the target quoted.
+		f := strings.Fields(strings.ReplaceAll(v, `"`, ""))
+		if len(f) == 2 && priority != nil {
+			f = append([]string{strconv.Itoa(*priority)}, f...)
+		}
+		return strings.Join(f, " ")
 	case "CAA":
 		return strings.Join(strings.Fields(strings.ReplaceAll(v, `"`, "")), " ")
 	}

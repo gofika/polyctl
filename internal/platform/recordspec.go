@@ -24,6 +24,9 @@ type RecordSpec struct {
 	TTL      *int   `json:"ttl,omitempty" yaml:"ttl,omitempty"`
 	Proxied  *bool  `json:"proxied,omitempty" yaml:"proxied,omitempty"`
 	Priority *int   `json:"priority,omitempty" yaml:"priority,omitempty"`
+	// TTLAuto is set when the TTL was given as "auto" (TTL stays nil): on
+	// Cloudflare that is the automatic TTL (1), elsewhere "not given".
+	TTLAuto bool `json:"-" yaml:"-"`
 }
 
 // RecordSpecFormat is the inline syntax, for error messages.
@@ -110,6 +113,7 @@ func ParseRecordSpec(s string) (RecordSpec, error) {
 	}
 	c := valid[0]
 	spec.Value = strings.TrimSpace(c.value)
+	spec.TTLAuto = strings.EqualFold(strings.TrimSpace(c.ttl), "auto")
 	if t := strings.ToLower(strings.TrimSpace(c.ttl)); t != "" && t != "auto" {
 		n, err := strconv.Atoi(t)
 		if err != nil || n < 0 {
@@ -271,6 +275,7 @@ func ParseRecordFile(r io.Reader) ([]RecordSpec, error) {
 		case int:
 			spec.TTL = &v
 		case string:
+			spec.TTLAuto = strings.EqualFold(strings.TrimSpace(v), "auto")
 			if !strings.EqualFold(strings.TrimSpace(v), "auto") && strings.TrimSpace(v) != "" {
 				n, err := strconv.Atoi(strings.TrimSpace(v))
 				if err != nil {
