@@ -27,6 +27,7 @@ const (
 	resourceInstance   = "instance"
 	cpuArchX86         = "X86"
 	priceUnitHour      = "Hour"
+	operationUpgrade   = "Upgrade"
 	instanceTypesBatch = 10
 	// typeQueryWorkers bounds the system disk and price queries that run at
 	// the same time.
@@ -91,7 +92,7 @@ func (c *client) stockedTypes(ctx context.Context, region string, q stockQuery) 
 		req.InstanceType = q.InstanceType
 	} else {
 		req.Cores = requests.NewInteger(q.Cores)
-		req.Memory = requests.NewFloat(q.Memory)
+		req.Memory = memoryGiB(q.Memory)
 	}
 	req.ZoneId = q.Zone
 	resp, err := cl.DescribeAvailableResource(req)
@@ -99,6 +100,12 @@ func (c *client) stockedTypes(ctx context.Context, region string, q stockQuery) 
 		return nil, wrapErr("ecs DescribeAvailableResource "+region, err)
 	}
 	return withStock(resp.AvailableZones.AvailableZone), nil
+}
+
+// memoryGiB writes a memory size the way the API documents it ("4",
+// "0.5"), not with the six decimals of requests.NewFloat.
+func memoryGiB(gib float64) requests.Float {
+	return requests.Float(strconv.FormatFloat(gib, 'f', -1, 64))
 }
 
 // modifiableTypes returns the instance types of the size an instance can
@@ -114,8 +121,12 @@ func (c *client) modifiableTypes(ctx context.Context, region, id string, cores i
 	req.RegionId = region
 	req.ResourceId = id
 	req.DestinationResource = destInstanceType
+	// Upgrade is the one operation type of pay-as-you-go instances (the
+	// default, written out): it lists every type the instance can change
+	// to, smaller ones included.
+	req.OperationType = operationUpgrade
 	req.Cores = requests.NewInteger(cores)
-	req.Memory = requests.NewFloat(memory)
+	req.Memory = memoryGiB(memory)
 	resp, err := cl.DescribeResourcesModification(req)
 	if err != nil {
 		return nil, wrapErr("ecs DescribeResourcesModification "+id, err)

@@ -194,7 +194,8 @@ func TestInstanceResizeWithSize(t *testing.T) {
 			t.Errorf("stderr = %s", h.stderr.String())
 		}
 		q := h.api.callsFor("DescribeResourcesModification")
-		if len(q) != 1 || q[0].Get("ResourceId") != "i-1" || q[0].Get("Cores") != "2" || q[0].Get("DestinationResource") != "InstanceType" {
+		if len(q) != 1 || q[0].Get("ResourceId") != "i-1" || q[0].Get("Cores") != "2" || q[0].Get("Memory") != "4" ||
+			q[0].Get("DestinationResource") != "InstanceType" || q[0].Get("OperationType") != "Upgrade" {
 			t.Errorf("DescribeResourcesModification = %v", q)
 		}
 		if n := len(h.api.callsFor("DescribeAvailableResource")); n != 0 {

@@ -255,7 +255,7 @@ func TestResolveTypeSizeCheapestInStock(t *testing.T) {
 	if ar.Get("Cores") != "2" || ar.Get("InstanceType") != "" || ar.Get("ZoneId") != "" || ar.Get("DestinationResource") != "InstanceType" {
 		t.Errorf("DescribeAvailableResource = %v", ar)
 	}
-	if m, _ := strconv.ParseFloat(ar.Get("Memory"), 64); m != 4 {
+	if ar.Get("Memory") != "4" {
 		t.Errorf("Memory = %q", ar.Get("Memory"))
 	}
 	// Only the x86 candidates in stock in zones b and c are priced, with the
