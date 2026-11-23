@@ -32,7 +32,7 @@ resolved through the local inventory first, then remotely.
 The tree is also available under its short name: polyctl cf ...`,
 	}
 	cmd.AddCommand(
-		app.WhoamiCommand(rt, platform.Cloudflare, "On Cloudflare this verifies the API token and reports its id, status and\nexpiry, with the account the profile is pinned to."),
+		app.WhoamiCommand(rt, platform.Cloudflare, "On Cloudflare this verifies the API token and reports its id, status and\nexpiry, with the account the profile is pinned to. For an account authorized\nin the browser it checks the authorization with a request to the API and\nreports the granted scopes."),
 		newZoneCmd(rt), newDNSCmd(rt), newCacheCmd(rt), newDevModeCmd(rt), newSSLModeCmd(rt), newAccountCmd(rt))
 	return cmd
 }
@@ -690,7 +690,7 @@ func newAccountCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{Use: "account", Short: "Accounts"}
 	cmd.AddCommand(&cobra.Command{
 		Use:   "list",
-		Short: "List accounts visible to the token (needs Account:Read)",
+		Short: "List accounts visible to the credentials (API token: Account:Read; browser login: the account-settings.read scope)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if rt.Flags.Offline {

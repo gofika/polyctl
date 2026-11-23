@@ -25,6 +25,9 @@ const (
 type api struct {
 	http      *httpx.Client
 	accountID string
+	// oauth is set for browser logins: it supplies the access token and
+	// renews it. API-token accounts leave it nil.
+	oauth *oauthSession
 }
 
 func newAPI(baseURL, token, accountID string) *api {
@@ -33,6 +36,18 @@ func newAPI(baseURL, token, accountID string) *api {
 			r.Header.Set("Authorization", "Bearer "+token)
 		}),
 		accountID: accountID,
+	}
+}
+
+// newOAuthAPI returns the API of a browser login. Every request carries the
+// access token the session holds at that moment.
+func newOAuthAPI(baseURL string, s *oauthSession, accountID string) *api {
+	return &api{
+		http: httpx.New(baseURL, func(r *http.Request) {
+			r.Header.Set("Authorization", "Bearer "+s.current())
+		}),
+		accountID: accountID,
+		oauth:     s,
 	}
 }
 
@@ -134,7 +149,38 @@ func newError(status int, method, path string, msgs []message) *Error {
 }
 
 // do performs a request, validates the envelope and decodes result into out.
+// For a browser login it first makes sure the access token is not about to
+// expire, and when the API refuses the token all the same it renews it and
+// repeats the request once. The refusal means the request was not carried
+// out, so repeating it is safe for every method.
 func (a *api) do(ctx context.Context, method, path string, query url.Values, in, out any) (*resultInfo, error) {
+	if a.oauth == nil {
+		return a.doOnce(ctx, method, path, query, in, out)
+	}
+	used, err := a.oauth.fresh(ctx)
+	if err != nil {
+		return nil, err
+	}
+	info, err := a.doOnce(ctx, method, path, query, in, out)
+	if err != nil && a.oauth.mayBeExpired(err) {
+		if rerr := a.oauth.renew(ctx, used); rerr != nil {
+			if errors.Is(rerr, platform.ErrUnauthorized) {
+				return nil, rerr
+			}
+			// Not renewed (no answer from the authorization server): the
+			// refusal of the API is what there is to report.
+			return nil, a.oauth.explain(method, path, err)
+		}
+		info, err = a.doOnce(ctx, method, path, query, in, out)
+		if err != nil && errors.Is(err, platform.ErrUnauthorized) {
+			a.oauth.setFutile(err)
+		}
+	}
+	return info, a.oauth.explain(method, path, err)
+}
+
+// doOnce performs one request with the credentials as they are.
+func (a *api) doOnce(ctx context.Context, method, path string, query url.Values, in, out any) (*resultInfo, error) {
 	var env envelope
 	if err := a.http.Do(ctx, method, path, query, in, &env); err != nil {
 		var he *httpx.Error

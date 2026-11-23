@@ -41,6 +41,13 @@ type fakeCF struct {
 	accountOwned string
 	// forbidRecords answers 403 for the record listing of these zone ids.
 	forbidRecords map[string]bool
+	// oauth, when set, makes the API accept the access tokens of that
+	// authorization server instead of the API token, each limited to its
+	// scopes; the API-token verify endpoints refuse them.
+	oauth *fakeAS
+	// badTokenStatus is the status an unknown access token gets (default
+	// 401).
+	badTokenStatus int
 }
 
 func newFake(t *testing.T) (*fakeCF, *httptest.Server) {
@@ -132,7 +139,25 @@ func (f *fakeCF) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.requests = append(f.requests, r.Method+" "+r.URL.RequestURI())
-	if r.Header.Get("Authorization") != "Bearer "+f.token {
+	if f.oauth != nil {
+		scopes, ok := f.oauth.accessScopes(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		if !ok {
+			status := f.badTokenStatus
+			if status == 0 {
+				status = 401
+			}
+			f.fail(w, status, 9109, "Invalid access token")
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/tokens/verify") {
+			f.fail(w, 401, 1000, "Invalid API Token")
+			return
+		}
+		if need := scopeFor(r.Method, r.URL.Path); need != "" && !containsString(scopes, need) {
+			f.fail(w, 403, 10000, "Authentication error")
+			return
+		}
+	} else if r.Header.Get("Authorization") != "Bearer "+f.token {
 		f.fail(w, 400, 10000, "Authentication error")
 		return
 	}
