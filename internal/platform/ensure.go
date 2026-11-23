@@ -94,6 +94,9 @@ type Report struct {
 	Target  Target   `json:"target" yaml:"target"`
 	DryRun  bool     `json:"dry_run" yaml:"dry_run"`
 	Changes []Change `json:"changes" yaml:"changes"`
+	// Summary counts the outcomes; set by commands that delete in bulk
+	// (`dns delete --all`).
+	Summary *Summary `json:"summary,omitempty" yaml:"summary,omitempty"`
 }
 
 // Step is one unit of work of a Plan.
