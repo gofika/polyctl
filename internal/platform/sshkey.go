@@ -364,9 +364,21 @@ func ResolveKeyPair(ctx context.Context, lister KeyPairLister, in KeyInput) (Key
 		}
 		in.Key = key
 	}
+	match := in.Match.Match
+	if match == nil {
+		// Without a matcher of its own, a listing that carries the public
+		// key is compared by key, any other by the MD5 fingerprint: never
+		// "no match", which would make an existing key pair look foreign.
+		match = func(local *PublicKey, kp KeyPair) bool {
+			if kp.PublicKey != nil {
+				return MatchByPublicKey.Match(local, kp)
+			}
+			return MatchByFingerprintMD5.Match(local, kp)
+		}
+	}
 	var matched []string
 	for _, kp := range pairs {
-		if in.Match.Match != nil && in.Match.Match(in.Key, kp) {
+		if match(in.Key, kp) {
 			matched = append(matched, kp.Name)
 		}
 	}

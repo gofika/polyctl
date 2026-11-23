@@ -259,3 +259,19 @@ func TestKeyPairPlanStep(t *testing.T) {
 		t.Errorf("existing step = %+v", chs)
 	}
 }
+
+// A caller that names no matcher still finds an existing key pair, by key
+// when the listing carries it, else by the MD5 fingerprint.
+func TestResolveKeyPairDefaultMatcher(t *testing.T) {
+	line, _ := ed25519Line(t, "d")
+	pk, _ := ParsePublicKey(line)
+	for name, kp := range map[string]KeyPair{
+		"by key":         {Name: "mine", PublicKey: pk.Key},
+		"by fingerprint": {Name: "mine", Fingerprint: pk.FingerprintMD5Hex()},
+	} {
+		plan, err := ResolveKeyPair(t.Context(), fakeLister{pairs: []KeyPair{kp}}, KeyInput{Key: pk, Name: "mine"})
+		if err != nil || plan.Create || plan.Name != "mine" {
+			t.Errorf("%s: plan = %+v, %v", name, plan, err)
+		}
+	}
+}

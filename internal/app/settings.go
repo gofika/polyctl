@@ -33,7 +33,11 @@ func (rt *Runtime) RequireSetting(profile string, id platform.ID, key, flag, fla
 	if err != nil || v != "" {
 		return v, err
 	}
-	return "", UsageErrf("%s is required: pass --%s, or set defaults.%s.%s (or profiles.%s.defaults.%s.%s) in config.yaml", key, flag, id, key, profile, id, key)
+	prof := profile
+	if prof == "" {
+		prof = "<profile>"
+	}
+	return "", UsageErrf("%s is required: pass --%s, or set defaults.%s.%s (or profiles.%s.defaults.%s.%s) in config.yaml", key, flag, id, key, prof, id, key)
 }
 
 // SettingList resolves a list setting like Setting: the flag's values when
