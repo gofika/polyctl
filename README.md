@@ -16,6 +16,9 @@ Everything it learns about your accounts is cached in a local SQLite inventory, 
 - Secrets in the OS keyring (macOS Keychain, Windows Credential Manager, Secret Service on Linux) with an automatic fallback to a `0600` file; `config.yaml` never holds a secret.
 - Reverse lookup: `polyctl find 203.0.113.10` lists the instances, load balancers, elastic / static IPs and database endpoints that hold an address or DNS name, in every account, with console links.
 - Domain routing: `polyctl dns list example.com` finds the right zone and account by itself. Conflicts (the same domain in two accounts) are reported instead of guessed; `--profile` and `--platform` pick one.
+- Certificates: `polyctl cert ensure` issues and renews Let's Encrypt certificates through a DNS-01 challenge in whichever account hosts the domain, and `polyctl cert deploy` puts them on load balancers and certificate stores (Alibaba Cloud ALB and CAS, GCP HTTPS proxies, AWS ACM).
+- Cloud resources: instances (EC2, Compute Engine, ECS) with create, delete, start, stop, reboot and resize, security groups and firewalls, load balancers, EBS volumes and snapshots, RDS instances, key pairs, elastic IPs, VPCs, and platform certificates (ACM, CAS, GCP SSL certificates).
+- Idempotent `ensure` commands (`dns ensure`, `cloudflare zone ensure`, `aws elbv2 load-balancer ensure`, `aliyun ecs instance ensure`, ...) that change only what differs and print a change report; `--dry-run` shows the report of any write command without writing, and every destructive command asks first (`--yes` in scripts).
 - Local inventory (`inventory.db`): per-resource-type TTLs, `--refresh` to force a fetch, `--offline` to forbid the network, `polyctl sync` to bulk-load.
 - `table` (default), `json` and `yaml` output for every command.
 - Distinct exit codes for usage, auth, not-found, ambiguous, offline and not-supported errors.
@@ -60,11 +63,11 @@ The scripts download the latest release for your platform, verify its SHA-256 ch
 
 | Variable | Effect |
 | --- | --- |
-| `POLYCTL_VERSION` | Install a specific version (for example `0.3.0`) instead of the latest release. |
+| `POLYCTL_VERSION` | Install a specific version (for example `0.1.2`; see the [releases](https://github.com/gofika/polyctl/releases)) instead of the latest release. |
 | `POLYCTL_INSTALL_DIR` | Install the binary into this directory. |
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/gofika/polyctl/main/install.sh | POLYCTL_VERSION=0.3.0 POLYCTL_INSTALL_DIR="$HOME/bin" sh
+curl -fsSL https://raw.githubusercontent.com/gofika/polyctl/main/install.sh | POLYCTL_VERSION=0.1.2 POLYCTL_INSTALL_DIR="$HOME/bin" sh
 ```
 
 ### Manual download
@@ -99,7 +102,7 @@ polyctl completion fish > ~/.config/fish/completions/polyctl.fish
 polyctl completion powershell | Out-String | Invoke-Expression
 ```
 
-Completion is context-aware: `--profile`, `auth use` and the first argument of `auth rename` complete configured profiles, `auth login`, `auth logout` and `--platform` complete platform names, and the `<domain>` argument of `dns` / `domain` commands completes from the local domain index.
+Completion is context-aware: `--profile`, `auth use` and the first argument of `auth rename` complete configured profiles, `auth login`, `auth logout` and `--platform` complete platform names, and the `<domain>` argument of `dns`, `domain` and `cert` commands completes from the local domain index.
 
 ## Quick start
 
@@ -180,8 +183,8 @@ Help never depends on a setting: `--help`, `polyctl help <command>`, bare `polyc
 Flags that only some commands have are local to them:
 
 - `auth login` and `auth manage` take `--no-browser`: during a login, print URLs instead of opening a browser. It is implied in the non-interactive flow, which never opens one.
-- The `dns` and `domain` command groups take `--platform <platform>`, which routes to the account on that one platform (and restricts any indexing to it); see [Routing rules](#routing-rules).
-- `sync` and `inventory list` have a `--platform` of their own, a filter that takes a list of platforms; see [Caching](#caching).
+- The `dns` and `domain` command groups, `cert ensure` and `cert deploy` take `--platform <platform>`, which routes to the account on that one platform (and restricts any indexing to it); see [Routing rules](#routing-rules).
+- `sync`, `inventory list` and `find` have a `--platform` of their own, a filter that takes a list of platforms (comma-separated); see [Caching](#caching) and [Finding resources by IP or DNS name](#finding-resources-by-ip-or-dns-name).
 
 ### `config.yaml`
 
@@ -1625,7 +1628,8 @@ Errors are printed to stderr as `error: <message>`.
 
 ```text
 cmd/polyctl/                 main(): calls internal/cli.Main and exits with its code
-internal/cli/                Cobra command tree (root, auth, dns, domain, sync/inventory, platform mounts), exit-code mapping
+internal/cli/                Cobra command tree (root, auth, dns, domain, cert, cert deploy, find, sync/inventory,
+                             platform mounts), exit-code mapping
 internal/app/                Runtime shared by all commands: config, credential store, inventory, profile selection,
                              domain routing (ResolveDomain), resource routing (ResolveResource), cache policy
                              (EnsureSet / NeedsRefresh), SyncAccount, --dry-run and change reports, --wait flags,
@@ -1640,7 +1644,10 @@ internal/platform/           Provider-neutral contracts: Provider, Client, DNSSe
                              and registry of cert deploy
 internal/providers/
   cloudflare/  namecom/  godaddy/  aws/  gcp/  aliyun/
-                             One package per platform: provider.go (login, client, sync) and commands.go (native commands)
+                             One package per platform: provider.go (login, client, sync), commands.go (the command
+                             tree and the older native commands), and a client file and a command file per service
+                             or resource (aws: ec2.go, instance.go / instancecmd.go, elbv2*.go, rds*.go, acm*.go, ...),
+                             plus certdeploy.go (its cert deploy targets) and find.go (its part of find) where it has them
 internal/cert/               The certificate store, the ACME account and issuance (lego), the DNS-01 challenge records
                              written through a DNSService, the propagation check, the cert ensure flow and the
                              cert deploy flow
