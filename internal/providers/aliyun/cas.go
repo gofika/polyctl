@@ -204,6 +204,34 @@ type casCertificate struct {
 	Endpoint    string `json:"endpoint,omitempty" yaml:"endpoint,omitempty"`
 	Account     string `json:"account,omitempty" yaml:"account,omitempty"`
 	Source      string `json:"source" yaml:"source"`
+	// EndMillis is CertEndTime (the NotAfter of the certificate, in
+	// milliseconds; 0 when CAS did not say) and Expired the flag of CAS.
+	EndMillis int64 `json:"-" yaml:"-"`
+	Expired   bool  `json:"-" yaml:"-"`
+}
+
+// notAfter is the expiry of the certificate: CertEndTime, else 00:00 UTC
+// of its EndDate (a day early rather than late), else the zero time.
+func (c casCertificate) notAfter() time.Time {
+	if c.EndMillis > 0 {
+		return time.UnixMilli(c.EndMillis).UTC()
+	}
+	t, err := time.Parse("2006-01-02", c.EndDate)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+// names are the common name and the SANs of the certificate.
+func (c casCertificate) names() []string {
+	var out []string
+	for _, n := range append([]string{c.CommonName}, strings.Split(c.Sans, ",")...) {
+		if n = strings.ToLower(strings.TrimSpace(n)); n != "" && !containsString(out, n) {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 func (c casCertificate) resource() platform.Resource {
@@ -239,7 +267,7 @@ func (c casCertificate) expired(now time.Time) bool {
 func casCertificateFrom(it cas.CertificateOrderListItem, endpoint string) casCertificate {
 	return casCertificate{ID: strconv.FormatInt(it.CertificateId, 10), Name: it.Name, CommonName: it.CommonName, StartDate: it.StartDate,
 		EndDate: it.EndDate, NotAfter: it.EndDate, Fingerprint: it.Fingerprint, Sans: it.Sans, SerialNo: it.SerialNo,
-		Endpoint: endpoint, Source: "cas"}
+		Endpoint: endpoint, Source: "cas", EndMillis: it.CertEndTime, Expired: it.Expired}
 }
 
 // listCASCertificates lists the uploaded certificates (OrderType UPLOAD:
@@ -289,7 +317,16 @@ func (c *client) listCASCertificatesIn(ctx context.Context, s casScope) ([]casCe
 // (PEM texts) under name and returns its id. The PEM texts go in the form
 // body: a chain with its key is too long for a query string.
 func (c *client) uploadCASCertificate(ctx context.Context, name, certPEM, keyPEM string) (string, error) {
-	cl, s, err := c.casClient(ctx)
+	s, err := c.cas()
+	if err != nil {
+		return "", err
+	}
+	return c.uploadCASCertificateIn(ctx, s, name, certPEM, keyPEM)
+}
+
+// uploadCASCertificateIn is uploadCASCertificate in the store s.
+func (c *client) uploadCASCertificateIn(ctx context.Context, s casScope, name, certPEM, keyPEM string) (string, error) {
+	cl, s, err := c.casClientFor(ctx, s)
 	if err != nil {
 		return "", err
 	}
@@ -310,11 +347,20 @@ func (c *client) uploadCASCertificate(ctx context.Context, name, certPEM, keyPEM
 // deleteCASCertificate deletes an uploaded certificate. CAS does not check
 // whether a listener still uses it: callers check first.
 func (c *client) deleteCASCertificate(ctx context.Context, id string) error {
+	s, err := c.cas()
+	if err != nil {
+		return err
+	}
+	return c.deleteCASCertificateIn(ctx, s, id)
+}
+
+// deleteCASCertificateIn is deleteCASCertificate in the store s.
+func (c *client) deleteCASCertificateIn(ctx context.Context, s casScope, id string) error {
 	n, err := strconv.ParseInt(id, 10, 64)
 	if err != nil {
 		return fmt.Errorf("%w: certificate id %q is not an integer", platform.ErrInvalidInput, id)
 	}
-	cl, s, err := c.casClient(ctx)
+	cl, s, err := c.casClientFor(ctx, s)
 	if err != nil {
 		return err
 	}
