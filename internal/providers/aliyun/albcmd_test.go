@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -420,5 +421,182 @@ func TestALBACLEntryWritesWaitForAConfiguringACL(t *testing.T) {
 	}
 	if len(h.api.callsFor("AddEntriesToAcl")) != 1 || len(h.api.callsFor("RemoveEntriesFromAcl")) != 1 {
 		t.Errorf("writes = %d add, %d remove", len(h.api.callsFor("AddEntriesToAcl")), len(h.api.callsFor("RemoveEntriesFromAcl")))
+	}
+}
+
+func TestALBLoadBalancerUpdate(t *testing.T) {
+	h, _, alb, _, clock := albHarness(t, app.Flags{})
+	alb.addLB("alb-1", "lb-1", "vpc-site", "Active")
+	alb.addLB("alb-2", "lb-taken", "vpc-site", "Active")
+	writes := func() int {
+		return len(h.api.callsFor("UpdateLoadBalancerAttribute")) + len(h.api.callsFor("EnableDeletionProtection")) +
+			len(h.api.callsFor("DisableDeletionProtection"))
+	}
+	if err := h.run("alb", "load-balancer", "update", "lb-1", "--region", "cn-shanghai"); !errors.Is(err, app.ErrUsage) {
+		t.Errorf("no flag = %v", err)
+	}
+	if err := h.run("alb", "load-balancer", "update", "lb-1", "--region", "cn-shanghai", "--name", "alb-x"); !errors.Is(err, app.ErrUsage) {
+		t.Errorf("id-like name = %v", err)
+	}
+
+	// Dry run: both changes reported, nothing written.
+	h.rt.Flags.DryRun = true
+	if err := h.run("alb", "load-balancer", "update", "lb-1", "--region", "cn-shanghai", "--name", "lb-2", "--deletion-protection"); err != nil {
+		t.Fatal(err)
+	}
+	rep := reportOf(t, h)
+	if len(rep.Changes) != 2 || rep.Changes[0].Action != platform.WouldUpdate || rep.Changes[0].Resource != "load-balancer/lb-1/deletion-protection" ||
+		rep.Changes[0].Detail != "false -> true" || rep.Changes[1].Resource != "load-balancer/lb-1/name" || rep.Changes[1].Detail != "lb-1 -> lb-2" {
+		t.Errorf("dry run = %+v", rep.Changes)
+	}
+	if writes() != 0 {
+		t.Error("dry run wrote")
+	}
+	h.rt.Flags.DryRun = false
+
+	if err := h.run("alb", "load-balancer", "update", "lb-1", "--region", "cn-shanghai", "--name", "lb-2", "--deletion-protection"); err != nil {
+		t.Fatalf("update: %v\n%s", err, h.stderr.String())
+	}
+	if q := h.api.callsFor("EnableDeletionProtection"); len(q) != 1 || q[0].Get("ResourceId") != "alb-1" {
+		t.Errorf("EnableDeletionProtection = %v", q)
+	}
+	if q := h.api.callsFor("UpdateLoadBalancerAttribute"); len(q) != 1 || q[0].Get("LoadBalancerName") != "lb-2" || q[0].Get("LoadBalancerId") != "alb-1" {
+		t.Errorf("UpdateLoadBalancerAttribute = %v", q)
+	}
+	// It waited until the load balancer was Active again.
+	if l := alb.lb("alb-1"); l["LoadBalancerStatus"] != "Active" || l["LoadBalancerName"] != "lb-2" || len(clock.sleeps) != 2 {
+		t.Errorf("after update: %v, sleeps %v", l, clock.sleeps)
+	}
+
+	// The same values again: unchanged, nothing written.
+	before := writes()
+	if err := h.run("alb", "load-balancer", "update", "alb-1", "--region", "cn-shanghai", "--name", "lb-2", "--deletion-protection"); err != nil {
+		t.Fatal(err)
+	}
+	if rep := reportOf(t, h); writes() != before || len(rep.Changes) != 2 || rep.Changes[0].Action != platform.Unchanged || rep.Changes[1].Action != platform.Unchanged {
+		t.Errorf("same values: %+v", rep.Changes)
+	}
+
+	// --deletion-protection=false switches it off; --no-wait does not wait.
+	if err := h.run("alb", "load-balancer", "update", "lb-2", "--region", "cn-shanghai", "--deletion-protection=false", "--name", "lb-3", "--no-wait"); err != nil {
+		t.Fatal(err)
+	}
+	if q := h.api.callsFor("DisableDeletionProtection"); len(q) != 1 || alb.lb("alb-1")["DeletionProtectionConfig"].(map[string]any)["Enabled"] != false {
+		t.Errorf("DisableDeletionProtection = %v", q)
+	}
+	if len(clock.sleeps) != 2 || alb.lb("alb-1")["LoadBalancerStatus"] != "Configuring" {
+		t.Errorf("--no-wait waited: %v", clock.sleeps)
+	}
+
+	// A name another load balancer holds is refused before any write.
+	before = writes()
+	if err := h.run("alb", "load-balancer", "update", "alb-1", "--region", "cn-shanghai", "--name", "lb-taken"); err == nil || errors.Is(err, app.ErrUsage) || writes() != before {
+		t.Errorf("taken name = %v", err)
+	}
+	if err := h.run("alb", "load-balancer", "update", "lb-nosuch", "--region", "cn-shanghai", "--deletion-protection"); !errors.Is(err, platform.ErrNotFound) {
+		t.Errorf("missing = %v", err)
+	}
+	alb.addLB("alb-3", "lb-dup", "vpc-site", "Active")
+	alb.addLB("alb-4", "lb-dup", "vpc-site", "Active")
+	var ae *app.AmbiguousError
+	if err := h.run("alb", "load-balancer", "update", "lb-dup", "--region", "cn-shanghai", "--deletion-protection"); !errors.As(err, &ae) {
+		t.Errorf("ambiguous = %v", err)
+	}
+	// An unknown API error is a general failure.
+	alb.addLB("alb-5", "lb-busy", "vpc-site", "Provisioning")
+	alb.pending["alb-5"] = 100
+	err := h.run("alb", "load-balancer", "update", "alb-5", "--region", "cn-shanghai", "--name", "lb-busy-2")
+	if err == nil || !platform.HasErrorCode(err, "IncorrectStatus.LoadBalancer") || errors.Is(err, app.ErrUsage) || errors.Is(err, platform.ErrNotFound) {
+		t.Errorf("busy = %v", err)
+	}
+}
+
+func TestALBServerGroupUpdate(t *testing.T) {
+	h, _, alb, _, _ := albHarness(t, app.Flags{})
+	alb.addGroup("sgp-1", "web", "HTTP", "vpc-site")
+	alb.addGroup("sgp-2", "web-taken", "HTTP", "vpc-site")
+	calls := func() []url.Values { return h.api.callsFor("UpdateServerGroupAttribute") }
+	for _, args := range [][]string{
+		{},
+		{"--scheduler", "rr"},
+		{"--health-check-path", "healthz"},
+		{"--health-check=false", "--health-check-path", "/healthz"},
+		{"--name", "sgp-x"},
+		// The health check is off: a path alone has nothing to apply to.
+		{"--health-check-path", "/healthz"},
+	} {
+		if err := h.run(append([]string{"alb", "server-group", "update", "web"}, args...)...); !errors.Is(err, app.ErrUsage) {
+			t.Errorf("%v = %v", args, err)
+		}
+	}
+	if len(calls()) != 0 {
+		t.Fatal("a usage error wrote")
+	}
+
+	h.rt.Flags.DryRun = true
+	if err := h.run("alb", "server-group", "update", "web", "--name", "web-2", "--scheduler", "wlc"); err != nil {
+		t.Fatal(err)
+	}
+	rep := reportOf(t, h)
+	if len(rep.Changes) != 1 || rep.Changes[0].Action != platform.WouldUpdate || rep.Changes[0].Resource != "server-group/web" ||
+		rep.Changes[0].Detail != "name web -> web-2; scheduler Wrr -> Wlc" || len(calls()) != 0 {
+		t.Errorf("dry run = %+v", rep.Changes)
+	}
+	h.rt.Flags.DryRun = false
+
+	if err := h.run("alb", "server-group", "update", "web", "--scheduler", "wlc", "--health-check", "--health-check-path", "/healthz", "--sticky-session"); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	q := calls()
+	if len(q) != 1 || q[0].Get("Scheduler") != "Wlc" || q[0].Get("HealthCheckConfig.HealthCheckEnabled") != "true" ||
+		q[0].Get("HealthCheckConfig.HealthCheckPath") != "/healthz" || q[0].Get("StickySessionConfig.StickySessionEnabled") != "true" ||
+		q[0].Get("StickySessionConfig.StickySessionType") != "Insert" || q[0].Has("ServerGroupName") {
+		t.Errorf("UpdateServerGroupAttribute = %v", q)
+	}
+	if err := h.run("alb", "server-group", "get", "sgp-1"); err != nil {
+		t.Fatal(err)
+	}
+	var g albSGDetail
+	h.jsonOut(&g)
+	if g.Scheduler != "Wlc" || !g.HealthCheck || g.HealthCheckPath != "/healthz" || !g.StickySession || g.Status != "Available" {
+		t.Errorf("get = %+v", g)
+	}
+
+	// The same values again: unchanged, nothing written.
+	if err := h.run("alb", "server-group", "update", "sgp-1", "--scheduler", "Wlc", "--health-check", "--health-check-path", "/healthz", "--sticky-session"); err != nil {
+		t.Fatal(err)
+	}
+	if rep := reportOf(t, h); len(calls()) != 1 || rep.Changes[0].Action != platform.Unchanged {
+		t.Errorf("same values: %+v", rep.Changes)
+	}
+
+	// A new path for a health check that is on keeps it on.
+	if err := h.run("alb", "server-group", "update", "web", "--health-check-path", "/ready"); err != nil {
+		t.Fatal(err)
+	}
+	if q := calls(); len(q) != 2 || q[1].Get("HealthCheckConfig.HealthCheckEnabled") != "true" || q[1].Get("HealthCheckConfig.HealthCheckPath") != "/ready" ||
+		q[1].Has("Scheduler") || q[1].Has("StickySessionConfig.StickySessionEnabled") {
+		t.Errorf("path only = %v", q)
+	}
+	if err := h.run("alb", "server-group", "update", "web", "--health-check=false", "--sticky-session=false", "--name", "web-2"); err != nil {
+		t.Fatal(err)
+	}
+	if q := calls(); len(q) != 3 || q[2].Get("HealthCheckConfig.HealthCheckEnabled") != "false" || q[2].Has("HealthCheckConfig.HealthCheckPath") ||
+		q[2].Get("StickySessionConfig.StickySessionEnabled") != "false" || q[2].Has("StickySessionConfig.StickySessionType") || q[2].Get("ServerGroupName") != "web-2" {
+		t.Errorf("off = %v", q)
+	}
+
+	// A name another group of the VPC holds is refused before any write.
+	if err := h.run("alb", "server-group", "update", "web-2", "--name", "web-taken"); err == nil || errors.Is(err, app.ErrUsage) || len(calls()) != 3 {
+		t.Errorf("taken name = %v", err)
+	}
+	if err := h.run("alb", "server-group", "update", "nosuch", "--scheduler", "Sch"); !errors.Is(err, platform.ErrNotFound) {
+		t.Errorf("missing = %v", err)
+	}
+	alb.addGroup("sgp-3", "dup", "HTTP", "vpc-site")
+	alb.addGroup("sgp-4", "dup", "HTTP", "vpc-site")
+	var ae *app.AmbiguousError
+	if err := h.run("alb", "server-group", "update", "dup", "--scheduler", "Sch"); !errors.As(err, &ae) {
+		t.Errorf("ambiguous = %v", err)
 	}
 }

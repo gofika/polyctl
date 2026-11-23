@@ -263,6 +263,51 @@ func (a *albClient) deleteLoadBalancer(ctx context.Context, id string) error {
 	return nil
 }
 
+// renameLoadBalancer sets the name of a load balancer. The change is
+// asynchronous: the load balancer is Configuring for a while after it.
+func (a *albClient) renameLoadBalancer(ctx context.Context, id, name string) error {
+	req := alb.CreateUpdateLoadBalancerAttributeRequest()
+	a.route(req)
+	req.LoadBalancerId = id
+	req.LoadBalancerName = name
+	req.ClientToken = clientToken()
+	if _, err := a.cl.UpdateLoadBalancerAttribute(req); err != nil {
+		return albLBWriteError(wrapErr("alb UpdateLoadBalancerAttribute "+id, err))
+	}
+	return nil
+}
+
+// setDeletionProtection switches the deletion protection of a load
+// balancer on or off.
+func (a *albClient) setDeletionProtection(ctx context.Context, id string, on bool) error {
+	if on {
+		req := alb.CreateEnableDeletionProtectionRequest()
+		a.route(req)
+		req.ResourceId = id
+		req.ClientToken = clientToken()
+		if _, err := a.cl.EnableDeletionProtection(req); err != nil {
+			return albLBWriteError(wrapErr("alb EnableDeletionProtection "+id, err))
+		}
+		return nil
+	}
+	req := alb.CreateDisableDeletionProtectionRequest()
+	a.route(req)
+	req.ResourceId = id
+	req.ClientToken = clientToken()
+	if _, err := a.cl.DisableDeletionProtection(req); err != nil {
+		return albLBWriteError(wrapErr("alb DisableDeletionProtection "+id, err))
+	}
+	return nil
+}
+
+// albLBWriteError adds what to do to the known load balancer write errors.
+func albLBWriteError(err error) error {
+	if platform.HasErrorCode(err, "IncorrectStatus.LoadBalancer") {
+		return fmt.Errorf("%w (the load balancer is still changing; try again in a few seconds)", err)
+	}
+	return err
+}
+
 // describeZones returns the zones of the region that offer ALB, sorted.
 func (a *albClient) describeZones(ctx context.Context) ([]string, error) {
 	req := alb.CreateDescribeZonesRequest()
@@ -283,24 +328,35 @@ func (a *albClient) describeZones(ctx context.Context) ([]string, error) {
 
 // albServerGroup is a server group (a backend pool of ECS instances).
 type albServerGroup struct {
-	ID              string   `json:"id" yaml:"id"`
-	Name            string   `json:"name" yaml:"name"`
-	Protocol        string   `json:"protocol" yaml:"protocol"`
-	Type            string   `json:"type" yaml:"type"`
-	Status          string   `json:"status" yaml:"status"`
-	VpcID           string   `json:"vpc_id" yaml:"vpc_id"`
-	ResourceGroupID string   `json:"resource_group_id" yaml:"resource_group_id"`
-	ServerCount     int      `json:"server_count" yaml:"server_count"`
-	HealthCheck     bool     `json:"health_check" yaml:"health_check"`
-	LoadBalancers   []string `json:"load_balancers" yaml:"load_balancers"`
-	Listeners       []string `json:"listeners" yaml:"listeners"`
-	Region          string   `json:"region" yaml:"region"`
+	ID              string `json:"id" yaml:"id"`
+	Name            string `json:"name" yaml:"name"`
+	Protocol        string `json:"protocol" yaml:"protocol"`
+	Type            string `json:"type" yaml:"type"`
+	Status          string `json:"status" yaml:"status"`
+	VpcID           string `json:"vpc_id" yaml:"vpc_id"`
+	ResourceGroupID string `json:"resource_group_id" yaml:"resource_group_id"`
+	ServerCount     int    `json:"server_count" yaml:"server_count"`
+	HealthCheck     bool   `json:"health_check" yaml:"health_check"`
+	// HealthCheckProtocol and HealthCheckPath are those of the health
+	// check (empty when it is off).
+	HealthCheckProtocol string `json:"health_check_protocol,omitempty" yaml:"health_check_protocol,omitempty"`
+	HealthCheckPath     string `json:"health_check_path,omitempty" yaml:"health_check_path,omitempty"`
+	// Scheduler is the balancing algorithm: Wrr, Wlc or Sch.
+	Scheduler     string   `json:"scheduler" yaml:"scheduler"`
+	StickySession bool     `json:"sticky_session" yaml:"sticky_session"`
+	LoadBalancers []string `json:"load_balancers" yaml:"load_balancers"`
+	Listeners     []string `json:"listeners" yaml:"listeners"`
+	Region        string   `json:"region" yaml:"region"`
 }
 
 func albServerGroupFrom(g alb.ServerGroup, region string) albServerGroup {
 	out := albServerGroup{ID: g.ServerGroupId, Name: g.ServerGroupName, Protocol: g.Protocol, Type: g.ServerGroupType, Status: g.ServerGroupStatus,
 		VpcID: g.VpcId, ResourceGroupID: g.ResourceGroupId, ServerCount: g.ServerCount, HealthCheck: g.HealthCheckConfig.HealthCheckEnabled,
+		Scheduler: g.Scheduler, StickySession: g.StickySessionConfig.StickySessionEnabled,
 		LoadBalancers: append([]string{}, g.RelatedLoadBalancerIds...), Listeners: append([]string{}, g.RelatedListenerIds...), Region: region}
+	if out.HealthCheck {
+		out.HealthCheckProtocol, out.HealthCheckPath = g.HealthCheckConfig.HealthCheckProtocol, g.HealthCheckConfig.HealthCheckPath
+	}
 	return out
 }
 
@@ -384,6 +440,55 @@ func (a *albClient) deleteServerGroup(ctx context.Context, id string) error {
 		err = wrapErr("alb DeleteServerGroup "+id, err)
 		if platform.HasErrorCode(err, errALBServerGroupInUse) {
 			return fmt.Errorf("%w (a listener still forwards to it; the listeners of a deleted load balancer linger for about a minute)", err)
+		}
+		return err
+	}
+	return nil
+}
+
+// albServerGroupUpdate is a change to a server group: the fields set
+// (not "", not nil) are written, the others are left as they are.
+type albServerGroupUpdate struct {
+	Name      string
+	Scheduler string
+	// HealthCheck switches the health check on or off; HealthCheckPath
+	// (with the health check on) sets its path.
+	HealthCheck     *bool
+	HealthCheckPath string
+	// StickySession switches session persistence on (the load balancer
+	// inserts the cookie) or off.
+	StickySession *bool
+}
+
+// albStickyInsert is the session persistence of `--sticky-session`: the
+// load balancer inserts the cookie (Server would need a cookie name).
+const albStickyInsert = "Insert"
+
+// updateServerGroup writes u to a server group. The change is
+// asynchronous: the group is Configuring for a while after it.
+func (a *albClient) updateServerGroup(ctx context.Context, id string, u albServerGroupUpdate) error {
+	req := alb.CreateUpdateServerGroupAttributeRequest()
+	a.route(req)
+	req.ServerGroupId = id
+	req.ServerGroupName = u.Name
+	req.Scheduler = u.Scheduler
+	if u.HealthCheck != nil {
+		req.HealthCheckConfig = alb.UpdateServerGroupAttributeHealthCheckConfig{HealthCheckEnabled: strconv.FormatBool(*u.HealthCheck)}
+		if *u.HealthCheck {
+			req.HealthCheckConfig.HealthCheckPath = u.HealthCheckPath
+		}
+	}
+	if u.StickySession != nil {
+		req.StickySessionConfig = alb.UpdateServerGroupAttributeStickySessionConfig{StickySessionEnabled: strconv.FormatBool(*u.StickySession)}
+		if *u.StickySession {
+			req.StickySessionConfig.StickySessionType = albStickyInsert
+		}
+	}
+	req.ClientToken = clientToken()
+	if _, err := a.cl.UpdateServerGroupAttribute(req); err != nil {
+		err = wrapErr("alb UpdateServerGroupAttribute "+id, err)
+		if platform.HasErrorCode(err, "IncorrectStatus.ServerGroup") {
+			return fmt.Errorf("%w (the server group is still changing; try again in a few seconds)", err)
 		}
 		return err
 	}

@@ -41,7 +41,7 @@ region by default). Alibaba Cloud keeps none of their names unique: a name
 held by several is ambiguous (exit code 5); pass the id.`,
 	}
 	lb := &cobra.Command{Use: "load-balancer", Short: "ALB load balancers"}
-	lb.AddCommand(albLBListCmd(rt), albLBGetCmd(rt), albLBCreateCmd(rt), albLBDeleteCmd(rt), albLBEnsureCmd(rt))
+	lb.AddCommand(albLBListCmd(rt), albLBGetCmd(rt), albLBCreateCmd(rt), albLBUpdateCmd(rt), albLBDeleteCmd(rt), albLBEnsureCmd(rt))
 	lsn := &cobra.Command{Use: "listener", Short: "Listeners of a load balancer"}
 	cert := &cobra.Command{Use: "cert", Short: "The certificate of an HTTPS listener"}
 	cert.AddCommand(albListenerCertSetCmd(rt))
@@ -49,7 +49,7 @@ held by several is ambiguous (exit code 5); pass the id.`,
 	sg := &cobra.Command{Use: "server-group", Short: "Server groups (backend pools of ECS instances)"}
 	srv := &cobra.Command{Use: "server", Short: "Servers of a server group"}
 	srv.AddCommand(albServerAddCmd(rt))
-	sg.AddCommand(albSGListCmd(rt), albSGGetCmd(rt), albSGCreateCmd(rt), albSGDeleteCmd(rt), srv)
+	sg.AddCommand(albSGListCmd(rt), albSGGetCmd(rt), albSGCreateCmd(rt), albSGUpdateCmd(rt), albSGDeleteCmd(rt), srv)
 	acl := &cobra.Command{Use: "acl", Short: "Access control lists (IPv4 allow / deny lists)"}
 	entry := &cobra.Command{Use: "entry", Short: "Entries of an ACL"}
 	entry.AddCommand(albACLEntryAddCmd(rt), albACLEntryRemoveCmd(rt))
@@ -722,6 +722,99 @@ waits until it is Active (about 45 seconds), bounded by --timeout.`,
 	return cmd
 }
 
+func albLBUpdateCmd(rt *app.Runtime) *cobra.Command {
+	var region, name string
+	var deletionProtection bool
+	var w app.WaitFlags
+	cmd := &cobra.Command{
+		Use:   "update <name|id>",
+		Short: "Rename a load balancer or switch its deletion protection",
+		Long: `Change what the flags name, each only when it differs (otherwise it is
+reported unchanged): --name renames the load balancer (a name another load
+balancer of the region holds is exit code 1), --deletion-protection[=false]
+switches its deletion protection. The load balancer is found like get.
+After a rename the command waits until the load balancer is Active again,
+bounded by --timeout; --no-wait returns at once.`,
+		Example: "  polyctl aliyun alb load-balancer update lb-web --deletion-protection\n  polyctl aliyun alb load-balancer update alb-0123456789 --name lb-web-2 --deletion-protection=false",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			fl := cmd.Flags()
+			if !fl.Changed("name") && !fl.Changed("deletion-protection") {
+				return app.UsageErrf("nothing to update: pass --name or --deletion-protection")
+			}
+			if fl.Changed("name") {
+				if err := checkLBName(name); err != nil {
+					return err
+				}
+			}
+			wait, timeout, err := w.Resolve(cmd)
+			if err != nil {
+				return err
+			}
+			sc, lb, err := lbScope(ctx, rt, args[0], region)
+			if err != nil {
+				return err
+			}
+			res := "load-balancer/" + orID(lb.Name, lb.ID)
+			var plan platform.Plan
+			if fl.Changed("deletion-protection") {
+				want := deletionProtection
+				if lb.DeletionProtection == want {
+					plan.Add(platform.Step{Resource: res + "/deletion-protection", ID: lb.ID, Desc: strconv.FormatBool(want)})
+				} else {
+					plan.Add(platform.Step{Resource: res + "/deletion-protection", Action: platform.Updated, ID: lb.ID,
+						Desc: fmt.Sprintf("%t -> %t", lb.DeletionProtection, want),
+						Apply: func(ctx context.Context) (platform.Change, error) {
+							return platform.Change{}, sc.a.setDeletionProtection(ctx, lb.ID, want)
+						}})
+				}
+			}
+			if fl.Changed("name") {
+				if name == lb.Name {
+					plan.Add(platform.Step{Resource: res + "/name", ID: lb.ID, Desc: name})
+				} else {
+					found, err := sc.a.findLoadBalancersByName(ctx, name)
+					if err != nil {
+						return err
+					}
+					if len(found) > 0 {
+						return fmt.Errorf("load balancer %q already exists in %s (%s)", name, sc.where(), found[0].ID)
+					}
+					plan.Add(platform.Step{Resource: res + "/name", Action: platform.Updated, ID: lb.ID,
+						Desc: orDash(lb.Name) + " -> " + name,
+						Apply: func(ctx context.Context) (platform.Change, error) {
+							if err := sc.a.renameLoadBalancer(ctx, lb.ID, name); err != nil {
+								return platform.Change{}, err
+							}
+							// An Inactive (stopped) load balancer never becomes
+							// Active on its own: nothing to wait for.
+							if !wait || lb.Status == albStatusInactive {
+								return platform.Change{}, nil
+							}
+							if _, err := waitLBActive(ctx, sc.a, lb.ID, timeout); err != nil {
+								return platform.Change{}, fmt.Errorf("load balancer %s was renamed to %s: %w", lb.ID, name, err)
+							}
+							return platform.Change{}, nil
+						}})
+				}
+			}
+			err = rt.Ensure(ctx, "aliyun.alb.load_balancer.update", sc.target(), &plan)
+			if err == nil && !rt.DryRun() {
+				if again, gerr := sc.a.getLoadBalancer(ctx, lb.ID); gerr == nil && again != nil {
+					storeLB(ctx, rt, sc.profile, *again)
+				}
+			}
+			return err
+		},
+	}
+	cmd.Flags().StringVar(&name, "name", "", "new name of the load balancer")
+	cmd.Flags().BoolVar(&deletionProtection, "deletion-protection", false, "turn deletion protection on (--deletion-protection=false turns it off)")
+	cmd.Flags().StringVar(&region, "region", "", "region id: ask this region of the selected profile instead of the inventory")
+	app.AddWaitFlags(cmd, &w, true, app.DefaultWaitTimeout)
+	return cmd
+}
+
 func albLBDeleteCmd(rt *app.Runtime) *cobra.Command {
 	var region string
 	var force bool
@@ -1313,6 +1406,7 @@ func albSGGetCmd(rt *app.Runtime) *cobra.Command {
 					{"NAME", orDash(g.Name), "ID", g.ID},
 					{"PROTOCOL", g.Protocol, "VPC", orDash(g.VpcID)},
 					{"STATUS", orDash(g.Status), "HEALTH_CHECK", strconv.FormatBool(g.HealthCheck)},
+					{"SCHEDULER", orDash(g.Scheduler), "STICKY_SESSION", strconv.FormatBool(g.StickySession)},
 					{"SERVERS"},
 				}}
 				if len(srv) == 0 {
@@ -1409,6 +1503,153 @@ polyctl refuses to create a second one in the same VPC (exit code 1).`,
 	cmd.Flags().StringVar(&vpcRef, "vpc", "", "VPC of the server group, id or name (required)")
 	cmd.Flags().StringVar(&protocol, "protocol", "", "backend protocol: HTTP or HTTPS (required)")
 	cmd.Flags().StringVar(&group, "resource-group", "", "resource group, a name or an rg- id (default defaults.aliyun.resource_group, else \"default\")")
+	cmd.Flags().StringVar(&region, "region", "", "region id (default: the profile's region)")
+	return cmd
+}
+
+// albSchedulers are the balancing algorithms of a server group, as the API
+// writes them.
+var albSchedulers = []string{"Wrr", "Wlc", "Sch"}
+
+// parseScheduler reads --scheduler (any case).
+func parseScheduler(v string) (string, error) {
+	for _, s := range albSchedulers {
+		if strings.EqualFold(strings.TrimSpace(v), s) {
+			return s, nil
+		}
+	}
+	return "", app.UsageErrf("--scheduler must be one of %s, got %q", strings.Join(albSchedulers, ", "), v)
+}
+
+// checkHealthCheckPath validates --health-check-path: an absolute path of
+// at most 80 characters without spaces (the API's limits).
+func checkHealthCheckPath(v string) error {
+	if !strings.HasPrefix(v, "/") || len(v) > 80 || strings.ContainsAny(v, " \t\r\n") {
+		return app.UsageErrf("--health-check-path %q: expected a path starting with / (at most 80 characters, no spaces)", v)
+	}
+	return nil
+}
+
+func albSGUpdateCmd(rt *app.Runtime) *cobra.Command {
+	var region, name, scheduler, path string
+	var healthCheck, sticky bool
+	cmd := &cobra.Command{
+		Use:   "update <name|id>",
+		Short: "Rename a server group or change its scheduler, health check or session persistence",
+		Long: `Change what the flags name, each only when it differs (otherwise the group is
+reported unchanged): --name renames the group (a name another group of its
+VPC holds is exit code 1), --scheduler sets the balancing algorithm (Wrr,
+Wlc or Sch), --health-check[=false] switches the health check on or off,
+--health-check-path sets its path (the health check has to be on, or
+switched on by --health-check; an HTTP or HTTPS check), and
+--sticky-session[=false] switches session persistence on (the load balancer
+inserts the cookie) or off. Nothing else is changed. After a change the
+command waits up to a minute for the group to be Available again.`,
+		Example: "  polyctl aliyun alb server-group update site-a-http --health-check --health-check-path /healthz\n  polyctl aliyun alb server-group update sgp-0123456789 --scheduler Wlc --sticky-session=false",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			fl := cmd.Flags()
+			if !fl.Changed("name") && !fl.Changed("scheduler") && !fl.Changed("health-check") && !fl.Changed("health-check-path") && !fl.Changed("sticky-session") {
+				return app.UsageErrf("nothing to update: pass --name, --scheduler, --health-check, --health-check-path or --sticky-session")
+			}
+			if fl.Changed("name") && (strings.TrimSpace(name) == "" || looksLikeServerGroupID(name)) {
+				return app.UsageErrf("server group name %q is empty or starts with sgp- (that is how ids are written)", name)
+			}
+			if fl.Changed("scheduler") {
+				var err error
+				if scheduler, err = parseScheduler(scheduler); err != nil {
+					return err
+				}
+			}
+			if fl.Changed("health-check-path") {
+				if err := checkHealthCheckPath(path); err != nil {
+					return err
+				}
+				if fl.Changed("health-check") && !healthCheck {
+					return app.UsageErrf("--health-check-path needs the health check on: it cannot be combined with --health-check=false")
+				}
+			}
+			sc, err := openALBScope(ctx, rt, region)
+			if err != nil {
+				return err
+			}
+			g, err := resolveServerGroup(ctx, sc, args[0])
+			if err != nil {
+				return err
+			}
+			var u albServerGroupUpdate
+			var changes []string
+			if fl.Changed("name") && name != g.Name {
+				found, err := sc.a.listServerGroups(ctx, []string{name}, nil)
+				if err != nil {
+					return err
+				}
+				for _, o := range found {
+					if o.VpcID == g.VpcID {
+						return fmt.Errorf("server group %q already exists in %s (%s)", name, g.VpcID, o.ID)
+					}
+				}
+				u.Name = name
+				changes = append(changes, fmt.Sprintf("name %s -> %s", orDash(g.Name), name))
+			}
+			if fl.Changed("scheduler") && scheduler != g.Scheduler {
+				u.Scheduler = scheduler
+				changes = append(changes, fmt.Sprintf("scheduler %s -> %s", orDash(g.Scheduler), scheduler))
+			}
+			hcOn := g.HealthCheck
+			if fl.Changed("health-check") {
+				hcOn = healthCheck
+			}
+			if fl.Changed("health-check-path") {
+				if !hcOn {
+					return app.UsageErrf("server group %s has the health check off: pass --health-check with --health-check-path", g.ID)
+				}
+				if g.HealthCheck && g.HealthCheckProtocol != "" && !strings.EqualFold(g.HealthCheckProtocol, "HTTP") && !strings.EqualFold(g.HealthCheckProtocol, "HTTPS") {
+					return app.UsageErrf("server group %s has a %s health check, which has no path", g.ID, g.HealthCheckProtocol)
+				}
+			}
+			if fl.Changed("health-check") && healthCheck != g.HealthCheck {
+				changes = append(changes, fmt.Sprintf("health check %t -> %t", g.HealthCheck, healthCheck))
+				u.HealthCheck = &hcOn
+			}
+			if fl.Changed("health-check-path") && (!g.HealthCheck || path != g.HealthCheckPath) {
+				if g.HealthCheck {
+					changes = append(changes, fmt.Sprintf("health check path %s -> %s", orDash(g.HealthCheckPath), path))
+				} else {
+					changes = append(changes, "health check path "+path)
+				}
+				u.HealthCheck, u.HealthCheckPath = &hcOn, path
+			}
+			if fl.Changed("sticky-session") && sticky != g.StickySession {
+				v := sticky
+				u.StickySession = &v
+				changes = append(changes, fmt.Sprintf("sticky session %t -> %t", g.StickySession, sticky))
+			}
+			res := "server-group/" + orID(g.Name, g.ID)
+			var plan platform.Plan
+			if len(changes) == 0 {
+				plan.Add(platform.Step{Resource: res, Action: platform.Unchanged, ID: g.ID, Desc: "already as asked"})
+			} else {
+				plan.Add(platform.Step{Resource: res, Action: platform.Updated, ID: g.ID, Desc: strings.Join(changes, "; "),
+					Apply: func(ctx context.Context) (platform.Change, error) {
+						if err := sc.a.updateServerGroup(ctx, g.ID, u); err != nil {
+							return platform.Change{}, err
+						}
+						if err := waitServerGroupAvailable(ctx, sc.a, g.ID); err != nil {
+							return platform.Change{}, fmt.Errorf("server group %s was updated: %w", g.ID, err)
+						}
+						return platform.Change{}, nil
+					}})
+			}
+			return rt.Ensure(ctx, "aliyun.alb.server_group.update", sc.target(), &plan)
+		},
+	}
+	cmd.Flags().StringVar(&name, "name", "", "new name of the server group")
+	cmd.Flags().StringVar(&scheduler, "scheduler", "", "balancing algorithm: Wrr, Wlc or Sch")
+	cmd.Flags().BoolVar(&healthCheck, "health-check", false, "turn the health check on (--health-check=false turns it off)")
+	cmd.Flags().StringVar(&path, "health-check-path", "", "path of the HTTP / HTTPS health check, e.g. /healthz (the health check has to be on)")
+	cmd.Flags().BoolVar(&sticky, "sticky-session", false, "turn session persistence on, with a cookie the load balancer inserts (--sticky-session=false turns it off)")
 	cmd.Flags().StringVar(&region, "region", "", "region id (default: the profile's region)")
 	return cmd
 }

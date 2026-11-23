@@ -53,10 +53,14 @@ func newFakeALB(t *testing.T, api *fakeAPI, net *fakeECS) *fakeALB {
 	api.on("GetLoadBalancerAttribute", f.getLoadBalancer)
 	api.on("CreateLoadBalancer", net.write(f.createLoadBalancer))
 	api.on("DeleteLoadBalancer", net.write(f.deleteLoadBalancer))
+	api.on("UpdateLoadBalancerAttribute", net.write(f.updateLoadBalancer))
+	api.on("EnableDeletionProtection", net.write(f.setDeletionProtection(true)))
+	api.on("DisableDeletionProtection", net.write(f.setDeletionProtection(false)))
 	api.on("DescribeZones", f.describeZones)
 	api.on("ListServerGroups", f.listServerGroups)
 	api.on("CreateServerGroup", net.write(f.createServerGroup))
 	api.on("DeleteServerGroup", net.write(f.deleteServerGroup))
+	api.on("UpdateServerGroupAttribute", net.write(f.updateServerGroup))
 	api.on("ListServerGroupServers", f.listServers)
 	api.on("AddServersToServerGroup", net.write(f.addServers))
 	api.on("ListListeners", f.listListeners)
@@ -174,8 +178,44 @@ func (f *fakeALB) getLoadBalancer(q url.Values) (int, any) {
 	if l == nil {
 		return 404, notFound("LoadBalancer")
 	}
-	f.settle(l["LoadBalancerId"].(string), l, "LoadBalancerStatus", "Provisioning", "Active")
+	transitional := "Provisioning"
+	if l["LoadBalancerStatus"] == "Configuring" {
+		transitional = "Configuring"
+	}
+	f.settle(l["LoadBalancerId"].(string), l, "LoadBalancerStatus", transitional, "Active")
 	return 200, l
+}
+
+// updateLoadBalancer renames a load balancer, which is Configuring for
+// f.configuring reads after; one that is not Active refuses the write.
+func (f *fakeALB) updateLoadBalancer(q url.Values) (int, any) {
+	if q.Get("ClientToken") == "" {
+		f.t.Errorf("UpdateLoadBalancerAttribute without ClientToken")
+	}
+	l := f.lb(q.Get("LoadBalancerId"))
+	if l == nil {
+		return 404, notFound("LoadBalancer")
+	}
+	if l["LoadBalancerStatus"] != "Active" {
+		return 400, apiErr("IncorrectStatus.LoadBalancer", "The status of the load balancer is incorrect.")
+	}
+	if n := q.Get("LoadBalancerName"); n != "" {
+		l["LoadBalancerName"] = n
+	}
+	l["LoadBalancerStatus"] = "Configuring"
+	f.pending[l["LoadBalancerId"].(string)] = f.configuring
+	return 200, map[string]any{"JobId": "job-1", "RequestId": "r"}
+}
+
+func (f *fakeALB) setDeletionProtection(on bool) func(q url.Values) (int, any) {
+	return func(q url.Values) (int, any) {
+		l := f.lb(q.Get("ResourceId"))
+		if l == nil {
+			return 404, notFound("LoadBalancer")
+		}
+		l["DeletionProtectionConfig"] = map[string]any{"Enabled": on}
+		return 200, map[string]any{"RequestId": "r"}
+	}
 }
 
 func (f *fakeALB) createLoadBalancer(q url.Values) (int, any) {
@@ -242,7 +282,8 @@ func (f *fakeALB) describeZones(q url.Values) (int, any) {
 
 func (f *fakeALB) addGroup(id, name, protocol, vpc string) map[string]any {
 	g := map[string]any{"ServerGroupId": id, "ServerGroupName": name, "Protocol": protocol, "VpcId": vpc, "ServerGroupStatus": "Available",
-		"ServerGroupType": "Instance", "ResourceGroupId": "rg-default0001", "HealthCheckConfig": map[string]any{"HealthCheckEnabled": false}}
+		"ServerGroupType": "Instance", "ResourceGroupId": "rg-default0001", "Scheduler": "Wrr", "HealthCheckConfig": map[string]any{"HealthCheckEnabled": false},
+		"StickySessionConfig": map[string]any{"StickySessionEnabled": false}}
 	f.groups = append(f.groups, g)
 	return g
 }
@@ -265,7 +306,11 @@ func (f *fakeALB) listServerGroups(q url.Values) (int, any) {
 		if len(ids) > 0 && !contains(ids, g["ServerGroupId"].(string)) {
 			continue
 		}
-		f.settle(g["ServerGroupId"].(string), g, "ServerGroupStatus", "Creating", "Available")
+		transitional := "Creating"
+		if g["ServerGroupStatus"] == "Configuring" {
+			transitional = "Configuring"
+		}
+		f.settle(g["ServerGroupId"].(string), g, "ServerGroupStatus", transitional, "Available")
 		g["ServerCount"] = len(f.servers[g["ServerGroupId"].(string)])
 		out = append(out, g)
 	}
@@ -294,6 +339,54 @@ func (f *fakeALB) group(id string) map[string]any {
 		}
 	}
 	return nil
+}
+
+// updateServerGroup writes the attributes given; the group is Configuring
+// for one read after. Turning the health check on without a path gives it
+// the API's defaults (HTTP, /); session persistence needs its type.
+func (f *fakeALB) updateServerGroup(q url.Values) (int, any) {
+	g := f.group(q.Get("ServerGroupId"))
+	if g == nil {
+		return 404, notFound("ServerGroup")
+	}
+	if g["ServerGroupStatus"] != "Available" {
+		return 400, apiErr("IncorrectStatus.ServerGroup", "The status of the server group is incorrect.")
+	}
+	if n := q.Get("ServerGroupName"); n != "" {
+		g["ServerGroupName"] = n
+	}
+	if s := q.Get("Scheduler"); s != "" {
+		g["Scheduler"] = s
+	}
+	switch q.Get("HealthCheckConfig.HealthCheckEnabled") {
+	case "true":
+		hc := map[string]any{"HealthCheckEnabled": true, "HealthCheckProtocol": "HTTP", "HealthCheckPath": "/"}
+		if old, _ := g["HealthCheckConfig"].(map[string]any); old["HealthCheckEnabled"] == true {
+			hc = old
+		}
+		if p := q.Get("HealthCheckConfig.HealthCheckPath"); p != "" {
+			hc["HealthCheckPath"] = p
+		}
+		g["HealthCheckConfig"] = hc
+	case "false":
+		g["HealthCheckConfig"] = map[string]any{"HealthCheckEnabled": false}
+	case "":
+		if q.Get("HealthCheckConfig.HealthCheckPath") != "" {
+			return 400, apiErr("MissingParam.HealthCheckEnabled", "HealthCheckEnabled is mandatory")
+		}
+	}
+	switch q.Get("StickySessionConfig.StickySessionEnabled") {
+	case "true":
+		if q.Get("StickySessionConfig.StickySessionType") == "" {
+			return 400, apiErr("MissingParam.StickySessionType", "StickySessionType is mandatory")
+		}
+		g["StickySessionConfig"] = map[string]any{"StickySessionEnabled": true, "StickySessionType": q.Get("StickySessionConfig.StickySessionType"), "CookieTimeout": 1000}
+	case "false":
+		g["StickySessionConfig"] = map[string]any{"StickySessionEnabled": false}
+	}
+	g["ServerGroupStatus"] = "Configuring"
+	f.pending[g["ServerGroupId"].(string)] = 1
+	return 200, map[string]any{"JobId": "job-1", "RequestId": "r"}
 }
 
 func (f *fakeALB) deleteServerGroup(q url.Values) (int, any) {
