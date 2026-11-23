@@ -816,7 +816,8 @@ func ecsRebootCmd(rt *app.Runtime) *cobra.Command {
 exit code 1 (start a stopped one with start). --wait waits until it is
 Running again: a Running read counts only after the instance was seen
 leaving Running (or 30 seconds after the reboot), so a read taken before
-the reboot began does not end the wait.`,
+the reboot began does not end the wait; a Stopped read on the way is
+accepted for 30 seconds.`,
 		Example: "  polyctl aliyun ecs instance reboot site-a --wait",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

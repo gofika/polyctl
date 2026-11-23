@@ -260,3 +260,24 @@ func TestModifyInstanceSpecHasNoClientToken(t *testing.T) {
 		t.Errorf("query = %v", q)
 	}
 }
+
+func TestWaitRebootedStopped(t *testing.T) {
+	t.Run("transient", func(t *testing.T) {
+		s, f, _ := waitScope(t)
+		f.addVM("i-1", "a", instRunning, "t", "v", "s")
+		f.seq["i-1"] = []string{instStopping, instStopped, instStarting, instRunning}
+		if _, err := waitRebooted(context.Background(), s, "i-1", "a", time.Minute); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("stays stopped", func(t *testing.T) {
+		s, f, _ := waitScope(t)
+		f.addVM("i-1", "a", instRunning, "t", "v", "s")
+		f.seq["i-1"] = []string{instStopping, instStopped}
+		_, err := waitRebooted(context.Background(), s, "i-1", "a", 10*time.Minute)
+		var te *platform.WaitTimeoutError
+		if err == nil || errors.As(err, &te) || !strings.Contains(err.Error(), "instance start i-1") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+}

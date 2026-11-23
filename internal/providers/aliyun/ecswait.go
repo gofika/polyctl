@@ -130,6 +130,7 @@ func waitRebooted(ctx context.Context, s *ecsScope, id, label string, timeout ti
 	clock := netClock()
 	start := clock.Now()
 	left := false
+	var stoppedSince time.Time
 	err := platform.WaitUntil(ctx, platform.WaitOptions{Resource: "instance/" + label, Want: instRunning, Timeout: timeout,
 		Interval: instanceWaitInterval, Clock: clock}, func(ctx context.Context) (platform.WaitState, string, error) {
 		st, err := pollStatus(ctx, s, id)
@@ -137,9 +138,19 @@ func waitRebooted(ctx context.Context, s *ecsScope, id, label string, timeout ti
 			return platform.KeepWaiting, "", err
 		}
 		if st != instRunning {
-			if left && st == instStopped {
-				// Stopping, Starting, then Stopped: someone stopped it.
-				return platform.KeepWaiting, st, fmt.Errorf("instance %s (%s) is %s after the reboot; start it with `polyctl aliyun ecs instance start %s`", label, id, st, id)
+			if st == instStopped {
+				// A reboot may pass through Stopped between Stopping and
+				// Starting, as a new instance does; Stopped for longer than
+				// stoppedGrace means someone stopped it.
+				now := clock.Now()
+				if stoppedSince.IsZero() {
+					stoppedSince = now
+				}
+				if now.Sub(stoppedSince) > stoppedGrace {
+					return platform.KeepWaiting, st, fmt.Errorf("instance %s (%s) is %s after the reboot; start it with `polyctl aliyun ecs instance start %s`", label, id, st, id)
+				}
+			} else {
+				stoppedSince = time.Time{}
 			}
 			if st != statusNotFound {
 				left = true
