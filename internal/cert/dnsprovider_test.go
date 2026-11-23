@@ -245,6 +245,26 @@ func TestPropagation(t *testing.T) {
 	}
 }
 
+// An ended context must stop lego's wait loop, which only stops on true.
+func TestPropagationStopsWhenContextEnds(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	p := &Propagation{Ctx: ctx, Resolvers: []string{"r1"}, Min: 1,
+		Lookup: func(ctx context.Context, r, fqdn string) txtAnswer { return txtAnswer{Kind: platform.NSNXDomain} }}
+	if ok, err := p.Check("example.com", challengeName+".", "v", nil); !ok || !errors.Is(err, context.Canceled) {
+		t.Fatalf("check = %v %v", ok, err)
+	}
+	ctx, cancel = context.WithCancel(context.Background())
+	p = &Propagation{Ctx: ctx, Resolvers: []string{"r1"}, Min: 1, SettleDelay: time.Second,
+		Sleep: func(ctx context.Context, d time.Duration) error { cancel(); return ctx.Err() },
+		Lookup: func(ctx context.Context, r, fqdn string) txtAnswer {
+			return txtAnswer{Kind: platform.NSOK, Values: []string{"v"}}
+		}}
+	if ok, err := p.Check("example.com", challengeName+".", "v", nil); !ok || !errors.Is(err, context.Canceled) {
+		t.Fatalf("settle = %v %v", ok, err)
+	}
+}
+
 func TestPropagationOverDNS(t *testing.T) {
 	a := dnstest.Start(t, map[string]dnstest.Answer{challengeName: {TXT: []string{"v1", "v2"}}})
 	b := dnstest.Start(t, nil) // NXDOMAIN

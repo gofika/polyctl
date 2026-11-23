@@ -70,8 +70,11 @@ func (p *Propagation) Check(domain, fqdn, value string, _ dns01.PreCheckFunc) (b
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// A context that ended stops the wait: lego keeps polling a check that
+	// only reports an error until its own propagation timeout, so the check
+	// says "done" together with the error.
 	if err := ctx.Err(); err != nil {
-		return false, err
+		return true, err
 	}
 	answers := p.query(ctx, fqdn)
 	seen := 0
@@ -95,7 +98,7 @@ func (p *Propagation) Check(domain, fqdn, value string, _ dns01.PreCheckFunc) (b
 			sleep = sleepCtx
 		}
 		if err := sleep(ctx, p.SettleDelay); err != nil {
-			return false, err
+			return true, err
 		}
 	}
 	return true, nil
