@@ -33,7 +33,7 @@ Certificates used by CloudFront must be in us-east-1; those of a load balancer
 in the load balancer's region.`,
 	}
 	c := &cobra.Command{Use: "certificate", Short: "ACM certificates"}
-	c.AddCommand(acmListCmd(rt), acmGetCmd(rt))
+	c.AddCommand(acmListCmd(rt), acmGetCmd(rt), acmRequestCmd(rt))
 	cmd.AddCommand(c)
 	return cmd
 }
