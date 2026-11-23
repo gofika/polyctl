@@ -357,24 +357,26 @@ func TestDomainNSSetDoesNotCacheOnPendingTask(t *testing.T) {
 	}
 }
 
-// A declined confirmation of `ecs stop` stops nothing and is not an error: a
-// note on stderr and a nil error, which is exit code 0. The question belongs
-// to the interactive flow.
+// A declined confirmation of `ecs stop` stops nothing and is not a failure:
+// "nothing to do", which is exit code 0. The question belongs to the
+// interactive flow.
 func TestECSStopDeclinedIsNotAnError(t *testing.T) {
 	t.Setenv(app.EnvNonInteractive, "") // not the developer's setting
 	for _, answer := range []string{"n\n", "\n"} {
-		h := newHarness(t, app.Flags{})
+		h, f, _ := computeHarness(t, app.Flags{})
+		f.addVM("i-1", "site-a", instRunning, "t", "vpc-1", "vsw-b")
 		h.rt.Picker = terminalStub{t}
 		h.rt.Stdin = strings.NewReader(answer)
-		if err := h.run("ecs", "instance", "stop", "i-1"); err != nil {
-			t.Errorf("answer %q: ecs stop = %v, want no error", answer, err)
+		err := h.run("ecs", "instance", "stop", "i-1")
+		if !errors.Is(err, platform.ErrNothingToDo) || !strings.Contains(err.Error(), "instance site-a was not stopped") {
+			t.Errorf("answer %q: ecs stop = %v, want nothing to do", answer, err)
 		}
 		stderr := h.stderr.String()
-		if !strings.Contains(stderr, "stop instance i-1 (y/N)") {
+		if !strings.Contains(stderr, "Stop instance site-a (Running)? It is unavailable until it is started again. (y/N)") {
 			t.Errorf("answer %q: the question was not asked: %q", answer, stderr)
 		}
-		if !strings.HasSuffix(stderr, "nothing to do: instance i-1 was not stopped\n") || strings.Contains(stderr, "error:") || strings.Contains(stderr, "stop requested") {
-			t.Errorf("answer %q: stderr = %q, want the note", answer, stderr)
+		if strings.Contains(stderr, "requested") {
+			t.Errorf("answer %q: stderr = %q", answer, stderr)
 		}
 		if h.stdout.Len() != 0 {
 			t.Errorf("answer %q: stdout = %q, want nothing", answer, h.stdout.String())
@@ -388,9 +390,6 @@ func TestECSStopDeclinedIsNotAnError(t *testing.T) {
 // The two flows of `ecs stop`: the interactive one asks, the non-interactive
 // one never asks or reads stdin and needs --yes.
 func TestECSStopFlows(t *testing.T) {
-	stoppable := func(h *harness) {
-		h.api.on("StopInstance", func(q url.Values) (int, any) { return 200, map[string]any{"RequestId": "r"} })
-	}
 	for _, tc := range []struct {
 		name     string
 		flags    app.Flags
@@ -400,8 +399,11 @@ func TestECSStopFlows(t *testing.T) {
 		stopped  bool
 		refused  bool
 		asked    bool
+		// unchanged: the instance is Stopped already, nothing is asked
+		unchanged bool
 	}{
 		{name: "interactive, yes", terminal: true, stdin: "y\n", stopped: true, asked: true},
+		{name: "interactive, stopped already", terminal: true, stdin: "y\n", stopped: false, unchanged: true},
 		{name: "interactive, --yes", flags: app.Flags{Yes: true}, terminal: true, stopped: true},
 		{name: "no terminal", refused: true},
 		{name: "no terminal, --yes", flags: app.Flags{Yes: true}, stopped: true},
@@ -415,8 +417,12 @@ func TestECSStopFlows(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(app.EnvNonInteractive, tc.env)
-			h := newHarness(t, tc.flags)
-			stoppable(h)
+			h, f, _ := computeHarness(t, tc.flags)
+			status := instRunning
+			if tc.unchanged {
+				status = instStopped
+			}
+			f.addVM("i-1", "site-a", status, "t", "vpc-1", "vsw-b")
 			if tc.terminal {
 				h.rt.Picker = terminalStub{t}
 			}
@@ -444,6 +450,9 @@ func TestECSStopFlows(t *testing.T) {
 			}
 			if n := len(h.api.callsFor("StopInstance")); (n == 1) != tc.stopped {
 				t.Errorf("StopInstance was called %d time(s), stopped want %v", n, tc.stopped)
+			}
+			if tc.unchanged && !strings.Contains(h.stdout.String(), `"unchanged"`) {
+				t.Errorf("stopped already: report = %q", h.stdout.String())
 			}
 			if tc.flags.DryRun && !strings.Contains(h.stdout.String(), `"would_update"`) {
 				t.Errorf("dry run report = %q", h.stdout.String())

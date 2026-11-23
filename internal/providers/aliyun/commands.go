@@ -713,120 +713,109 @@ func refreshInstance(rt *app.Runtime, ctx context.Context, c *client, prof, regi
 	return in
 }
 
-func newECSStartCmd(rt *app.Runtime) *cobra.Command {
-	var region string
-	var w app.WaitFlags
-	cmd := &cobra.Command{
-		Use:   "start <instance-id>",
-		Short: "Start a stopped ECS instance",
-		Long: "Start a stopped ECS instance. --wait waits until it is Running (polled every\n" +
-			"2 seconds, bounded by --timeout).",
-		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			wait, timeout, err := w.Resolve(cmd)
-			if err != nil {
-				return err
-			}
-			c, p, err := openClient(rt, cmd.Context())
-			if err != nil {
-				return err
-			}
-			if done, err := rt.WouldWrite(platform.Target{Platform: platform.Aliyun, Profile: p.Name, Region: region}, app.ResourceChange("instance", args[0], platform.Updated, "start")); done || err != nil {
-				return err
-			}
-			if err := c.StartInstance(cmd.Context(), region, args[0]); err != nil {
-				return err
-			}
-			rt.Infof("start requested for %s via aliyun/%s", args[0], p.Name)
-			if wait {
-				s := &ecsScope{c: c, profile: p.Name, region: c.regionOr(region)}
-				took, err := waitInstanceRunning(cmd.Context(), s, args[0], args[0], timeout)
-				if err != nil {
-					return fmt.Errorf("start of %s was requested: %w", args[0], err)
-				}
-				rt.Infof("instance %s is Running (waited %s)", args[0], took.Round(time.Second))
-			}
-			in := refreshInstance(rt, cmd.Context(), c, p.Name, region, args[0])
-			if in == nil {
-				return rt.Render(map[string]string{"profile": p.Name, "instance": args[0], "action": "start"}, func() output.Grid {
-					return output.KV("INSTANCE", args[0], "ACTION", "start")
-				})
-			}
-			return rt.Render(in, func() output.Grid { return instanceGrid([]Instance{*in}) })
-		},
-	}
-	cmd.Flags().StringVar(&region, "region", "", "region id (default: the profile's region)")
-	app.AddWaitFlags(cmd, &w, false, defaultInstanceTimeout)
-	return cmd
-}
+func newECSStartCmd(rt *app.Runtime) *cobra.Command { return newECSPowerCmd(rt, "start") }
 
-func newECSStopCmd(rt *app.Runtime) *cobra.Command {
+func newECSStopCmd(rt *app.Runtime) *cobra.Command { return newECSPowerCmd(rt, "stop") }
+
+// newECSPowerCmd builds `ecs instance start` and `stop`.
+func newECSPowerCmd(rt *app.Runtime, verb string) *cobra.Command {
 	var region string
 	var force bool
 	var w app.WaitFlags
+	want := instRunning
+	if verb == "stop" {
+		want = instStopped
+	}
+	title := strings.ToUpper(verb[:1]) + verb[1:]
+	long := title + ` an ECS instance, found like get finds it. An instance that is ` + want + `
+already is unchanged (exit code 0). --wait waits until it is ` + want + ` (polled
+every 2 seconds, bounded by --timeout).`
+	if verb == "stop" {
+		long += `
+
+In the interactive flow the stop is confirmed first (default no); --yes
+skips the question. In the non-interactive flow (no terminal,
+--non-interactive or POLYCTL_NON_INTERACTIVE=1) nothing is asked: --yes is
+required, and without it the command is a usage error (exit code 2) raised
+before the account is opened. A declined confirmation is exit code 0.
+--force stops the instance hard (ForceStop: like pulling the power).`
+	}
 	cmd := &cobra.Command{
-		Use:   "stop <instance-id>",
-		Short: "Stop a running ECS instance",
-		Long: "Stop a running ECS instance. In the interactive flow the stop is confirmed\n" +
-			"first (default no); --yes skips the question. In the non-interactive flow\n" +
-			"(no terminal, --non-interactive or POLYCTL_NON_INTERACTIVE=1) nothing is asked:\n--yes is " +
-			"required, and without it the command is a usage error (exit code 2).\n" +
-			"--wait waits until it is Stopped (polled every 2 seconds, bounded by --timeout).",
-		Args: cobra.ExactArgs(1),
+		Use:   verb + " <name|id>",
+		Short: title + " an ECS instance",
+		Long:  long,
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
 			wait, timeout, err := w.Resolve(cmd)
 			if err != nil {
 				return err
 			}
-			action := fmt.Sprintf("stop instance %s", args[0])
 			// Before anything else: the non-interactive flow without --yes
 			// is refused without needing credentials or the network. A dry
 			// run stops nothing, so it needs no confirmation.
-			if !rt.DryRun() {
-				if err := rt.CanConfirm(action); err != nil {
+			if verb == "stop" && !rt.DryRun() {
+				if err := rt.CanConfirm("stop instance " + args[0]); err != nil {
 					return err
 				}
 			}
-			c, p, err := openClient(rt, cmd.Context())
+			s, in, err := resolveECSInstance(ctx, rt, args[0], region)
 			if err != nil {
 				return err
 			}
-			if done, err := rt.WouldWrite(platform.Target{Platform: platform.Aliyun, Profile: p.Name, Region: region}, app.ResourceChange("instance", args[0], platform.Updated, "stop")); done || err != nil {
+			label := instanceLabel(in)
+			if in.Status == want {
+				return rt.RenderReport(platform.Report{Target: s.target(), DryRun: rt.DryRun(), Changes: []platform.Change{
+					{Resource: "instance/" + label, Action: platform.Unchanged, ID: in.ID, Detail: in.Status}}})
+			}
+			change := platform.Change{Resource: "instance/" + label, Action: platform.Updated, ID: in.ID, Detail: verb}
+			if force {
+				change.Detail = "stop (forced)"
+			}
+			if done, err := rt.WouldWrite(s.target(), change); done || err != nil {
 				return err
 			}
-			if !rt.Flags.Yes {
-				ok, err := rt.Confirm(cmd.Context(), action, false)
+			if verb == "stop" {
+				ok, err := rt.Confirm(ctx, fmt.Sprintf("Stop instance %s (%s)? It is unavailable until it is started again.", label, in.Status), false)
 				if err != nil {
 					return err
 				}
 				if !ok {
-					// Declining is not a failure: exit code 0.
-					rt.Infof("nothing to do: instance %s was not stopped", args[0])
-					return nil
+					return fmt.Errorf("%w: cancelled; instance %s was not stopped", platform.ErrNothingToDo, label)
 				}
+				err = s.c.StopInstance(ctx, s.region, in.ID, force)
+			} else {
+				err = s.c.StartInstance(ctx, s.region, in.ID)
 			}
-			if err := c.StopInstance(cmd.Context(), region, args[0], force); err != nil {
+			if err != nil {
 				return err
 			}
-			rt.Infof("stop requested for %s via aliyun/%s", args[0], p.Name)
+			rt.Infof("%s of %s requested via aliyun/%s (was %s)", verb, label, s.profile, in.Status)
 			if wait {
-				s := &ecsScope{c: c, profile: p.Name, region: c.regionOr(region)}
-				if err := waitInstanceStatus(cmd.Context(), s, args[0], args[0], instStopped, timeout); err != nil {
-					return fmt.Errorf("stop of %s was requested: %w", args[0], err)
+				if verb == "start" {
+					took, err := waitInstanceRunning(ctx, s, in.ID, label, timeout)
+					if err != nil {
+						return fmt.Errorf("start of %s was requested: %w", label, err)
+					}
+					rt.Infof("instance %s is Running (waited %s)", label, took.Round(time.Second))
+				} else {
+					if err := waitInstanceStatus(ctx, s, in.ID, label, instStopped, timeout); err != nil {
+						return fmt.Errorf("stop of %s was requested: %w", label, err)
+					}
+					rt.Infof("instance %s is Stopped", label)
 				}
-				rt.Infof("instance %s is Stopped", args[0])
+				change.Detail += "; " + want
 			}
-			in := refreshInstance(rt, cmd.Context(), c, p.Name, region, args[0])
-			if in == nil {
-				return rt.Render(map[string]string{"profile": p.Name, "instance": args[0], "action": "stop"}, func() output.Grid {
-					return output.KV("INSTANCE", args[0], "ACTION", "stop")
-				})
+			if after := refreshInstance(rt, ctx, s.c, s.profile, s.region, in.ID); after != nil && verb == "start" && wait {
+				change.Attrs = map[string]string{"public_ip": after.PublicIP, "private_ip": after.PrivateIP}
 			}
-			return rt.Render(in, func() output.Grid { return instanceGrid([]Instance{*in}) })
+			return rt.RenderReport(platform.Report{Target: s.target(), Changes: []platform.Change{change}})
 		},
 	}
-	cmd.Flags().StringVar(&region, "region", "", "region id (default: the profile's region)")
-	cmd.Flags().BoolVar(&force, "force", false, "force stop (like pulling the power)")
+	cmd.Flags().StringVar(&region, "region", "", "region of the instance (default: look it up in the inventory of every account)")
+	if verb == "stop" {
+		cmd.Flags().BoolVar(&force, "force", false, "force stop (like pulling the power)")
+	}
 	app.AddWaitFlags(cmd, &w, false, defaultInstanceTimeout)
 	return cmd
 }

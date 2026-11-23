@@ -811,12 +811,6 @@ EC2 wildcard pattern it is). Several filters must all match.`,
 	return cmd
 }
 
-type stateChangeResult struct {
-	Profile string                `json:"profile" yaml:"profile"`
-	Region  string                `json:"region" yaml:"region"`
-	Changes []instanceStateChange `json:"changes" yaml:"changes"`
-}
-
 func ec2StateCmd(rt *app.Runtime, action string) *cobra.Command {
 	var region string
 	var force bool
@@ -825,96 +819,97 @@ func ec2StateCmd(rt *app.Runtime, action string) *cobra.Command {
 	if action == "stop" {
 		want = stateStopped
 	}
+	title := strings.ToUpper(action[:1]) + action[1:]
+	long := title + ` an EC2 instance, found like get finds it. An instance that is ` + want + `
+already is unchanged (exit code 0). --wait waits (5 second polls, at most
+--timeout) until the instance is ` + want + `; after a start the new addresses
+are printed.`
+	if action == "stop" {
+		long += `
+
+A confirmation is asked first (default no; --yes skips it, and the
+non-interactive flow needs --yes: exit code 2 without it). A declined
+confirmation is exit code 0. --force stops the instance without a clean
+shutdown of the operating system.`
+	}
 	cmd := &cobra.Command{
-		Use:   action + " <instance-id>",
-		Short: strings.ToUpper(action[:1]) + action[1:] + " an EC2 instance",
-		Long: strings.ToUpper(action[:1]) + action[1:] + ` an EC2 instance by its id. --wait waits (5 second polls, at most
---timeout) until the instance is ` + want + `; after a start the new addresses are printed.`,
-		Args: cobra.ExactArgs(1),
+		Use:   action + " <name|id>",
+		Short: title + " an EC2 instance",
+		Long:  long,
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
 			wait, timeout, err := wf.Resolve(cmd)
 			if err != nil {
 				return err
 			}
-			if rt.Flags.Offline {
-				return app.ErrOffline
+			// The non-interactive flow without --yes is refused before any
+			// lookup; a dry run stops nothing and needs no confirmation.
+			if action == "stop" && !rt.DryRun() {
+				if err := rt.CanConfirm("stop instance " + args[0]); err != nil {
+					return err
+				}
 			}
-			c, prof, err := openClient(cmd.Context(), rt)
+			l, err := resolveInstance(ctx, rt, args[0], region, false)
 			if err != nil {
 				return err
 			}
-			if region == "" {
-				region = c.region
+			target := l.target()
+			label := instanceLabel(l.inst)
+			cur := instanceState(l.inst)
+			if cur == want {
+				return rt.RenderReport(platform.Report{Target: target, DryRun: rt.DryRun(), Changes: []platform.Change{
+					{Resource: l.resource(), Action: platform.Unchanged, ID: l.id(), Detail: cur}}})
 			}
-			if done, err := rt.WouldWrite(platform.Target{Platform: platform.AWS, Profile: prof.Name, Region: region}, app.ResourceChange("instance", args[0], platform.Updated, action)); done || err != nil {
+			change := platform.Change{Resource: l.resource(), Action: platform.Updated, ID: l.id(), Detail: action}
+			if force {
+				change.Detail = "stop (forced)"
+			}
+			if done, err := rt.WouldWrite(target, change); done || err != nil {
 				return err
 			}
-			var changes []instanceStateChange
-			if action == "start" {
-				changes, err = c.startInstance(cmd.Context(), region, args[0])
-			} else {
-				changes, err = c.stopInstance(cmd.Context(), region, args[0], force)
-			}
-			if err != nil {
-				return err
-			}
-			updateInstanceState(cmd.Context(), rt, prof.Name, changes)
-			for _, ch := range changes {
-				rt.Infof("%s %s: %s -> %s via aws/%s", action, ch.ID, ch.PreviousState, ch.CurrentState, prof.Name)
-			}
-			if wait {
-				in, err := c.waitInstanceState(cmd.Context(), region, args[0], args[0], want, timeout)
+			if action == "stop" {
+				ok, err := rt.Confirm(ctx, fmt.Sprintf("Stop instance %s (%s)? It is unavailable until it is started again.", label, cur), false)
 				if err != nil {
-					return fmt.Errorf("%s of %s was requested: %w", action, args[0], err)
+					return err
 				}
-				storeInstance(cmd.Context(), rt, prof.Name, c, region, in)
-				for i := range changes {
-					if changes[i].ID == args[0] {
-						changes[i].CurrentState = instanceState(in)
-					}
+				if !ok {
+					return fmt.Errorf("%w: cancelled; instance %s was not stopped", platform.ErrNothingToDo, label)
 				}
-				if want == stateRunning {
-					rt.Infof("instance %s is running: public ip %s, private ip %s", instanceLabel(in), orNone(awssdk.ToString(in.PublicIpAddress)), orNone(awssdk.ToString(in.PrivateIpAddress)))
-				} else {
-					rt.Infof("instance %s is stopped", instanceLabel(in))
-				}
+				err = l.c.stopInstanceChecked(ctx, l.region, l.id(), force)
+			} else {
+				err = l.c.startInstanceChecked(ctx, l.region, l.id())
 			}
-			res := stateChangeResult{Profile: prof.Name, Region: region, Changes: changes}
-			return rt.Render(res, func() output.Grid {
-				g := output.Grid{Headers: []string{"ID", "PREVIOUS", "CURRENT"}}
-				for _, ch := range changes {
-					g.Rows = append(g.Rows, []string{ch.ID, ch.PreviousState, ch.CurrentState})
+			if err != nil {
+				return err
+			}
+			rt.Infof("%s of %s requested via aws/%s (was %s)", action, label, l.profile, cur)
+			if wait {
+				in, err := l.c.waitInstanceState(ctx, l.region, l.id(), l.name(), want, timeout)
+				if err != nil {
+					return fmt.Errorf("%s of %s was requested: %w", action, label, err)
 				}
-				return g
-			})
+				l.inst = in
+				if want == stateRunning {
+					pub := awssdk.ToString(in.PublicIpAddress)
+					change.Detail += "; running, public ip " + orNone(pub)
+					change.Attrs = map[string]string{"public_ip": pub, "private_ip": awssdk.ToString(in.PrivateIpAddress)}
+					rt.Infof("instance %s is running: public ip %s, private ip %s", label, orNone(pub), orNone(awssdk.ToString(in.PrivateIpAddress)))
+				} else {
+					change.Detail += "; stopped"
+					rt.Infof("instance %s is stopped", label)
+				}
+				storeInstance(ctx, rt, l.profile, l.c, l.region, in)
+			} else {
+				l.reread(ctx, rt)
+			}
+			return rt.RenderReport(platform.Report{Target: target, Changes: []platform.Change{change}})
 		},
 	}
-	cmd.Flags().StringVar(&region, "region", "", "region of the instance (default: the profile's region)")
+	cmd.Flags().StringVar(&region, "region", "", "region of the instance (default: look it up in the inventory of every account)")
 	if action == "stop" {
 		cmd.Flags().BoolVar(&force, "force", false, "force the instance to stop without a clean shutdown")
 	}
 	app.AddWaitFlags(cmd, &wf, false, defaultInstanceTimeout)
 	return cmd
-}
-
-// updateInstanceState reflects a start/stop in the cached instance row.
-func updateInstanceState(ctx context.Context, rt *app.Runtime, profName string, changes []instanceStateChange) {
-	db, err := rt.DB()
-	if err != nil {
-		return
-	}
-	cfg, _ := rt.Config()
-	set := inventory.Set{Platform: platform.AWS, Profile: profName, Type: platform.ResInstance}
-	for _, ch := range changes {
-		r, err := db.Get(ctx, set, platform.ResInstance, ch.ID)
-		if err != nil {
-			continue
-		}
-		var i instanceInfo
-		if r.Decode(&i) != nil {
-			continue
-		}
-		i.State = ch.CurrentState
-		_ = db.Upsert(ctx, set, i.resource(), cfg.TTLFor(platform.ResInstance))
-	}
 }

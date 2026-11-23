@@ -762,3 +762,36 @@ func TestInstanceRoutingAcrossProfiles(t *testing.T) {
 	}
 	_ = fmt.Sprint()
 }
+
+func TestInstanceStartStop(t *testing.T) {
+	h := newGCPHarness(t, app.Flags{}, nil)
+	h.gce.addInstance("proj", "us-central1-a", "web-1", "10.128.0.5", "203.0.113.10")
+
+	// Running already: unchanged, nothing written.
+	if err := h.run("compute", "instance", "start", "web-1"); err != nil {
+		t.Fatal(err)
+	}
+	if r := rows(h.report()); !slices.Equal(r, []string{"instance/web-1 unchanged RUNNING"}) || len(h.gce.writes()) != 0 {
+		t.Errorf("start of a running instance: rows %v, writes %v", r, h.gce.writes())
+	}
+	// stop asks: the non-interactive flow needs --yes.
+	if err := h.run("compute", "instance", "stop", "web-1"); exitClass(err) != "usage" || len(h.gce.writes()) != 0 {
+		t.Errorf("stop without --yes = %v, writes %v", err, h.gce.writes())
+	}
+	if err := h.run("compute", "instance", "stop", "web-1", "--yes", "--wait"); err != nil {
+		t.Fatal(err)
+	}
+	if r := rows(h.report()); !slices.Equal(r, []string{"instance/web-1 updated stop; TERMINATED"}) {
+		t.Errorf("stop rows = %v", r)
+	}
+	if err := h.run("compute", "instance", "start", "web-1", "--wait"); err != nil {
+		t.Fatal(err)
+	}
+	if r := rows(h.report()); !slices.Equal(r, []string{"instance/web-1 updated start; RUNNING"}) {
+		t.Errorf("start rows = %v", r)
+	}
+	// An instance nobody has: not found (exit code 4), not a general error.
+	if err := h.run("compute", "instance", "start", "nope"); exitClass(err) != "notfound" {
+		t.Errorf("missing instance = %v (%s)", err, exitClass(err))
+	}
+}

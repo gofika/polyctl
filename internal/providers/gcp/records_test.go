@@ -231,27 +231,6 @@ func TestParseServiceAccountKey(t *testing.T) {
 	}
 }
 
-func TestLocateInstance(t *testing.T) {
-	list := []Instance{
-		{Name: "web", ID: "111", Zone: "us-central1-a"},
-		{Name: "web", ID: "222", Zone: "europe-west1-b"},
-		{Name: "db", ID: "333", Zone: "us-central1-a"},
-	}
-	// A numeric id is unique even when the name exists in several zones.
-	if zone, name, cands := locateInstance(list, "222"); zone != "europe-west1-b" || name != "web" || cands != nil {
-		t.Errorf("by id: %q %q %v", zone, name, cands)
-	}
-	if zone, name, cands := locateInstance(list, "db"); zone != "us-central1-a" || name != "db" || cands != nil {
-		t.Errorf("unique name: %q %q %v", zone, name, cands)
-	}
-	if zone, name, cands := locateInstance(list, "web"); zone != "" || name != "web" || !reflect.DeepEqual(cands, []string{"us-central1-a", "europe-west1-b"}) {
-		t.Errorf("ambiguous name: %q %q %v", zone, name, cands)
-	}
-	if zone, _, cands := locateInstance(list, "nope"); zone != "" || cands != nil {
-		t.Errorf("missing: %q %v", zone, cands)
-	}
-}
-
 func TestLabelAndHelpers(t *testing.T) {
 	if label("", "p") != "project p" || label("a@b", "p") != "a@b (project p)" {
 		t.Error("label")

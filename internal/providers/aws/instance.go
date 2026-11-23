@@ -563,10 +563,14 @@ func (c *client) startInstanceChecked(ctx context.Context, region, id string) er
 	return nil
 }
 
-// stopInstanceChecked stops an instance.
-func (c *client) stopInstanceChecked(ctx context.Context, region, id string) error {
+// stopInstanceChecked stops an instance; force skips the clean shutdown.
+func (c *client) stopInstanceChecked(ctx context.Context, region, id string, force bool) error {
 	region = c.regionOr(region)
-	if _, err := c.ec2For(region).StopInstances(ctx, &ec2.StopInstancesInput{InstanceIds: []string{id}}); err != nil {
+	in := &ec2.StopInstancesInput{InstanceIds: []string{id}}
+	if force {
+		in.Force = awssdk.Bool(true)
+	}
+	if _, err := c.ec2For(region).StopInstances(ctx, in); err != nil {
 		return ec2Err("StopInstances", region, err)
 	}
 	return nil

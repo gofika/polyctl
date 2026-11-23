@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -651,94 +652,94 @@ func newComputeListCmd(rt *app.Runtime) *cobra.Command {
 func newComputePowerCmd(rt *app.Runtime, verb string) *cobra.Command {
 	var zone string
 	var wf app.WaitFlags
+	want := statusRunning
+	if verb == "stop" {
+		want = statusTerminated
+	}
+	title := strings.ToUpper(verb[:1]) + verb[1:]
+	long := title + ` a Compute Engine instance, found like get finds it (--zone narrows several
+matches and finds an instance the inventory does not know yet). An instance
+that is ` + want + ` already is unchanged (exit code 0). --wait waits for the
+operation to finish (--timeout).`
+	if verb == "stop" {
+		long += `
+
+A confirmation is asked first (default no; --yes skips it, and the
+non-interactive flow needs --yes: exit code 2 without it). A declined
+confirmation is exit code 0. A stopped instance loses its ephemeral external
+IP.`
+	}
 	cmd := &cobra.Command{
-		Use:   verb + " <instance>",
-		Short: strings.ToUpper(verb[:1]) + verb[1:] + " an instance",
+		Use:   verb + " <name|id>",
+		Short: title + " a Compute Engine instance",
+		Long:  long,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
 			wait, timeout, err := wf.Resolve(cmd)
 			if err != nil {
 				return err
 			}
-			if rt.Flags.Offline {
-				return app.ErrOffline
-			}
-			profile, err := rt.ProfileFor(platform.GCP)
-			if err != nil {
-				return err
-			}
-			instance := args[0]
-			if zone == "" {
-				// Fall back to the cached inventory to find the instance's zone.
-				list, _, err := cachedInstances(cmd.Context(), rt, profile)
-				if err != nil && !errors.Is(err, inventory.ErrNeverSynced) {
+			// The non-interactive flow without --yes is refused before any
+			// lookup; a dry run stops nothing and needs no confirmation.
+			if verb == "stop" && !rt.DryRun() {
+				if err := rt.CanConfirm("stop instance " + args[0]); err != nil {
 					return err
 				}
-				var zones []string
-				zone, instance, zones = locateInstance(list, instance)
-				switch {
-				case zone != "":
-				case len(zones) == 0:
-					return fmt.Errorf("--zone is required (instance %q is not in the local inventory)", instance)
-				default:
-					return &app.AmbiguousError{What: "zone of instance " + instance, Candidates: zones}
+			}
+			l, err := resolveInstance(ctx, rt, args[0], zone, false)
+			if err != nil {
+				return err
+			}
+			id := strconv.FormatUint(l.inst.Id, 10)
+			cur := l.inst.Status
+			if cur == want {
+				return rt.RenderReport(platform.Report{Target: l.target(), DryRun: rt.DryRun(), Changes: []platform.Change{
+					{Resource: l.resource(), Action: platform.Unchanged, ID: id, Detail: cur}}})
+			}
+			change := platform.Change{Resource: l.resource(), Action: platform.Updated, ID: id, Detail: verb}
+			if done, err := rt.WouldWrite(l.target(), change); done || err != nil {
+				return err
+			}
+			if verb == "stop" {
+				ok, err := rt.Confirm(ctx, fmt.Sprintf("Stop instance %s (%s)? It is unavailable until it is started again.", l.label(), cur), false)
+				if err != nil {
+					return err
+				}
+				if !ok {
+					return fmt.Errorf("%w: cancelled; instance %s was not stopped", platform.ErrNothingToDo, l.name())
 				}
 			}
-			if done, err := rt.WouldWrite(platform.Target{Platform: platform.GCP, Profile: profile, Zone: zone}, app.ResourceChange("instance", instance, platform.Updated, verb)); done || err != nil {
-				return err
+			if !wait {
+				timeout = 0 // no deadline: the call returns once the operation is requested
 			}
-			c, _, err := openClient(cmd.Context(), rt)
-			if err != nil {
-				return err
-			}
-			ctx := cmd.Context()
-			if wait {
-				var cancel context.CancelFunc
-				ctx, cancel = context.WithTimeout(ctx, timeout)
-				defer cancel()
-			}
+			wctx, cancel, conv := deadline(ctx, timeout, l.resource(), "the "+verb+" operation to finish")
+			defer cancel()
 			var res *OperationResult
 			if verb == "start" {
-				res, err = c.StartInstance(ctx, zone, instance, wait)
+				res, err = l.c.StartInstance(wctx, l.zone, l.name(), wait)
 			} else {
-				res, err = c.StopInstance(ctx, zone, instance, wait)
+				res, err = l.c.StopInstance(wctx, l.zone, l.name(), wait)
 			}
-			if err != nil && wait && errors.Is(err, context.DeadlineExceeded) && cmd.Context().Err() == nil {
-				err = &platform.WaitTimeoutError{Resource: "instance/" + instance, Want: "the " + verb + " operation to finish", Timeout: timeout}
-			}
-			if err != nil {
+			if err = conv(err); err != nil {
 				return err
 			}
-			rt.Infof("%s %s in %s: operation %s is %s via gcp/%s", verb, instance, zone, res.Operation, res.Status, profile)
-			return rt.Render(res, func() output.Grid {
-				return output.KV("instance", res.Instance, "zone", res.Zone, "operation", res.Operation, "type", res.Type, "status", res.Status)
-			})
+			rt.Infof("%s %s in %s: operation %s is %s via gcp/%s", verb, l.name(), l.zone, res.Operation, res.Status, l.profile)
+			l.reread(ctx, rt)
+			if wait {
+				change.Detail += "; " + l.inst.Status
+				if verb == "start" {
+					internal, external := ips(l.inst)
+					change.Attrs = map[string]string{"internal_ip": internal, "external_ip": external}
+					rt.Infof("instance %s is %s: external ip %s, internal ip %s", l.name(), l.inst.Status, orNone(external), orNone(internal))
+				}
+			}
+			return rt.RenderReport(platform.Report{Target: l.target(), Changes: []platform.Change{change}})
 		},
 	}
-	cmd.Flags().StringVar(&zone, "zone", "", "Compute Engine zone of the instance (looked up in the inventory when omitted)")
+	cmd.Flags().StringVar(&zone, "zone", "", "zone of the instance (default: from the inventory)")
 	app.AddWaitFlags(cmd, &wf, false, app.DefaultWaitTimeout)
 	return cmd
-}
-
-// locateInstance resolves an instance argument (numeric id or name) against
-// the cached inventory. An id is unique in a project and wins outright; a
-// name may exist in several zones, in which case zone is empty and
-// candidates lists every zone that has an instance of that name.
-func locateInstance(list []Instance, arg string) (zone, name string, candidates []string) {
-	for _, in := range list {
-		if in.ID == arg {
-			return in.Zone, in.Name, nil
-		}
-	}
-	for _, in := range list {
-		if in.Name == arg {
-			candidates = append(candidates, in.Zone)
-		}
-	}
-	if len(candidates) == 1 {
-		return candidates[0], arg, nil
-	}
-	return "", arg, candidates
 }
 
 func cacheNote(cached bool) string {

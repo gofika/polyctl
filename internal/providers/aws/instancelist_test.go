@@ -8,6 +8,7 @@ import (
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 
 	"github.com/gofika/polyctl/internal/app"
+	"github.com/gofika/polyctl/internal/platform"
 )
 
 func TestInstanceListFilters(t *testing.T) {
@@ -61,18 +62,36 @@ func TestInstanceListFilters(t *testing.T) {
 func TestInstanceStartStopWait(t *testing.T) {
 	h := newInstanceHarness(t, app.Flags{})
 	h.addInstance("ap-east-1", &fakeInstance{id: "i-0aaaaaaaaaaaaaaa1", name: "web", typ: "t3.nano", state: stateStopped})
-	if err := h.run("ec2", "instance", "start", "i-0aaaaaaaaaaaaaaa1", "--wait"); err != nil {
+	// By name, like get.
+	if err := h.run("ec2", "instance", "start", "web", "--wait"); err != nil {
 		t.Fatal(err)
 	}
 	if st, _ := h.instState("ap-east-1", "i-0aaaaaaaaaaaaaaa1"); st != stateRunning || !strings.Contains(h.stderr.String(), "is running: public ip 203.0.113.") {
 		t.Errorf("start --wait: %s / %s", st, h.stderr.String())
 	}
+	if rep := h.report(); len(rep.Changes) != 1 || rep.Changes[0].Action != platform.Updated || !strings.HasPrefix(rep.Changes[0].Detail, "start; running") {
+		t.Errorf("start report = %+v", rep)
+	}
+	// Running already: unchanged, nothing written.
+	h.ec2.reset()
+	if err := h.run("ec2", "instance", "start", "web"); err != nil {
+		t.Fatal(err)
+	}
+	if rep := h.report(); len(rep.Changes) != 1 || rep.Changes[0].Action != platform.Unchanged || len(h.writes()) != 0 {
+		t.Errorf("start of a running instance = %+v, writes %v", rep, h.writes())
+	}
+	// The non-interactive flow needs --yes to stop.
+	if err := h.run("ec2", "instance", "stop", "web"); !errors.Is(err, app.ErrUsage) || len(h.writes()) != 0 {
+		t.Errorf("stop without --yes = %v, writes %v", err, h.writes())
+	}
+	h.rt.Flags.Yes = true
 	if err := h.run("ec2", "instance", "stop", "i-0aaaaaaaaaaaaaaa1", "--wait", "--timeout", "1m"); err != nil {
 		t.Fatal(err)
 	}
-	var res stateChangeResult
-	h.jsonOut(&res)
-	if len(res.Changes) != 1 || res.Changes[0].CurrentState != stateStopped {
-		t.Errorf("stop --wait = %+v", res)
+	if rep := h.report(); len(rep.Changes) != 1 || rep.Changes[0].Detail != "stop; stopped" {
+		t.Errorf("stop --wait = %+v", rep)
+	}
+	if st, _ := h.instState("ap-east-1", "i-0aaaaaaaaaaaaaaa1"); st != stateStopped {
+		t.Errorf("state after stop = %s", st)
 	}
 }

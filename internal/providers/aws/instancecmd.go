@@ -1109,7 +1109,7 @@ c6a.2xlarge, c6a.4xlarge; burstable t3 types can stall under steady load.`,
 						st = stateRunning
 					}
 					if st == stateRunning {
-						if err := l.c.stopInstanceChecked(ctx, l.region, l.id()); err != nil {
+						if err := l.c.stopInstanceChecked(ctx, l.region, l.id(), false); err != nil {
 							return platform.Change{}, err
 						}
 					}
