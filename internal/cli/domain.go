@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -19,8 +20,8 @@ func newDomainCmd(rt *app.Runtime) *cobra.Command {
 		Short: "Platform-neutral domain management (auto-routed by domain)",
 	}
 	addRouteFlags(rt, cmd)
-	ns := &cobra.Command{Use: "ns", Short: "Manage nameservers at the registrar"}
-	ns.AddCommand(newDomainNSSetCmd(rt), newDomainNSGetCmd(rt))
+	ns := &cobra.Command{Use: "ns", Short: "Manage nameservers at the registrar and check the delegation"}
+	ns.AddCommand(newDomainNSSetCmd(rt), newDomainNSGetCmd(rt), newDomainNSCheckCmd(rt))
 	cmd.AddCommand(newDomainInfoCmd(rt), ns, newDomainWhichCmd(rt), newDomainIndexCmd(rt), newDomainListCmd(rt))
 	return cmd
 }
@@ -413,4 +414,157 @@ func newDomainListCmd(rt *app.Runtime) *cobra.Command {
 			})
 		},
 	}
+}
+
+func newDomainNSCheckCmd(rt *app.Runtime) *cobra.Command {
+	var (
+		resolvers           []string
+		timeout             time.Duration
+		noRegistrar, noZone bool
+	)
+	cmd := &cobra.Command{
+		Use:   "check <domain>",
+		Short: "Compare the nameservers at the registrar, in the hosted zone and as resolvers see them",
+		Long: "Compare three sets of nameservers of a domain: the ones set at its registrar, the\n" +
+			"ones its hosted DNS zone was assigned (every zone of the domain in every\n" +
+			"selected account is listed), and the ones public resolvers return now. A name\n" +
+			"below a registered domain is checked as that registered domain. The status is\n" +
+			"ok, partial, mismatch, no-zone, no-live or unknown; it is a report, so the exit\n" +
+			"code is 0 whatever the status (read status from -o json in scripts).",
+		Example: "  polyctl domain ns check example.com\n" +
+			"  polyctl domain ns check www.example.com -o json\n" +
+			"  polyctl domain ns check example.com --resolver 223.5.5.5,114.114.114.114\n" +
+			"  polyctl domain ns check example.com --no-registrar",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeDomains(rt),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := rt.Config()
+			if err != nil {
+				return err
+			}
+			list := cfg.NSResolvers()
+			if cmd.Flags().Changed("resolver") {
+				list = resolvers
+			}
+			var addrs []string
+			for _, r := range list {
+				a, err := platform.ParseResolver(r)
+				if err != nil {
+					return usageErr("--resolver: %v", err)
+				}
+				addrs = append(addrs, a)
+			}
+			if len(addrs) == 0 {
+				return usageErr("--resolver: at least one resolver is required")
+			}
+			t := cfg.NSTimeout()
+			if cmd.Flags().Changed("timeout") {
+				if timeout <= 0 {
+					return usageErr("--timeout must be positive, got %s", timeout)
+				}
+				t = timeout
+			}
+			res, err := rt.NSCheck(cmd.Context(), app.NSCheckOptions{
+				Domain: args[0], Resolvers: addrs, Timeout: t,
+				NoRegistrar: noRegistrar, NoZone: noZone,
+			})
+			if err != nil {
+				return err
+			}
+			if err := rt.Render(res, func() output.Grid { return nsCheckGrid(res) }); err != nil {
+				return err
+			}
+			return res.Failed
+		},
+	}
+	cmd.Flags().StringSliceVar(&resolvers, "resolver", nil, "recursive resolvers to ask, in order: IP or IP:port, comma-separated or repeated (default 1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4, or dns.resolvers)")
+	cmd.Flags().DurationVar(&timeout, "timeout", platform.DefaultNSTimeout, "timeout of one DNS query (or dns.timeout)")
+	cmd.Flags().BoolVar(&noRegistrar, "no-registrar", false, "skip the registrar side")
+	cmd.Flags().BoolVar(&noZone, "no-zone", false, "skip the hosted zone side")
+	return cmd
+}
+
+// nsCheckGrid renders an NS check as a key-value block.
+func nsCheckGrid(r *app.NSCheckResult) output.Grid {
+	nsList := func(ns []string) string {
+		if len(ns) == 0 {
+			return "(none)"
+		}
+		return strings.Join(ns, ", ")
+	}
+	side := func(v app.NSView, notes ...string) string {
+		if v.Skipped {
+			return v.Reason
+		}
+		if !v.Available {
+			s := "unavailable"
+			if v.Account() != "" {
+				s += " [" + v.Account() + "]"
+			}
+			if v.Reason != "" {
+				s += ": " + v.Reason
+			}
+			return s
+		}
+		if v.Account() != "" {
+			notes = append([]string{v.Account()}, notes...)
+		}
+		s := nsList(v.NS)
+		if len(notes) > 0 {
+			s += "  [" + strings.Join(notes, ", ") + "]"
+		}
+		return s
+	}
+	status := strings.ToUpper(r.Status)
+	var diffs []string
+	for _, d := range []struct {
+		eq   *bool
+		name string
+	}{{r.Match.RegistrarVsZone, "registrar != zone"}, {r.Match.LiveVsZone, "live != zone"}, {r.Match.RegistrarVsLive, "registrar != live"}} {
+		if d.eq != nil && !*d.eq {
+			diffs = append(diffs, d.name)
+		}
+	}
+	if len(diffs) > 0 {
+		status += "  (" + strings.Join(diffs, ", ") + ")"
+	}
+	pairs := []string{"DOMAIN", r.Domain}
+	if r.CheckedDomain != r.Domain {
+		pairs = append(pairs, "CHECKED DOMAIN", r.CheckedDomain+" (registered domain of "+r.Domain+")")
+	}
+	pairs = append(pairs, "STATUS", status, "REGISTRAR NS", side(r.Registrar))
+	switch {
+	case r.Zone.Skipped:
+		pairs = append(pairs, "ZONE NS", r.Zone.Reason)
+	case len(r.Zones) == 0:
+		pairs = append(pairs, "ZONE NS", side(r.Zone))
+	default:
+		for _, z := range r.Zones {
+			var notes []string
+			if z.Status != "" {
+				notes = append(notes, "zone status="+z.Status)
+			}
+			if len(r.Zones) > 1 && z.LiveMatch != "" {
+				notes = append(notes, "live match="+z.LiveMatch)
+			}
+			if z.MirrorsRegistrar {
+				notes = append(notes, "mirrors the registration")
+			}
+			pairs = append(pairs, "ZONE NS", side(z, notes...))
+		}
+	}
+	var liveNotes []string
+	if r.Live.Resolver != "" {
+		liveNotes = append(liveNotes, r.Live.Resolver)
+	}
+	live := side(r.Live, liveNotes...)
+	if r.Live.Available && len(r.Live.NS) == 0 {
+		live = "(none)  [" + strings.Join(append(liveNotes, r.Live.Result), ", ") + "]"
+	}
+	guess := r.ProviderGuess
+	if len(r.Providers) > 0 {
+		guess += " (" + strings.Join(r.Providers, ", ") + ")"
+	}
+	pairs = append(pairs, "LIVE NS", live, "PROVIDER GUESS", guess, "CONCLUSION", r.Message)
+	return output.KV(pairs...)
 }

@@ -175,6 +175,8 @@ type fakeClient struct {
 	failCreate string
 	// failDelete fails DeleteRecord for this record id with errFakeDelete.
 	failDelete string
+	// zoneErr fails GetZone; domainErr fails GetDomain.
+	zoneErr, domainErr error
 }
 
 var (
@@ -232,6 +234,22 @@ func (c *fakeClient) ListZones(ctx context.Context) ([]platform.Zone, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]platform.Zone(nil), c.zones...), nil
+}
+
+func (c *fakeClient) GetZone(ctx context.Context, id string) (*platform.Zone, error) {
+	c.record("GetZone:" + id)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.zoneErr != nil {
+		return nil, c.zoneErr
+	}
+	for _, z := range c.zones {
+		if z.ID == id {
+			out := z
+			return &out, nil
+		}
+	}
+	return nil, platform.ErrNotFound
 }
 
 func (c *fakeClient) ListRecords(ctx context.Context, zoneID string) ([]platform.Record, error) {
@@ -303,6 +321,9 @@ func (c *fakeClient) GetDomain(ctx context.Context, name string) (*platform.Doma
 	c.record("GetDomain:" + name)
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.domainErr != nil {
+		return nil, c.domainErr
+	}
 	for _, d := range c.domains {
 		if d.Name == platform.NormalizeDomain(name) {
 			out := d
@@ -330,4 +351,5 @@ var (
 	_ platform.Revoker          = (*fakeProvider)(nil)
 	_ platform.DNSService       = (*fakeClient)(nil)
 	_ platform.RegistrarService = (*fakeClient)(nil)
+	_ platform.ZoneGetter       = (*fakeClient)(nil)
 )
