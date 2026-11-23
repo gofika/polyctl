@@ -1,7 +1,7 @@
 // Package aws implements the Amazon Web Services provider: IAM Identity
 // Center (SSO), access-key and shared-profile authentication, Route 53
 // hosted zones and records, Route 53 Domains, EC2 instances, Elastic Load
-// Balancing v2 and AWS Certificate Manager certificates.
+// Balancing v2, AWS Certificate Manager certificates and RDS instances.
 //
 // Profile metadata keys (stored in plaintext in config.yaml, never sensitive):
 //
