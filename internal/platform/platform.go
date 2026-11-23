@@ -292,6 +292,9 @@ type Resource struct {
 	Domain string
 	// Data is the platform-native representation; it is JSON-encoded in the DB.
 	Data any
+	// IPs are the addresses, prefixes and DNS names the resource holds; they
+	// are written to the IP index of the inventory (polyctl find).
+	IPs []IPRef
 }
 
 // DNSService is implemented by clients that host DNS zones.

@@ -71,7 +71,7 @@ func Open(path string) (*DB, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(schema); err != nil {
+	if _, err := db.Exec(schema + ipIndexSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate inventory db: %w", err)
 	}
@@ -197,7 +197,7 @@ func (d *DB) GetState(ctx context.Context, s Set) (*State, error) {
 }
 
 // Replace atomically replaces the contents of a set with resources, records
-// the sync time, and rebuilds the domain index for the set. For an
+// the sync time, and rebuilds the domain index and the IP index for the set. For an
 // unscoped dns_record set it also clears every per-zone scope of the profile.
 func (d *DB) Replace(ctx context.Context, s Set, resources []platform.Resource, ttl time.Duration) error {
 	now := d.now()
@@ -215,6 +215,9 @@ func (d *DB) Replace(ctx context.Context, s Set, resources []platform.Resource, 
 		if _, err := tx.ExecContext(ctx, `DELETE FROM domain_index WHERE platform=? AND profile=? AND resource_type=?`, string(s.Platform), s.Profile, string(s.Type)); err != nil {
 			return err
 		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM ip_index WHERE platform=? AND profile=? AND resource_type=?`, string(s.Platform), s.Profile, string(s.Type)); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM sync_state WHERE platform=? AND profile=? AND resource_type=?`, string(s.Platform), s.Profile, string(s.Type)); err != nil {
 			return err
 		}
@@ -222,6 +225,10 @@ func (d *DB) Replace(ctx context.Context, s Set, resources []platform.Resource, 
 		// The index rows are found through the resources they belong to, so
 		// they must go before the resources themselves.
 		if _, err := tx.ExecContext(ctx, `DELETE FROM domain_index WHERE platform=? AND profile=? AND resource_type=? AND resource_id IN (SELECT resource_id FROM resources WHERE platform=? AND profile=? AND resource_type=? AND parent_id=?)`,
+			string(s.Platform), s.Profile, string(s.Type), string(s.Platform), s.Profile, string(s.Type), s.Scope); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM ip_index WHERE platform=? AND profile=? AND resource_type=? AND resource_id IN (SELECT resource_id FROM resources WHERE platform=? AND profile=? AND resource_type=? AND parent_id=?)`,
 			string(s.Platform), s.Profile, string(s.Type), string(s.Platform), s.Profile, string(s.Type), s.Scope); err != nil {
 			return err
 		}
@@ -254,6 +261,9 @@ func (d *DB) Replace(ctx context.Context, s Set, resources []platform.Resource, 
 			if _, err := idx.ExecContext(ctx, dom, string(s.Platform), s.Profile, string(r.Type), r.ID, now.Unix()); err != nil {
 				return err
 			}
+		}
+		if err := writeIPs(ctx, tx, s.Platform, s.Profile, r); err != nil {
+			return err
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO sync_state (platform, profile, resource_type, scope, synced_at, expires_at) VALUES (?,?,?,?,?,?)`,
@@ -301,6 +311,9 @@ func (d *DB) Upsert(ctx context.Context, s Set, r platform.Resource, ttl time.Du
 			return err
 		}
 	}
+	if err := writeIPs(ctx, tx, s.Platform, s.Profile, r); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -315,6 +328,9 @@ func (d *DB) Delete(ctx context.Context, s Set, resourceType platform.ResourceTy
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM domain_index WHERE platform=? AND profile=? AND resource_type=? AND resource_id=?`, string(s.Platform), s.Profile, string(resourceType), id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM ip_index WHERE platform=? AND profile=? AND resource_type=? AND resource_id=?`, string(s.Platform), s.Profile, string(resourceType), id); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -459,7 +475,7 @@ func (d *DB) IndexEntries(ctx context.Context) ([]IndexEntry, error) {
 
 // Purge removes everything stored for a profile (used by logout).
 func (d *DB) Purge(ctx context.Context, p platform.ID, profile string) error {
-	for _, t := range []string{"resources", "domain_index", "sync_state"} {
+	for _, t := range []string{"resources", "domain_index", "ip_index", "sync_state"} {
 		if _, err := d.sql.ExecContext(ctx, `DELETE FROM `+t+` WHERE platform=? AND profile=?`, string(p), profile); err != nil {
 			return err
 		}
@@ -479,7 +495,7 @@ func (d *DB) RenameProfile(ctx context.Context, p platform.ID, oldName, newName 
 		return err
 	}
 	defer tx.Rollback()
-	for _, t := range []string{"resources", "domain_index", "sync_state"} {
+	for _, t := range []string{"resources", "domain_index", "ip_index", "sync_state"} {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM `+t+` WHERE platform=? AND profile=?`, string(p), newName); err != nil {
 			return err
 		}
