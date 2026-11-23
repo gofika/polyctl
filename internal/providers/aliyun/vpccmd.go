@@ -233,8 +233,11 @@ type vswPlan struct {
 	pending  bool
 	existing []vSwitch
 	mask     int
-	wait     bool
-	skip     string
+	// fixedMask is set when mask is not a flag of the command (vswitch
+	// create): a block that does not fit asks for --cidr instead.
+	fixedMask bool
+	wait      bool
+	skip      string
 }
 
 type vswWant struct {
@@ -305,12 +308,18 @@ func (p vswPlan) add(plan *platform.Plan, wants []vswWant) error {
 			used = append(used, w.CIDR)
 		}
 	}
-	blocks, err := allocateCIDR(used, p.vpcCIDR, p.mask, auto)
-	if err != nil {
-		if errors.Is(err, platform.ErrInvalidInput) {
-			return app.UsageErrf("--netmask %d: %v", p.mask, err)
+	var blocks []string
+	if auto > 0 {
+		var err error
+		if blocks, err = allocateCIDR(used, p.vpcCIDR, p.mask, auto); err != nil {
+			if errors.Is(err, platform.ErrInvalidInput) {
+				if p.fixedMask {
+					return app.UsageErrf("%v: pass --cidr", err)
+				}
+				return app.UsageErrf("--netmask %d: %v", p.mask, err)
+			}
+			return fmt.Errorf("VPC %s (%s): %w", p.vpcID(), p.vpcCIDR, err)
 		}
-		return fmt.Errorf("VPC %s (%s): %w", p.vpcID(), p.vpcCIDR, err)
 	}
 	for _, w := range missing {
 		cidr := w.CIDR
@@ -829,7 +838,7 @@ vSwitch to be Available; running out of time is only a warning.`,
 					others = append(others, vSwitch{CIDR: e.CIDR})
 				}
 			}
-			vp := vswPlan{rt: rt, s: s, vpcID: func() string { return v.ID }, vpcCIDR: v.CIDR, existing: others, mask: defaultVSwitchMask, wait: true}
+			vp := vswPlan{rt: rt, s: s, vpcID: func() string { return v.ID }, vpcCIDR: v.CIDR, existing: others, mask: defaultVSwitchMask, fixedMask: true, wait: true}
 			if err := vp.add(&plan, []vswWant{{Name: name, Zone: z, CIDR: cidr}}); err != nil {
 				return err
 			}

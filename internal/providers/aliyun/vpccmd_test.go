@@ -327,3 +327,20 @@ func TestVPCAndVSwitchLists(t *testing.T) {
 		t.Errorf("offline = %v", err)
 	}
 }
+
+// A vSwitch given its block does not need room for a /22: a VPC smaller
+// than that takes it; without --cidr it is a usage error naming --cidr.
+func TestVSwitchCreateInSmallVPC(t *testing.T) {
+	h, f, _ := netHarness(t, app.Flags{})
+	f.addVPCFull("vpc-small", "small", "10.0.0.0/24", false)
+	if err := h.run("vpc", "vswitch", "create", "s1", "--vpc", "vpc-small", "--zone", "b", "--cidr", "10.0.0.0/26"); err != nil {
+		t.Fatalf("create with --cidr: %v", err)
+	}
+	if q := h.api.callsFor("CreateVSwitch"); len(q) != 1 || q[0].Get("CidrBlock") != "10.0.0.0/26" {
+		t.Fatalf("creates = %v", q)
+	}
+	err := h.run("vpc", "vswitch", "create", "s2", "--vpc", "vpc-small", "--zone", "c")
+	if !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "--cidr") || strings.Contains(err.Error(), "--netmask") {
+		t.Errorf("create without --cidr = %v", err)
+	}
+}
