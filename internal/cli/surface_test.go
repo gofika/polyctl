@@ -368,7 +368,7 @@ func TestPlatformTreeShapes(t *testing.T) {
 		"aws elbv2 target-group list", "aws elbv2 target-group get", "aws elbv2 target-group create", "aws elbv2 target-group update",
 		"aws elbv2 target-group delete",
 		"aws elbv2 listener list", "aws elbv2 listener get", "aws elbv2 listener create", "aws elbv2 listener update", "aws elbv2 listener delete",
-		"aws acm certificate list", "aws acm certificate get", "aws acm certificate request",
+		"aws acm certificate list", "aws acm certificate get", "aws acm certificate request", "aws acm certificate import",
 		"gcp compute instance list", "gcp compute instance start", "gcp compute instance stop",
 		"gcp compute instance get", "gcp compute instance create", "gcp compute instance delete",
 		"gcp compute instance resize", "gcp compute instance reboot", "gcp compute instance update",
