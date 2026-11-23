@@ -24,9 +24,9 @@ const DefaultCertTimeout = 15 * time.Minute
 func newCertCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "cert",
-		Short: "Issue Let's Encrypt certificates through DNS-01 and keep them in a local store",
+		Short: "Issue Let's Encrypt certificates through DNS-01, keep them in a local store and deploy them to the cloud",
 	}
-	cmd.AddCommand(newCertEnsureCmd(rt), newCertGetCmd(rt))
+	cmd.AddCommand(newCertEnsureCmd(rt), newCertGetCmd(rt), newCertDeployCmd(rt))
 	return cmd
 }
 

@@ -423,6 +423,7 @@ func TestPlatformTreeShapes(t *testing.T) {
 		"aws route53 record upsert", "gcp dns record upsert", "godaddy dns upsert", "godaddy dns add",
 		// Core.
 		"dns set", "dns add", "dns list", "dns delete", "domain ns set", "domain which",
+		"cert ensure", "cert get", "cert deploy",
 	}
 	for _, path := range exists {
 		if find(root, path) == nil {
