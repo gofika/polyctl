@@ -211,13 +211,35 @@ func rrdataFromRecord(r platform.Record) (string, error) {
 	return content, nil
 }
 
+// txtChunk is the longest character-string of a TXT rrdata.
+const txtChunk = 255
+
 // quoteTXT wraps a TXT value in double quotes unless it already looks like a
-// quoted (possibly multi-string) rrdata.
+// quoted (possibly multi-string) rrdata. A value longer than 255 bytes is
+// split into several quoted strings, which Cloud DNS requires (unquoted, it
+// would split the text at white space instead).
 func quoteTXT(s string) string {
 	if strings.HasPrefix(s, "\"") && strings.HasSuffix(s, "\"") && len(s) >= 2 {
 		return s
 	}
-	return "\"" + strings.ReplaceAll(s, "\"", "\\\"") + "\""
+	var chunks []string
+	var cur strings.Builder
+	n := 0
+	for _, r := range s {
+		tok := string(r)
+		if n+len(tok) > txtChunk {
+			chunks = append(chunks, cur.String())
+			cur.Reset()
+			n = 0
+		}
+		n += len(tok)
+		if r == '"' {
+			tok = "\\\""
+		}
+		cur.WriteString(tok)
+	}
+	chunks = append(chunks, cur.String())
+	return "\"" + strings.Join(chunks, "\" \"") + "\""
 }
 
 // removeValue returns values without v and whether v was present.

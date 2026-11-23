@@ -269,3 +269,16 @@ func TestLabelAndHelpers(t *testing.T) {
 		t.Error("removeValue missing")
 	}
 }
+
+// A TXT value longer than 255 bytes is sent as several quoted strings.
+func TestQuoteTXTSplitsLongValues(t *testing.T) {
+	long := strings.Repeat("a", 300)
+	got := quoteTXT(long)
+	want := `"` + strings.Repeat("a", 255) + `" "` + strings.Repeat("a", 45) + `"`
+	if got != want {
+		t.Errorf("quoteTXT(300 x a) = %q", got)
+	}
+	if got := quoteTXT(`say "hi"`); got != `"say \"hi\""` {
+		t.Errorf("quoteTXT = %q", got)
+	}
+}
