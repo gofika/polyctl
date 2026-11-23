@@ -575,8 +575,20 @@ func ReplaceProxyCertificate(ctx context.Context, spec replaceSpec) (*replacePla
 				return platform.Change{}, s.setProxyCerts(ctx, proxy, urls)
 			}})
 	}
+	// A proxy left unchanged (it holds the new leaf already) keeps its
+	// certificates, so an extra old one it still holds is not deleted.
+	held := map[string]bool{}
+	for _, st := range states {
+		if st.current {
+			for _, u := range st.urls {
+				held[lastSegment(u)] = true
+			}
+		}
+	}
 	for _, o := range spec.extraOld {
-		addOld(o)
+		if !held[o] {
+			addOld(o)
+		}
 	}
 	for _, o := range oldOrder {
 		res := "ssl-certificate/" + o

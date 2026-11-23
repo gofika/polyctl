@@ -394,3 +394,23 @@ func TestSSLCertificateErrorsAndSync(t *testing.T) {
 		t.Errorf("sync = %+v, %v", res, err)
 	}
 }
+
+func TestSSLCertificateUpdateKeepsCertOfCurrentProxy(t *testing.T) {
+	h := newGCPHarness(t, app.Flags{}, nil)
+	old := newPair(t, []string{"example.com"}, 10)
+	nw := newPair(t, []string{"example.com"}, 90)
+	h.gce.addCert("us-central1", "example-com-old", old.chain)
+	h.gce.addCert("us-central1", "example-com-new", nw.chain)
+	// The proxy holds the new leaf already, and the old certificate too.
+	h.gce.addHTTPSProxy("us-central1", "proxy-https-web-1", "lb-web-1", "example-com-old", "example-com-new")
+	if err := h.run("compute", "ssl-certificate", "update", "example-com-old", "--cert-file", nw.certFile, "--key-file", nw.keyFile, "--region", "us-central1"); err != nil {
+		t.Fatal(err)
+	}
+	if w := h.gce.lbWrites(); len(w) != 0 {
+		t.Errorf("writes = %v", w)
+	}
+	got := rows(h.report())
+	if len(got) != 1 || !strings.HasPrefix(got[0], "target-https-proxy/proxy-https-web-1 unchanged") {
+		t.Errorf("report = %v", got)
+	}
+}
