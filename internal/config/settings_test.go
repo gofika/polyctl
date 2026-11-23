@@ -150,6 +150,9 @@ func TestNamingTemplates(t *testing.T) {
 	if n, _ := cfg.Name("gcp_instance_internal_ip", map[string]string{"name": "web-1"}); n != "web-1-internal-ip" {
 		t.Errorf("gcp internal ip default = %q", n)
 	}
+	if n, _ := cfg.Name("gcp_lb_firewall", map[string]string{"network": "net-a"}); n != "allow-lb-health-check-net-a" {
+		t.Errorf("gcp lb firewall default = %q", n)
+	}
 	if _, err := cfg.Name("aws_elbv2_target_group", map[string]string{"name": "site"}); err == nil || !strings.Contains(err.Error(), "{port}") {
 		t.Errorf("missing variable = %v", err)
 	}
