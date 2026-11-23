@@ -930,7 +930,8 @@ first, then a confirmation is asked (default no; --yes skips it, and the
 non-interactive flow needs --yes). The listeners go with the load balancer;
 the target groups stay unless --cascade, which deletes them afterwards
 (retrying for up to a minute while AWS still reports them in use; one that
-another load balancer still uses is skipped with a warning). Deletion
+another load balancer still uses is skipped with a warning, at once when
+AWS lists that load balancer on the group). Deletion
 protection is exit code 1: turn it off first with
 update --deletion-protection=false (polyctl never does it for you). --wait
 waits until the load balancer is no longer listed.`,
@@ -971,15 +972,22 @@ waits until the load balancer is no longer listed.`,
 			changes := []platform.Change{change}
 			if cascade {
 				for _, tg := range tgs {
-					changes = append(changes, platform.Change{Resource: "target-group/" + tg.Name, Action: platform.Deleted, ID: tg.ID})
+					changes = append(changes, cascadeTGChange(tg, lb.ID))
 				}
 			}
 			if done, err := rt.WouldWrite(s.target(), changes...); done || err != nil {
 				return err
 			}
 			what := fmt.Sprintf("Delete load balancer %s", lb.Name)
-			if cascade && len(tgs) > 0 {
-				what += fmt.Sprintf(" and its %d target group(s)", len(tgs))
+			if n := len(changes) - 1; cascade && n > 0 {
+				for _, c := range changes[1:] {
+					if c.Action == platform.Skipped {
+						n--
+					}
+				}
+				if n > 0 {
+					what += fmt.Sprintf(" and its %d target group(s)", n)
+				}
 			}
 			ok, err := rt.Confirm(ctx, what+"?", false)
 			if err != nil {
@@ -1010,6 +1018,11 @@ waits until the load balancer is no longer listed.`,
 			var failed error
 			if cascade {
 				for _, tg := range tgs {
+					if ch := cascadeTGChange(tg, lb.ID); ch.Action == platform.Skipped {
+						rt.Infof("warning: target group %s was kept: %s", tg.Name, ch.Detail)
+						rep.Changes = append(rep.Changes, ch)
+						continue
+					}
 					ch := deleteTGAfterLB(ctx, rt, s, tg)
 					if ch.Action == platform.Failed && failed == nil {
 						failed = fmt.Errorf("target group %s was not deleted: %s", tg.Name, ch.Detail)
@@ -1027,6 +1040,24 @@ waits until the load balancer is no longer listed.`,
 	cmd.Flags().StringVar(&region, "region", "", "region of the load balancer (asks the profile's account there directly)")
 	app.AddWaitFlags(cmd, &wf, false, app.DefaultWaitTimeout)
 	return cmd
+}
+
+// cascadeTGChange is what delete --cascade does to a target group of the
+// load balancer lbID: deleted, or skipped at once when the listeners or
+// rules of another load balancer forward to it too (AWS would refuse it as
+// in use for as long as they do, so retrying is pointless).
+func cascadeTGChange(tg platform.LBTargetGroup, lbID string) platform.Change {
+	ch := platform.Change{Resource: "target-group/" + tg.Name, Action: platform.Deleted, ID: tg.ID}
+	var others []string
+	for _, arn := range tg.LoadBalancers {
+		if arn != lbID {
+			others = append(others, arnName(arn))
+		}
+	}
+	if len(others) > 0 {
+		ch.Action, ch.Detail = platform.Skipped, "still in use by load balancer "+strings.Join(others, ", ")
+	}
+	return ch
 }
 
 // deleteTGAfterLB deletes a target group of a load balancer that was just

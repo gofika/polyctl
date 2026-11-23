@@ -708,6 +708,40 @@ func TestLBDeleteCascadeKeepsGroupInUse(t *testing.T) {
 	}
 }
 
+func TestLBDeleteCascadeSkipsSharedGroup(t *testing.T) {
+	h, _ := newELBHarness(t, app.Flags{Yes: true}, nil)
+	if err := h.run("elbv2", "load-balancer", "ensure", "site-xz7", "--instance", "site-xz7", "--skip-https"); err != nil {
+		t.Fatal(err)
+	}
+	e := h.elb()
+	tg := e.findTG("ap-east-1", "site-xz7-80-target")
+	if tg == nil {
+		t.Fatal("no target group")
+	}
+	other := "arn:aws:elasticloadbalancing:ap-east-1:123456789012:loadbalancer/net/other-lb/1"
+	tg.tg.LoadBalancerArns = append(tg.tg.LoadBalancerArns, other)
+
+	h.rt.Flags.DryRun = true
+	h.resetELB()
+	if err := h.run("elbv2", "load-balancer", "delete", "site-xz7-lb", "--cascade"); err != nil {
+		t.Fatal(err)
+	}
+	if a := actions(h.report()); a["target-group/site-xz7-80-target skipped"] != 1 {
+		t.Errorf("dry run rows = %v", a)
+	}
+	h.rt.Flags.DryRun = false
+	h.resetELB()
+	if err := h.run("elbv2", "load-balancer", "delete", "site-xz7-lb", "--cascade"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if a := actions(h.report()); a["target-group/site-xz7-80-target skipped"] != 1 || !strings.Contains(h.stderr.String(), "other-lb") {
+		t.Errorf("shared = %v\n%s", a, h.stderr.String())
+	}
+	if w := strings.Join(h.elbWrites(), ","); w != "DeleteLoadBalancer" {
+		t.Errorf("writes = %s", w)
+	}
+}
+
 func TestLBDeleteInteractive(t *testing.T) {
 	h, _ := newELBHarness(t, app.Flags{NonInteractiveSet: true}, nil)
 	h.rt.Flags.NonInteractive = false
