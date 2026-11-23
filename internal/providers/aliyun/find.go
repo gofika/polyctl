@@ -319,41 +319,26 @@ func albInterfaceNames(id string) []string {
 // (a bounded number at a time), and the addresses of the network interfaces
 // ALB created for it ("<id> CREATED_BY_ALB") are added.
 func (c *client) albResources(ctx context.Context, region string) ([]platform.Resource, error) {
-	cl, err := alb.NewClientWithOptions(region, sdkConfig(), c.credential())
+	a, err := c.albClient(ctx, region)
 	if err != nil {
 		return nil, err
 	}
-	cl.SetTransport(ctxTransport{ctx: ctx, base: c.transport})
-	var ids []string
-	token := ""
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		req := alb.CreateListLoadBalancersRequest()
-		c.route(req, albEndpoint(region))
-		req.MaxResults = requests.NewInteger(albPageSize)
-		req.NextToken = token
-		resp, err := cl.ListLoadBalancers(req)
-		if err != nil {
-			return nil, wrapErr("alb ListLoadBalancers "+region, err)
-		}
-		for _, lb := range resp.LoadBalancers {
-			ids = append(ids, lb.LoadBalancerId)
-		}
-		if resp.NextToken == "" || resp.NextToken == token || len(resp.LoadBalancers) == 0 {
-			break
-		}
-		token = resp.NextToken
+	lbs0, err := a.listLoadBalancers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(lbs0))
+	for _, lb := range lbs0 {
+		ids = append(ids, lb.ID)
 	}
 	if len(ids) == 0 {
 		return nil, nil
 	}
 	got, err := platform.SyncRegions(ctx, ids, regionConcurrency, func(ctx context.Context, id string) ([]platform.Resource, error) {
 		req := alb.CreateGetLoadBalancerAttributeRequest()
-		c.route(req, albEndpoint(region))
+		a.route(req)
 		req.LoadBalancerId = id
-		resp, err := cl.GetLoadBalancerAttribute(req)
+		resp, err := a.cl.GetLoadBalancerAttribute(req)
 		if err != nil {
 			return nil, wrapErr("alb GetLoadBalancerAttribute "+id, err)
 		}
