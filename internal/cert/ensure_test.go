@@ -309,6 +309,21 @@ func TestEnsureDryRunWritesNothing(t *testing.T) {
 	if len(fx.dns.writes) != before {
 		t.Error("dry run wrote DNS records")
 	}
+	// A key whose registration failed is registered by the real run.
+	fx2 := newEnsureFixture(t)
+	if _, err := fx2.env.Store.NewAccount("ops@example.net"); err != nil {
+		t.Fatal(err)
+	}
+	res, err = Ensure(context.Background(), fx2.env, fx2.dryOpts())
+	if err != nil || len(res.Changes) != 2 || res.Changes[0].Resource != "acme-account/letsencrypt" || res.Changes[0].Action != platform.WouldCreate {
+		t.Fatalf("dry run with an unregistered key = %+v %v", res, err)
+	}
+}
+
+func (fx *ensureFixture) dryOpts() EnsureOptions {
+	o := fx.opts()
+	o.DryRun = true
+	return o
 }
 
 func TestEnsureNSWarningAndCNAME(t *testing.T) {

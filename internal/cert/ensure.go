@@ -244,7 +244,9 @@ func Ensure(ctx context.Context, env *Env, o EnsureOptions) (*Result, error) {
 	}
 	detail := fmt.Sprintf("%s; issue [%s] via dns-01, DNS account %s", reason, strings.Join(Names(root), " "), route.Label())
 	if o.DryRun {
-		if acct == nil {
+		if acct == nil || acct.URI == "" {
+			// No account, or a key whose registration did not succeed:
+			// the real run registers one.
 			d := "register a new account"
 			if email != "" {
 				d += " for " + email
