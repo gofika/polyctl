@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -47,17 +48,23 @@ type fakeInstance struct {
 type fakeInstances struct {
 	byRegion  map[string][]*fakeInstance
 	archs     map[string][]string // instance type -> architectures
+	shapes    map[string][2]int   // instance type -> default vCPUs, MiB
+	oldGen    map[string]bool     // instance types of a previous generation
 	offerings map[string][]string // instance type -> zones
-	images    map[string][]ec2types.Image
-	ssmValue  map[string]string // parameter -> value
-	ssmErr    error
-	volErr    error
-	errs      map[string]error // call -> error of that call
-	runs      []*ec2.RunInstancesInput
-	filters   [][]ec2types.Filter
-	pageSize  int
-	nextIP    int
-	nextID    int
+	// typePage is the page length of a filtered DescribeInstanceTypes (0: all).
+	typePage int
+	// offeringCalls are the filters of every DescribeInstanceTypeOfferings.
+	offeringCalls []ec2.DescribeInstanceTypeOfferingsInput
+	images        map[string][]ec2types.Image
+	ssmValue      map[string]string // parameter -> value
+	ssmErr        error
+	volErr        error
+	errs          map[string]error // call -> error of that call
+	runs          []*ec2.RunInstancesInput
+	filters       [][]ec2types.Filter
+	pageSize      int
+	nextIP        int
+	nextID        int
 }
 
 func (fi *fakeInstances) init() {
@@ -66,7 +73,17 @@ func (fi *fakeInstances) init() {
 		fi.archs = map[string][]string{
 			"t3.nano": {"x86_64"}, "t3.micro": {"x86_64"}, "c6a.large": {"x86_64"}, "c6a.xlarge": {"x86_64"},
 			"t4g.nano": {"arm64"}, "t4g.small": {"arm64"},
+			"t3.small": {"x86_64"}, "t3.medium": {"x86_64"}, "t3.large": {"x86_64"}, "t3a.medium": {"x86_64"},
+			"m7i.large": {"x86_64"}, "c7i.large": {"x86_64"}, "c5.large": {"x86_64"}, "z1d.large": {"x86_64"},
+			"m4.large": {"x86_64", "i386"}, "a1.large": {"arm64"},
 		}
+		fi.shapes = map[string][2]int{
+			"t3.nano": {2, 512}, "t3.micro": {2, 1024}, "t3.small": {2, 2048}, "t3.medium": {2, 4096}, "t3.large": {2, 8192},
+			"t3a.medium": {2, 4096}, "c6a.large": {2, 4096}, "c7i.large": {2, 4096}, "c5.large": {2, 4096}, "a1.large": {2, 4096},
+			"c6a.xlarge": {4, 8192}, "m7i.large": {2, 8192}, "m4.large": {2, 8192}, "z1d.large": {2, 16384},
+			"t4g.nano": {2, 512}, "t4g.small": {2, 2048},
+		}
+		fi.oldGen = map[string]bool{"m4.large": true}
 		fi.offerings = map[string][]string{}
 		for t := range fi.archs {
 			fi.offerings[t] = []string{"ap-east-1a", "ap-east-1b", "us-west-2a"}
@@ -385,22 +402,75 @@ func (f *fakeEC2) DescribeInstanceTypes(_ context.Context, in *ec2.DescribeInsta
 	}
 	f.shared.mu.Lock()
 	defer f.shared.mu.Unlock()
-	f.shared.inst.init()
-	out := &ec2.DescribeInstanceTypesOutput{}
-	for _, t := range in.InstanceTypes {
-		archs, ok := f.shared.inst.archs[string(t)]
-		if !ok {
-			return nil, &fakeAPIError{"InvalidInstanceType", "The following supplied instance types do not exist: [" + string(t) + "]"}
-		}
+	fi := &f.shared.inst
+	fi.init()
+	info := func(t string) ec2types.InstanceTypeInfo {
 		pi := &ec2types.ProcessorInfo{}
-		for _, a := range archs {
+		for _, a := range fi.archs[t] {
 			pi.SupportedArchitectures = append(pi.SupportedArchitectures, ec2types.ArchitectureType(a))
 		}
-		out.InstanceTypes = append(out.InstanceTypes, ec2types.InstanceTypeInfo{InstanceType: t, ProcessorInfo: pi})
+		it := ec2types.InstanceTypeInfo{InstanceType: ec2types.InstanceType(t), ProcessorInfo: pi, CurrentGeneration: awssdk.Bool(!fi.oldGen[t])}
+		if sh, ok := fi.shapes[t]; ok {
+			it.VCpuInfo = &ec2types.VCpuInfo{DefaultVCpus: awssdk.Int32(int32(sh[0]))}
+			it.MemoryInfo = &ec2types.MemoryInfo{SizeInMiB: awssdk.Int64(int64(sh[1]))}
+		}
+		return it
 	}
+	out := &ec2.DescribeInstanceTypesOutput{}
+	if len(in.InstanceTypes) > 0 {
+		for _, t := range in.InstanceTypes {
+			if _, ok := fi.archs[string(t)]; !ok {
+				return nil, &fakeAPIError{"InvalidInstanceType", "The following supplied instance types do not exist: [" + string(t) + "]"}
+			}
+			out.InstanceTypes = append(out.InstanceTypes, info(string(t)))
+		}
+		return out, nil
+	}
+	// A filtered listing, sorted by name, in pages of typePage.
+	var match []ec2types.InstanceTypeInfo
+	names := make([]string, 0, len(fi.archs))
+	for t := range fi.archs {
+		names = append(names, t)
+	}
+	sort.Strings(names)
+	for _, t := range names {
+		it := info(t)
+		ok := true
+		for _, flt := range in.Filters {
+			v := flt.Values[0]
+			switch awssdk.ToString(flt.Name) {
+			case "vcpu-info.default-vcpus":
+				ok = ok && it.VCpuInfo != nil && strconv.Itoa(int(*it.VCpuInfo.DefaultVCpus)) == v
+			case "memory-info.size-in-mib":
+				ok = ok && it.MemoryInfo != nil && strconv.Itoa(int(*it.MemoryInfo.SizeInMiB)) == v
+			case "processor-info.supported-architecture":
+				ok = ok && containsStr(fi.archs[t], v)
+			case "current-generation":
+				ok = ok && strconv.FormatBool(!fi.oldGen[t]) == v
+			default:
+				return nil, &fakeAPIError{"InvalidParameterValue", "unknown filter " + awssdk.ToString(flt.Name)}
+			}
+		}
+		if ok {
+			match = append(match, it)
+		}
+	}
+	start := 0
+	if in.NextToken != nil {
+		start, _ = strconv.Atoi(*in.NextToken)
+	}
+	end := len(match)
+	if fi.typePage > 0 && start+fi.typePage < end {
+		end = start + fi.typePage
+		out.NextToken = awssdk.String(strconv.Itoa(end))
+	}
+	out.InstanceTypes = match[start:end]
 	return out, nil
 }
 
+// DescribeInstanceTypeOfferings returns the offerings of the instance-type
+// filter: per zone of the region, or once for the region with LocationType
+// region; a location filter keeps only that location.
 func (f *fakeEC2) DescribeInstanceTypeOfferings(_ context.Context, in *ec2.DescribeInstanceTypeOfferingsInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstanceTypeOfferingsOutput, error) {
 	f.mu.Lock()
 	err := f.callErr("DescribeInstanceTypeOfferings")
@@ -411,14 +481,34 @@ func (f *fakeEC2) DescribeInstanceTypeOfferings(_ context.Context, in *ec2.Descr
 	f.shared.mu.Lock()
 	defer f.shared.mu.Unlock()
 	f.shared.inst.init()
-	out := &ec2.DescribeInstanceTypeOfferingsOutput{}
+	f.shared.inst.offeringCalls = append(f.shared.inst.offeringCalls, *in)
+	var types, locs []string
 	for _, flt := range in.Filters {
-		for _, t := range flt.Values {
-			for _, z := range f.shared.inst.offerings[t] {
-				if strings.HasPrefix(z, f.region) {
-					out.InstanceTypeOfferings = append(out.InstanceTypeOfferings, ec2types.InstanceTypeOffering{InstanceType: ec2types.InstanceType(t), Location: awssdk.String(z), LocationType: in.LocationType})
+		switch awssdk.ToString(flt.Name) {
+		case "instance-type":
+			types = append(types, flt.Values...)
+		case "location":
+			locs = append(locs, flt.Values...)
+		}
+	}
+	out := &ec2.DescribeInstanceTypeOfferingsOutput{}
+	add := func(t, loc string) {
+		if len(locs) == 0 || containsStr(locs, loc) {
+			out.InstanceTypeOfferings = append(out.InstanceTypeOfferings, ec2types.InstanceTypeOffering{InstanceType: ec2types.InstanceType(t), Location: awssdk.String(loc), LocationType: in.LocationType})
+		}
+	}
+	for _, t := range types {
+		inRegion := false
+		for _, z := range f.shared.inst.offerings[t] {
+			if strings.HasPrefix(z, f.region) {
+				inRegion = true
+				if in.LocationType != ec2types.LocationTypeRegion {
+					add(t, z)
 				}
 			}
+		}
+		if inRegion && in.LocationType == ec2types.LocationTypeRegion {
+			add(t, f.region)
 		}
 	}
 	return out, nil
