@@ -37,18 +37,36 @@ func (w albListenerWant) defaultPort() bool {
 	return (w.Protocol == "HTTP" && w.Port == 80) || (w.Protocol == "HTTPS" && w.Port == 443)
 }
 
-// match returns the existing listener w stands for, or nil.
-func (w albListenerWant) match(existing []albListener) *albListener {
-	for i := range existing {
-		l := &existing[i]
-		if !strings.EqualFold(l.Protocol, w.Protocol) {
-			continue
-		}
-		if w.defaultPort() || l.Port == w.Port {
-			return l
+// matchListeners pairs each wanted listener with the existing one it stands
+// for (absent: none). A listener on the wanted protocol and port always
+// matches; a default-port want (http:80, https:443) otherwise takes the
+// first listener of its protocol that no other want matched by port, so
+// that two wants never claim the same listener.
+func matchListeners(wants []albListenerWant, existing []albListener) map[string]*albListener {
+	out := map[string]*albListener{}
+	claimed := map[string]bool{}
+	for _, w := range wants {
+		for i := range existing {
+			l := &existing[i]
+			if strings.EqualFold(l.Protocol, w.Protocol) && l.Port == w.Port && !claimed[l.ID] {
+				out[w.key()], claimed[l.ID] = l, true
+				break
+			}
 		}
 	}
-	return nil
+	for _, w := range wants {
+		if out[w.key()] != nil || !w.defaultPort() {
+			continue
+		}
+		for i := range existing {
+			l := &existing[i]
+			if strings.EqualFold(l.Protocol, w.Protocol) && !claimed[l.ID] {
+				out[w.key()], claimed[l.ID] = l, true
+				break
+			}
+		}
+	}
+	return out
 }
 
 // parseListenerWants reads the --listener values: each protocol:port once.
@@ -185,9 +203,10 @@ nothing created.
   the HTTPS listener forwards to its own group ({service}-https, port 443);
   otherwise it reuses the HTTP group.
 - Listeners (--listener, http:80 and https:443 by default): a missing one is
-  created and waited for until Running. http:80 and https:443 match the
-  existing listener of their protocol whatever its port; other ports match
-  by protocol and port. Of an existing listener only the certificate of an
+  created and waited for until Running. A listener matches by protocol and
+  port; http:80 and https:443 otherwise take an existing listener of their
+  protocol whatever its port (one no other --listener matched). Of an
+  existing listener only the certificate of an
   HTTPS one is compared: another one is replaced, and the listener waited
   for until Running again.
 - The certificate is --cert (a CAS certificate id), else the latest valid
@@ -755,13 +774,14 @@ func (e *albEnsure) buildListeners(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	matched := matchListeners(e.wants, e.listeners)
 	for _, w := range e.wants {
 		group := httpName
 		if w.Protocol == "HTTPS" && e.httpsBackend {
 			group = httpsName
 		}
 		res := "load-balancer/" + e.lbName + "/listener/" + w.key()
-		have := w.match(e.listeners)
+		have := matched[w.key()]
 		if have == nil {
 			desc := "-> " + group
 			certID := ""

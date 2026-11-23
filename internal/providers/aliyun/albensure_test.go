@@ -395,3 +395,40 @@ func TestPickCASCert(t *testing.T) {
 		t.Errorf("an expired certificate is never picked: %+v", c)
 	}
 }
+
+func TestALBEnsureListenersNeverShareAnExistingOne(t *testing.T) {
+	h, net, alb, _, _ := albHarness(t, app.Flags{})
+	alb.addLB("alb-1", "lb-example-com", "vpc-site", "Active", "cn-shanghai-b=eip-a:203.0.113.10", "cn-shanghai-c=eip-b:203.0.113.11")
+	alb.addGroup("sgp-1", "site-a-http", "HTTP", "vpc-site")
+	alb.addServer("sgp-1", "i-site", 80)
+	alb.addListener("lsn-1", "alb-1", "HTTP", 8080, "sgp-1")
+	if err := h.run("alb", "load-balancer", "ensure", "example.com", "--service", "site-a", "--listener", "http:80", "--listener", "http:8080"); err != nil {
+		t.Fatalf("ensure: %v\n%s", err, h.stderr.String())
+	}
+	if !slices.Equal(net.writes, []string{"CreateListener"}) {
+		t.Fatalf("writes = %v", net.writes)
+	}
+	if got := h.api.callsFor("CreateListener")[0].Get("ListenerPort"); got != "80" {
+		t.Errorf("created port %s, want 80", got)
+	}
+	rep := ensureReportOf(t, h)
+	if c, _ := changeIn(rep, "load-balancer/lb-example-com/listener/http:8080"); c.Action != platform.Unchanged || c.ID != "lsn-1" {
+		t.Errorf("http:8080 = %+v", c)
+	}
+	if c, _ := changeIn(rep, "load-balancer/lb-example-com/listener/http:80"); c.Action != platform.Created {
+		t.Errorf("http:80 = %+v", c)
+	}
+}
+
+func TestMatchListeners(t *testing.T) {
+	existing := []albListener{{ID: "lsn-a", Protocol: "HTTPS", Port: 8443}, {ID: "lsn-b", Protocol: "HTTPS", Port: 443}, {ID: "lsn-c", Protocol: "HTTP", Port: 81}}
+	wants := []albListenerWant{{Protocol: "HTTPS", Port: 443}, {Protocol: "HTTPS", Port: 8443}, {Protocol: "HTTP", Port: 80}}
+	got := matchListeners(wants, existing)
+	if got["https:443"].ID != "lsn-b" || got["https:8443"].ID != "lsn-a" || got["http:80"].ID != "lsn-c" {
+		t.Errorf("matches = %v %v %v", got["https:443"], got["https:8443"], got["http:80"])
+	}
+	got = matchListeners([]albListenerWant{{Protocol: "HTTPS", Port: 443}, {Protocol: "HTTPS", Port: 8443}}, existing[:1])
+	if got["https:443"] != nil || got["https:8443"].ID != "lsn-a" {
+		t.Errorf("a listener claimed by port is not taken by a default-port want: %v %v", got["https:443"], got["https:8443"])
+	}
+}
