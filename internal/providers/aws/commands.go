@@ -721,7 +721,7 @@ same name is never picked. Several live instances of one name are ambiguous
 	}
 	instance.AddCommand(ec2ListCmd(rt), ec2GetCmd(rt), ec2CreateCmd(rt), ec2DeleteCmd(rt), ec2RebootCmd(rt), ec2ResizeCmd(rt),
 		ec2StateCmd(rt, "start"), ec2StateCmd(rt, "stop"))
-	cmd.AddCommand(instance, keyPairCmd(rt), securityGroupCmd(rt))
+	cmd.AddCommand(instance, keyPairCmd(rt), securityGroupCmd(rt), volumeCmd(rt))
 	return cmd
 }
 
