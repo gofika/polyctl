@@ -116,6 +116,12 @@ func TestRDSErrMapping(t *testing.T) {
 	if !errors.Is(err, platform.ErrUnauthorized) || !strings.Contains(err.Error(), "rds:StopDBInstance") {
 		t.Errorf("denied = %v", err)
 	}
+	// A 403 with another code (a bad signature, an expired token) is a
+	// credentials problem too.
+	err = rdsErr("DescribeDBInstances", "eu-west-1", &statusErr{fakeAPIError{"SignatureDoesNotMatch", "no"}, 403})
+	if !errors.Is(err, platform.ErrUnauthorized) {
+		t.Errorf("403 = %v", err)
+	}
 	// Parameter errors and others keep the general code.
 	for _, code := range []string{"InvalidParameterValue", "InvalidParameterCombination", "DBSubnetGroupNotFoundFault"} {
 		err := rdsErr("CreateDBInstance", "eu-west-1", &fakeAPIError{code, "x"})

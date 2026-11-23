@@ -93,7 +93,9 @@ func rdsErr(action, region string, err error) error {
 	}
 	denied := unauthorizedCodes[platform.ErrorCode(err)]
 	var he httpStatusError
-	if !denied && platform.ErrorCode(err) == "" && errors.As(err, &he) {
+	if !denied && errors.As(err, &he) {
+		// Any 401 or 403 is a credentials problem (SignatureDoesNotMatch,
+		// ExpiredToken, ...), as mapErr has it for the other services.
 		denied = he.HTTPStatusCode() == 401 || he.HTTPStatusCode() == 403
 	}
 	if denied {
