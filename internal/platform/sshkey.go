@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/md5"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -193,6 +194,31 @@ func (k *PublicKey) FingerprintAWSED25519() string {
 	return base64.StdEncoding.EncodeToString(sum[:])
 }
 
+// FingerprintAWSRSA is the fingerprint AWS reports for an imported RSA key
+// pair: MD5 of the PKIX (SubjectPublicKeyInfo) DER encoding of the key, in
+// colon-separated lower-case hexadecimal. It is "" for a key that is not
+// RSA. (Key pairs AWS generated report the SHA-1 of the private key
+// instead, which cannot be computed from the public key.)
+func (k *PublicKey) FingerprintAWSRSA() string {
+	if k.Key.Type() != KeyTypeRSA {
+		return ""
+	}
+	ck, ok := k.Key.(ssh.CryptoPublicKey)
+	if !ok {
+		return ""
+	}
+	der, err := x509.MarshalPKIXPublicKey(ck.CryptoPublicKey())
+	if err != nil {
+		return ""
+	}
+	sum := md5.Sum(der)
+	parts := make([]string, len(sum))
+	for i, b := range sum {
+		parts[i] = hex.EncodeToString([]byte{b})
+	}
+	return strings.Join(parts, ":")
+}
+
 // Summary describes the key without printing it: algorithm, a shortened
 // SHA256 fingerprint and the first 20 characters of the comment.
 func (k *PublicKey) Summary() string {
@@ -249,6 +275,30 @@ var MatchByPublicKey = KeyMatcher{Label: "matched by public key", Match: func(lo
 	return local.Equal(kp.PublicKey)
 }}
 
+// MatchAWS matches AWS key pairs: by the public key when the listing
+// carries it (DescribeKeyPairs with IncludePublicKey=true, which works for
+// every kind of key pair), else by the fingerprint AWS computes for
+// imported keys (padded base64 SHA-256 of the wire bytes for ED25519, MD5
+// of the PKIX DER for RSA; the base64 padding and a "SHA256:" prefix are
+// ignored, hexadecimal is compared without regard to case).
+var MatchAWS = KeyMatcher{Label: "matched by public key", Match: func(local *PublicKey, kp KeyPair) bool {
+	if kp.PublicKey != nil {
+		return local.Equal(kp.PublicKey)
+	}
+	fp := strings.TrimSpace(kp.Fingerprint)
+	if fp == "" {
+		return false
+	}
+	switch local.Type() {
+	case KeyTypeED25519:
+		norm := func(s string) string { return strings.TrimRight(strings.TrimPrefix(s, "SHA256:"), "=") }
+		return norm(fp) == norm(local.FingerprintAWSED25519())
+	case KeyTypeRSA:
+		return strings.EqualFold(fp, local.FingerprintAWSRSA())
+	}
+	return false
+}}
+
 // KeyPrompter asks the questions of the interactive flow of key pair
 // resolution. It is never used in the non-interactive flow.
 type KeyPrompter interface {
@@ -268,6 +318,10 @@ type KeyInput struct {
 	Key *PublicKey
 	// Name is --key-pair, or "".
 	Name string
+	// NameFlag is how the command takes the key pair name, for messages:
+	// "--key-pair" by default; a command that takes it as an argument says
+	// so ("<name>").
+	NameFlag string
 	// DefaultName is a configured default key pair name; it is used only
 	// when that key pair exists. A key pair is never created under it.
 	DefaultName string
@@ -355,7 +409,7 @@ func ResolveKeyPair(ctx context.Context, lister KeyPairLister, in KeyInput) (Key
 			fallthrough
 		default:
 			if !in.Interactive {
-				return KeyPairPlan{}, invalid("a key pair is required: pass --key-pair <name> (an existing key pair), or --ssh-key-file <path> / --ssh-key <public key> with --key-pair <name> to import one")
+				return KeyPairPlan{}, invalid("a key pair is required: pass %[1]s (an existing key pair), or --ssh-key-file <path> / --ssh-key <public key> with %[1]s to import one", nameUsage(in))
 			}
 		}
 		key, err := askKey(in)
@@ -391,7 +445,7 @@ func ResolveKeyPair(ctx context.Context, lister KeyPairLister, in KeyInput) (Key
 	case len(matched) == 1:
 		plan := existing(matched[0], label)
 		if in.Name != "" && in.Name != matched[0] {
-			plan.Notes = append(plan.Notes, fmt.Sprintf("note: key already exists as %q, ignoring --key-pair %q", matched[0], in.Name))
+			plan.Notes = append(plan.Notes, fmt.Sprintf("note: key already exists as %q, ignoring %s %q", matched[0], nameFlag(in), in.Name))
 		}
 		return plan, nil
 	case len(matched) > 1:
@@ -399,7 +453,7 @@ func ResolveKeyPair(ctx context.Context, lister KeyPairLister, in KeyInput) (Key
 			return existing(in.Name, label), nil
 		}
 		if !in.Interactive || in.Prompter == nil {
-			return KeyPairPlan{}, fmt.Errorf("%w: the key is registered under several key pairs (%s); pass --key-pair <name> to choose one", ErrAmbiguous, strings.Join(matched, ", "))
+			return KeyPairPlan{}, fmt.Errorf("%w: the key is registered under several key pairs (%s); pass %s to choose one", ErrAmbiguous, strings.Join(matched, ", "), nameUsage(in))
 		}
 		name, err := in.Prompter.ChooseKeyPair(matched)
 		if err != nil {
@@ -410,7 +464,7 @@ func ResolveKeyPair(ctx context.Context, lister KeyPairLister, in KeyInput) (Key
 	name := in.Name
 	if name == "" {
 		if !in.Interactive || in.Prompter == nil {
-			return KeyPairPlan{}, invalid("creating a key pair needs a name: pass --key-pair <name> (no name is ever chosen for you, since the key may be somebody else's)")
+			return KeyPairPlan{}, invalid("creating a key pair needs a name: pass %s (no name is ever chosen for you, since the key may be somebody else's)", nameUsage(in))
 		}
 		name, err = in.Prompter.KeyPairName()
 		if err != nil {
@@ -425,10 +479,28 @@ func ResolveKeyPair(ctx context.Context, lister KeyPairLister, in KeyInput) (Key
 		}
 	}
 	if _, ok := byName[name]; ok {
-		return KeyPairPlan{}, invalid("key pair %q already exists with a different public key; choose another name with --key-pair (an existing key pair is never replaced)", name)
+		return KeyPairPlan{}, invalid("key pair %q already exists with a different public key; choose another name with %s (an existing key pair is never replaced)", name, nameUsage(in))
 	}
 	return KeyPairPlan{Name: name, Create: true, Key: in.Key,
 		Change: Change{Resource: "key-pair/" + name, Action: Created, Detail: "import from " + in.Key.Source + " (" + in.Key.Summary() + ")"}}, nil
+}
+
+// nameFlag is how the command takes the key pair name ("--key-pair").
+func nameFlag(in KeyInput) string {
+	if in.NameFlag != "" {
+		return in.NameFlag
+	}
+	return "--key-pair"
+}
+
+// nameUsage is the name option with its value ("--key-pair <name>"), or
+// the argument alone ("<name>").
+func nameUsage(in KeyInput) string {
+	f := nameFlag(in)
+	if strings.HasPrefix(f, "-") {
+		return f + " <name>"
+	}
+	return f
 }
 
 func allowedTypes(in KeyInput) []string {

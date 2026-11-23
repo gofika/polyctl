@@ -124,3 +124,19 @@ func TestKeyFlagsMutuallyExclusive(t *testing.T) {
 		t.Errorf("both flags: ran=%v err=%v", ran, err)
 	}
 }
+
+// AddPublicKeyFlags registers the key flags without --key-pair.
+func TestAddPublicKeyFlags(t *testing.T) {
+	var f KeyFlags
+	cmd := &cobra.Command{Use: "x"}
+	AddPublicKeyFlags(cmd, &f)
+	if cmd.Flags().Lookup("ssh-key") == nil || cmd.Flags().Lookup("ssh-key-file") == nil || cmd.Flags().Lookup("key-pair") != nil {
+		t.Errorf("flags: ssh-key %v, ssh-key-file %v, key-pair %v", cmd.Flags().Lookup("ssh-key") != nil,
+			cmd.Flags().Lookup("ssh-key-file") != nil, cmd.Flags().Lookup("key-pair") != nil)
+	}
+	full := &cobra.Command{Use: "y"}
+	AddKeyFlags(full, &f)
+	if full.Flags().Lookup("key-pair") == nil || full.Flags().Lookup("ssh-key") == nil {
+		t.Error("AddKeyFlags must register --key-pair and the key flags")
+	}
+}
