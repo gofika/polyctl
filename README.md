@@ -167,6 +167,7 @@ All state lives in one directory, `~/.config/polyctl/` by default (created with 
 | `-o, --output <fmt>` | `table` (default), `json` or `yaml`. Overrides `POLYCTL_OUTPUT` and `output:` in `config.yaml`. |
 | `-v, --verbose` | Extra diagnostics on stderr. |
 | `-y, --yes` | Assume "yes" for confirmations (multi-record `dns delete`, `aliyun ecs instance stop`, the interactive `auth logout`, the removal inside `auth manage`), in both flows. In the non-interactive flow it is the only way to confirm: without it such a command is a usage error (exit code 2). It confirms, it does not choose: a missing argument is still asked for on a terminal, and still a usage error without one. |
+| `--dry-run` | Write commands report what they would change and write nothing: every command that writes to a platform honours it, prints the change report of [Dry runs and change reports](#dry-runs-and-change-reports) with `would create` / `would update` / `would delete`, and exits with code 0. Reads still happen (a dry run looks at the current state to tell what would change). Nothing is confirmed either: a dry run asks no question and needs no `--yes`, also together with `--yes`. Read-only commands ignore the flag. The commands that change local configuration only (`auth login`, `auth use`, `auth logout`, `auth rename`, `auth manage`) refuse it with a usage error rather than change anything. |
 | `--non-interactive` | Force the non-interactive flow, also on a terminal: never ask, choose or confirm anything. Missing arguments and unconfirmed actions are usage errors (exit code 2) that name what to pass. Same as `POLYCTL_NON_INTERACTIVE=1`, which the flag overrides: `--non-interactive=false` keeps a terminal interactive although the variable is set. With `--yes`: no question at all, and destructive actions proceed. |
 | `--version` | Print the build version. |
 
@@ -701,6 +702,8 @@ The trees follow each platform's own model, but the same operation has the same 
 - **Platforms that give every record an id** (Cloudflare, name.com, Alibaba Cloud) have `create`, `update <zone-or-domain> <record-id>` and `delete <zone-or-domain> <record-id>`. The record id is required there, so it is an argument.
 - **Platforms that address records by name and type** (Route 53, Cloud DNS, GoDaddy) have `upsert`, which sets the whole record set, and a `delete` that takes `--name` / `--type`. There `--id` is an optional second way to pick one record, so it stays a flag, as on the neutral `dns delete`.
 - **Compute services** name the resource: `<service> instance list|start|stop`.
+- **`ensure`** converges a group of related resources to a desired state, where `create` makes one new resource (and fails when it exists) and `set` / `upsert` set one object (a DNS record, a record set) to the given value. An `ensure` command is idempotent: it first reads what exists, changes only what differs, reports `unchanged` for what already matches, and never deletes resources it was not told about. Any command that implicitly creates resources the caller did not name one by one (dependencies such as a VPC, a security group, a certificate, a listener) is an `ensure` command; `set` and `upsert` never create anything but their target. `ensure` waits until the resources are usable (`--no-wait` returns at once, `--timeout` bounds the wait) and prints a change report (see [Dry runs and change reports](#dry-runs-and-change-reports)). Exit code 0 includes "everything was unchanged".
+- **Asynchronous changes** take `--wait` (wait until the change has completed; the default of `ensure` commands only) and `--timeout <duration>` (the upper bound of the wait, default `10m`). A wait that runs out of time fails with exit code 1 and names the resource and its last status.
 
 ### Cloudflare (`polyctl cloudflare`, alias `polyctl cf`)
 
@@ -779,7 +782,7 @@ gcp dns zone list                 gcp dns zone get <managed-zone>
 gcp dns record list <zone> [--type] [--name]
 gcp dns record upsert <zone> --type A --name www --value 203.0.113.10 [--value ...] [--ttl 300]
 gcp dns record delete <zone> (--type A --name www [--value <v>] [--priority] | --id <zone|TYPE|name|value>)
-gcp compute instance list                         gcp compute instance start <instance> [--zone <z>] [--wait]     gcp compute instance stop <instance> [--zone <z>] [--wait]
+gcp compute instance list                         gcp compute instance start <instance> [--zone <z>] [--wait [--timeout 10m]]     gcp compute instance stop <instance> [--zone <z>] [--wait [--timeout 10m]]
 ```
 
 Inventory types: `zone`, `dns_record`, `instance`. Cloud DNS record sets are split one record per value exactly like Route 53 (see above); writes are applied as a single atomic change.
@@ -827,11 +830,37 @@ Tables are tab-aligned and contain only the most useful columns. JSON and YAML e
 
 Human-readable progress and notes always go to stderr, so stdout is safe to pipe.
 
+### Dry runs and change reports
+
+`ensure` commands, and every write command run with `--dry-run`, print a change report: one row per resource, with what happened to it (or would happen).
+
+```text
+RESOURCE                    ACTION        DETAIL
+security-group/web          unchanged     sg-0abc
+security-group/web/rule     created       tcp 443 0.0.0.0/0
+record/www.example.com/A    would update  203.0.113.10 -> 203.0.113.20
+```
+
+The actions are `created`, `updated`, `unchanged`, `skipped`, `deleted` and `failed`, and in a dry run `would create`, `would update` and `would delete` (`would_create`, `would_update`, `would_delete` in JSON and YAML). With `-o json` / `-o yaml` the report is
+
+```json
+{
+  "target": { "platform": "aws", "profile": "acme", "region": "ap-east-1" },
+  "dry_run": false,
+  "changes": [
+    { "resource": "security-group/web", "action": "unchanged", "id": "sg-0abc" },
+    { "resource": "security-group/web/rule", "action": "created", "detail": "tcp 443 0.0.0.0/0" }
+  ]
+}
+```
+
+A report with nothing in it still prints its header (`"changes": []`). When a step fails, the report is printed all the same, with the failed step as `failed` and the error as its detail, and the command exits with the code of the error. Commands that work through a batch (several records, several accounts) go on after a failed item, report every item and exit with code 1 at the end when any failed.
+
 ## Exit codes
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Success. Also a menu or selection prompt left with Esc or Ctrl-C, a question of a login flow left with Ctrl-C or Ctrl-D, and a command that had nothing to do: no account to `sync` or `domain index` (none configured, none matching `--profile` / `--platform`, none supporting `--type`), no profile or account to pick from in `auth use` / `auth logout` / `auth manage`, a declined or left confirmation of `dns delete` or `aliyun ecs instance stop`. The prompts in this row exist in the interactive flow only. |
+| `0` | Success, including an `ensure` that found everything unchanged and any `--dry-run`. Also a menu or selection prompt left with Esc or Ctrl-C, a question of a login flow left with Ctrl-C or Ctrl-D, and a command that had nothing to do: no account to `sync` or `domain index` (none configured, none matching `--profile` / `--platform`, none supporting `--type`), no profile or account to pick from in `auth use` / `auth logout` / `auth manage`, a declined or left confirmation of `dns delete` or `aliyun ecs instance stop`. The prompts in this row exist in the interactive flow only. |
 | `1` | Generic error (API failure, I/O error, a login that was not approved in time, `config.yaml` changed by another process while the command ran, ...). |
 | `2` | Usage error: bad flag combination, unknown flag or command (also below a command group: `polyctl dns nosuch`), unknown platform or resource type, missing required flag or argument, an unknown value of a login option (`--set env=`, `--set method=`), an invalid or already used name for `auth rename`, invalid config, an invalid `POLYCTL_NON_INTERACTIVE` value, `auth login` without `--profile` for a platform that only other profiles have. Also everything the non-interactive flow cannot ask for: `auth manage`, a missing argument (`auth login` without a platform, `auth use` without a profile, `auth logout` without `--profile`), a confirmation without `--yes` (`dns delete` of several records, `aliyun ecs instance stop`), and a login value or choice that was not passed (the message names the `--set` key or environment variable). |
 | `3` | Authentication: missing credentials, no account on the platform in the selected profile, rejected token, expired SSO session, `auth status` with a failing account. Also a request valid credentials were not allowed to make: a RAM / IAM policy denial (the platform's error code is kept in the message), or an account the platform refuses to serve until something is done in its console (Alibaba Cloud basic information not completed, real-name verification missing). Such a denial does not ask for a new login, and `sync` goes on with the account's other resource types. |

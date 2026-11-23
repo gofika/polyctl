@@ -210,6 +210,9 @@ func newDomainNSSetCmd(rt *app.Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if done, err := rt.WouldWrite(t.ReportTarget(), app.NameserverChange(t.Domain, ns)); done || err != nil {
+				return err
+			}
 			if rt.Flags.Offline {
 				return app.ErrOffline
 			}

@@ -305,6 +305,9 @@ func newDomainNSSetCmd(rt *app.Runtime) *cobra.Command {
 				return err
 			}
 			name := platform.NormalizeDomain(args[0])
+			if done, err := rt.WouldWrite(platform.Target{Platform: platform.GoDaddy, Profile: p.Name, Domain: name}, app.NameserverChange(name, ns)); done || err != nil {
+				return err
+			}
 			if err := c.SetNameservers(cmd.Context(), name, ns); err != nil {
 				return err
 			}
@@ -337,6 +340,9 @@ func newDomainLockCmd(rt *app.Runtime, lock bool) *cobra.Command {
 				return err
 			}
 			name := platform.NormalizeDomain(args[0])
+			if done, err := rt.WouldWrite(platform.Target{Platform: platform.GoDaddy, Profile: p.Name, Domain: name}, app.ResourceChange("domain", name+"/lock", platform.Updated, fmt.Sprintf("locked=%v", lock))); done || err != nil {
+				return err
+			}
 			if err := c.SetLocked(cmd.Context(), name, lock); err != nil {
 				return err
 			}
@@ -374,6 +380,9 @@ func newDomainAutoRenewCmd(rt *app.Runtime) *cobra.Command {
 				return err
 			}
 			name := platform.NormalizeDomain(args[0])
+			if done, err := rt.WouldWrite(platform.Target{Platform: platform.GoDaddy, Profile: p.Name, Domain: name}, app.ResourceChange("domain", name+"/autorenew", platform.Updated, fmt.Sprintf("autorenew=%v", on))); done || err != nil {
+				return err
+			}
 			if err := c.SetAutoRenew(cmd.Context(), name, on); err != nil {
 				return err
 			}
@@ -577,7 +586,11 @@ func newDNSAddCmd(rt *app.Runtime) *cobra.Command {
 				return err
 			}
 			zone := platform.NormalizeDomain(args[0])
-			out, err := c.CreateRecord(cmd.Context(), zone, buildRecord(cmd, zone, typ, name, value, ttl, priority))
+			rec := buildRecord(cmd, zone, typ, name, value, ttl, priority)
+			if done, err := rt.WouldWrite(platform.Target{Platform: platform.GoDaddy, Profile: p.Name, Domain: zone}, platform.Change{Resource: app.RecordResource(rec.Name, rec.Type), Action: platform.Created, Detail: rec.Value}); done || err != nil {
+				return err
+			}
+			out, err := c.CreateRecord(cmd.Context(), zone, rec)
 			if err != nil {
 				return err
 			}
@@ -624,6 +637,9 @@ the existing ones use ` + "`polyctl godaddy dns add`" + `.`,
 			for _, v := range values {
 				recs = append(recs, buildRecord(cmd, zone, typ, rel, v, ttl, priority))
 			}
+			if done, err := rt.WouldWrite(platform.Target{Platform: platform.GoDaddy, Profile: p.Name, Domain: zone}, platform.Change{Resource: app.RecordResource(platform.FQDN(rel, zone), typ), Action: platform.Updated, Detail: "set to " + strings.Join(values, ",")}); done || err != nil {
+				return err
+			}
 			out, err := c.ReplaceRecords(cmd.Context(), zone, typ, rel, recs)
 			if err != nil {
 				return err
@@ -668,6 +684,9 @@ way to pick a single record here, not a required argument.`,
 				if err != nil {
 					return err
 				}
+				if done, err := rt.WouldWrite(platform.Target{Platform: platform.GoDaddy, Profile: p.Name, Domain: zone}, platform.Change{Resource: app.RecordResource(platform.FQDN(n, zone), t), Action: platform.Deleted, ID: id, Detail: d}); done || err != nil {
+					return err
+				}
 				if err := c.DeleteRecord(cmd.Context(), zone, id); err != nil {
 					return err
 				}
@@ -676,6 +695,9 @@ way to pick a single record here, not a required argument.`,
 				return rt.Render(map[string]any{"profile": p.Name, "zone": zone, "deleted": []string{id}}, func() output.Grid { return output.Grid{} })
 			}
 			rel := platform.RelativeName(platform.FQDN(name, zone), zone)
+			if done, err := rt.WouldWrite(platform.Target{Platform: platform.GoDaddy, Profile: p.Name, Domain: zone}, platform.Change{Resource: app.RecordResource(platform.FQDN(rel, zone), typ), Action: platform.Deleted, Detail: "every record of the set"}); done || err != nil {
+				return err
+			}
 			if err := c.DeleteRecordSet(cmd.Context(), zone, typ, rel); err != nil {
 				return err
 			}

@@ -409,6 +409,9 @@ func TestECSStopFlows(t *testing.T) {
 		{name: "--non-interactive --yes on a terminal", flags: app.Flags{NonInteractive: true, Yes: true}, terminal: true, stopped: true},
 		{name: "POLYCTL_NON_INTERACTIVE on a terminal", env: "1", terminal: true, refused: true},
 		{name: "POLYCTL_NON_INTERACTIVE with --yes", env: "true", flags: app.Flags{Yes: true}, terminal: true, stopped: true},
+		// A dry run stops nothing: no question, no --yes needed.
+		{name: "no terminal, --dry-run", flags: app.Flags{DryRun: true}},
+		{name: "interactive, --dry-run", flags: app.Flags{DryRun: true}, terminal: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(app.EnvNonInteractive, tc.env)
@@ -441,6 +444,9 @@ func TestECSStopFlows(t *testing.T) {
 			}
 			if n := len(h.api.callsFor("StopInstance")); (n == 1) != tc.stopped {
 				t.Errorf("StopInstance was called %d time(s), stopped want %v", n, tc.stopped)
+			}
+			if tc.flags.DryRun && !strings.Contains(h.stdout.String(), `"would_update"`) {
+				t.Errorf("dry run report = %q", h.stdout.String())
 			}
 		})
 	}

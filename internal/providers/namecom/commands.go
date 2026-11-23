@@ -361,6 +361,9 @@ func newDomainNSSetCmd(rt *app.Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if done, err := rt.WouldWrite(platform.Target{Platform: platform.NameCom, Profile: p.Name, Domain: platform.NormalizeDomain(args[0])}, app.NameserverChange(args[0], ns)); done || err != nil {
+				return err
+			}
 			d, err := c.SetNameserversDomain(cmd.Context(), args[0], ns)
 			if err != nil {
 				return err
@@ -394,6 +397,9 @@ func newDomainLockCmd(rt *app.Runtime, lock bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if done, err := rt.WouldWrite(platform.Target{Platform: platform.NameCom, Profile: p.Name, Domain: platform.NormalizeDomain(args[0])}, app.ResourceChange("domain", platform.NormalizeDomain(args[0])+"/lock", platform.Updated, fmt.Sprintf("locked=%v", lock))); done || err != nil {
+				return err
+			}
 			d, err := c.SetLock(cmd.Context(), args[0], lock)
 			if err != nil {
 				return err
@@ -422,6 +428,9 @@ func newDomainAutorenewCmd(rt *app.Runtime) *cobra.Command {
 			}
 			c, p, err := open(cmd.Context(), rt)
 			if err != nil {
+				return err
+			}
+			if done, err := rt.WouldWrite(platform.Target{Platform: platform.NameCom, Profile: p.Name, Domain: platform.NormalizeDomain(args[0])}, app.ResourceChange("domain", platform.NormalizeDomain(args[0])+"/autorenew", platform.Updated, fmt.Sprintf("autorenew=%v", enabled))); done || err != nil {
 				return err
 			}
 			d, err := c.SetAutorenew(cmd.Context(), args[0], enabled)
@@ -561,6 +570,9 @@ func newDNSCreateCmd(rt *app.Runtime) *cobra.Command {
 				pr := priority
 				rec.Priority = &pr
 			}
+			if done, err := rt.WouldWrite(platform.Target{Platform: platform.NameCom, Profile: p.Name, Domain: domain}, platform.Change{Resource: app.RecordResource(rec.Name, rec.Type), Action: platform.Created, Detail: rec.Value}); done || err != nil {
+				return err
+			}
 			out, err := c.CreateRecord(cmd.Context(), domain, rec)
 			if err != nil {
 				return err
@@ -617,6 +629,9 @@ func newDNSUpdateCmd(rt *app.Runtime) *cobra.Command {
 				pr := priority
 				rec.Priority = &pr
 			}
+			if done, err := rt.WouldWrite(platform.Target{Platform: platform.NameCom, Profile: p.Name, Domain: domain}, platform.Change{Resource: app.RecordResource(rec.Name, rec.Type), Action: platform.Updated, ID: id, Detail: cur.Value + " -> " + rec.Value}); done || err != nil {
+				return err
+			}
 			out, err := c.UpdateRecord(cmd.Context(), domain, rec)
 			if err != nil {
 				return err
@@ -653,6 +668,9 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 			id = strconv.FormatInt(n, 10)
 			c, p, err := open(cmd.Context(), rt)
 			if err != nil {
+				return err
+			}
+			if done, err := rt.WouldWrite(platform.Target{Platform: platform.NameCom, Profile: p.Name, Domain: domain}, platform.Change{Resource: "record/" + id, Action: platform.Deleted, ID: id, Detail: "domain " + domain}); done || err != nil {
 				return err
 			}
 			if err := c.DeleteRecord(cmd.Context(), domain, id); err != nil {

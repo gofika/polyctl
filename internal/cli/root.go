@@ -307,6 +307,9 @@ POLYCTL_NON_INTERACTIVE is set.`,
 				// create no directory and cannot fail on a setting.
 				return nil
 			}
+			if rt.Flags.DryRun && cmd.Annotations[noDryRunAnnotation] != "" {
+				return usageErr("%s does not support --dry-run: it changes local configuration only, which a dry run does not cover", cmd.CommandPath())
+			}
 			rt.SkipNonInteractiveEnvCheck = asksNothing(cmd)
 			if err := rt.Init(); err != nil {
 				return usageErr("%v", err)
@@ -327,6 +330,7 @@ POLYCTL_NON_INTERACTIVE is set.`,
 	pf.StringVarP(&rt.Flags.Output, "output", "o", "", "output format: table, json or yaml (overrides POLYCTL_OUTPUT and the config file; default table)")
 	pf.BoolVarP(&rt.Flags.Verbose, "verbose", "v", false, "verbose logging to stderr")
 	pf.BoolVarP(&rt.Flags.Yes, "yes", "y", false, "assume yes for confirmations (required for them in the non-interactive flow)")
+	pf.BoolVar(&rt.Flags.DryRun, "dry-run", false, "write commands only report what they would change (nothing is written or confirmed); read-only commands ignore it")
 	pf.VarPF(boolSetFlag{&rt.Flags.NonInteractive, &rt.Flags.NonInteractiveSet}, "non-interactive", "", "never ask questions, also on a terminal: missing arguments and unconfirmed actions are usage errors (overrides POLYCTL_NON_INTERACTIVE; --non-interactive=false keeps a terminal interactive)").NoOptDefVal = "true"
 	_ = root.RegisterFlagCompletionFunc("output", cobra.FixedCompletions([]string{"table", "json", "yaml"}, cobra.ShellCompDirectiveNoFileComp))
 	_ = root.RegisterFlagCompletionFunc("profile", completeProfiles(rt))

@@ -37,6 +37,9 @@ type Flags struct {
 	Verbose   bool
 	NoBrowser bool
 	Yes       bool
+	// DryRun makes write commands report what they would change without
+	// writing anything (--dry-run). Read-only commands ignore it.
+	DryRun bool
 	// NonInteractive forces the non-interactive flow, also on a terminal.
 	NonInteractive bool
 	// NonInteractiveSet says --non-interactive was given, with either

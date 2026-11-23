@@ -253,6 +253,9 @@ func newDNSRecordCreateCmd(rt *app.Runtime) *cobra.Command {
 			if line != "" {
 				rec.Extra = map[string]any{"line": line}
 			}
+			if done, err := rt.WouldWrite(platform.Target{Platform: platform.Aliyun, Profile: p.Name, Domain: zone}, platform.Change{Resource: app.RecordResource(rec.Name, rec.Type), Action: platform.Created, Detail: rec.Value}); done || err != nil {
+				return err
+			}
 			out, err := c.CreateRecord(cmd.Context(), zone, rec)
 			if err != nil {
 				return err
@@ -329,6 +332,9 @@ func newDNSRecordUpdateCmd(rt *app.Runtime) *cobra.Command {
 				}
 				rec.Extra["line"] = line
 			}
+			if done, err := rt.WouldWrite(platform.Target{Platform: platform.Aliyun, Profile: p.Name, Domain: zone}, platform.Change{Resource: app.RecordResource(rec.Name, rec.Type), Action: platform.Updated, ID: id, Detail: cur.Value + " -> " + rec.Value}); done || err != nil {
+				return err
+			}
 			out, err := c.UpdateRecord(cmd.Context(), zone, rec)
 			if err != nil {
 				return err
@@ -359,6 +365,9 @@ func newDNSRecordDeleteCmd(rt *app.Runtime) *cobra.Command {
 			zone := platform.NormalizeDomain(args[0])
 			c, p, err := openClient(rt, cmd.Context())
 			if err != nil {
+				return err
+			}
+			if done, err := rt.WouldWrite(platform.Target{Platform: platform.Aliyun, Profile: p.Name, Domain: zone}, platform.Change{Resource: "record/" + id, Action: platform.Deleted, ID: id, Detail: "domain " + zone}); done || err != nil {
 				return err
 			}
 			if err := c.DeleteRecord(cmd.Context(), zone, id); err != nil {
@@ -576,6 +585,9 @@ func newDomainNSSetCmd(rt *app.Runtime) *cobra.Command {
 				return err
 			}
 			name := platform.NormalizeDomain(args[0])
+			if done, err := rt.WouldWrite(platform.Target{Platform: platform.Aliyun, Profile: p.Name, Domain: name}, app.NameserverChange(name, ns)); done || err != nil {
+				return err
+			}
 			// SetNameservers waits for the registrar task; on ErrTaskPending
 			// (or any failure) nothing is mirrored into the inventory.
 			if err := c.SetNameservers(cmd.Context(), name, ns); err != nil {
@@ -711,6 +723,9 @@ func newECSStartCmd(rt *app.Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if done, err := rt.WouldWrite(platform.Target{Platform: platform.Aliyun, Profile: p.Name, Region: region}, app.ResourceChange("instance", args[0], platform.Updated, "start")); done || err != nil {
+				return err
+			}
 			if err := c.StartInstance(cmd.Context(), region, args[0]); err != nil {
 				return err
 			}
@@ -742,12 +757,18 @@ func newECSStopCmd(rt *app.Runtime) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			action := fmt.Sprintf("stop instance %s", args[0])
 			// Before anything else: the non-interactive flow without --yes
-			// is refused without needing credentials or the network.
-			if err := rt.CanConfirm(action); err != nil {
-				return err
+			// is refused without needing credentials or the network. A dry
+			// run stops nothing, so it needs no confirmation.
+			if !rt.DryRun() {
+				if err := rt.CanConfirm(action); err != nil {
+					return err
+				}
 			}
 			c, p, err := openClient(rt, cmd.Context())
 			if err != nil {
+				return err
+			}
+			if done, err := rt.WouldWrite(platform.Target{Platform: platform.Aliyun, Profile: p.Name, Region: region}, app.ResourceChange("instance", args[0], platform.Updated, "stop")); done || err != nil {
 				return err
 			}
 			if !rt.Flags.Yes {

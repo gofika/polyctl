@@ -411,6 +411,9 @@ leading number inside the value ("10 mail.example.com").`,
 					}
 				}
 			}
+			if done, err := rt.WouldWrite(platform.Target{Platform: platform.AWS, Profile: prof.Name, Domain: z.Name}, platform.Change{Resource: app.RecordResource(fqdn, typ), Action: platform.Updated, Detail: "set to " + strings.Join(values, ",")}); done || err != nil {
+				return err
+			}
 			recs, err := c.ReplaceSet(cmd.Context(), z.ID, fqdn, typ, values, ttl)
 			if err != nil {
 				return err
@@ -453,6 +456,9 @@ func recordDeleteCmd(rt *app.Runtime) *cobra.Command {
 				return err
 			}
 			fqdn := platform.FQDN(name, z.Name)
+			if done, err := rt.WouldWrite(platform.Target{Platform: platform.AWS, Profile: prof.Name, Domain: z.Name}, platform.Change{Resource: app.RecordResource(fqdn, typ), Action: platform.Deleted, Detail: "the whole record set"}); done || err != nil {
+				return err
+			}
 			recs, err := c.DeleteSet(cmd.Context(), z.ID, fqdn, typ)
 			if err != nil {
 				return err
@@ -661,6 +667,9 @@ func nsSetCmd(rt *app.Runtime) *cobra.Command {
 				return err
 			}
 			name := platform.NormalizeDomain(args[0])
+			if done, err := rt.WouldWrite(platform.Target{Platform: platform.AWS, Profile: prof.Name, Domain: name}, app.NameserverChange(name, ns)); done || err != nil {
+				return err
+			}
 			if err := c.SetNameservers(cmd.Context(), name, ns); err != nil {
 				return err
 			}
@@ -784,6 +793,9 @@ func ec2StateCmd(rt *app.Runtime, action string) *cobra.Command {
 			}
 			if region == "" {
 				region = c.region
+			}
+			if done, err := rt.WouldWrite(platform.Target{Platform: platform.AWS, Profile: prof.Name, Region: region}, app.ResourceChange("instance", args[0], platform.Updated, action)); done || err != nil {
+				return err
 			}
 			var changes []instanceStateChange
 			if action == "start" {

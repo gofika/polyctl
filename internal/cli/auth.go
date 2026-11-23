@@ -23,7 +23,26 @@ func newAuthCmd(rt *app.Runtime) *cobra.Command {
 	}
 	cmd.AddCommand(newAuthLoginCmd(rt), newAuthListCmd(rt), newAuthUseCmd(rt), newAuthStatusCmd(rt), newAuthLogoutCmd(rt),
 		newAuthRenameCmd(rt), newAuthManageCmd(rt))
+	// These change local configuration and secrets, which --dry-run does
+	// not cover: rather than ignore the flag and change things anyway, they
+	// refuse it.
+	for _, c := range cmd.Commands() {
+		switch c.Name() {
+		case "login", "use", "logout", "rename", "manage":
+			markNoDryRun(c)
+		}
+	}
 	return cmd
+}
+
+// noDryRunAnnotation marks commands that refuse --dry-run.
+const noDryRunAnnotation = "polyctl.nodryrun"
+
+func markNoDryRun(c *cobra.Command) {
+	if c.Annotations == nil {
+		c.Annotations = map[string]string{}
+	}
+	c.Annotations[noDryRunAnnotation] = "1"
 }
 
 func loginHelp() string {

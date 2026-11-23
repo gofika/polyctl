@@ -186,12 +186,23 @@ func newDNSWriteCmd(rt *app.Runtime, add bool, cmd *cobra.Command) *cobra.Comman
 			b := proxied
 			rec.Proxied = &b
 		}
+		create := add || len(matches) == 0
+		if !create && len(matches) > 1 {
+			return fmt.Errorf("%d records named %s %s exist; use `polyctl dns add` to create another, or `polyctl dns delete` first", len(matches), fqdn, typ)
+		}
+		change := platform.Change{Resource: app.RecordResource(fqdn, typ), Action: platform.Created, Detail: value}
+		if !create {
+			change.Action, change.ID = platform.Updated, matches[0].ID
+			change.Detail = matches[0].Value + " -> " + value
+		}
+		if done, err := rt.WouldWrite(t.ReportTarget(), change); done || err != nil {
+			return err
+		}
 		var out *platform.Record
 		oldID := ""
-		switch {
-		case add || len(matches) == 0:
+		if create {
 			out, err = dns.CreateRecord(cmd.Context(), t.ResourceID, rec)
-		case len(matches) == 1:
+		} else {
 			rec.ID = matches[0].ID
 			oldID = rec.ID
 			if rec.TTL == 0 {
@@ -205,8 +216,6 @@ func newDNSWriteCmd(rt *app.Runtime, add bool, cmd *cobra.Command) *cobra.Comman
 			}
 			rec.Extra = matches[0].Extra
 			out, err = dns.UpdateRecord(cmd.Context(), t.ResourceID, rec)
-		default:
-			return fmt.Errorf("%d records named %s %s exist; use `polyctl dns add` to create another, or `polyctl dns delete` first", len(matches), fqdn, typ)
 		}
 		if err != nil {
 			return err
@@ -298,6 +307,14 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 			}
 			if len(matches) == 0 {
 				return fmt.Errorf("%w: no matching record in zone %s", platform.ErrNotFound, t.Domain)
+			}
+			var changes []platform.Change
+			for _, r := range matches {
+				changes = append(changes, platform.Change{Resource: app.RecordResource(r.Name, r.Type), Action: platform.Deleted, ID: r.ID, Detail: r.Value})
+			}
+			// A dry run neither asks nor needs --yes: nothing is deleted.
+			if done, err := rt.WouldWrite(t.ReportTarget(), changes...); done || err != nil {
+				return err
 			}
 			if len(matches) > 1 && !rt.Flags.Yes {
 				// Shown in both flows, so the caller sees what is affected:

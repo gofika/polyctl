@@ -394,6 +394,10 @@ func newDNSCreateCmd(rt *app.Runtime) *cobra.Command {
 			if comment != "" {
 				rec.Extra = map[string]any{"comment": comment}
 			}
+			target := platform.Target{Platform: platform.Cloudflare, Profile: profile, Domain: z.Name}
+			if done, err := rt.WouldWrite(target, platform.Change{Resource: app.RecordResource(rec.Name, rec.Type), Action: platform.Created, Detail: rec.Value}); done || err != nil {
+				return err
+			}
 			out, err := s.client.CreateRecord(cmd.Context(), z.ID, rec)
 			if err != nil {
 				return err
@@ -487,6 +491,10 @@ switches it off, and without it the record keeps its current setting.`,
 			if cmd.Flags().Changed("comment") {
 				rec.Extra["comment"] = comment
 			}
+			target := platform.Target{Platform: platform.Cloudflare, Profile: profile, Domain: z.Name}
+			if done, err := rt.WouldWrite(target, platform.Change{Resource: app.RecordResource(rec.Name, rec.Type), Action: platform.Updated, ID: id, Detail: cur.Value + " -> " + rec.Value}); done || err != nil {
+				return err
+			}
 			out, err := s.client.UpdateRecord(cmd.Context(), z.ID, rec)
 			if err != nil {
 				return err
@@ -523,6 +531,10 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 			}
 			s, err := mutationSession(cmd.Context(), rt)
 			if err != nil {
+				return err
+			}
+			target := platform.Target{Platform: platform.Cloudflare, Profile: profile, Domain: z.Name}
+			if done, err := rt.WouldWrite(target, platform.Change{Resource: "record/" + id, Action: platform.Deleted, ID: id, Detail: "zone " + z.Name}); done || err != nil {
 				return err
 			}
 			if err := s.client.DeleteRecord(cmd.Context(), z.ID, id); err != nil {
@@ -574,6 +586,14 @@ func newCacheCmd(rt *app.Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			what := "everything"
+			if selective {
+				what = fmt.Sprintf("%d url(s), %d host(s), %d tag(s), %d prefix(es)", len(urls), len(hosts), len(tags), len(prefixes))
+			}
+			target := platform.Target{Platform: platform.Cloudflare, Profile: profile, Domain: z.Name}
+			if done, err := rt.WouldWrite(target, app.ResourceChange("cache", z.Name, platform.Updated, "purge "+what)); done || err != nil {
+				return err
+			}
 			res, err := s.client.api.purgeCache(cmd.Context(), z.ID, req)
 			if err != nil {
 				return err
@@ -581,10 +601,6 @@ func newCacheCmd(rt *app.Runtime) *cobra.Command {
 			out := purgeOutput{Profile: profile, Zone: z.Name, ZoneID: z.ID, Request: req}
 			if res != nil {
 				out.ID = res.ID
-			}
-			what := "everything"
-			if selective {
-				what = fmt.Sprintf("%d url(s), %d host(s), %d tag(s), %d prefix(es)", len(urls), len(hosts), len(tags), len(prefixes))
 			}
 			rt.Infof("purged %s for zone %s via cloudflare/%s", what, z.Name, profile)
 			return rt.Render(out, func() output.Grid {
@@ -655,6 +671,10 @@ func settingCmd(rt *app.Runtime, use, short, setting string, allowed []string) *
 				}
 				res, err = s.client.api.getSetting(cmd.Context(), z.ID, setting)
 			} else {
+				target := platform.Target{Platform: platform.Cloudflare, Profile: profile, Domain: z.Name}
+				if done, err := rt.WouldWrite(target, app.ResourceChange("zone", z.Name+"/"+setting, platform.Updated, value)); done || err != nil {
+					return err
+				}
 				if s, err = mutationSession(cmd.Context(), rt); err != nil {
 					return err
 				}

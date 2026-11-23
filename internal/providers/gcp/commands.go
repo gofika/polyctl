@@ -463,6 +463,9 @@ Cloud DNS expects; TXT values are quoted automatically.`,
 				}
 				raw = append(raw, rd)
 			}
+			if done, err := rt.WouldWrite(platform.Target{Platform: platform.GCP, Profile: profile, Domain: z.Name}, platform.Change{Resource: app.RecordResource(fqdn, typ), Action: platform.Updated, Detail: "set to " + strings.Join(values, ",")}); done || err != nil {
+				return err
+			}
 			c, _, err := openClient(cmd.Context(), rt)
 			if err != nil {
 				return err
@@ -512,6 +515,16 @@ required argument.`,
 			}
 			z, err := resolveZone(cmd.Context(), rt, profile, args[0])
 			if err != nil {
+				return err
+			}
+			change := platform.Change{Resource: app.RecordResource(platform.FQDN(name, z.Name), typ), Action: platform.Deleted, Detail: "the whole record set"}
+			switch {
+			case id != "":
+				change = platform.Change{Resource: "record/" + id, Action: platform.Deleted, ID: id}
+			case value != "":
+				change.Detail = value
+			}
+			if done, err := rt.WouldWrite(platform.Target{Platform: platform.GCP, Profile: profile, Domain: z.Name}, change); done || err != nil {
 				return err
 			}
 			c, _, err := openClient(cmd.Context(), rt)
@@ -634,12 +647,16 @@ func newComputeListCmd(rt *app.Runtime) *cobra.Command {
 
 func newComputePowerCmd(rt *app.Runtime, verb string) *cobra.Command {
 	var zone string
-	var wait bool
+	var wf app.WaitFlags
 	cmd := &cobra.Command{
 		Use:   verb + " <instance>",
 		Short: strings.ToUpper(verb[:1]) + verb[1:] + " an instance",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			wait, timeout, err := wf.Resolve(cmd)
+			if err != nil {
+				return err
+			}
 			if rt.Flags.Offline {
 				return app.ErrOffline
 			}
@@ -664,15 +681,27 @@ func newComputePowerCmd(rt *app.Runtime, verb string) *cobra.Command {
 					return &app.AmbiguousError{What: "zone of instance " + instance, Candidates: zones}
 				}
 			}
+			if done, err := rt.WouldWrite(platform.Target{Platform: platform.GCP, Profile: profile, Zone: zone}, app.ResourceChange("instance", instance, platform.Updated, verb)); done || err != nil {
+				return err
+			}
 			c, _, err := openClient(cmd.Context(), rt)
 			if err != nil {
 				return err
 			}
+			ctx := cmd.Context()
+			if wait {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, timeout)
+				defer cancel()
+			}
 			var res *OperationResult
 			if verb == "start" {
-				res, err = c.StartInstance(cmd.Context(), zone, instance, wait)
+				res, err = c.StartInstance(ctx, zone, instance, wait)
 			} else {
-				res, err = c.StopInstance(cmd.Context(), zone, instance, wait)
+				res, err = c.StopInstance(ctx, zone, instance, wait)
+			}
+			if err != nil && wait && errors.Is(err, context.DeadlineExceeded) && cmd.Context().Err() == nil {
+				err = &platform.WaitTimeoutError{Resource: "instance/" + instance, Want: "the " + verb + " operation to finish", Timeout: timeout}
 			}
 			if err != nil {
 				return err
@@ -684,7 +713,7 @@ func newComputePowerCmd(rt *app.Runtime, verb string) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&zone, "zone", "", "Compute Engine zone of the instance (looked up in the inventory when omitted)")
-	cmd.Flags().BoolVar(&wait, "wait", false, "wait until the operation completes")
+	app.AddWaitFlags(cmd, &wf, false, app.DefaultWaitTimeout)
 	return cmd
 }
 
