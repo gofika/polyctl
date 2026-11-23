@@ -404,3 +404,21 @@ func TestALBInteractiveConfirmations(t *testing.T) {
 		}
 	}
 }
+
+func TestALBACLEntryWritesWaitForAConfiguringACL(t *testing.T) {
+	h, _, alb, _, _ := albHarness(t, app.Flags{})
+	// An earlier write still configures the ACL.
+	alb.addACL("acl-busy", "busy")["AclStatus"] = "Configuring"
+	alb.pending["acl-busy"] = 2
+	if err := h.run("alb", "acl", "entry", "add", "busy", "192.0.2.1"); err != nil {
+		t.Fatalf("entry add: %v\n%s", err, h.stderr.String())
+	}
+	alb.acl("acl-busy")["AclStatus"] = "Configuring"
+	alb.pending["acl-busy"] = 2
+	if err := h.run("alb", "acl", "entry", "remove", "busy", "192.0.2.1"); err != nil {
+		t.Fatalf("entry remove: %v\n%s", err, h.stderr.String())
+	}
+	if len(h.api.callsFor("AddEntriesToAcl")) != 1 || len(h.api.callsFor("RemoveEntriesFromAcl")) != 1 {
+		t.Errorf("writes = %d add, %d remove", len(h.api.callsFor("AddEntriesToAcl")), len(h.api.callsFor("RemoveEntriesFromAcl")))
+	}
+}

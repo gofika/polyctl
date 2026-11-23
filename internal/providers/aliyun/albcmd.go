@@ -183,6 +183,21 @@ func waitACLAvailable(ctx context.Context, a *albClient, id string) error {
 	})
 }
 
+// settleACL waits, before the first write to an ACL, until it is Available
+// when it was read in another status (a write of an earlier command still
+// configuring it), then records it as Available: each write waits after
+// itself.
+func settleACL(ctx context.Context, a *albClient, x *albACL) error {
+	if x.Status == albAvailable {
+		return nil
+	}
+	if err := waitACLAvailable(ctx, a, x.ID); err != nil {
+		return err
+	}
+	x.Status = albAvailable
+	return nil
+}
+
 // setListenerCertificate makes certID (a listener certificate id) the
 // default certificate of a listener, then waits until the listener is
 // Running again, so that the next write to it (cert deploy updates several
@@ -1815,6 +1830,9 @@ the message quotes the account's limit (500 entries by default).
 					if i == 0 {
 						// The first step of a batch writes the whole batch.
 						step.Apply = func(ctx context.Context) (platform.Change, error) {
+							if err := settleACL(ctx, sc.a, x); err != nil {
+								return platform.Change{}, err
+							}
 							list := make([]albACLEntry, 0, len(batch))
 							for _, b := range batch {
 								list = append(list, albACLEntry{Entry: b, Description: desc})
@@ -1889,6 +1907,9 @@ be Available after each.`,
 					step := platform.Step{Resource: res + "/entry/" + e, Action: platform.Deleted, Desc: e}
 					if i == 0 {
 						step.Apply = func(ctx context.Context) (platform.Change, error) {
+							if err := settleACL(ctx, sc.a, x); err != nil {
+								return platform.Change{}, err
+							}
 							if err := sc.a.removeACLEntries(ctx, x.ID, batch); err != nil {
 								return platform.Change{}, err
 							}
