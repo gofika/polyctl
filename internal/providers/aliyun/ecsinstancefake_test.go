@@ -235,7 +235,7 @@ func (f *fakeECS) describeDisks(q url.Values) (int, any) {
 	if !ok {
 		size = 20
 	}
-	return 200, map[string]any{"TotalCount": 1, "Disks": map[string]any{"Disk": []map[string]any{{"DiskId": "d-1", "Type": "system", "Size": size}}}}
+	return 200, map[string]any{"TotalCount": 1, "Disks": map[string]any{"Disk": []map[string]any{{"DiskId": "d-1", "Type": "system", "Size": size, "Category": "cloud_essd_entry"}}}}
 }
 
 // associateEipFlaky refuses the first associateFails bindings as ECS may
