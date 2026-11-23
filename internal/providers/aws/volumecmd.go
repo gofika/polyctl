@@ -37,7 +37,7 @@ const (
 func volumeCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "volume",
-		Short: "EBS volumes: list, get, create, resize, attach, detach, delete",
+		Short: "EBS volumes: list, get, create, resize",
 		Long: `EBS volumes. A volume is named by its id (vol-...) or its Name tag. An id is
 looked up in the inventory (volume), which holds the volumes of every
 enabled region of every selected account (synced once when it does not know
@@ -46,7 +46,7 @@ directly. A Name tag is looked up live in the region of each selected
 account (the profile's region, or --region); several volumes of one name
 are ambiguous (exit code 5).`,
 	}
-	cmd.AddCommand(volumeListCmd(rt), volumeGetCmd(rt), volumeCreateCmd(rt))
+	cmd.AddCommand(volumeListCmd(rt), volumeGetCmd(rt), volumeCreateCmd(rt), volumeResizeCmd(rt))
 	return cmd
 }
 

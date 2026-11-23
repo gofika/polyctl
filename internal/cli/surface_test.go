@@ -363,7 +363,7 @@ func TestPlatformTreeShapes(t *testing.T) {
 		"aws ec2 key-pair list", "aws ec2 key-pair import", "aws ec2 key-pair ensure",
 		"aws ec2 security-group list", "aws ec2 security-group get", "aws ec2 security-group create", "aws ec2 security-group delete",
 		"aws ec2 security-group ensure", "aws ec2 security-group rule add", "aws ec2 security-group rule remove",
-		"aws ec2 volume list", "aws ec2 volume get", "aws ec2 volume create",
+		"aws ec2 volume list", "aws ec2 volume get", "aws ec2 volume create", "aws ec2 volume resize",
 		"aws elbv2 load-balancer list", "aws elbv2 load-balancer get", "aws elbv2 load-balancer create", "aws elbv2 load-balancer update",
 		"aws elbv2 load-balancer delete", "aws elbv2 load-balancer ensure",
 		"aws elbv2 target-group list", "aws elbv2 target-group get", "aws elbv2 target-group create", "aws elbv2 target-group update",
