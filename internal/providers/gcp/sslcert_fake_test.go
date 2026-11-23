@@ -214,6 +214,9 @@ func (f *fakeCompute) lbWrites() []string {
 		if rest[0] == "regions" && len(rest) > 1 {
 			rest = append([]string{rest[1]}, rest[2:]...)
 		}
+		if rest[0] == "targetHttpsProxies" {
+			rest = append([]string{"global"}, rest...)
+		}
 		out = append(out, method+" "+strings.Join(rest, "/"))
 	}
 	return out
@@ -261,6 +264,9 @@ func (f *fakeCompute) handleLB(w http.ResponseWriter, r *http.Request, project s
 	var scope string
 	var tail []string
 	switch {
+	case len(rest) >= 2 && rest[0] == "targetHttpsProxies":
+		// The global setSslCertificates has no "global/" in its path.
+		scope, tail = "global", rest
 	case len(rest) >= 2 && rest[0] == "global":
 		scope, tail = "global", rest[1:]
 	case len(rest) >= 3 && rest[0] == "regions":

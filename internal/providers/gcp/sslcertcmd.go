@@ -417,7 +417,7 @@ exit code 4; a Google-managed one cannot be replaced (exit code 1).`,
 			if err != nil {
 				return err
 			}
-			plan := &platform.Plan{Steps: rp.steps}
+			plan := &platform.Plan{Steps: append(rp.steps, rp.cleanup...)}
 			rep, err := rt.RunPlan(ctx, target, plan)
 			if !rep.DryRun {
 				recordCertChanges(ctx, rt, profile, s, rep.Changes)

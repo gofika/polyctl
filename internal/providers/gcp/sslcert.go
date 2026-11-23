@@ -425,7 +425,10 @@ type replaceSpec struct {
 
 // replacePlan is what ReplaceProxyCertificate found and will do.
 type replacePlan struct {
-	steps []platform.Step
+	// steps create the certificate and switch the proxies; cleanup
+	// deletes (or keeps) the old certificates, to run last.
+	steps   []platform.Step
+	cleanup []platform.Step
 	// newName is the certificate the proxies end with ("" when nothing
 	// needs it).
 	newName string
@@ -578,11 +581,11 @@ func ReplaceProxyCertificate(ctx context.Context, spec replaceSpec) (*replacePla
 	for _, o := range oldOrder {
 		res := "ssl-certificate/" + o
 		if spec.keepOld {
-			rp.steps = append(rp.steps, platform.Step{Resource: res, Action: platform.Skipped, Desc: "old, kept (--keep-old)", Attrs: attrs("old", o)})
+			rp.cleanup = append(rp.cleanup, platform.Step{Resource: res, Action: platform.Skipped, Desc: "old, kept (--keep-old)", Attrs: attrs("old", o)})
 			continue
 		}
 		name := o
-		rp.steps = append(rp.steps, platform.Step{Resource: res, Action: platform.Deleted, Desc: "old, after switch", Attrs: attrs("old", name),
+		rp.cleanup = append(rp.cleanup, platform.Step{Resource: res, Action: platform.Deleted, Desc: "old, after switch", Attrs: attrs("old", name),
 			Apply: func(ctx context.Context) (platform.Change, error) {
 				err := deleteRetry(ctx, s, name)
 				if err == nil {

@@ -581,7 +581,7 @@ func newComputeCmd(rt *app.Runtime) *cobra.Command {
 	instance.AddCommand(newComputeListCmd(rt), computeGetCmd(rt), computeCreateCmd(rt), computeDeleteCmd(rt),
 		computeResizeCmd(rt), computeRebootCmd(rt), computeUpdateCmd(rt),
 		newComputePowerCmd(rt, "start"), newComputePowerCmd(rt, "stop"))
-	cmd.AddCommand(instance, newFirewallCmd(rt), newNetworkCmd(rt), newSubnetCmd(rt), newSSLCertificateCmd(rt))
+	cmd.AddCommand(instance, newFirewallCmd(rt), newNetworkCmd(rt), newSubnetCmd(rt), newSSLCertificateCmd(rt), newLoadBalancerCmd(rt))
 	return cmd
 }
 
