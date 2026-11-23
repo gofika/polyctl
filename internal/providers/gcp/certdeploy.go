@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"slices"
 	"strings"
@@ -172,6 +173,10 @@ func (d lbDeployer) Discover(ctx context.Context, acct *platform.DeployAccount, 
 			f := factsOf(sc)
 			link := consoleCertURL(sc.Name, c.project, s.region)
 			if sc.Type == certManaged {
+				attrs := maps.Clone(attrs)
+				if root, err := platform.RegisteredDomain(f.Domain); err == nil {
+					attrs["domain"] = root
+				}
 				if !f.Expire.IsZero() && !now.Before(f.Expire) {
 					o.Warnf("managed certificate %s expired %d days ago; check its status (domain authorization, DNS pointing at the load balancer): %s",
 						sc.Name, -daysLeft(f.Expire, now), link)

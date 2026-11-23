@@ -84,6 +84,9 @@ func (d acmDeployer) Discover(ctx context.Context, acct *platform.DeployAccount,
 			name := region + "/" + s.ID
 			res := platform.DeployResource(acmDeployerID, acct.Profile, name)
 			attrs := map[string]string{"deployer": acmDeployerID, "platform": string(platform.AWS), "profile": acct.Profile, "region": region}
+			if root, err := platform.RegisteredDomain(platform.CertDomain(append([]string{s.Domain}, s.Names...), "")); err == nil {
+				attrs["domain"] = root
+			}
 			switch s.Type {
 			case acmImported:
 			case acmAmazonIssued:
