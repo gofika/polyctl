@@ -353,6 +353,9 @@ func TestPlatformTreeShapes(t *testing.T) {
 		"aws whoami", "gcp whoami", "aliyun whoami", "cloudflare whoami", "namecom whoami", "godaddy whoami",
 		// The Cloudflare tree under its platform id and its alias.
 		"cloudflare dns list", "cf dns list", "cf whoami",
+		// Zones: lifecycle and settings.
+		"cloudflare zone create", "cloudflare zone ensure", "cloudflare zone delete",
+		"cloudflare zone setting list", "cloudflare zone setting get", "cloudflare zone setting set",
 		// R2: buckets and their custom domains.
 		"cloudflare r2 bucket list", "cloudflare r2 domain list", "cloudflare r2 domain get", "cloudflare r2 domain attach",
 		"cloudflare r2 domain update", "cloudflare r2 domain detach", "cloudflare r2 domain ensure",

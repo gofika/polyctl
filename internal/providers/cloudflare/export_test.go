@@ -76,3 +76,12 @@ func UseBaseURL(t *testing.T, url string) {
 	apiBaseURL = url
 	t.Cleanup(func() { apiBaseURL = old })
 }
+
+// SetFoundationPollInterval sets the pause between the reads of a zone's
+// nameservers after a Foundation DNS switch for the duration of the test.
+func SetFoundationPollInterval(t *testing.T, d time.Duration) {
+	t.Helper()
+	old := foundationPollInterval
+	foundationPollInterval = d
+	t.Cleanup(func() { foundationPollInterval = old })
+}

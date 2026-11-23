@@ -23,8 +23,9 @@ func Command(rt *app.Runtime) *cobra.Command {
 		Use:     "cloudflare",
 		Aliases: []string{"cf"},
 		Short:   "Cloudflare native commands (alias: cf)",
-		Long: `Cloudflare-specific operations: zones, DNS records, cache purge, development
-mode, SSL mode, R2 custom domains, accounts and the identity check.
+		Long: `Cloudflare-specific operations: zones (create, ensure, delete, settings),
+DNS records, cache purge, development mode, SSL mode, R2 custom domains,
+accounts and the identity check.
 
 <zone> arguments accept a zone name (example.com) or a zone id. Names are
 resolved through the local inventory first, then remotely.
@@ -217,7 +218,7 @@ func sortRecords(recs []platform.Record) {
 // --- zone ------------------------------------------------------------------
 
 func newZoneCmd(rt *app.Runtime) *cobra.Command {
-	cmd := &cobra.Command{Use: "zone", Short: "Zones"}
+	cmd := &cobra.Command{Use: "zone", Short: "Zones: list, get, create, ensure, delete and settings"}
 	cmd.AddCommand(
 		&cobra.Command{
 			Use:   "list",
@@ -246,6 +247,7 @@ func newZoneCmd(rt *app.Runtime) *cobra.Command {
 				return rt.Render(zoneResult{Profile: profile, Zone: z}, func() output.Grid { return zoneKV(z) })
 			},
 		},
+		newZoneCreateCmd(rt), newZoneEnsureCmd(rt), newZoneDeleteCmd(rt), newZoneSettingCmd(rt),
 	)
 	return cmd
 }
