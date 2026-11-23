@@ -390,6 +390,27 @@ func TestEnsureAccountQuestions(t *testing.T) {
 	}
 }
 
+// Declining the terms when the CA forgot the account reports no failed row.
+func TestEnsureDeclinedReRegistrationHasNoFailedRow(t *testing.T) {
+	fx := newEnsureFixture(t)
+	if _, err := Ensure(context.Background(), fx.env, fx.opts()); err != nil {
+		t.Fatal(err)
+	}
+	fx.iss.accounts = map[string]string{}
+	fx.env.ConfirmTOS = func(ctx context.Context, dir string) (bool, error) { return false, nil }
+	o := fx.opts()
+	o.Force, o.AgreeTOS = true, false
+	res, err := Ensure(context.Background(), fx.env, o)
+	if !errors.Is(err, platform.ErrNothingToDo) {
+		t.Fatalf("err = %v", err)
+	}
+	for _, c := range res.Changes {
+		if c.Action == platform.Failed {
+			t.Fatalf("changes = %+v", res.Changes)
+		}
+	}
+}
+
 // A key left without account.json does not swallow the address asked for:
 // the account is registered under that address.
 func TestEnsureAskedEmailFillsKeyWithoutAddress(t *testing.T) {

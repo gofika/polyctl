@@ -355,6 +355,10 @@ func Ensure(ctx context.Context, env *Env, o EnsureOptions) (*Result, error) {
 		},
 	})
 	changes, err := plan.Run(ctx, false)
+	if errors.Is(err, ErrDeclined) {
+		// A "no" to the terms of service is not a failed step.
+		changes = slices.DeleteFunc(changes, func(c platform.Change) bool { return c.Action == platform.Failed })
+	}
 	res.Changes = changes
 	return res, err
 }
