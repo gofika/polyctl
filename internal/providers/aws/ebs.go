@@ -168,6 +168,7 @@ type snapshotInfo struct {
 	Description string `json:"description" yaml:"description"`
 	Name        string `json:"name" yaml:"name"`
 	Encrypted   bool   `json:"encrypted" yaml:"encrypted"`
+	Profile     string `json:"profile" yaml:"profile"`
 	Region      string `json:"region" yaml:"region"`
 }
 
