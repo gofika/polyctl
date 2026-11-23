@@ -131,6 +131,10 @@ func unreachableErr(scopes []string) error {
 	return e
 }
 
+// lbLabel is the label of the forwarding rules load-balancer ensure
+// creates, carrying the load balancer name.
+const lbLabel = "polyctl-lb"
+
 // ForwardingRule is the inventory form of a forwarding rule: the address
 // of a load balancer. Region is empty for a global rule.
 type ForwardingRule struct {
@@ -147,6 +151,11 @@ type ForwardingRule struct {
 	Network             string `json:"network,omitempty" yaml:"network,omitempty"`
 	Subnetwork          string `json:"subnetwork,omitempty" yaml:"subnetwork,omitempty"`
 	SelfLink            string `json:"self_link,omitempty" yaml:"self_link,omitempty"`
+	// LoadBalancer is the name of the load balancer the rule belongs to:
+	// its polyctl-lb label, else the URL map of its target proxy, else the
+	// rule's own name (set by the sync; empty in rows of older versions).
+	LoadBalancer string            `json:"load_balancer,omitempty" yaml:"load_balancer,omitempty"`
+	Labels       map[string]string `json:"labels,omitempty" yaml:"labels,omitempty"`
 }
 
 // fallbackID is the inventory id of a resource: its numeric id, else its
@@ -170,7 +179,7 @@ func forwardingRuleFrom(fr *compute.ForwardingRule) ForwardingRule {
 	return ForwardingRule{ID: strconv.FormatUint(fr.Id, 10), Name: fr.Name, Region: lastSegment(fr.Region), IPAddress: fr.IPAddress,
 		IPProtocol: fr.IPProtocol, PortRange: fr.PortRange, LoadBalancingScheme: fr.LoadBalancingScheme, NetworkTier: fr.NetworkTier,
 		Target: lastSegment(fr.Target), BackendService: lastSegment(fr.BackendService), Network: lastSegment(fr.Network),
-		Subnetwork: lastSegment(fr.Subnetwork), SelfLink: fr.SelfLink}
+		Subnetwork: lastSegment(fr.Subnetwork), SelfLink: fr.SelfLink, Labels: fr.Labels, LoadBalancer: fr.Labels[lbLabel]}
 }
 
 func (f ForwardingRule) kind() platform.IPKind {
@@ -187,13 +196,52 @@ func (f ForwardingRule) resource() platform.Resource {
 	return platform.Resource{Type: platform.ResLoadBalancer, ID: id, Name: f.Name, ParentID: f.Region, Data: f, IPs: s.Refs()}
 }
 
+// proxyURLMaps maps the target HTTP and HTTPS proxies of every scope
+// (resourceKey of their self link) to the name of their URL map. It is
+// best effort: a list that fails leaves its proxies out.
+func (c *client) proxyURLMaps(ctx context.Context) map[string]string {
+	out := map[string]string{}
+	_ = c.compute.TargetHttpProxies.AggregatedList(c.project).Pages(ctx, func(l *compute.TargetHttpProxyAggregatedList) error {
+		for _, scoped := range l.Items {
+			for _, p := range scoped.TargetHttpProxies {
+				out[resourceKey(p.SelfLink)] = lastSegment(p.UrlMap)
+			}
+		}
+		return nil
+	})
+	_ = c.compute.TargetHttpsProxies.AggregatedList(c.project).Pages(ctx, func(l *compute.TargetHttpsProxyAggregatedList) error {
+		for _, scoped := range l.Items {
+			for _, p := range scoped.TargetHttpsProxies {
+				out[resourceKey(p.SelfLink)] = lastSegment(p.UrlMap)
+			}
+		}
+		return nil
+	})
+	return out
+}
+
+// lbNameOf is the load balancer a forwarding rule belongs to: its
+// polyctl-lb label, else the URL map of its target proxy (load balancers
+// built before polyctl, whatever their naming), else its own name.
+func lbNameOf(fr *compute.ForwardingRule, urlMaps map[string]string) string {
+	if v := fr.Labels[lbLabel]; v != "" {
+		return v
+	}
+	if m := urlMaps[resourceKey(fr.Target)]; m != "" && fr.Target != "" {
+		return m
+	}
+	return fr.Name
+}
+
 // syncForwardingRules lists every forwarding rule of the project. The
-// aggregated list already holds the global rules, so it is the only call;
-// rules are still deduplicated by self link.
+// aggregated list already holds the global rules, so it is the only call
+// for the rules; rules are still deduplicated by self link. Each row
+// carries the name of its load balancer (lbNameOf).
 func (c *client) syncForwardingRules(ctx context.Context) ([]platform.Resource, error) {
 	var out []platform.Resource
 	var unreachable []string
 	seen := map[string]bool{}
+	var urlMaps map[string]string
 	err := c.compute.ForwardingRules.AggregatedList(c.project).Pages(ctx, func(resp *compute.ForwardingRuleAggregatedList) error {
 		for _, scoped := range resp.Items {
 			for _, fr := range scoped.ForwardingRules {
@@ -205,7 +253,14 @@ func (c *client) syncForwardingRules(ctx context.Context) ([]platform.Resource, 
 					continue
 				}
 				seen[key] = true
-				out = append(out, forwardingRuleFrom(fr).resource())
+				v := forwardingRuleFrom(fr)
+				if v.LoadBalancer == "" {
+					if urlMaps == nil && fr.Target != "" {
+						urlMaps = c.proxyURLMaps(ctx)
+					}
+					v.LoadBalancer = lbNameOf(fr, urlMaps)
+				}
+				out = append(out, v.resource())
 			}
 		}
 		unreachable = append(unreachable, resp.Unreachables...)
