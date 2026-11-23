@@ -23,14 +23,6 @@ import (
 // HTTP proxy only is upgraded with an HTTPS proxy and a :443 forwarding
 // rule on the IP of its :80 rule.
 
-func newLoadBalancerCmd(rt *app.Runtime) *cobra.Command {
-	cmd := &cobra.Command{Use: "load-balancer", Short: "Load balancers (external Application Load Balancers)"}
-	certCmd := &cobra.Command{Use: "cert", Short: "Certificates of the target HTTPS proxies of a load balancer"}
-	certCmd.AddCommand(lbCertSetCmd(rt))
-	cmd.AddCommand(certCmd)
-	return cmd
-}
-
 // ensureCert gets the certificate of domain from the local store,
 // issuing or renewing it when it has days days left or fewer (never in a
 // dry run). Tests replace it.

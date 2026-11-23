@@ -225,6 +225,9 @@ func (f *fakeCompute) lbWrites() []string {
 // handleLB serves the load balancer resources; false when the path is
 // not one of them.
 func (f *fakeCompute) handleLB(w http.ResponseWriter, r *http.Request, project string, rest []string) bool {
+	if f.handleLBParts(w, r, project, rest) {
+		return true
+	}
 	if len(rest) == 2 && rest[0] == "aggregated" {
 		switch rest[1] {
 		case "sslCertificates":

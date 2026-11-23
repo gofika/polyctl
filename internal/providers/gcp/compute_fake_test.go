@@ -78,6 +78,8 @@ type fakeCompute struct {
 	seq   int
 	// lbState holds the load balancer resources (sslcert_fake_test.go).
 	lbState *lbFake
+	// lbParts holds the other load balancer components (lb_fake_test.go).
+	lbParts *lbParts
 }
 
 func newFakeCompute(t *testing.T) *fakeCompute {

@@ -382,6 +382,7 @@ func TestPlatformTreeShapes(t *testing.T) {
 		"gcp compute firewall delete", "gcp compute firewall ensure",
 		"gcp compute ssl-certificate list", "gcp compute ssl-certificate create", "gcp compute ssl-certificate update",
 		"gcp compute ssl-certificate delete", "gcp compute load-balancer cert set",
+		"gcp compute load-balancer ensure", "gcp compute load-balancer list", "gcp compute load-balancer get", "gcp compute load-balancer delete",
 		"aliyun ecs instance list", "aliyun ecs instance start", "aliyun ecs instance stop",
 		"aliyun ecs instance get", "aliyun ecs instance create", "aliyun ecs instance delete", "aliyun ecs instance reboot",
 		"aliyun ecs instance resize", "aliyun ecs instance ensure",
