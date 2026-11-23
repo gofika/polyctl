@@ -228,6 +228,36 @@ func allowedLabel(list []*compute.FirewallAllowed) string {
 	return strings.Join(parts, " ")
 }
 
+// allowedKey is a canonical form of allowed entries for comparison: the
+// protocols lower-cased and sorted, the ports of each normalized, so the
+// order Compute Engine returns them in does not matter.
+func allowedKey(list []*compute.FirewallAllowed) string {
+	ports := map[string][]string{}
+	every := map[string]bool{}
+	for _, a := range list {
+		p := strings.ToLower(a.IPProtocol)
+		if len(a.Ports) == 0 {
+			every[p] = true
+		}
+		ports[p] = append(ports[p], a.Ports...)
+	}
+	var parts []string
+	for p, ps := range ports {
+		switch rs, err := platform.ParsePortSpec(strings.Join(ps, ",")); {
+		case every[p]:
+		case err == nil:
+			p += ":" + strings.Join(portStrings(rs), ",")
+		default:
+			ps = slices.Clone(ps)
+			sort.Strings(ps)
+			p += ":" + strings.Join(slices.Compact(ps), ",")
+		}
+		parts = append(parts, p)
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, " ")
+}
+
 // deniedLabel renders denied entries like allowedLabel.
 func deniedLabel(list []*compute.FirewallDenied) string {
 	var conv []*compute.FirewallAllowed

@@ -301,3 +301,18 @@ func TestFirewallNoWaitOnlySubmits(t *testing.T) {
 		t.Errorf("overlapping write = %v", err)
 	}
 }
+
+func TestFirewallUpdateAllowIgnoresOrder(t *testing.T) {
+	h := newGCPHarness(t, app.Flags{}, nil)
+	h.gce.addFirewall(&compute.Firewall{Name: "dns", Network: "default", SourceRanges: []string{"10.0.0.0/8"},
+		Allowed: []*compute.FirewallAllowed{{IPProtocol: "tcp", Ports: []string{"53", "22"}}, {IPProtocol: "UDP", Ports: []string{"53"}}}})
+	if err := h.run("compute", "firewall", "update", "dns", "--allow", "udp:53", "--allow", "tcp:ssh,53"); err != nil {
+		t.Fatal(err)
+	}
+	if got := rows(h.report()); len(got) != 1 || !strings.HasPrefix(got[0], "firewall/dns unchanged") || len(h.gce.firewallWrites()) != 0 {
+		t.Errorf("same allowed in another order = %v %v", got, h.gce.firewallWrites())
+	}
+	if a, b := allowedKey([]*compute.FirewallAllowed{{IPProtocol: "tcp"}, {IPProtocol: "tcp", Ports: []string{"80"}}}), "tcp"; a != b {
+		t.Errorf("allowedKey every port = %q", a)
+	}
+}

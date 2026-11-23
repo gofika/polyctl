@@ -443,7 +443,7 @@ the change was accepted.`,
 			}
 			patch := &compute.Firewall{}
 			var details []string
-			if allowed != nil && allowedLabel(allowed) != allowedLabel(fw.Allowed) {
+			if allowed != nil && allowedKey(allowed) != allowedKey(fw.Allowed) {
 				patch.Allowed = allowed
 				details = append(details, fmt.Sprintf("allow %s -> %s", allowedLabel(fw.Allowed), allowedLabel(allowed)))
 			}
