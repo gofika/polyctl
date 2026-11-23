@@ -70,7 +70,7 @@ func (*provider) RecordTypes() []string {
 var _ platform.RecordTyper = (*provider)(nil)
 
 func (*provider) ResourceTypes() []platform.ResourceType {
-	return []platform.ResourceType{platform.ResZone, platform.ResDNSRecord, platform.ResInstance}
+	return []platform.ResourceType{platform.ResZone, platform.ResDNSRecord, platform.ResInstance, platform.ResLoadBalancer, platform.ResEIP}
 }
 
 // Open builds an authenticated client for the profile.

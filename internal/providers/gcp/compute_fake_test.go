@@ -54,6 +54,9 @@ type fakeCompute struct {
 	subnets      map[string][]*compute.Subnetwork
 	projectMeta  map[string]*compute.Metadata
 	firewalls    map[string]*compute.Firewall // project/name
+	// forwardingRules are listed by the aggregated list, per project, as
+	// given (global rules have no region).
+	forwardingRules map[string][]*compute.ForwardingRule
 	// busy maps the operation of a firewall write that was not waited for
 	// yet to the rule it writes (writes to a busy rule are not ready).
 	busy  map[string]string
@@ -299,6 +302,38 @@ func (f *fakeCompute) handle(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		writeJSONStatus(w, 200, &compute.InstanceAggregatedList{Items: items})
+	case len(rest) == 2 && rest[0] == "aggregated" && rest[1] == "forwardingRules":
+		items := map[string]compute.ForwardingRulesScopedList{}
+		for _, fr := range f.forwardingRules[project] {
+			scope := "global"
+			if fr.Region != "" {
+				scope = "regions/" + lastSegment(fr.Region)
+			}
+			l := items[scope]
+			l.ForwardingRules = append(l.ForwardingRules, fr)
+			items[scope] = l
+		}
+		items["regions/asia-east2"] = compute.ForwardingRulesScopedList{Warning: &compute.ForwardingRulesScopedListWarning{Code: "NO_RESULTS_ON_PAGE"}}
+		writeJSONStatus(w, 200, &compute.ForwardingRuleAggregatedList{Items: items})
+	case len(rest) == 2 && rest[0] == "aggregated" && rest[1] == "addresses":
+		items := map[string]compute.AddressesScopedList{}
+		for key, a := range f.addresses {
+			p, region, _ := strings.Cut(key, "/")
+			region, _, _ = strings.Cut(region, "/")
+			if p != project {
+				continue
+			}
+			cp := *a
+			f.addressStatus(project, &cp)
+			scope := "regions/" + region
+			if region == "global" {
+				scope = "global"
+			}
+			l := items[scope]
+			l.Addresses = append(l.Addresses, &cp)
+			items[scope] = l
+		}
+		writeJSONStatus(w, 200, &compute.AddressAggregatedList{Items: items})
 	case len(rest) >= 2 && rest[0] == "global" && rest[1] == "firewalls":
 		f.handleFirewalls(w, r, project, rest[2:])
 	case len(rest) >= 3 && rest[0] == "global" && rest[1] == "operations":

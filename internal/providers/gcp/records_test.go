@@ -208,7 +208,8 @@ func TestInstanceFromAPI(t *testing.T) {
 	}
 	got := instanceFromAPI(in)
 	want := Instance{Name: "web-1", ID: "42", Zone: "us-central1-a", MachineType: "e2-small", Status: "RUNNING",
-		InternalIP: "10.0.0.2", ExternalIP: "34.1.2.3", CreationTimestamp: "2026-01-01T00:00:00Z", Labels: map[string]string{"role": "web"}}
+		InternalIP: "10.0.0.2", ExternalIP: "34.1.2.3", CreationTimestamp: "2026-01-01T00:00:00Z", Labels: map[string]string{"role": "web"},
+		Interfaces: []NetIface{{InternalIPs: []string{"10.0.0.2"}, ExternalIPs: []string{"34.1.2.3"}}}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %+v\nwant %+v", got, want)
 	}

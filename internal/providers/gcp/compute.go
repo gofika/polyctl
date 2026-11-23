@@ -23,6 +23,9 @@ type Instance struct {
 	Tags              []string          `json:"tags,omitempty" yaml:"tags,omitempty"`
 	CreationTimestamp string            `json:"creation_timestamp,omitempty" yaml:"creation_timestamp,omitempty"`
 	Labels            map[string]string `json:"labels,omitempty" yaml:"labels,omitempty"`
+	// Interfaces are every network interface with all its addresses
+	// (polyctl find).
+	Interfaces []NetIface `json:"interfaces,omitempty" yaml:"interfaces,omitempty"`
 }
 
 // lastSegment returns the final path element of a resource URL
@@ -57,13 +60,15 @@ func instanceFromAPI(in *compute.Instance) Instance {
 				out.ExternalIP = ac.NatIP
 			}
 		}
+		out.Interfaces = append(out.Interfaces, netIfaceFrom(ni))
 	}
 	return out
 }
 
-// instanceResource wraps an Instance for the inventory.
+// instanceResource wraps an Instance for the inventory, with every address
+// of every interface for the IP index.
 func instanceResource(i Instance) platform.Resource {
-	return platform.Resource{Type: platform.ResInstance, ID: i.ID, Name: i.Name, Data: i}
+	return platform.Resource{Type: platform.ResInstance, ID: i.ID, Name: i.Name, Data: i, IPs: i.ipSet().Refs()}
 }
 
 // ListInstances lists every instance of the project across all zones.
@@ -81,6 +86,26 @@ func (c *client) ListInstances(ctx context.Context) ([]platform.Resource, error)
 		return nil, mapErr(err)
 	}
 	return out, nil
+}
+
+// syncInstances lists every instance of the project, for the inventory.
+// Zones the API reports unreachable are region failures.
+func (c *client) syncInstances(ctx context.Context) ([]platform.Resource, error) {
+	var out []platform.Resource
+	var unreachable []string
+	err := c.compute.Instances.AggregatedList(c.project).Pages(ctx, func(resp *compute.InstanceAggregatedList) error {
+		for _, scoped := range resp.Items {
+			for _, in := range scoped.Instances {
+				out = append(out, instanceResource(instanceFromAPI(in)))
+			}
+		}
+		unreachable = append(unreachable, resp.Unreachables...)
+		return nil
+	})
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return out, unreachableErr(unreachable)
 }
 
 // OperationResult summarises a zonal operation for output.

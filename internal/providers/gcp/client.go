@@ -152,7 +152,11 @@ func (c *client) Sync(ctx context.Context, rt platform.ResourceType) ([]platform
 		}
 		return out, nil
 	case platform.ResInstance:
-		return c.ListInstances(ctx)
+		return c.syncInstances(ctx)
+	case platform.ResLoadBalancer:
+		return c.syncForwardingRules(ctx)
+	case platform.ResEIP:
+		return c.syncAddresses(ctx)
 	}
 	return nil, fmt.Errorf("%s: %w", rt, platform.ErrNotSupported)
 }
