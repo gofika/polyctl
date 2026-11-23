@@ -3,7 +3,6 @@ package aliyun
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"strings"
 
@@ -22,18 +21,30 @@ var errNoALBEndpoint = errors.New("ALB is not available in this region")
 
 // albRef is a load balancer as ListLoadBalancers lists it.
 type albRef struct {
-	ID   string
-	Name string
+	ID      string
+	Name    string
+	Status  string
+	VpcID   string
+	DNSName string
 }
 
 // albListener is a listener as ListListeners lists it (without its
-// certificates: the list does not carry them).
+// certificates: the list does not carry them; GetListenerAttribute adds
+// the default one).
 type albListener struct {
-	ID             string
-	LoadBalancerID string
-	Protocol       string
-	Port           int
-	Status         string
+	ID             string `json:"id" yaml:"id"`
+	LoadBalancerID string `json:"load_balancer_id" yaml:"load_balancer_id"`
+	Protocol       string `json:"protocol" yaml:"protocol"`
+	Port           int    `json:"port" yaml:"port"`
+	Status         string `json:"status" yaml:"status"`
+	// DefaultAction is the type of the first default action (ForwardGroup).
+	DefaultAction string `json:"default_action,omitempty" yaml:"default_action,omitempty"`
+	// ServerGroups are the server groups the default actions forward to.
+	ServerGroups []string `json:"server_groups" yaml:"server_groups"`
+	// Certificates are the listener certificate ids, the default first
+	// (read by GetListenerAttribute only).
+	Certificates []string `json:"certificates,omitempty" yaml:"certificates,omitempty"`
+	Region       string   `json:"region" yaml:"region"`
 }
 
 // albClient is the ALB client of a region; requests go to the region's
@@ -58,63 +69,12 @@ func (a *albClient) route(r requests.AcsRequest) { a.c.route(r, albEndpoint(a.re
 // listLoadBalancers lists every load balancer of the region, page by page
 // (NextToken empty or repeated ends the list).
 func (a *albClient) listLoadBalancers(ctx context.Context) ([]albRef, error) {
-	var out []albRef
-	token := ""
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		req := alb.CreateListLoadBalancersRequest()
-		a.route(req)
-		req.MaxResults = requests.NewInteger(albPageSize)
-		req.NextToken = token
-		resp, err := a.cl.ListLoadBalancers(req)
-		if err != nil {
-			if isNoSuchHost(err) {
-				return nil, fmt.Errorf("alb ListLoadBalancers %s: %w: %v", a.region, errNoALBEndpoint, err)
-			}
-			return nil, wrapErr("alb ListLoadBalancers "+a.region, err)
-		}
-		for _, lb := range resp.LoadBalancers {
-			out = append(out, albRef{ID: lb.LoadBalancerId, Name: lb.LoadBalancerName})
-		}
-		if resp.NextToken == "" || resp.NextToken == token || len(resp.LoadBalancers) == 0 {
-			break
-		}
-		token = resp.NextToken
-	}
-	return out, nil
+	return a.listLBs(ctx, nil)
 }
 
 // listListeners lists the listeners of a load balancer, page by page.
 func (a *albClient) listListeners(ctx context.Context, lbID string) ([]albListener, error) {
-	var out []albListener
-	token := ""
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		req := alb.CreateListListenersRequest()
-		a.route(req)
-		req.LoadBalancerIds = &[]string{lbID}
-		req.MaxResults = requests.NewInteger(albListenerPageSize)
-		req.NextToken = token
-		resp, err := a.cl.ListListeners(req)
-		if err != nil {
-			return nil, wrapErr("alb ListListeners "+lbID, err)
-		}
-		for _, l := range resp.Listeners {
-			if l.LoadBalancerId != "" && l.LoadBalancerId != lbID {
-				continue
-			}
-			out = append(out, albListener{ID: l.ListenerId, LoadBalancerID: lbID, Protocol: l.ListenerProtocol, Port: l.ListenerPort, Status: l.ListenerStatus})
-		}
-		if resp.NextToken == "" || resp.NextToken == token || len(resp.Listeners) == 0 {
-			break
-		}
-		token = resp.NextToken
-	}
-	return out, nil
+	return a.listListenersOf(ctx, lbID, "")
 }
 
 // listenerCertificates reads the certificate ids of a listener, as the API
