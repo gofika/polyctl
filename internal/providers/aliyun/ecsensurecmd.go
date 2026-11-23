@@ -45,7 +45,8 @@ profile's), Running, with an EIP. Running it again changes nothing.
 - An instance of the name (compared case-sensitively; several are exit code
   5) is used as it is: nothing it depends on is checked or repaired, and a
   --type or --disk that differs is reported skipped ("use resize"), never
-  changed. A Stopped instance is reported skipped (start it); one that is
+  changed (a --type size is compared with the vCPUs and memory of the
+  instance). A Stopped instance is reported skipped (start it); one that is
   Pending or Starting is waited for.
 - Otherwise everything missing is created, in this order: the key pair (an
   existing one first: --key-pair, or the key pair holding --ssh-key /
@@ -61,7 +62,8 @@ profile's), Running, with an EIP. Running it again changes nothing.
   not ensured). Nothing created is rolled back when a later step fails:
   running ensure again goes on from there.
 - The instance is --type (defaults.aliyun.ecs_instance_type, else
-  ecs.u1-c1m1.large), --image or the newest image of --os, a --disk GiB
+  ecs.u1-c1m1.large; a type id, or a size <cores>H<memory>G such as 2H4G,
+  see Instance sizes below), --image or the newest image of --os, a --disk GiB
   --disk-category system disk, pay as you go, without a public address of
   its own. It is waited for until Running (every 2 seconds, --timeout 10m);
   --no-wait returns at once and skips the EIP.
@@ -69,7 +71,8 @@ profile's), Running, with an EIP. Running it again changes nothing.
   else a new one (see aliyun eip address), unless the instance holds one.
 - Another account or region of the inventory holding an instance of the
   name is a note, not an error.
-- -o json adds "result": {"instance_id", "public_ip"}.`,
+- -o json adds "result": {"instance_id", "public_ip"}.
+` + instanceSizeHelp,
 		Example: `  polyctl aliyun ecs instance ensure site-a --type ecs.u1-c1m1.large --disk 40 \
     --ssh-key-file ~/.ssh/id_ed25519.pub --key-pair ops --region cn-hongkong
   polyctl aliyun ecs instance ensure site-a --ssh-key-file ~/.ssh/id_ed25519.pub --dry-run`,
@@ -115,6 +118,9 @@ profile's), Running, with an EIP. Running it again changes nothing.
 			if f.typ == "" {
 				f.typ = defaultInstanceType
 			}
+			if err := f.parseSize(); err != nil {
+				return err
+			}
 			noteNamesakes(ctx, rt, s, name)
 
 			found, err := s.c.findInstances(ctx, s.region, name)
@@ -140,7 +146,7 @@ profile's), Running, with an EIP. Running it again changes nothing.
 			return e.run(ctx)
 		},
 	}
-	f.add(cmd, true, true, "instance type (default defaults.aliyun.ecs_instance_type, else "+defaultInstanceType+")", "security group, name (default naming.aliyun_ecs_security_group, sg-common) or id")
+	f.add(cmd, true, true, "instance type id, or a size <cores>H<memory>G such as 2H4G resolved to the cheapest x86 type in stock (default defaults.aliyun.ecs_instance_type, else "+defaultInstanceType+")", "security group, name (default naming.aliyun_ecs_security_group, sg-common) or id")
 	cmd.Flags().StringArrayVar(&specs, "rule", nil, "ingress rule of the security group <protocol>:<port|from-to|alias|all>:<source> (repeatable; default defaults.aliyun.ecs_security_group_rules, else icmp, 80 and 443 from anywhere)")
 	return cmd
 }
@@ -199,7 +205,15 @@ func (e *instanceEnsure) planExisting(ctx context.Context, cmd *cobra.Command, i
 	res := "instance/" + e.name
 	step := platform.Step{Resource: res, Action: platform.Unchanged, ID: in.ID, Desc: fmt.Sprintf("%s %s %s", in.ID, in.Type, in.Status)}
 	var differs []string
-	if cmd.Flags().Changed("type") && in.Type != e.f.typ {
+	switch {
+	case !cmd.Flags().Changed("type"):
+	case e.f.size != nil:
+		// A size is compared with the size of the instance, whatever its
+		// type: nothing is resolved for an existing instance.
+		if !e.f.size.Matches(in.CPU, in.MemoryMB) {
+			differs = append(differs, fmt.Sprintf("size differs: current %s (%s), want %s; use resize", in.Type, instanceSize(in), e.f.size))
+		}
+	case in.Type != e.f.typ:
 		differs = append(differs, fmt.Sprintf("type differs: current %s, want %s; use resize", in.Type, e.f.typ))
 	}
 	if cmd.Flags().Changed("disk") {
@@ -276,6 +290,11 @@ func (e *instanceEnsure) planNew(ctx context.Context, cmd *cobra.Command, host s
 	}
 	e.plan.Add(kpStep)
 
+	image, err := e.f.resolveImage(ctx, s)
+	if err != nil {
+		return err
+	}
+
 	// The network: the VPC and its vSwitches, or --vswitch.
 	var vpcID, vswID string
 	vpcPending := false
@@ -284,6 +303,11 @@ func (e *instanceEnsure) planNew(ctx context.Context, cmd *cobra.Command, host s
 		v, err := resolveVSwitch(ctx, s, e.f.vswitch, "")
 		if err != nil {
 			return err
+		}
+		if e.f.size != nil {
+			if err := e.f.resolveSize(ctx, rt, cmd, s, image, []string{v.Zone}); err != nil {
+				return err
+			}
 		}
 		vpcID, vswID = v.VPC, v.ID
 		e.plan.Add(platform.Step{Resource: "vswitch/" + orID(v.Name, v.ID), Action: platform.Unchanged, ID: v.ID, Desc: v.ID + " " + v.Zone + " " + v.CIDR})
@@ -304,13 +328,30 @@ func (e *instanceEnsure) planNew(ctx context.Context, cmd *cobra.Command, host s
 			}
 			wants = append(wants, vswWant{Name: n, Zone: z})
 		}
+		// The instance goes in the vSwitch of zone b, or with a --type size
+		// in that of the zone the size resolved to.
+		place := wants[0]
+		if e.f.size != nil {
+			var zones []string
+			for _, w := range wants {
+				zones = append(zones, w.Zone.ID)
+			}
+			if err := e.f.resolveSize(ctx, rt, cmd, s, image, zones); err != nil {
+				return err
+			}
+			for _, w := range wants {
+				if w.Zone.ID == e.f.choice.Zone {
+					place = w
+				}
+			}
+		}
 		vpcs, err := s.c.findVPCs(ctx, s.region, vpcName)
 		if err != nil {
 			return err
 		}
 		vp := vswPlan{rt: rt, s: s, vpcID: func() string { return vpcID }, mask: defaultVSwitchMask, wait: true,
 			created: func(name, id string) {
-				if name == wants[0].Name {
+				if name == place.Name {
 					vswID, vswFresh = id, true
 				}
 			}}
@@ -336,7 +377,7 @@ func (e *instanceEnsure) planNew(ctx context.Context, cmd *cobra.Command, host s
 			if vp.existing, err = s.c.listVSwitches(ctx, s.region, v.ID, "", ""); err != nil {
 				return err
 			}
-			if have := pickVSwitch(vp.existing, wants[0]); have != nil {
+			if have := pickVSwitch(vp.existing, place); have != nil {
 				vswID = have.ID
 			}
 		default:
@@ -417,10 +458,6 @@ func (e *instanceEnsure) planNew(ctx context.Context, cmd *cobra.Command, host s
 	addRuleSteps(&e.plan, rt, s, sgRes+"/rule", func() string { return groupID }, func() bool { return groupCreated }, missing, present, sgPriorityDefault, "")
 
 	// The instance.
-	image, err := e.f.resolveImage(ctx, s)
-	if err != nil {
-		return err
-	}
 	e.plan.Add(runStep(rt, s, e.name, host, e.f, image, func() string { return groupID }, func() string { return vswID },
 		func() string { return kp.Name }, func() bool { return groupCreated || vswFresh }, &e.instID))
 	if e.wait {

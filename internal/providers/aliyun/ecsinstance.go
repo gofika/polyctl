@@ -253,10 +253,17 @@ func (c *client) modifyInstanceSpec(ctx context.Context, region, id, typ string)
 // systemDiskSize returns the size in GiB of an instance's system disk, 0
 // when it has none listed.
 func (c *client) systemDiskSize(ctx context.Context, region, id string) (int, error) {
+	size, _, err := c.systemDisk(ctx, region, id)
+	return size, err
+}
+
+// systemDisk returns the size in GiB and the category of an instance's
+// system disk (0 and "" when it has none listed).
+func (c *client) systemDisk(ctx context.Context, region, id string) (int, string, error) {
 	region = c.regionOr(region)
 	cl, err := c.ecsClient(ctx, region)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	req := ecs.CreateDescribeDisksRequest()
 	c.route(req, endpointECS)
@@ -266,14 +273,14 @@ func (c *client) systemDiskSize(ctx context.Context, region, id string) (int, er
 	req.PageSize = requests.NewInteger(describeDisksPageSize)
 	resp, err := cl.DescribeDisks(req)
 	if err != nil {
-		return 0, wrapErr("ecs DescribeDisks "+id, err)
+		return 0, "", wrapErr("ecs DescribeDisks "+id, err)
 	}
 	for _, d := range resp.Disks.Disk {
 		if d.Type == "" || d.Type == instanceTypeSystemDisk {
-			return d.Size, nil
+			return d.Size, d.Category, nil
 		}
 	}
-	return 0, nil
+	return 0, "", nil
 }
 
 // CreateInstance creates an instance from a platform spec
@@ -366,4 +373,9 @@ func normalizeHostName(name string) (host string, changed bool, err error) {
 // looksLikeInstanceID reports a reference written as an instance id.
 func looksLikeInstanceID(ref string) bool {
 	return strings.HasPrefix(ref, instanceNameIDPrefix) && len(ref) > len(instanceNameIDPrefix)
+}
+
+// instanceSize writes the size of an instance as <cores>H<memory>G.
+func instanceSize(in *Instance) string {
+	return fmt.Sprintf("%dH%sG", in.CPU, strconv.FormatFloat(float64(in.MemoryMB)/1024, 'f', -1, 64))
 }

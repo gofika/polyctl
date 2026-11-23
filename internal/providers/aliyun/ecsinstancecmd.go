@@ -215,6 +215,10 @@ type instanceFlags struct {
 	eip                                                      bool
 	wait                                                     app.WaitFlags
 	region                                                   string
+	// size is --type written as <cores>H<memory>G (nil for a type id);
+	// choice is the type it resolved to.
+	size   *platform.TypeShorthand
+	choice *typeChoice
 }
 
 func (f *instanceFlags) add(cmd *cobra.Command, eipDefault, waitDefault bool, typeHelp, sgHelp string) {
@@ -249,7 +253,50 @@ func (f *instanceFlags) check(cmd *cobra.Command) error {
 	if f.image != "" && cmd.Flags().Changed("os") {
 		return app.UsageErrf("--image and --os are mutually exclusive")
 	}
+	if _, _, err := platform.ParseTypeShorthand(f.typ); err != nil {
+		return err
+	}
 	return nil
+}
+
+// parseSize reads --type as a <cores>H<memory>G size: f.size stays nil
+// for an exact type id. A malformed size is a usage error.
+func (f *instanceFlags) parseSize() error {
+	sz, ok, err := platform.ParseTypeShorthand(f.typ)
+	if err != nil {
+		return err
+	}
+	f.size = nil
+	if ok {
+		f.size = &sz
+	}
+	return nil
+}
+
+// resolveSize resolves f.size to the cheapest x86 type in stock in one of
+// zones (a read-only step, made in a dry run too) and puts that type and
+// the system disk category it takes in f.
+func (f *instanceFlags) resolveSize(ctx context.Context, rt *app.Runtime, cmd *cobra.Command, s *ecsScope, image string, zones []string) error {
+	ch, err := s.c.resolveTypeSize(ctx, s.region, typeRequest{Size: *f.size, Zones: zones, Image: image, DiskGiB: f.disk,
+		DiskCategory: f.diskCategory, DiskFixed: cmd.Flags().Changed("disk-category")})
+	if err != nil {
+		return err
+	}
+	rt.Infof("%s", ch.note())
+	if ch.DiskCategory != f.diskCategory {
+		rt.Infof("note: %s offers no %s system disk in %s: the system disk is %s", ch.Type, f.diskCategory, ch.Zone, ch.DiskCategory)
+	}
+	f.typ, f.diskCategory, f.choice = ch.Type, ch.DiskCategory, ch
+	return nil
+}
+
+// typeLabel is the type in the change report, with the size it was
+// resolved from.
+func (f *instanceFlags) typeLabel() string {
+	if f.choice == nil {
+		return f.typ
+	}
+	return f.typ + " " + f.choice.label()
 }
 
 // resolveImage returns --image, else the newest image of --os (a read-only
@@ -285,6 +332,25 @@ func (f *instanceFlags) keyInput(rt *app.Runtime) (platform.KeyInput, error) {
 	return in, nil
 }
 
+// instanceSizeHelp explains --type <cores>H<memory>G in the help of create
+// and ensure.
+const instanceSizeHelp = `
+Instance sizes: --type <cores>H<memory>G (2H4G, 4H8G, 1H0.5G; any case)
+is resolved on every run, in a dry run too, and never remembered (stock
+and prices change). The candidates are the x86 types of exactly that many
+vCPUs and GiB in stock for pay-as-you-go instances, in the zones the
+instance may go to (the zone of --vswitch, else the zones of the default
+vSwitches, b and c); each is priced by the hour with the image and the
+system disk the instance gets, the cheapest wins (ties: the type name,
+then the zone), and its zone places the instance. The system disk is
+--disk-category when the type offers it there, else (unless
+--disk-category was given) the first offered of cloud_essd_entry,
+cloud_essd, cloud_auto, cloud_efficiency, cloud_ssd. The choice is printed
+on stderr ("2H4G -> ecs.e-c1m2.large (cn-hongkong-b, 0.0123 CNY/hour)")
+and shown in the change report. The memory must match exactly (a 3.5 GiB
+type is not 4 GiB): no match is exit code 4, and a size of 0 vCPUs or
+0 GiB is exit code 2. Anything else is a type id, used as it is.`
+
 // createDesc describes the instance a step creates.
 func createDesc(typ string, disk int, category, image string) string {
 	return fmt.Sprintf("%s, system disk %dGiB %s, image %s", typ, disk, category, image)
@@ -296,7 +362,7 @@ func createDesc(typ string, disk int, category, image string) string {
 // fresh reports that the group or the vSwitch was created by this run: a
 // RunInstances that does not find them yet is then retried a few times.
 func runStep(rt *app.Runtime, s *ecsScope, name, host string, f *instanceFlags, image string, sg, vsw, kp func() string, fresh func() bool, id *string) platform.Step {
-	desc := createDesc(f.typ, f.disk, f.diskCategory, image)
+	desc := createDesc(f.typeLabel(), f.disk, f.diskCategory, image)
 	if host != name {
 		desc += ", host name " + host
 	}
@@ -343,7 +409,7 @@ func runStep(rt *app.Runtime, s *ecsScope, name, host string, f *instanceFlags, 
 			} else {
 				storeInstance(ctx, rt, s.profile, Instance{ID: iid, Name: name, Type: f.typ, Region: s.region, Status: instPending})
 			}
-			detail := iid + " " + f.typ
+			detail := iid + " " + f.typeLabel()
 			if host != name {
 				detail += " (host name " + host + ")"
 			}
@@ -462,7 +528,8 @@ own (outbound bandwidth 0): the public address is an EIP (--eip). Nothing
 else is created except the key pair: use ensure to create the VPC, the
 vSwitches and the security group as well.
 
-- --type is required (or defaults.aliyun.ecs_instance_type).
+- --type is required (or defaults.aliyun.ecs_instance_type): a type id,
+  or a size <cores>H<memory>G such as 2H4G (see Instance sizes below).
 - --vswitch (id or name) places the instance and decides its zone; default
   the vSwitch named by naming.aliyun_vswitch for zone b ({region}-switch-b)
   in the VPC named by naming.aliyun_vpc, which must exist.
@@ -478,7 +545,8 @@ vSwitches and the security group as well.
   digits, hyphens and dots replaced by a hyphen, cut to 64 characters.
 - An instance of the name in the region is exit code 1: use ensure.
 - create waits until it is Running (by default, as on every platform:
-  polled every 2 seconds, --timeout; --no-wait returns at once); --eip waits too, then binds an idle EIP of the region, else a new one.`,
+  polled every 2 seconds, --timeout; --no-wait returns at once); --eip waits too, then binds an idle EIP of the region, else a new one.
+` + instanceSizeHelp,
 		Example: `  polyctl aliyun ecs instance create site-a --type ecs.u1-c1m1.large --security-group sg-common \
     --key-pair ops --ssh-key-file ~/.ssh/id_ed25519.pub`,
 		Args: cobra.ExactArgs(1),
@@ -516,10 +584,16 @@ vSwitches and the security group as well.
 			if f.typ, err = rt.RequireSetting(s.profile, platform.Aliyun, "ecs_instance_type", "type", f.typ); err != nil {
 				return err
 			}
-			vsw, err := createVSwitch(ctx, rt, s, f.vswitch)
+			if err := f.parseSize(); err != nil {
+				return err
+			}
+			// A size picks its zone among the vSwitches it may use: --vswitch,
+			// else the default vSwitches that exist.
+			vsws, err := createVSwitches(ctx, rt, s, f.vswitch, f.size != nil)
 			if err != nil {
 				return err
 			}
+			vsw := vsws[0]
 			sg, err := findInstanceSG(ctx, s, f.securityGroup, vsw.VPC)
 			if err != nil {
 				return err
@@ -538,6 +612,21 @@ vSwitches and the security group as well.
 			image, err := f.resolveImage(ctx, s)
 			if err != nil {
 				return err
+			}
+			if f.size != nil {
+				var zones []string
+				for _, v := range vsws {
+					zones = append(zones, v.Zone)
+				}
+				if err := f.resolveSize(ctx, rt, cmd, s, image, zones); err != nil {
+					return err
+				}
+				for _, v := range vsws {
+					if v.Zone == f.choice.Zone {
+						vsw = v
+						break
+					}
+				}
 			}
 			kp, kpStep, err := resolveKeyPairStep(ctx, rt, s, in)
 			if err != nil {
@@ -570,7 +659,7 @@ vSwitches and the security group as well.
 			return rt.Ensure(ctx, "aliyun.ecs.instance.create", s.target(), &plan)
 		},
 	}
-	f.add(cmd, false, true, "instance type (required, unless defaults.aliyun.ecs_instance_type is set)", "security group of the instance, name or id (required)")
+	f.add(cmd, false, true, "instance type id, or a size <cores>H<memory>G such as 2H4G resolved to the cheapest x86 type in stock (required, unless defaults.aliyun.ecs_instance_type is set)", "security group of the instance, name or id (required)")
 	return cmd
 }
 
@@ -634,25 +723,47 @@ func checkInstanceSGName(name string) error {
 	return nil
 }
 
-// createVSwitch resolves the --vswitch of create: the vSwitch given (id or
-// name), else the default vSwitch of zone b in the default VPC.
-func createVSwitch(ctx context.Context, rt *app.Runtime, s *ecsScope, ref string) (*vSwitch, error) {
+// createVSwitches resolves the --vswitch of create: the vSwitch given (id
+// or name), else the default vSwitch of zone b in the default VPC. With
+// all (a --type size, which picks the zone), every default vSwitch that
+// exists (zones b and c) is returned instead, in that order.
+func createVSwitches(ctx context.Context, rt *app.Runtime, s *ecsScope, ref string, all bool) ([]*vSwitch, error) {
 	if ref != "" {
-		return resolveVSwitch(ctx, s, ref, "")
+		v, err := resolveVSwitch(ctx, s, ref, "")
+		if err != nil {
+			return nil, err
+		}
+		return []*vSwitch{v}, nil
 	}
 	vpcName, err := rt.ResourceName("aliyun_vpc", "", map[string]string{"region": s.region})
 	if err != nil {
 		return nil, err
 	}
-	vswName, err := vswName(rt, s.region, "", zoneTarget{ID: s.region + "-" + defaultZones[0], Suffix: defaultZones[0]})
-	if err != nil {
-		return nil, err
+	zones := defaultZones[:1]
+	if all {
+		zones = defaultZones
 	}
-	v, err := resolveVSwitch(ctx, s, vswName, vpcName)
-	if errors.Is(err, platform.ErrNotFound) {
-		return nil, app.UsageErrf("no vSwitch for the instance: the default vSwitch %q of VPC %q does not exist in %s; pass --vswitch <id|name>, or use ensure", vswName, vpcName, s.region)
+	var out []*vSwitch
+	var names []string
+	for _, suffix := range zones {
+		name, err := vswName(rt, s.region, "", zoneTarget{ID: s.region + "-" + suffix, Suffix: suffix})
+		if err != nil {
+			return nil, err
+		}
+		names = append(names, fmt.Sprintf("%q", name))
+		v, err := resolveVSwitch(ctx, s, name, vpcName)
+		if errors.Is(err, platform.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
 	}
-	return v, err
+	if len(out) == 0 {
+		return nil, app.UsageErrf("no vSwitch for the instance: the default vSwitch %s of VPC %q does not exist in %s; pass --vswitch <id|name>, or use ensure", strings.Join(names, " or "), vpcName, s.region)
+	}
+	return out, nil
 }
 
 // ------------------------------------------------------------- delete
@@ -897,6 +1008,21 @@ accepted for 30 seconds.`,
 
 // ------------------------------------------------------------- resize
 
+// resizeChoice resolves a --type size for an instance: the cheapest x86
+// type of that size it can change to in its zone, priced with its image
+// and system disk.
+func resizeChoice(ctx context.Context, s *ecsScope, in *Instance, size platform.TypeShorthand) (*typeChoice, error) {
+	diskGiB, category, err := s.c.systemDisk(ctx, s.region, in.ID)
+	if err != nil {
+		return nil, err
+	}
+	r := typeRequest{Size: size, Image: in.ImageID, DiskGiB: diskGiB, DiskCategory: category, DiskFixed: true, Resize: in.ID, Current: in.Type}
+	if in.Zone != "" {
+		r.Zones = []string{in.Zone}
+	}
+	return s.c.resolveTypeSize(ctx, s.region, r)
+}
+
 func ecsResizeCmd(rt *app.Runtime) *cobra.Command {
 	var region, typ string
 	var w app.WaitFlags
@@ -920,13 +1046,27 @@ IP, the EIP or the private IP; it implies --wait.
 The same type is unchanged. A type the zone has no stock of, or that the
 instance cannot change to, is exit code 1 with the Alibaba Cloud message;
 the instance is then Stopped with its old type: start it, or run the
-command again with another type.`,
+command again with another type.
+
+--type also takes a size <cores>H<memory>G (2H4G, 4H8G, 1H0.5G), resolved
+before anything changes (in a dry run too, never remembered): an instance
+of that size already is unchanged; otherwise the candidates are the x86
+types of exactly that size in stock that the instance can change to in
+its zone (DescribeResourcesModification), each priced by the hour with
+its image and system disk, and the cheapest wins (ties: the type name).
+The choice is printed on stderr ("2H4G -> ecs.e-c1m2.large
+(cn-hongkong-b, 0.0123 CNY/hour)") and shown in the change report; no
+match is exit code 4, a size of 0 vCPUs or 0 GiB exit code 2.`,
 		Example: "  polyctl aliyun ecs instance resize site-a --type ecs.u1-c1m2.large --yes --wait",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			if typ == "" {
 				return app.UsageErrf("--type is required")
+			}
+			size, isSize, err := platform.ParseTypeShorthand(typ)
+			if err != nil {
+				return err
 			}
 			wait, timeout, err := w.Resolve(cmd)
 			if err != nil {
@@ -944,6 +1084,21 @@ command again with another type.`,
 			}
 			label := instanceLabel(in)
 			res := "instance/" + label
+			typeDesc := typ
+			if isSize {
+				if size.Matches(in.CPU, in.MemoryMB) {
+					rt.Infof("instance %s already is %s (%s)", label, size, in.Type)
+					return rt.RenderReport(platform.Report{Target: s.target(), DryRun: rt.DryRun(), Changes: []platform.Change{
+						{Resource: res, Action: platform.Unchanged, ID: in.ID, Detail: "type " + in.Type + " (" + size.String() + ")"}}})
+				}
+				ch, err := resizeChoice(ctx, s, in, size)
+				if err != nil {
+					return err
+				}
+				rt.Infof("%s", ch.note())
+				typ = ch.Type
+				typeDesc = typ + " " + ch.label()
+			}
 			if in.Type == typ {
 				rt.Infof("instance %s already is %s", label, typ)
 				return rt.RenderReport(platform.Report{Target: s.target(), DryRun: rt.DryRun(), Changes: []platform.Change{
@@ -976,7 +1131,7 @@ command again with another type.`,
 					return platform.Change{Detail: "stop; stopped"}, nil
 				}})
 			}
-			plan.Add(platform.Step{Resource: res, Action: platform.Updated, ID: in.ID, Desc: fmt.Sprintf("modify type %s -> %s", cur, typ), Apply: func(ctx context.Context) (platform.Change, error) {
+			plan.Add(platform.Step{Resource: res, Action: platform.Updated, ID: in.ID, Desc: fmt.Sprintf("modify type %s -> %s", cur, typeDesc), Apply: func(ctx context.Context) (platform.Change, error) {
 				if err := s.c.modifyInstanceSpec(ctx, s.region, in.ID, typ); err != nil {
 					return platform.Change{}, fmt.Errorf("%w; the instance is Stopped with its type %s: start it with `polyctl aliyun ecs instance start %s`, or run resize again", err, cur, in.ID)
 				}
@@ -1043,7 +1198,7 @@ command again with another type.`,
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&typ, "type", "", "new instance type (required)")
+	cmd.Flags().StringVar(&typ, "type", "", "new instance type id, or a size <cores>H<memory>G such as 2H4G resolved to the cheapest x86 type (required)")
 	cmd.Flags().StringVar(&region, "region", "", "region of the instance (default: look it up in the inventory of every account)")
 	cmd.Flags().BoolVar(&start, "start", false, "start the instance after the change (default: only when it was running; --start=false leaves it stopped)")
 	cmd.Flags().IntVar(&port, "wait-port", 0, "after the start, wait until this TCP port accepts connections (22 for SSH; implies --wait)")
