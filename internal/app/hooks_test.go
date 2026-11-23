@@ -72,6 +72,19 @@ func TestNotifyFailureWebhook(t *testing.T) {
 	}
 }
 
+// A webhook that cannot be reached is reported without its URL, which is
+// often the secret of the webhook.
+func TestNotifyFailureWebhookErrorHidesTheURL(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	url := srv.URL + "/services/T000/B000/secret-token"
+	srv.Close()
+	rt, errb := hookRuntime(t, url)
+	rt.NotifyFailure(t.Context(), Failure{Event: "x.failed", Error: "e"})
+	if !strings.Contains(errb.String(), "warning: hooks.on_failure: webhook request failed") || strings.Contains(errb.String(), "secret-token") {
+		t.Errorf("stderr = %q", errb.String())
+	}
+}
+
 func TestNotifyFailureCommand(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses /bin/sh")

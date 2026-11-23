@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"os/exec"
 	"runtime"
@@ -86,12 +88,18 @@ func (rt *Runtime) NotifyFailure(ctx context.Context, f Failure) {
 func postHook(ctx context.Context, url string, body []byte) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return errors.New("the webhook URL is not valid")
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := hookHTTPClient.Do(req)
 	if err != nil {
-		return err
+		// The URL of a webhook is often its secret (Slack, Teams, ...):
+		// report why the request failed without quoting it.
+		var ue *neturl.Error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
+		return fmt.Errorf("webhook request failed: %v", err)
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
