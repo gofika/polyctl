@@ -3,7 +3,6 @@ package aws
 import (
 	"context"
 	"fmt"
-	"sort"
 	"time"
 
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
@@ -64,29 +63,7 @@ func (i instanceInfo) resource() platform.Resource {
 
 // describeInstances lists every instance of a region.
 func (c *client) describeInstances(ctx context.Context, region string) ([]instanceInfo, error) {
-	if region == "" {
-		region = c.region
-	}
-	var out []instanceInfo
-	pg := ec2.NewDescribeInstancesPaginator(c.ec2For(region), &ec2.DescribeInstancesInput{})
-	for pg.HasMorePages() {
-		page, err := pg.NextPage(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("describe instances in %s: %w", region, mapErr(err))
-		}
-		for _, r := range page.Reservations {
-			for _, in := range r.Instances {
-				out = append(out, instanceFrom(region, in))
-			}
-		}
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Name != out[j].Name {
-			return out[i].Name < out[j].Name
-		}
-		return out[i].ID < out[j].ID
-	})
-	return out, nil
+	return c.listInstancesFiltered(ctx, region, instanceFilters{})
 }
 
 // listInstances returns the instances of a region as inventory resources.
