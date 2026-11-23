@@ -269,6 +269,17 @@ func (f *fakeCF) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 				f.records[zoneID][idx] = rec
 				f.ok(w, rec)
+			case http.MethodPatch:
+				// "Update DNS Record": only the fields in the body change.
+				rec := map[string]any{}
+				for k, v := range f.records[zoneID][idx] {
+					rec[k] = v
+				}
+				for k, v := range body {
+					rec[k] = v
+				}
+				f.records[zoneID][idx] = rec
+				f.ok(w, rec)
 			case http.MethodDelete:
 				f.records[zoneID] = append(f.records[zoneID][:idx], f.records[zoneID][idx+1:]...)
 				f.ok(w, map[string]any{"id": parts[2]})
@@ -976,10 +987,16 @@ func TestToBodyAndToRecord(t *testing.T) {
 	if caa.Content != "" || caa.Data["tag"] != "issue" || strings.Contains(string(got), `"content"`) || !strings.Contains(string(got), `"data"`) {
 		t.Fatalf("CAA body: %s", got)
 	}
-	// Without data the formatted content is sent as before.
+	// Without data the text is read into data: the API takes the
+	// components of these types, not their text.
 	caa = toBody(platform.Record{Name: "example.com", Type: "CAA", Value: "0 issue letsencrypt.org", TTL: 1})
-	if caa.Content != "0 issue letsencrypt.org" || caa.Data != nil {
+	if caa.Content != "" || caa.Data["tag"] != "issue" || caa.Data["value"] != "letsencrypt.org" {
 		t.Fatalf("CAA body without data: %+v", caa)
+	}
+	// Text that cannot be read is sent as content, for the API to judge.
+	caa = toBody(platform.Record{Name: "example.com", Type: "CAA", Value: "garbled", TTL: 1})
+	if caa.Content != "garbled" || caa.Data != nil {
+		t.Fatalf("unreadable CAA body: %+v", caa)
 	}
 }
 
@@ -1171,5 +1188,124 @@ func TestErrorWithoutCode(t *testing.T) {
 	e := newError(400, "PUT", "/zones/x/rulesets", []message{{Message: "unknown field"}, {Code: 1004, Message: "bad"}})
 	if got := e.Error(); strings.Contains(got, "code 0") || !strings.Contains(got, "unknown field; bad (code 1004)") {
 		t.Errorf("Error() = %q", got)
+	}
+}
+
+// PatchRecord sends only the changed fields: an apex CNAME whose value
+// changes is one PATCH that keeps ttl, proxied, comment and tags, with no
+// delete and re-create.
+func TestPatchRecordSendsChangedFieldsOnly(t *testing.T) {
+	f, srv := newFake(t)
+	c := openClient(t, srv, "good-token", "")
+	ctx := context.Background()
+	f.records["zone1"] = append(f.records["zone1"], map[string]any{
+		"id": "apex", "zone_id": "zone1", "zone_name": "example.com", "name": "example.com", "type": "CNAME",
+		"content": "old.example.net", "ttl": 300, "proxied": true, "proxiable": true, "comment": "keep me", "tags": []string{"t:1"},
+		"created_on": "2024-01-01T00:00:00Z",
+	})
+	recs, err := c.ListRecords(ctx, "zone1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cur platform.Record
+	for _, r := range recs {
+		if r.ID == "apex" {
+			cur = r
+		}
+	}
+	if cur.Extra["created_on"] != "2024-01-01T00:00:00Z" {
+		t.Errorf("created_on not kept: %+v", cur.Extra)
+	}
+	v := "new.example.net"
+	out, err := c.PatchRecord(ctx, "zone1", cur, platform.RecordPatch{Value: &v})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.lastBody) != 1 || f.lastBody["content"] != "new.example.net" {
+		t.Errorf("patch body = %v, want content only", f.lastBody)
+	}
+	if out.Value != "new.example.net" || out.TTL != 300 || out.Proxied == nil || !*out.Proxied || out.Extra["comment"] != "keep me" {
+		t.Errorf("patched record = %+v", *out)
+	}
+	if f.count("PATCH /zones/zone1/dns_records/apex") != 1 || f.count("DELETE") != 0 || f.count("PUT") != 0 || f.count("POST") != 0 {
+		t.Errorf("requests = %v", f.requests)
+	}
+	// Proxied and TTL alone.
+	px, ttl := false, 0
+	if _, err := c.PatchRecord(ctx, "zone1", cur, platform.RecordPatch{Proxied: &px, TTL: &ttl}); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.lastBody) != 2 || f.lastBody["proxied"] != false || f.lastBody["ttl"] != float64(1) {
+		t.Errorf("patch body = %v", f.lastBody)
+	}
+	// A data type travels as its components.
+	srvRec := platform.Record{ID: "rec1", Type: "SRV"}
+	sv := "10 5 5060 sip.example.com."
+	if _, err := c.PatchRecord(ctx, "zone1", srvRec, platform.RecordPatch{Value: &sv}); err != nil {
+		t.Fatal(err)
+	}
+	if d, ok := f.lastBody["data"].(map[string]any); !ok || d["target"] != "sip.example.com" || d["priority"] != float64(10) || d["port"] != float64(5060) {
+		t.Errorf("srv patch body = %v", f.lastBody)
+	}
+	if _, err := c.PatchRecord(ctx, "zone1", srvRec, platform.RecordPatch{Value: ptr("nonsense")}); !errors.Is(err, platform.ErrInvalidInput) {
+		t.Errorf("bad SRV text = %v", err)
+	}
+}
+
+func ptr(s string) *string { return &s }
+
+// A new record of a data type given as text is sent as data.
+func TestCreateDataRecordFromText(t *testing.T) {
+	f, srv := newFake(t)
+	c := openClient(t, srv, "good-token", "")
+	ctx := context.Background()
+	if _, err := c.CreateRecord(ctx, "zone1", platform.Record{Name: "example.com", Type: "CAA", Value: `0 issue "letsencrypt.org"`}); err != nil {
+		t.Fatal(err)
+	}
+	if d, ok := f.lastBody["data"].(map[string]any); !ok || d["tag"] != "issue" || d["value"] != "letsencrypt.org" || d["flags"] != float64(0) {
+		t.Errorf("caa body = %v", f.lastBody)
+	}
+	if _, ok := f.lastBody["content"]; ok {
+		t.Errorf("content sent with data: %v", f.lastBody)
+	}
+	for typ, text := range map[string]string{
+		"TLSA":   "3 1 1 abcd",
+		"URI":    `10 1 "https://example.com/"`,
+		"NAPTR":  `100 10 "U" "E2U+sip" "!^.*$!sip:info@example.com!" .`,
+		"DS":     "2371 13 2 1F987CC6",
+		"DNSKEY": "257 3 13 AbCd==",
+		"CERT":   "1 0 0 AbCd",
+	} {
+		if d, _, err := dataFromText(typ, text, nil); err != nil || len(d) == 0 {
+			t.Errorf("dataFromText(%s, %q) = %v, %v", typ, text, d, err)
+		}
+	}
+}
+
+// Every page is read, by total_pages; a page past the end is an empty
+// result, not an error.
+func TestListRecordsReadsEveryPage(t *testing.T) {
+	f, srv := newFake(t)
+	f.maxPerPage = 0
+	c := openClient(t, srv, "good-token", "")
+	f.records["zone1"] = nil
+	for i := 0; i < 203; i++ {
+		f.records["zone1"] = append(f.records["zone1"], map[string]any{
+			"id": fmt.Sprintf("p%d", i), "name": fmt.Sprintf("h%d.example.com", i), "type": "A", "content": "203.0.113.1", "ttl": 1,
+		})
+	}
+	recs, err := c.ListRecords(context.Background(), "zone1")
+	if err != nil || len(recs) != 203 || recs[100].ID != "p100" || recs[202].ID != "p202" {
+		t.Fatalf("records = %d, %v", len(recs), err)
+	}
+	if n := f.count("GET /zones/zone1/dns_records"); n != 3 {
+		t.Errorf("pages read = %d, want 3", n)
+	}
+	// Without total_pages, a full last page is followed by an empty one.
+	f.noTotalPages = true
+	f.records["zone1"] = f.records["zone1"][:200]
+	recs, err = c.ListRecords(context.Background(), "zone1")
+	if err != nil || len(recs) != 200 {
+		t.Fatalf("records = %d, %v", len(recs), err)
 	}
 }

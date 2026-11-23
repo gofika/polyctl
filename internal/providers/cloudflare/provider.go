@@ -124,6 +124,13 @@ func (*provider) LoginOptions() []string {
 	return []string{metaMethod, "token", metaAccountID}
 }
 
+// RecordTypes are the record types Cloudflare creates through the API
+// (SPF and SOA are refused there; DNSKEY only at the apex and DS only next
+// to NS records, which the API reports).
+func (*provider) RecordTypes() []string {
+	return []string{"A", "AAAA", "CNAME", "MX", "NS", "TXT", "SRV", "CAA", "PTR", "NAPTR", "TLSA", "URI", "CERT", "DNSKEY", "DS"}
+}
+
 func (*provider) ResourceTypes() []platform.ResourceType {
 	return []platform.ResourceType{platform.ResZone, platform.ResDNSRecord}
 }
@@ -682,6 +689,54 @@ func (c *Client) UpdateRecord(ctx context.Context, zoneID string, r platform.Rec
 	out := toRecord(*res)
 	return &out, nil
 }
+
+// PatchRecord changes only the fields named in p (PATCH): ttl, proxied,
+// comment and tags of the record stay as they are unless p names them.
+// A value of a data type (SRV, CAA, ...) is sent as its components.
+func (c *Client) PatchRecord(ctx context.Context, zoneID string, cur platform.Record, p platform.RecordPatch) (*platform.Record, error) {
+	if cur.ID == "" {
+		return nil, errors.New("record id is required")
+	}
+	body := map[string]any{}
+	if p.Value != nil {
+		if isDataType(cur.Type) {
+			d, prio, err := dataFromText(cur.Type, *p.Value, p.Priority)
+			if err != nil {
+				return nil, fmt.Errorf("%w: %v", platform.ErrInvalidInput, err)
+			}
+			body["data"] = d
+			if prio != nil {
+				body["priority"] = *prio
+			}
+		} else {
+			body["content"] = *p.Value
+		}
+	}
+	if p.TTL != nil {
+		ttl := *p.TTL
+		if ttl <= 0 {
+			ttl = 1
+		}
+		body["ttl"] = ttl
+	}
+	if p.Proxied != nil {
+		body["proxied"] = *p.Proxied
+	}
+	if p.Priority != nil {
+		body["priority"] = *p.Priority
+	}
+	res, err := c.api.patchRecord(ctx, zoneID, cur.ID, body)
+	if err != nil {
+		return nil, err
+	}
+	out := toRecord(*res)
+	return &out, nil
+}
+
+var (
+	_ platform.RecordPatcher = (*Client)(nil)
+	_ platform.RecordTyper   = (*provider)(nil)
+)
 
 // DeleteRecord deletes a record.
 func (c *Client) DeleteRecord(ctx context.Context, zoneID, recordID string) error {

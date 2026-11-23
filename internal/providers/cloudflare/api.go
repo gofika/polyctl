@@ -424,6 +424,7 @@ type apiRecord struct {
 	Comment    string         `json:"comment,omitempty"`
 	Tags       []string       `json:"tags,omitempty"`
 	Data       map[string]any `json:"data,omitempty"`
+	CreatedOn  string         `json:"created_on,omitempty"`
 	ModifiedOn string         `json:"modified_on,omitempty"`
 }
 
@@ -472,6 +473,17 @@ func (a *api) updateRecord(ctx context.Context, zoneID, recordID string, body re
 	return &r, nil
 }
 
+// patchRecord changes the fields in body only: the record keeps every
+// field the body leaves out (ttl, proxied, comment, tags), where PUT would
+// reset them.
+func (a *api) patchRecord(ctx context.Context, zoneID, recordID string, body map[string]any) (*apiRecord, error) {
+	var r apiRecord
+	if _, err := a.do(ctx, http.MethodPatch, "/zones/"+url.PathEscape(zoneID)+"/dns_records/"+url.PathEscape(recordID), nil, body, &r); err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
 func (a *api) deleteRecord(ctx context.Context, zoneID, recordID string) error {
 	_, err := a.do(ctx, http.MethodDelete, "/zones/"+url.PathEscape(zoneID)+"/dns_records/"+url.PathEscape(recordID), nil, nil, nil)
 	return err
@@ -489,6 +501,9 @@ func toRecord(r apiRecord) platform.Record {
 	}
 	if len(r.Data) > 0 {
 		extra["data"] = r.Data
+	}
+	if r.CreatedOn != "" {
+		extra["created_on"] = r.CreatedOn
 	}
 	if r.ModifiedOn != "" {
 		extra["modified_on"] = r.ModifiedOn
@@ -546,7 +561,127 @@ func toBody(r platform.Record) recordBody {
 			b.Content = ""
 		}
 	}
+	if b.Data == nil && isDataType(b.Type) && b.Content != "" {
+		// A new record given as text ("10 5 5060 sip.example.com"): the
+		// API takes the components only. Text it cannot read is sent as
+		// content, for the API to judge.
+		if d, prio, err := dataFromText(b.Type, b.Content, r.Priority); err == nil {
+			b.Data, b.Content = d, ""
+			if prio != nil {
+				b.Priority = prio
+			}
+		}
+	}
 	return b
+}
+
+// dataFromText reads the zone-file text of a record of a data type into
+// the components of the API's data object. The field names of SRV and CAA
+// are confirmed against the API; those of the other types follow its
+// documentation. URI keeps its priority outside data (returned separately).
+// priority is the priority given apart from the text, if any.
+func dataFromText(typ, text string, priority *int) (map[string]any, *int, error) {
+	f := strings.Fields(text)
+	num := func(s string) (int, error) { return strconv.Atoi(s) }
+	unquote := func(s string) string { return strings.Trim(s, `"`) }
+	host := func(s string) string { return strings.TrimSuffix(s, ".") }
+	bad := func() (map[string]any, *int, error) {
+		return nil, nil, fmt.Errorf("cannot read %s value %q", typ, text)
+	}
+	ints := func(parts []string) ([]int, bool) {
+		out := make([]int, len(parts))
+		for i, p := range parts {
+			n, err := num(p)
+			if err != nil {
+				return nil, false
+			}
+			out[i] = n
+		}
+		return out, true
+	}
+	switch strings.ToUpper(typ) {
+	case "SRV":
+		if len(f) == 3 && priority != nil {
+			f = append([]string{strconv.Itoa(*priority)}, f...)
+		}
+		if len(f) != 4 {
+			return bad()
+		}
+		n, ok := ints(f[:3])
+		if !ok {
+			return bad()
+		}
+		return map[string]any{"priority": n[0], "weight": n[1], "port": n[2], "target": host(f[3])}, nil, nil
+	case "CAA":
+		if len(f) < 3 {
+			return bad()
+		}
+		flags, err := num(f[0])
+		if err != nil {
+			return bad()
+		}
+		value := strings.TrimSpace(strings.SplitN(strings.TrimSpace(text), f[1], 2)[1])
+		return map[string]any{"flags": flags, "tag": f[1], "value": unquote(value)}, nil, nil
+	case "TLSA":
+		if len(f) < 4 {
+			return bad()
+		}
+		n, ok := ints(f[:3])
+		if !ok {
+			return bad()
+		}
+		return map[string]any{"usage": n[0], "selector": n[1], "matching_type": n[2], "certificate": strings.Join(f[3:], "")}, nil, nil
+	case "DS":
+		if len(f) < 4 {
+			return bad()
+		}
+		n, ok := ints(f[:3])
+		if !ok {
+			return bad()
+		}
+		return map[string]any{"key_tag": n[0], "algorithm": n[1], "digest_type": n[2], "digest": strings.Join(f[3:], "")}, nil, nil
+	case "DNSKEY":
+		if len(f) < 4 {
+			return bad()
+		}
+		n, ok := ints(f[:3])
+		if !ok {
+			return bad()
+		}
+		return map[string]any{"flags": n[0], "protocol": n[1], "algorithm": n[2], "public_key": strings.Join(f[3:], "")}, nil, nil
+	case "CERT":
+		if len(f) < 4 {
+			return bad()
+		}
+		n, ok := ints(f[:3])
+		if !ok {
+			return bad()
+		}
+		return map[string]any{"type": n[0], "key_tag": n[1], "algorithm": n[2], "certificate": strings.Join(f[3:], "")}, nil, nil
+	case "URI":
+		if len(f) == 2 && priority != nil {
+			f = append([]string{strconv.Itoa(*priority)}, f...)
+		}
+		if len(f) != 3 {
+			return bad()
+		}
+		n, ok := ints(f[:2])
+		if !ok {
+			return bad()
+		}
+		p := n[0]
+		return map[string]any{"weight": n[1], "target": unquote(f[2])}, &p, nil
+	case "NAPTR":
+		if len(f) != 6 {
+			return bad()
+		}
+		n, ok := ints(f[:2])
+		if !ok {
+			return bad()
+		}
+		return map[string]any{"order": n[0], "preference": n[1], "flags": unquote(f[2]), "service": unquote(f[3]), "regex": unquote(f[4]), "replacement": host(f[5])}, nil, nil
+	}
+	return bad()
 }
 
 // --- zone operations used by native commands ------------------------------
