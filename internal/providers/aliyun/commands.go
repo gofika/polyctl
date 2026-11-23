@@ -659,7 +659,7 @@ func newECSListCmd(rt *app.Runtime) *cobra.Command {
 				if err != nil {
 					return nil, err
 				}
-				return c.ListInstances(ctx, region)
+				return c.instanceResources(ctx, region)
 			})
 			if err != nil {
 				return err
