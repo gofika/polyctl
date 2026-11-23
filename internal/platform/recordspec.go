@@ -52,7 +52,7 @@ var proxiableTypes = []string{"A", "AAAA", "CNAME"}
 // records file too.
 func ParseRecordSpec(s string) (RecordSpec, error) {
 	bad := func(format string, args ...any) (RecordSpec, error) {
-		return RecordSpec{}, fmt.Errorf("invalid record %q: %s (format %s)", s, fmt.Sprintf(format, args...), RecordSpecFormat)
+		return RecordSpec{}, invalid("record %q: %s (format %s)", s, fmt.Sprintf(format, args...), RecordSpecFormat)
 	}
 	parts := strings.SplitN(s, ":", 3)
 	if len(parts) < 3 {
@@ -121,7 +121,7 @@ func ParseRecordSpec(s string) (RecordSpec, error) {
 		b := strings.EqualFold(c.proxied, "true")
 		spec.Proxied = &b
 	}
-	if err := spec.Validate(); err != nil {
+	if err := spec.validate(); err != nil {
 		return bad("%v", err)
 	}
 	return spec, nil
@@ -172,8 +172,15 @@ func checkSpecType(t string) error {
 }
 
 // Validate checks a spec that did not come through ParseRecordSpec (a
-// records file).
+// records file). Its errors map to the usage exit code.
 func (r RecordSpec) Validate() error {
+	if err := r.validate(); err != nil {
+		return invalid("record %s: %v", r.Name, err)
+	}
+	return nil
+}
+
+func (r RecordSpec) validate() error {
 	if strings.TrimSpace(r.Name) == "" {
 		return errors.New("the name is empty (use @ for the zone apex)")
 	}
@@ -207,7 +214,7 @@ func (r RecordSpec) FQDN(zone string) (string, error) {
 	if strings.HasSuffix(name, ".") {
 		n := NormalizeDomain(name)
 		if n != zone && !strings.HasSuffix(n, "."+zone) {
-			return "", fmt.Errorf("record name %q is not in zone %s", name, zone)
+			return "", invalid("record name %q is not in zone %s", name, zone)
 		}
 		return n, nil
 	}
@@ -252,9 +259,9 @@ func ParseRecordFile(r io.Reader) ([]RecordSpec, error) {
 	var f recordsFile
 	if err := dec.Decode(&f); err != nil {
 		if errors.Is(err, io.EOF) {
-			return nil, errors.New("records file is empty")
+			return nil, invalid("records file is empty")
 		}
-		return nil, fmt.Errorf("records file: %w", err)
+		return nil, invalid("records file: %v", err)
 	}
 	out := make([]RecordSpec, 0, len(f.Records))
 	for i, fr := range f.Records {
@@ -267,15 +274,15 @@ func ParseRecordFile(r io.Reader) ([]RecordSpec, error) {
 			if !strings.EqualFold(strings.TrimSpace(v), "auto") && strings.TrimSpace(v) != "" {
 				n, err := strconv.Atoi(strings.TrimSpace(v))
 				if err != nil {
-					return nil, fmt.Errorf("records file: record %d: ttl %q is not a number of seconds or auto", i+1, v)
+					return nil, invalid("records file: record %d: ttl %q is not a number of seconds or auto", i+1, v)
 				}
 				spec.TTL = &n
 			}
 		default:
-			return nil, fmt.Errorf("records file: record %d: ttl must be a number of seconds or auto", i+1)
+			return nil, invalid("records file: record %d: ttl must be a number of seconds or auto", i+1)
 		}
-		if err := spec.Validate(); err != nil {
-			return nil, fmt.Errorf("records file: record %d: %v", i+1, err)
+		if err := spec.validate(); err != nil {
+			return nil, invalid("records file: record %d: %v", i+1, err)
 		}
 		out = append(out, spec)
 	}

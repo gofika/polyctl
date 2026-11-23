@@ -55,7 +55,7 @@ const RuleFormat = "<protocol>:<port|from-to|alias|all>:<source>, e.g. tcp:443:0
 // sources contain colons: the source is everything after the second colon.
 func ParseIngressRule(s string) (IngressRule, error) {
 	bad := func(format string, args ...any) (IngressRule, error) {
-		return IngressRule{}, fmt.Errorf("invalid rule %q: %s (format %s)", s, fmt.Sprintf(format, args...), RuleFormat)
+		return IngressRule{}, invalid("rule %q: %s (format %s)", s, fmt.Sprintf(format, args...), RuleFormat)
 	}
 	parts := strings.SplitN(strings.TrimSpace(s), ":", 3)
 	if len(parts) < 3 {
@@ -102,7 +102,7 @@ func ParseIngressRule(s string) (IngressRule, error) {
 	default:
 		return bad("unknown protocol %q (expected tcp, udp, icmp or all)", proto)
 	}
-	src, kind, err := ParseRuleSource(source)
+	src, kind, err := parseRuleSource(source)
 	if err != nil {
 		return bad("%v", err)
 	}
@@ -128,8 +128,17 @@ func parsePort(s string) (int, error) {
 
 // ParseRuleSource normalizes the source of a rule: a masked CIDR (a bare
 // address gets /32 or /128) or a security group id. It parses with
-// net/netip; it never guesses from whether the text holds a slash.
+// net/netip; it never guesses from whether the text holds a slash. Its
+// errors map to the usage exit code.
 func ParseRuleSource(s string) (source, kind string, err error) {
+	source, kind, err = parseRuleSource(s)
+	if err != nil {
+		return "", "", invalid("%v", err)
+	}
+	return source, kind, nil
+}
+
+func parseRuleSource(s string) (source, kind string, err error) {
 	s = strings.TrimSpace(s)
 	switch {
 	case s == "":
@@ -229,18 +238,18 @@ func ParseListener(s string) (Listener, error) {
 	proto, port, ok := strings.Cut(strings.TrimSpace(s), ":")
 	proto = strings.ToLower(strings.TrimSpace(proto))
 	if !ok || proto == "" || strings.TrimSpace(port) == "" {
-		return Listener{}, fmt.Errorf("invalid listener %q: expected <protocol>:<port>, e.g. tcp:80 or https:443", s)
+		return Listener{}, invalid("listener %q: expected <protocol>:<port>, e.g. tcp:80 or https:443", s)
 	}
 	valid := false
 	for _, p := range ListenerProtocols {
 		valid = valid || p == proto
 	}
 	if !valid {
-		return Listener{}, fmt.Errorf("invalid listener %q: unknown protocol %q (expected one of %s)", s, proto, strings.Join(ListenerProtocols, ", "))
+		return Listener{}, invalid("listener %q: unknown protocol %q (expected one of %s)", s, proto, strings.Join(ListenerProtocols, ", "))
 	}
 	p, err := parsePort(strings.ToLower(port))
 	if err != nil {
-		return Listener{}, fmt.Errorf("invalid listener %q: %v", s, err)
+		return Listener{}, invalid("listener %q: %v", s, err)
 	}
 	return Listener{Protocol: proto, Port: p}, nil
 }
