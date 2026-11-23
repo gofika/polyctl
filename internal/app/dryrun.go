@@ -115,9 +115,11 @@ type WaitFlags struct {
 // DefaultWaitTimeout is the default --timeout of a wait.
 const DefaultWaitTimeout = 10 * time.Minute
 
-// AddWaitFlags registers --wait and --timeout on cmd. ensure commands wait
-// by default (defaultWait true) and also get --no-wait; every other command
-// waits only with --wait.
+// AddWaitFlags registers --wait, --no-wait and --timeout on cmd. ensure and
+// create commands wait by default (defaultWait true); every other command
+// waits only with --wait. --no-wait is accepted everywhere, so a script can
+// pass it to any command that has --wait; it is hidden from the help where
+// not waiting is the default already, since it changes nothing there.
 func AddWaitFlags(cmd *cobra.Command, w *WaitFlags, defaultWait bool, defaultTimeout time.Duration) {
 	if defaultTimeout <= 0 {
 		defaultTimeout = DefaultWaitTimeout
@@ -127,8 +129,9 @@ func AddWaitFlags(cmd *cobra.Command, w *WaitFlags, defaultWait bool, defaultTim
 		help += " (default; --no-wait or --wait=false returns at once)"
 	}
 	cmd.Flags().BoolVar(&w.Wait, "wait", defaultWait, help)
-	if defaultWait {
-		cmd.Flags().BoolVar(&w.noWait, "no-wait", false, "return as soon as the change was requested, without waiting for it to complete")
+	cmd.Flags().BoolVar(&w.noWait, "no-wait", false, "return as soon as the change was requested, without waiting for it to complete")
+	if !defaultWait {
+		_ = cmd.Flags().MarkHidden("no-wait")
 	}
 	cmd.Flags().DurationVar(&w.Timeout, "timeout", defaultTimeout, "upper bound of the wait (a Go duration such as 90s or 10m)")
 }

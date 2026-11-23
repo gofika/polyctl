@@ -82,7 +82,12 @@ func TestWaitFlags(t *testing.T) {
 	if _, _, err := parse(false, "--timeout", "0s"); !errors.Is(err, ErrUsage) {
 		t.Errorf("zero timeout = %v", err)
 	}
-	if _, _, err := parse(false, "--no-wait"); err == nil {
-		t.Error("--no-wait exists only where waiting is the default")
+	// --no-wait is accepted where not waiting is the default: it changes
+	// nothing, and it contradicts --wait as it does elsewhere.
+	if wait, _, err := parse(false, "--no-wait"); err != nil || wait {
+		t.Errorf("--no-wait without a waiting default = %v %v", wait, err)
+	}
+	if _, _, err := parse(false, "--no-wait", "--wait"); !errors.Is(err, ErrUsage) {
+		t.Errorf("contradiction without a waiting default = %v", err)
 	}
 }

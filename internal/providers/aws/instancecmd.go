@@ -642,9 +642,10 @@ none does. Without any key pair the instance gets no SSH key.
 --disk adds a data disk (/dev/sdb, gp3, 3000 IOPS, 125 MiB/s by default)
 that is kept when the instance is deleted; encryption follows the
 account's EBS default. The Name tag and the tags of defaults.aws.tags and
---tag go on the instance and on its volumes. --wait waits until the
-instance is running and prints its addresses.`,
-		Example: `  polyctl aws ec2 instance create site-new --type c6a.xlarge --disk 400 --wait --dry-run
+--tag go on the instance and on its volumes. create waits (by default, as
+on every platform; --no-wait returns at once) until the instance is
+running and prints its addresses.`,
+		Example: `  polyctl aws ec2 instance create site-new --type c6a.xlarge --disk 400 --dry-run
   polyctl aws ec2 instance create site-new --type t4g.small --ssh-key-file ~/.ssh/id_ed25519.pub --key-pair ops`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -832,7 +833,7 @@ instance is running and prints its addresses.`,
 	cmd.Flags().BoolVar(&publicIP, "public-ip", true, "assign a public IP (--public-ip=false for none)")
 	cmd.Flags().StringArrayVar(&tagArgs, "tag", nil, "extra tag key=value (repeatable; Name is always the instance name)")
 	cmd.Flags().StringVar(&region, "region", "", "region of the instance (default: the profile's region)")
-	app.AddWaitFlags(cmd, &wf, false, defaultInstanceTimeout)
+	app.AddWaitFlags(cmd, &wf, true, defaultInstanceTimeout)
 	return cmd
 }
 

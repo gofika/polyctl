@@ -475,10 +475,10 @@ vSwitches and the security group as well.
 - The host name is the name with every character other than letters,
   digits, hyphens and dots replaced by a hyphen, cut to 64 characters.
 - An instance of the name in the region is exit code 1: use ensure.
-- --wait waits until it is Running (polled every 2 seconds, --timeout);
-  --eip waits too, then binds an idle EIP of the region, else a new one.`,
+- create waits until it is Running (by default, as on every platform:
+  polled every 2 seconds, --timeout; --no-wait returns at once); --eip waits too, then binds an idle EIP of the region, else a new one.`,
 		Example: `  polyctl aliyun ecs instance create site-a --type ecs.u1-c1m1.large --security-group sg-common \
-    --key-pair ops --ssh-key-file ~/.ssh/id_ed25519.pub --wait`,
+    --key-pair ops --ssh-key-file ~/.ssh/id_ed25519.pub`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -568,7 +568,7 @@ vSwitches and the security group as well.
 			return rt.Ensure(ctx, "aliyun.ecs.instance.create", s.target(), &plan)
 		},
 	}
-	f.add(cmd, false, false, "instance type (required, unless defaults.aliyun.ecs_instance_type is set)", "security group of the instance, name or id (required)")
+	f.add(cmd, false, true, "instance type (required, unless defaults.aliyun.ecs_instance_type is set)", "security group of the instance, name or id (required)")
 	return cmd
 }
 
