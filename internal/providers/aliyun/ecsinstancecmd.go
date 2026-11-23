@@ -703,8 +703,9 @@ func ecsDeleteCmd(rt *app.Runtime) *cobra.Command {
 	var force bool
 	var timeout time.Duration
 	cmd := &cobra.Command{
-		Use:   "delete <name|id>",
-		Short: "Delete an ECS instance (asks first)",
+		Use:     "delete <name|id>",
+		Aliases: []string{"terminate"},
+		Short:   "Delete an ECS instance (asks first)",
 		Long: `Delete an ECS instance, found like get finds it. The instance and its
 addresses are shown, then a confirmation is asked (default no; --yes skips
 it, and the non-interactive flow needs --yes: exit code 2 without it).

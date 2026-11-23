@@ -1032,8 +1032,9 @@ func computeDeleteCmd(rt *app.Runtime) *cobra.Command {
 	var releaseIPs bool
 	var wf app.WaitFlags
 	cmd := &cobra.Command{
-		Use:   "delete <name|id>",
-		Short: "Delete a Compute Engine instance (asks first)",
+		Use:     "delete <name|id>",
+		Aliases: []string{"terminate"},
+		Short:   "Delete a Compute Engine instance (asks first)",
 		Long: `Delete a Compute Engine instance, found like get finds it. The instance, its
 disks and the static addresses it keeps are shown first, then a confirmation
 is asked (default no; --yes skips it, and the non-interactive flow needs
