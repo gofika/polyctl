@@ -60,6 +60,13 @@ func (*provider) LoginOptions() []string {
 	return []string{"username", "token", metaEnv}
 }
 
+// RecordTypes are the record types name.com can write.
+func (*provider) RecordTypes() []string {
+	return []string{"A", "AAAA", "CNAME", "MX", "NS", "TXT", "SRV", "CAA"}
+}
+
+var _ platform.RecordTyper = (*provider)(nil)
+
 func (*provider) ResourceTypes() []platform.ResourceType {
 	return []platform.ResourceType{platform.ResDomain, platform.ResZone, platform.ResDNSRecord}
 }

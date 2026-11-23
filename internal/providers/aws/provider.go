@@ -82,6 +82,13 @@ func (*provider) LoginOptions() []string {
 	return []string{"method", metaRegion, metaStartURL, metaSSORegion, metaAccountID, metaRoleName, metaAWSProfile, secretAccessKeyID, secretSecretAccessKey, secretSessionToken}
 }
 
+// RecordTypes are the record types Route 53 can write.
+func (*provider) RecordTypes() []string {
+	return []string{"A", "AAAA", "CNAME", "MX", "NS", "TXT", "SRV", "CAA", "PTR", "NAPTR", "SPF", "DS", "TLSA"}
+}
+
+var _ platform.RecordTyper = (*provider)(nil)
+
 func (*provider) ResourceTypes() []platform.ResourceType {
 	return []platform.ResourceType{platform.ResZone, platform.ResDNSRecord, platform.ResDomain, platform.ResInstance}
 }

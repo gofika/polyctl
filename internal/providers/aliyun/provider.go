@@ -75,6 +75,13 @@ func (*provider) LoginOptions() []string {
 	return []string{secretKeyID, secretKeySecret, metaRegion, metaSite, optCLIProfile}
 }
 
+// RecordTypes are the record types Alidns can write.
+func (*provider) RecordTypes() []string {
+	return []string{"A", "AAAA", "CNAME", "MX", "NS", "TXT", "SRV", "CAA"}
+}
+
+var _ platform.RecordTyper = (*provider)(nil)
+
 func (*provider) ResourceTypes() []platform.ResourceType {
 	return []platform.ResourceType{platform.ResZone, platform.ResDNSRecord, platform.ResDomain, platform.ResInstance}
 }

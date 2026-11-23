@@ -62,6 +62,13 @@ func (*provider) LoginOptions() []string {
 	return []string{"method", "project", "key_file", "client_id", "client_secret"}
 }
 
+// RecordTypes are the record types Cloud DNS can write.
+func (*provider) RecordTypes() []string {
+	return []string{"A", "AAAA", "CNAME", "MX", "NS", "TXT", "SRV", "CAA", "PTR", "NAPTR", "SPF", "TLSA", "DNSKEY", "DS"}
+}
+
+var _ platform.RecordTyper = (*provider)(nil)
+
 func (*provider) ResourceTypes() []platform.ResourceType {
 	return []platform.ResourceType{platform.ResZone, platform.ResDNSRecord, platform.ResInstance}
 }

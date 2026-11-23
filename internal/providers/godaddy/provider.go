@@ -66,6 +66,13 @@ func (*provider) LoginOptions() []string {
 	return []string{metaMethod, secretToken, optAPIKey, optAPISecret, metaEnv, metaBaseURL}
 }
 
+// RecordTypes are the record types GoDaddy can write.
+func (*provider) RecordTypes() []string {
+	return []string{"A", "AAAA", "CNAME", "MX", "NS", "TXT", "SRV", "CAA"}
+}
+
+var _ platform.RecordTyper = (*provider)(nil)
+
 func (*provider) ResourceTypes() []platform.ResourceType {
 	return []platform.ResourceType{platform.ResDomain, platform.ResZone, platform.ResDNSRecord}
 }
