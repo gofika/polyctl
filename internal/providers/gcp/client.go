@@ -157,6 +157,8 @@ func (c *client) Sync(ctx context.Context, rt platform.ResourceType) ([]platform
 		return c.syncForwardingRules(ctx)
 	case platform.ResEIP:
 		return c.syncAddresses(ctx)
+	case platform.ResCertificate:
+		return c.syncCertificates(ctx)
 	}
 	return nil, fmt.Errorf("%s: %w", rt, platform.ErrNotSupported)
 }

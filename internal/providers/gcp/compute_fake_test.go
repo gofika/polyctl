@@ -76,6 +76,8 @@ type fakeCompute struct {
 	// ("stop" -> STOPPING) so waits time out.
 	stuck map[string]string
 	seq   int
+	// lbState holds the load balancer resources (sslcert_fake_test.go).
+	lbState *lbFake
 }
 
 func newFakeCompute(t *testing.T) *fakeCompute {
@@ -286,6 +288,9 @@ func (f *fakeCompute) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	project := parts[1]
 	rest := parts[2:]
+	if f.handleLB(w, r, project, rest) {
+		return
+	}
 	switch {
 	case len(rest) == 0:
 		writeJSONStatus(w, 200, &compute.Project{Name: project, CommonInstanceMetadata: f.projectMeta[project]})
