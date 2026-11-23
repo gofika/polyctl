@@ -378,6 +378,17 @@ func TestInstanceCreateSSHKeysInProjectMetadata(t *testing.T) {
 	if strings.Count(v, "\n") != 1 || !strings.HasPrefix(v, "alice:") {
 		t.Errorf("instance-only ssh-keys = %q", v)
 	}
+	// A project that blocks its own keys: every key goes into the instance.
+	h.gce.mu.Lock()
+	h.gce.projectMeta["proj"].Items = append(h.gce.projectMeta["proj"].Items, &compute.MetadataItems{Key: "block-project-ssh-keys", Value: strPtr("true")})
+	h.gce.mu.Unlock()
+	if err := h.run("compute", "instance", "create", "web-3", "--ssh-key", a, "--static-ip=false"); err != nil {
+		t.Fatal(err)
+	}
+	v, _ = metadataValue(h.gce.instance("us-central1-a", "web-3").Metadata, "ssh-keys")
+	if !strings.HasPrefix(v, "alice:") || !strings.Contains(h.stderr.String(), "block-project-ssh-keys") {
+		t.Errorf("blocked project ssh-keys = %q\n%s", v, h.stderr.String())
+	}
 }
 
 func TestInstanceCreateFailures(t *testing.T) {

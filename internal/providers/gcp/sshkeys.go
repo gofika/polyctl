@@ -23,6 +23,7 @@ const (
 	sshKeysItem      = "ssh-keys"
 	legacySSHKeys    = "sshKeys"
 	osLoginItem      = "enable-oslogin"
+	blockProjectKeys = "block-project-ssh-keys"
 	maxSSHKeyFile    = 1 << 20
 	sshUserMaxLength = 32
 )
@@ -259,6 +260,14 @@ func (k sshKey) presentIn(keys []metadataKey) bool {
 // osLoginEnabled reports enable-oslogin=TRUE in metadata.
 func osLoginEnabled(md *compute.Metadata) bool {
 	v, ok := metadataValue(md, osLoginItem)
+	return ok && strings.EqualFold(strings.TrimSpace(v), "true")
+}
+
+// projectKeysBlocked reports block-project-ssh-keys=TRUE in metadata: set
+// project-wide, it is inherited by new instances, which then ignore the
+// project's ssh-keys, so every key has to go into the instance metadata.
+func projectKeysBlocked(md *compute.Metadata) bool {
+	v, ok := metadataValue(md, blockProjectKeys)
 	return ok && strings.EqualFold(strings.TrimSpace(v), "true")
 }
 

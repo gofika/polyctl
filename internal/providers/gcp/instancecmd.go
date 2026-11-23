@@ -840,7 +840,11 @@ func runCreate(cmd *cobra.Command, rt *app.Runtime, o *createOptions, name strin
 			if osLoginEnabled(md) {
 				rt.Infof("warning: the project enables OS Login (enable-oslogin=TRUE): ssh-keys metadata is ignored, and SSH access needs roles/compute.osLogin in IAM")
 			}
-			projectKeys = metadataKeys(md)
+			if projectKeysBlocked(md) {
+				rt.Infof("note: the project metadata sets block-project-ssh-keys=TRUE: every key goes into the instance metadata")
+			} else {
+				projectKeys = metadataKeys(md)
+			}
 		}
 		for _, k := range keys {
 			if !o.sshInstanceOnly && k.presentIn(projectKeys) {
