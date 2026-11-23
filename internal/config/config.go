@@ -72,6 +72,9 @@ func (a *Account) ClearLegacySecret() {
 // stands for one project or one customer.
 type Profile struct {
 	Platforms map[platform.ID]*Account `yaml:"platforms"`
+	// Defaults override the top-level defaults for this profile's accounts:
+	// profiles.<name>.defaults.<platform>.<key>.
+	Defaults Defaults `yaml:"defaults,omitempty"`
 }
 
 // legacyProfile is the pre-0.2 layout: one platform per profile.
@@ -127,10 +130,12 @@ func (p *Profile) UnmarshalYAML(n *yaml.Node) error {
 	}
 	var cur struct {
 		Platforms map[string]*Account `yaml:"platforms"`
+		Defaults  Defaults            `yaml:"defaults"`
 	}
 	if err := n.Decode(&cur); err != nil {
 		return err
 	}
+	p.Defaults = cur.Defaults
 	for name, a := range cur.Platforms {
 		id, err := platform.Parse(name)
 		if err != nil {
@@ -193,6 +198,16 @@ type Config struct {
 	CredentialStore string              `yaml:"credential_store,omitempty"`
 	TTL             map[string]Duration `yaml:"ttl,omitempty"`
 	Output          string              `yaml:"output,omitempty"`
+	// Naming holds the naming templates of resources ensure commands
+	// create (naming.<key>); see DefaultNaming.
+	Naming map[string]string `yaml:"naming,omitempty"`
+	// Hooks are notifications of unattended runs.
+	Hooks Hooks `yaml:"hooks,omitempty"`
+	// Cert configures the certificate commands.
+	Cert Cert `yaml:"cert,omitempty"`
+	// Defaults are per-platform default values (defaults.<platform>.<key>);
+	// a profile can override them under profiles.<name>.defaults.
+	Defaults Defaults `yaml:"defaults,omitempty"`
 
 	path string
 	// read is the state of the file when it was loaded or last saved; Save
@@ -278,6 +293,9 @@ func Load(path string) (*Config, error) {
 		if p.Platforms == nil {
 			p.Platforms = map[platform.ID]*Account{}
 		}
+	}
+	if err := c.validate(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return c, nil
 }

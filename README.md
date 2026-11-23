@@ -241,7 +241,97 @@ Keys:
 - `profiles.<name>.platforms.<platform>.legacy_secret`: written by polyctl only, while an account converted from a 0.1.x config still has its secret under the old key (see [Upgrading from 0.1.x](#upgrading-from-01x)). It disappears once the secret has been moved, or once the backend that would hold it says there is none.
 - `profiles.<name>.platforms.<platform>.legacy_backend`: written by polyctl only, next to `legacy_secret`, when the account was logged in again while the backend holding the old entry was out of reach: it names that backend, so the old entry can still be removed once the backend is available.
 
+- `profiles.<name>.defaults.<platform>.<key>`: overrides `defaults.<platform>.<key>` for the accounts of this profile (see below).
+
 Profile names must not contain spaces or slashes.
+
+#### Defaults, naming, hooks and certificates
+
+These keys configure the commands that create resources. None of them holds a secret, and no built-in default is a value of a particular account (no account name, public key, address, VPC or security group id): a value that has no neutral default and is not configured has to be passed as a flag, otherwise the command is a usage error (exit code 2) that names the flag and the key.
+
+```yaml
+defaults:                         # per-platform defaults: defaults.<platform>.<key>
+  aws:
+    region: eu-west-1
+    vpc_id: vpc-0123456789abcdef0
+    subnet_id: subnet-0123456789abcdef0
+    security_group_ids: [sg-0123456789abcdef0]
+    key_name: ops
+    instance_type: t3.small
+    elb_security_group_ids: [sg-0fedcba9876543210]
+    tags: { team: ops }
+    rds:
+      default_class: db.t3.micro
+      subnet_group: default
+      security_group_ids: [sg-0123456789abcdef0]
+      parameter_group: default.mysql8.0
+      default_tags: { backup: daily }
+  gcp:
+    network: default
+    subnet: default
+    zone: europe-west1-b
+    machine_type: e2-small
+    tags: [web]
+    lb_network_tag: lb-health-check
+    ssh_keys: []
+  aliyun:
+    region: cn-hongkong
+    resource_group: rg-0123456789
+    cas_region: ap-southeast-1
+    cas_endpoint: cas.ap-southeast-1.aliyuncs.com
+  cloudflare:
+    ssl: strict
+
+profiles:
+  acme:
+    platforms: { ... }
+    defaults:                     # per-profile overrides: profiles.<name>.defaults.<platform>.<key>
+      aws:
+        instance_type: t3.large
+
+naming:                           # names of the resources ensure commands create
+  aws_elbv2_load_balancer: "{name}-lb"
+  aws_elbv2_target_group: "{name}-{port}-target"
+  aliyun_alb_load_balancer: "lb-{name}"
+  aliyun_alb_server_group: "{service}-{protocol}"
+  aliyun_vpc: "{region}-vpc"
+  aliyun_vswitch: "{region}-switch-{zone}"
+  aliyun_ecs_security_group: "sg-common"
+  gcp_lb_prefix: "lb-"
+  gcp_instance_group_prefix: "ig-"
+  gcp_backend_service_prefix: "bs-"
+  gcp_proxy_prefix: "proxy-"
+  gcp_forwarding_rule_prefix: "fr-"
+
+hooks:
+  on_failure: https://hooks.example.com/polyctl   # or a shell command
+
+cert:
+  email: ops@example.com          # required by certificate issuance
+  agree_tos: false                # must be set to true explicitly
+  dir: ""                         # default <config dir>/certs
+  acme_directory: https://acme-v02.api.letsencrypt.org/directory
+  key_type: ec256                 # ec256 | rsa2048
+  reuse_key: false                # keep the private key on renewal
+  renew_days: 30                  # default of --days
+  name_template: "upload_{name}_{not_after}"
+  skip_accounts: []               # accounts (or account:deployer) certificate deployment leaves alone
+  dns:
+    resolvers: ["1.1.1.1:53", "8.8.8.8:53", "223.5.5.5:53", "114.114.114.114:53"]
+    min_resolvers: 2              # how many of them must see a TXT record
+    propagation_timeout: 5m
+    poll_interval: 10s
+    settle_delay: 20s
+  aws:
+    regions: [us-east-1]          # regions certificate deployment scans (default: the account's region)
+  aliyun:
+    regions: [cn-hongkong]
+```
+
+- `defaults.<platform>.<key>`: the value a command uses when its flag is not given. `<platform>` is a platform id (`aws`, `gcp`, `aliyun`, `cloudflare`, `namecom`, `godaddy`; aliases are not accepted here), and a key may be nested (`defaults.aws.rds.default_class`). Values are single values, lists or mappings, as shown. A profile overrides them with `profiles.<name>.defaults.<platform>.<key>`, which wins for that profile's accounts. The order is the usual one: the command-line flag, then the profile's value, then the top-level value, then the built-in default (where one exists).
+- `naming.<key>`: the template of the names `ensure` commands give to resources they create, unless a flag names the resource. Templates use `{name}`, `{service}`, `{protocol}`, `{port}`, `{region}` and `{zone}`; which ones a resource provides is documented with its command, and a template that uses a variable the resource does not provide is an error. The defaults are the ones shown. An unknown key, an unknown variable or an unbalanced brace is reported when the config is loaded (exit code 2).
+- `hooks.on_failure`: called when an `ensure`-style command fails (not for usage errors, not in a dry run), typically from cron. A value starting with `http://` or `https://` is a webhook: it receives a `POST` with a JSON body `{"event": "<command>.failed", "platform", "profile", "target", "domain", "error", "time", "changes"}`. Any other value is a shell command (`/bin/sh -c`, `cmd /C` on Windows) that gets the same JSON on stdin and the fields in `POLYCTL_EVENT`, `POLYCTL_PLATFORM`, `POLYCTL_PROFILE`, `POLYCTL_DEPLOYER`, `POLYCTL_TARGET`, `POLYCTL_DOMAIN` and `POLYCTL_ERROR`. A hook gets 15 seconds; a hook that fails or times out is a warning on stderr and never changes the exit code. Empty (the default): no notification.
+- `cert.*`: the settings of the certificate commands, with the defaults shown. `cert.key_type` takes `ec256` or `rsa2048`.
 
 Files written by 0.1.x, where a profile was a single platform (`profiles.<name>.platform: cloudflare` with `metadata` next to it), are still read: each such profile becomes a profile holding that one platform. See [Upgrading from 0.1.x](#upgrading-from-01x). A profile that mixes the two layouts is rejected when the config is loaded (exit code 2) instead of being loaded with a part of it dropped: both a `platform:` and a `platforms:` key (keep only `platforms:`), a `platform:` key without a value, or `metadata`, `credential_backend`, `created_at` or `updated_at` set on the profile itself without `platform:` (move them under `platforms.<platform>`).
 

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -88,11 +89,17 @@ func (rt *Runtime) RunPlan(ctx context.Context, target platform.Target, plan *pl
 
 // Ensure runs plan and prints its report: the common tail of every ensure
 // command. The report is printed when the plan failed too, before the
-// error is returned.
-func (rt *Runtime) Ensure(ctx context.Context, command string, target platform.Target, plan *platform.Plan) error {
+// error is returned. A failure (not in a dry run, not a usage error) is
+// also sent to hooks.on_failure as the event "<event>.failed"; event names
+// the command, dot-separated ("aws.rds.instance.ensure").
+func (rt *Runtime) Ensure(ctx context.Context, event string, target platform.Target, plan *platform.Plan) error {
 	rep, err := rt.RunPlan(ctx, target, plan)
 	if rerr := rt.RenderReport(rep); rerr != nil && err == nil {
 		err = rerr
+	}
+	if err != nil && !rep.DryRun && !errors.Is(err, ErrUsage) {
+		rt.NotifyFailure(ctx, Failure{Event: event + ".failed", Platform: string(target.Platform), Profile: target.Profile,
+			Domain: target.Domain, Error: err.Error(), Changes: rep.Changes})
 	}
 	return err
 }
