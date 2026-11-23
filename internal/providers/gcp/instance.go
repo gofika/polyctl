@@ -32,7 +32,7 @@ var (
 	instanceClock        platform.Clock = platform.RealClock
 )
 
-// dialTCP opens and closes one TCP connection (resize --wait-ssh); tests
+// dialTCP opens and closes one TCP connection (resize --wait-port); tests
 // replace it.
 var dialTCP = func(ctx context.Context, addr string, timeout time.Duration) error {
 	d := net.Dialer{Timeout: timeout}
