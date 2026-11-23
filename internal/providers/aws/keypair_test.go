@@ -59,16 +59,6 @@ func (f *fakeEC2) record(call string) {
 	f.calls = append(f.calls, f.region+":"+call)
 }
 
-func (f *fakeEC2) DescribeInstances(context.Context, *ec2.DescribeInstancesInput, ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
-	return &ec2.DescribeInstancesOutput{}, nil
-}
-func (f *fakeEC2) StartInstances(context.Context, *ec2.StartInstancesInput, ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error) {
-	return &ec2.StartInstancesOutput{}, nil
-}
-func (f *fakeEC2) StopInstances(context.Context, *ec2.StopInstancesInput, ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error) {
-	return &ec2.StopInstancesOutput{}, nil
-}
-
 func (f *fakeEC2) DescribeKeyPairs(_ context.Context, in *ec2.DescribeKeyPairsInput, _ ...func(*ec2.Options)) (*ec2.DescribeKeyPairsOutput, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -139,6 +129,7 @@ type fakeEC2s struct {
 	regions map[string][]*fakeKeyPair
 	views   []*fakeEC2
 	descErr error // DescribeKeyPairs fails with it when set
+	inst    fakeInstances
 }
 
 func (s *fakeEC2s) calls() []string {
@@ -209,7 +200,9 @@ func newAWSHarness(t *testing.T, flags app.Flags, defaults map[string]any) *awsH
 		fakes.views = append(fakes.views, v)
 		return v
 	}
-	t.Cleanup(func() { newEC2 = old })
+	oldSSM := newSSM
+	newSSM = func(cfg awssdk.Config) ssmAPI { return &fakeSSM{shared: fakes, region: cfg.Region} }
+	t.Cleanup(func() { newEC2, newSSM = old, oldSSM })
 
 	dir := t.TempDir()
 	t.Setenv(config.EnvConfigDir, dir)

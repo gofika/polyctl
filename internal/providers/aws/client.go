@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/route53"
 	"github.com/aws/aws-sdk-go-v2/service/route53domains"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 
 	"github.com/gofika/polyctl/internal/app"
@@ -43,10 +44,25 @@ type ec2API interface {
 	StopInstances(ctx context.Context, in *ec2.StopInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error)
 	DescribeKeyPairs(ctx context.Context, in *ec2.DescribeKeyPairsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeKeyPairsOutput, error)
 	ImportKeyPair(ctx context.Context, in *ec2.ImportKeyPairInput, optFns ...func(*ec2.Options)) (*ec2.ImportKeyPairOutput, error)
+	RunInstances(ctx context.Context, in *ec2.RunInstancesInput, optFns ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error)
+	TerminateInstances(ctx context.Context, in *ec2.TerminateInstancesInput, optFns ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error)
+	RebootInstances(ctx context.Context, in *ec2.RebootInstancesInput, optFns ...func(*ec2.Options)) (*ec2.RebootInstancesOutput, error)
+	ModifyInstanceAttribute(ctx context.Context, in *ec2.ModifyInstanceAttributeInput, optFns ...func(*ec2.Options)) (*ec2.ModifyInstanceAttributeOutput, error)
+	DescribeInstanceTypes(ctx context.Context, in *ec2.DescribeInstanceTypesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstanceTypesOutput, error)
+	DescribeInstanceTypeOfferings(ctx context.Context, in *ec2.DescribeInstanceTypeOfferingsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstanceTypeOfferingsOutput, error)
+	DescribeImages(ctx context.Context, in *ec2.DescribeImagesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeImagesOutput, error)
+	DescribeVolumes(ctx context.Context, in *ec2.DescribeVolumesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeVolumesOutput, error)
+}
+
+type ssmAPI interface {
+	GetParameter(ctx context.Context, in *ssm.GetParameterInput, optFns ...func(*ssm.Options)) (*ssm.GetParameterOutput, error)
 }
 
 // newEC2 creates the EC2 client of a region; tests replace it with a fake.
 var newEC2 = func(cfg awssdk.Config) ec2API { return ec2.NewFromConfig(cfg) }
+
+// newSSM creates the SSM client of a region; tests replace it with a fake.
+var newSSM = func(cfg awssdk.Config) ssmAPI { return ssm.NewFromConfig(cfg) }
 
 // client is an authenticated AWS session.
 type client struct {
@@ -55,6 +71,7 @@ type client struct {
 	r53    route53API
 	r53d   route53domainsAPI
 	ec2For func(region string) ec2API
+	ssmFor func(region string) ssmAPI
 }
 
 var (
@@ -75,6 +92,7 @@ func newClient(cfg awssdk.Config, region string) *client {
 		r53:    route53.NewFromConfig(regional(region)),
 		r53d:   route53domains.NewFromConfig(regional(route53domainsRegion)),
 		ec2For: func(r string) ec2API { return newEC2(regional(r)) },
+		ssmFor: func(r string) ssmAPI { return newSSM(regional(r)) },
 	}
 }
 
