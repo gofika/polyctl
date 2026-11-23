@@ -3,6 +3,7 @@ package aliyun
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/requests"
@@ -143,6 +144,23 @@ func (c *client) ListRecords(ctx context.Context, zoneID string) ([]platform.Rec
 	return out, nil
 }
 
+// defaultLine is the resolution line of records that name none.
+const defaultLine = "default"
+
+// mxValue separates an MX value written as "<priority> <host>" when no
+// priority is given apart: Alidns keeps the priority in its own field.
+func mxValue(r platform.Record) (string, *int) {
+	if !strings.EqualFold(r.Type, "MX") || r.Priority != nil {
+		return r.Value, r.Priority
+	}
+	if f := strings.Fields(r.Value); len(f) == 2 {
+		if p, err := strconv.Atoi(f[0]); err == nil {
+			return f[1], &p
+		}
+	}
+	return r.Value, nil
+}
+
 // CreateRecord adds a record to a zone.
 func (c *client) CreateRecord(ctx context.Context, zoneID string, r platform.Record) (*platform.Record, error) {
 	cl, err := c.dnsClient(ctx)
@@ -155,15 +173,17 @@ func (c *client) CreateRecord(ctx context.Context, zoneID string, r platform.Rec
 	req.DomainName = zone
 	req.RR = platform.RelativeName(r.Name, zone)
 	req.Type = strings.ToUpper(r.Type)
-	req.Value = r.Value
+	value, prio := mxValue(r)
+	req.Value = value
 	if r.TTL > 0 {
 		req.TTL = requests.NewInteger(r.TTL)
 	}
-	if r.Priority != nil {
-		req.Priority = requests.NewInteger(*r.Priority)
+	if prio != nil {
+		req.Priority = requests.NewInteger(*prio)
 	} else if req.Type == "MX" {
 		req.Priority = requests.NewInteger(10)
 	}
+	req.Line = defaultLine
 	if line := recordLine(r); line != "" {
 		req.Line = line
 	}
@@ -189,14 +209,15 @@ func (c *client) UpdateRecord(ctx context.Context, zoneID string, r platform.Rec
 	req.RecordId = r.ID
 	req.RR = platform.RelativeName(r.Name, zone)
 	req.Type = strings.ToUpper(r.Type)
-	req.Value = r.Value
+	value, prio := mxValue(r)
+	req.Value = value
 	ttl := r.TTL
 	if ttl <= 0 {
 		ttl = defaultRecordTTL
 	}
 	req.TTL = requests.NewInteger(ttl)
-	if r.Priority != nil {
-		req.Priority = requests.NewInteger(*r.Priority)
+	if prio != nil {
+		req.Priority = requests.NewInteger(*prio)
 	} else if req.Type == "MX" {
 		req.Priority = requests.NewInteger(10)
 	}

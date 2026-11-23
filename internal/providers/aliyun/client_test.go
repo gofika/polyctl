@@ -901,3 +901,24 @@ func TestLoginNonInteractiveNeverAsks(t *testing.T) {
 		t.Errorf("half a key = %v, want a usage error", err)
 	}
 }
+
+// An MX value written as "<priority> <host>" is split into Alidns's
+// Priority and Value; a new record names the default line.
+func TestCreateRecordSplitsMXPriority(t *testing.T) {
+	f := newFakeAPI(t)
+	var added url.Values
+	f.on("AddDomainRecord", func(q url.Values) (int, any) {
+		added = q
+		return 200, map[string]any{"RecordId": "9002"}
+	})
+	f.on("DescribeDomainRecordInfo", func(q url.Values) (int, any) {
+		return 200, map[string]any{"RecordId": "9002", "RR": "@", "Type": "MX", "Value": "mail.example.com", "TTL": 600, "Priority": 10, "DomainName": "example.com", "Line": "default"}
+	})
+	c := f.client()
+	if _, err := c.CreateRecord(context.Background(), "example.com", platform.Record{Name: "example.com", Type: "MX", Value: "10 mail.example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	if added.Get("Priority") != "10" || added.Get("Value") != "mail.example.com" || added.Get("RR") != "@" || added.Get("Line") != "default" {
+		t.Errorf("AddDomainRecord params = %v", added)
+	}
+}
