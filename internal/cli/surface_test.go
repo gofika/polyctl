@@ -373,6 +373,7 @@ func TestPlatformTreeShapes(t *testing.T) {
 		"aliyun ecs security-group list", "aliyun ecs security-group get", "aliyun ecs security-group create",
 		"aliyun ecs security-group delete", "aliyun ecs security-group ensure",
 		"aliyun ecs security-group rule add", "aliyun ecs security-group rule remove",
+		"aliyun ecs key-pair list", "aliyun ecs key-pair import", "aliyun ecs key-pair ensure",
 		// Registrar groups: list, get, ns get|set directly below the group.
 		"aws route53domains list", "aws route53domains get", "aws route53domains ns get", "aws route53domains ns set",
 		"namecom domain list", "namecom domain get", "namecom domain ns get", "namecom domain ns set", "namecom domain check",
@@ -393,7 +394,7 @@ func TestPlatformTreeShapes(t *testing.T) {
 	gone := []string{
 		"aws sts", "aws sts whoami", "aliyun sts", "aliyun sts whoami", "namecom hello", "cloudflare token", "cloudflare token verify",
 		"aws ec2 list", "aws ec2 start", "aws ec2 stop", "gcp compute list", "gcp compute start", "gcp compute stop",
-		"aliyun ecs list", "aliyun ecs start", "aliyun ecs stop", "aws ec2 key-pair delete",
+		"aliyun ecs list", "aliyun ecs start", "aliyun ecs stop", "aws ec2 key-pair delete", "aliyun ecs key-pair delete",
 		"aws route53domains domain", "aws route53domains domain list", "aws route53domains domain get",
 		"godaddy domain available", "godaddy dns replace", "aliyun dns record add", "dns update",
 	}

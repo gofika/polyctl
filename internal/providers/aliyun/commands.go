@@ -20,10 +20,10 @@ func Command(rt *app.Runtime) *cobra.Command {
 		Use:   "aliyun",
 		Short: "Alibaba Cloud native commands",
 		Long: `Alibaba Cloud native commands: the identity check, Alibaba Cloud DNS (alidns)
-domains and records, the domain registrar, ECS instances and security groups.
-The profile is chosen with --profile (or the current/only aliyun profile);
-listing commands read the local inventory unless --refresh is given or the
-data has expired.`,
+domains and records, the domain registrar, ECS instances, security groups and
+key pairs. The profile is chosen with --profile (or the current/only aliyun
+profile); listing commands read the local inventory unless --refresh is given
+or the data has expired.`,
 	}
 	cmd.AddCommand(
 		app.WhoamiCommand(rt, platform.Aliyun, "On Alibaba Cloud this calls sts GetCallerIdentity and reports the account,\nthe ARN and the identity type."),
@@ -626,10 +626,10 @@ func instanceGrid(list []Instance) output.Grid {
 }
 
 func newECSCmd(rt *app.Runtime) *cobra.Command {
-	cmd := &cobra.Command{Use: "ecs", Short: "Elastic Compute Service: instances and security groups"}
+	cmd := &cobra.Command{Use: "ecs", Short: "Elastic Compute Service: instances, security groups and key pairs"}
 	instance := &cobra.Command{Use: "instance", Short: "ECS instances"}
 	instance.AddCommand(newECSListCmd(rt), newECSStartCmd(rt), newECSStopCmd(rt))
-	cmd.AddCommand(instance, newSecurityGroupCmd(rt))
+	cmd.AddCommand(instance, newSecurityGroupCmd(rt), newKeyPairCmd(rt))
 	return cmd
 }
 

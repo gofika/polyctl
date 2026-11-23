@@ -1,6 +1,6 @@
 // Package aliyun implements the Alibaba Cloud provider: Alibaba Cloud DNS
-// (alidns) zones and records, the domain registrar, ECS instances and
-// security groups, authenticated with a RAM AccessKey.
+// (alidns) zones and records, the domain registrar, ECS instances,
+// security groups and key pairs, authenticated with a RAM AccessKey.
 //
 // Profile metadata keys (persisted in config.yaml, never sensitive):
 //
@@ -84,7 +84,7 @@ func (*provider) RecordTypes() []string {
 var _ platform.RecordTyper = (*provider)(nil)
 
 func (*provider) ResourceTypes() []platform.ResourceType {
-	return []platform.ResourceType{platform.ResZone, platform.ResDNSRecord, platform.ResDomain, platform.ResInstance, platform.ResSecurityGroup}
+	return []platform.ResourceType{platform.ResZone, platform.ResDNSRecord, platform.ResDomain, platform.ResInstance, platform.ResSecurityGroup, platform.ResKeyPair}
 }
 
 // optCLIProfile is the login option that names an aliyun CLI profile to

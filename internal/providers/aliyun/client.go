@@ -362,6 +362,8 @@ func (c *client) Sync(ctx context.Context, rt platform.ResourceType) ([]platform
 		return c.ListInstances(ctx, "")
 	case platform.ResSecurityGroup:
 		return c.securityGroupResources(ctx, c.region)
+	case platform.ResKeyPair:
+		return c.keyPairResources(ctx, c.region)
 	}
 	return nil, fmt.Errorf("%s: %w", rt, platform.ErrNotSupported)
 }
