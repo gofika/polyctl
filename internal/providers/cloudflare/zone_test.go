@@ -44,6 +44,8 @@ func TestFoundationUnsupported(t *testing.T) {
 		{cfErr(403, 10000, "Authentication error"), true},
 		{cfErr(400, 1001, "Request body is invalid."), false},
 		{cfErr(500, 10001, "internal"), false},
+		// A zone that does not exist is not an account without the feature.
+		{cfErr(403, 9109, "Invalid zone identifier"), false},
 	} {
 		if got := foundationUnsupported(tc.err); got != tc.want {
 			t.Errorf("foundationUnsupported(%v) = %v", tc.err, got)

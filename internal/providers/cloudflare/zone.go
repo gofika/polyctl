@@ -218,7 +218,9 @@ func (a *api) setFoundationDNS(ctx context.Context, zoneID string, on bool) (*zo
 // answer of an account without the feature has not been observed.
 func foundationUnsupported(err error) bool {
 	e := apiError(err)
-	if e == nil {
+	if e == nil || zoneGone(err) {
+		// A zone that does not exist (HTTP 403 code 9109 "Invalid zone
+		// identifier") is not an account without the feature.
 		return false
 	}
 	switch e.Status {

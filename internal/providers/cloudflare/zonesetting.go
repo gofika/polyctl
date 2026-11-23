@@ -114,6 +114,9 @@ func newZoneSettingGetCmd(rt *app.Runtime) *cobra.Command {
 				return err
 			}
 			cur, err := s.c.api.readSetting(ctx, s.z.ID, name)
+			if foundationUnsupported(err) && name == settingFoundationDNS {
+				return fmt.Errorf("%w: the account of zone %s cannot use Foundation DNS: %v", platform.ErrNotSupported, s.name(), err)
+			}
 			if err != nil {
 				return s.gone(ctx, rt, err)
 			}
