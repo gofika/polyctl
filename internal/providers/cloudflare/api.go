@@ -55,6 +55,13 @@ func newOAuthAPI(baseURL string, s *oauthSession, accountID string) *api {
 type message struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
+	// Source points at the part of the request body the error is about
+	// (a JSON pointer such as /rules/0/expression), when the API says.
+	Source *errorSource `json:"source,omitempty"`
+}
+
+type errorSource struct {
+	Pointer string `json:"pointer"`
 }
 
 type resultInfo struct {
