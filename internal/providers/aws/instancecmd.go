@@ -1180,7 +1180,7 @@ c6a.2xlarge, c6a.4xlarge; burstable t3 types can stall under steady load.`,
 					rt.Infof("instance %s already is %s", instanceLabel(l.inst), typ)
 				}
 				return rt.RenderReport(platform.Report{Target: target, DryRun: rt.DryRun(), Changes: []platform.Change{
-					{Resource: l.resource(), Action: platform.Unchanged, ID: l.id(), Detail: "type " + typeDesc}}})
+					{Resource: l.resource(), Action: platform.Unchanged, ID: l.id(), Detail: "type " + typeDesc, Attrs: sizeAttrs}}})
 			}
 			label := l.name()
 			var plan platform.Plan

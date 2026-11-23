@@ -106,6 +106,7 @@ func TestInstanceResizeSize(t *testing.T) {
 		t.Fatal(err)
 	}
 	if rep := h.report(); rep.Changes[0].Action != platform.Unchanged || rep.Changes[0].Detail != "type c6a.large(2H4G)" ||
+		rep.Changes[0].Attrs["instance_type"] != "c6a.large" || rep.Changes[0].Attrs["size"] != "2H4G" ||
 		h.ec2.count("DescribeInstanceTypeOfferings") != 0 || !strings.Contains(h.stderr.String(), "already is 2H4G (c6a.large)") {
 		t.Errorf("same size = %+v / %s", rep, h.stderr.String())
 	}
