@@ -99,7 +99,13 @@ func (e *Error) Error() string {
 		} else {
 			b.WriteString("; ")
 		}
-		fmt.Fprintf(&b, "%s (code %d)", m.Message, m.Code)
+		// Some errors carry a message only (no code); "code 0" would
+		// only mislead.
+		if m.Code == 0 {
+			b.WriteString(m.Message)
+		} else {
+			fmt.Fprintf(&b, "%s (code %d)", m.Message, m.Code)
+		}
 	}
 	return b.String()
 }

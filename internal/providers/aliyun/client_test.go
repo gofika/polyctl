@@ -248,10 +248,19 @@ func TestErrorMapping(t *testing.T) {
 		code   string
 		want   error
 	}{
-		// RAM policy denials are not authentication failures: no sentinel.
-		{403, "Forbidden.RAM", nil},
-		{403, "NoPermission.Domain", nil},
-		{403, "AccessDenied", nil},
+		// RAM policy denials and account-level refusals are not
+		// authentication failures: they are ErrForbidden.
+		{403, "Forbidden.RAM", platform.ErrForbidden},
+		{400, "Forbidden.RAM", platform.ErrForbidden},
+		{403, "Forbidden.LoadBalancer", platform.ErrForbidden},
+		{403, "NoPermission.Domain", platform.ErrForbidden},
+		{403, "NoPermission", platform.ErrForbidden},
+		{400, "NotAuthorized", platform.ErrForbidden},
+		{403, "AccessDenied", platform.ErrForbidden},
+		{403, "IncompleteAccountInfo", platform.ErrForbidden},
+		{400, "Identity.Uncertified", platform.ErrForbidden},
+		// 403 by itself decides nothing.
+		{403, "IncorrectInstanceStatus.Initializing", nil},
 		{404, "InvalidAccessKeyId.NotFound", platform.ErrUnauthorized},
 		{401, "", platform.ErrUnauthorized},
 		{400, "SignatureDoesNotMatch", platform.ErrUnauthorized},
@@ -268,7 +277,13 @@ func TestErrorMapping(t *testing.T) {
 		if tc.want != nil && !errors.Is(err, tc.want) {
 			t.Errorf("%s: error %v does not wrap %v", tc.code, err, tc.want)
 		}
-		if tc.want == nil && (errors.Is(err, platform.ErrUnauthorized) || errors.Is(err, platform.ErrNotFound)) {
+		if tc.want != platform.ErrUnauthorized && errors.Is(err, platform.ErrUnauthorized) {
+			t.Errorf("%s: must not map to ErrUnauthorized: %v", tc.code, err)
+		}
+		if platform.ErrorCode(err) != tc.code {
+			t.Errorf("%s: ErrorCode = %q", tc.code, platform.ErrorCode(err))
+		}
+		if tc.want == nil && (errors.Is(err, platform.ErrUnauthorized) || errors.Is(err, platform.ErrNotFound) || errors.Is(err, platform.ErrForbidden)) {
 			t.Errorf("%s: should not map to a sentinel: %v", tc.code, err)
 		}
 		if !strings.Contains(err.Error(), tc.code) || !strings.Contains(err.Error(), "alidns DescribeDomains") {
@@ -277,6 +292,26 @@ func TestErrorMapping(t *testing.T) {
 		if strings.Contains(err.Error(), "testsecret") {
 			t.Errorf("error message leaks the secret: %v", err)
 		}
+	}
+}
+
+func TestAccountStateAndDryRunCodes(t *testing.T) {
+	f := newFakeAPI(t)
+	c := f.client()
+	f.on("DescribeDomains", func(q url.Values) (int, any) { return 403, apiErr("IncompleteAccountInfo", "incomplete") })
+	_, err := c.ListZones(context.Background())
+	if !errors.Is(err, platform.ErrForbidden) || !strings.Contains(err.Error(), "basic information") {
+		t.Errorf("account state refusal = %v", err)
+	}
+	f.on("DescribeDomains", func(q url.Values) (int, any) {
+		return 400, apiErr("DryRunOperation", "Request validation has been passed with DryRun flag set.")
+	})
+	_, err = c.ListZones(context.Background())
+	if !isDryRunPassed(err) {
+		t.Errorf("DryRunOperation must count as passed: %v", err)
+	}
+	if isDryRunPassed(errors.New("DryRunOperation")) {
+		t.Error("a plain error is not a passed dry run")
 	}
 }
 

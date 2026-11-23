@@ -44,7 +44,7 @@ func ExitCodeFor(err error) int {
 		return ExitOK
 	case errors.As(err, &amb):
 		return ExitAmbiguous
-	case errors.Is(err, platform.ErrUnauthorized):
+	case errors.Is(err, platform.ErrUnauthorized), errors.Is(err, platform.ErrForbidden):
 		return ExitAuth
 	case errors.Is(err, platform.ErrNotFound), errors.Is(err, app.ErrDomainUnknown), errors.Is(err, inventory.ErrNeverSynced):
 		return ExitNotFound

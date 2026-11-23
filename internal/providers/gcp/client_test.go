@@ -21,6 +21,7 @@ import (
 
 	"golang.org/x/oauth2"
 	"google.golang.org/api/dns/v1"
+	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
 
 	"github.com/gofika/polyctl/internal/app"
@@ -973,5 +974,15 @@ func TestLoginNonInteractiveNeverAsks(t *testing.T) {
 	usage("adc with several projects", in, errBuf, "--set project=<id>", "other", "proj")
 	if strings.Contains(errBuf.String(), "1)") {
 		t.Errorf("adc with several projects drew the list: %q", errBuf.String())
+	}
+}
+
+func TestGoogleReason(t *testing.T) {
+	err := fmt.Errorf("insert: %w", &googleapi.Error{Code: 409, Errors: []googleapi.ErrorItem{{Reason: "alreadyExists", Message: "exists"}}})
+	if got := googleReason(err); got != "alreadyExists" {
+		t.Errorf("googleReason = %q", got)
+	}
+	if googleReason(&googleapi.Error{Code: 500}) != "" || googleReason(errors.New("x")) != "" {
+		t.Error("no reason expected")
 	}
 }

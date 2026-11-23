@@ -1166,3 +1166,10 @@ func TestLoginInteractiveChoosesAccount(t *testing.T) {
 		t.Errorf("chosen account: %+v (stderr %q)", res.Metadata, stderr.String())
 	}
 }
+
+func TestErrorWithoutCode(t *testing.T) {
+	e := newError(400, "PUT", "/zones/x/rulesets", []message{{Message: "unknown field"}, {Code: 1004, Message: "bad"}})
+	if got := e.Error(); strings.Contains(got, "code 0") || !strings.Contains(got, "unknown field; bad (code 1004)") {
+		t.Errorf("Error() = %q", got)
+	}
+}

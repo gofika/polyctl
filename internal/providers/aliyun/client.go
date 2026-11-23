@@ -176,9 +176,13 @@ func (c *client) ecsClient(ctx context.Context, region string) (*ecs.Client, err
 // apiError is an Alibaba Cloud API failure reduced to "action: Code: Message".
 // It unwraps to platform.ErrUnauthorized / platform.ErrNotFound when the
 // error code (or HTTP status) says so. RAM policy denials (Forbidden.*,
-// NoPermission.*, AccessDenied, HTTP 403) are authorization failures of a
-// valid key and deliberately carry no sentinel: the CLI must not ask for a
-// re-login and a sync must go on with the other resource types.
+// NoPermission.*, NotAuthorized, AccessDenied) and account-level refusals
+// (basic information not completed, real-name verification missing) are
+// failures of a valid key: they unwrap to platform.ErrForbidden, never to
+// ErrUnauthorized, so the CLI does not ask for a re-login and a sync goes on
+// with the other resource types. HTTP 403 alone decides nothing: ECS answers
+// several state errors (IncorrectInstanceStatus.Initializing,
+// DependencyViolation, ...) with 403 too.
 type apiError struct {
 	Action   string
 	Code     string
@@ -191,10 +195,17 @@ func (e *apiError) Error() string {
 	if e.Code == "" {
 		return fmt.Sprintf("%s: %s", e.Action, e.Message)
 	}
-	return fmt.Sprintf("%s: %s: %s", e.Action, e.Code, e.Message)
+	msg := fmt.Sprintf("%s: %s: %s", e.Action, e.Code, e.Message)
+	if hint := accountStateHint(e.Code); hint != "" {
+		msg += " (" + hint + ")"
+	}
+	return msg
 }
 
 func (e *apiError) Unwrap() error { return e.sentinel }
+
+// ErrorCode returns the Alibaba Cloud error code (platform.CodedError).
+func (e *apiError) ErrorCode() string { return e.Code }
 
 // wrapErr maps SDK errors to apiError (and the platform sentinels).
 func wrapErr(action string, err error) error {
@@ -224,6 +235,8 @@ func wrapErr(action string, err error) error {
 	switch {
 	case isUnauthorizedCode(e.Code, e.Status):
 		e.sentinel = platform.ErrUnauthorized
+	case isForbiddenCode(e.Code):
+		e.sentinel = platform.ErrForbidden
 	case isNotFoundCode(e.Code, e.Status):
 		e.sentinel = platform.ErrNotFound
 	}
@@ -240,6 +253,41 @@ func isUnauthorizedCode(code string, status int) bool {
 	}
 	return status == http.StatusUnauthorized
 }
+
+// isForbiddenCode reports a request a valid key may not make: a RAM denial
+// (the codes differ per product: ECS and Alidns 403 Forbidden.RAM, VPC 400
+// Forbidden.RAM, ALB 403 Forbidden.LoadBalancer, BSS 400 NotAuthorized,
+// ResourceManager 403 NoPermission) or an account the platform refuses to
+// serve until its console says so. ALB answers Forbidden.LoadBalancer even
+// for an id that does not exist, so a forbidden code is never "not found".
+func isForbiddenCode(code string) bool {
+	switch {
+	case code == "Forbidden", strings.HasPrefix(code, "Forbidden."),
+		code == "NoPermission", strings.HasPrefix(code, "NoPermission."),
+		code == "NotAuthorized", code == "AccessDenied", strings.HasPrefix(code, "AccessDenied."),
+		code == "UnauthorizedRegion",
+		code == "IncompleteAccountInfo", code == "OperationFailed.BasicInfoUncompleted",
+		code == "BASIC_INFO_UNCOMPLETED", code == "Identity.Uncertified":
+		return true
+	}
+	return false
+}
+
+// accountStateHint returns what to do about an account-level refusal, or "".
+func accountStateHint(code string) string {
+	switch code {
+	case "IncompleteAccountInfo", "OperationFailed.BasicInfoUncompleted", "BASIC_INFO_UNCOMPLETED":
+		return "complete the account's basic information in the Alibaba Cloud console, then try again"
+	case "Identity.Uncertified":
+		return "complete the account's real-name verification in the Alibaba Cloud console, then try again"
+	}
+	return ""
+}
+
+// isDryRunPassed reports the answer of a request sent with DryRun=true that
+// would have succeeded: Alibaba Cloud returns it as an error (HTTP 400
+// DryRunOperation), and it must be treated as success.
+func isDryRunPassed(err error) bool { return platform.HasErrorCode(err, "DryRunOperation") }
 
 func isNotFoundCode(code string, status int) bool {
 	switch {

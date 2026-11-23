@@ -74,6 +74,18 @@ func mapErr(err error) error {
 	return err
 }
 
+// googleReason returns the reason of a Compute REST error at submission
+// time: googleapi.Error.Errors[0].Reason. (apierror.APIError.Reason() is
+// always empty for compute REST errors, so it is not consulted.) Errors of
+// a finished Operation carry their code in the Operation itself instead.
+func googleReason(err error) string {
+	var ge *googleapi.Error
+	if errors.As(err, &ge) && len(ge.Errors) > 0 {
+		return ge.Errors[0].Reason
+	}
+	return ""
+}
+
 // isPermissionErr reports whether err is a 401/403 from the API.
 func isPermissionErr(err error) bool {
 	var ge *googleapi.Error
