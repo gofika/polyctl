@@ -214,6 +214,9 @@ func ParseTarget(s string) (LBTargetSpec, error) {
 	if id == "" {
 		return LBTargetSpec{}, invalid("target %q: the id is empty", s)
 	}
+	if port == "" && strings.HasSuffix(s, ":") {
+		return LBTargetSpec{}, invalid("target %q: the port after ':' is empty", s)
+	}
 	t := LBTargetSpec{ID: id}
 	if port != "" {
 		p, err := parsePort(port)

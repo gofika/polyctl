@@ -17,7 +17,7 @@ func TestParseTarget(t *testing.T) {
 			t.Errorf("ParseTarget(%q) = %+v, %v; want %+v", in, got, err, want)
 		}
 	}
-	for _, in := range []string{"", ":80", "i-1:0", "i-1:x", "[2001:db8::1", "[2001:db8::1]80"} {
+	for _, in := range []string{"", ":80", "i-1:0", "i-1:x", "i-1:", "[2001:db8::1]:", "[2001:db8::1", "[2001:db8::1]80"} {
 		if _, err := ParseTarget(in); err == nil {
 			t.Errorf("ParseTarget(%q) accepted", in)
 		}
