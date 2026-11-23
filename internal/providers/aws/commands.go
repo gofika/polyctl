@@ -20,10 +20,10 @@ func Command(rt *app.Runtime) *cobra.Command {
 		Use:   "aws",
 		Short: "Amazon Web Services native commands",
 		Long: `Native Amazon Web Services commands: the identity check, Route 53 hosted
-zones and records, Route 53 Domains registrations and EC2 instances. The
-profile is chosen with --profile (or the current profile); listing commands
-read the local inventory unless --refresh is given or the cached data has
-expired.`,
+zones and records, Route 53 Domains registrations, EC2 instances and EC2 key
+pairs. The profile is chosen with --profile (or the current profile);
+listing commands read the local inventory unless --refresh is given or the
+cached data has expired.`,
 	}
 	cmd.AddCommand(
 		app.WhoamiCommand(rt, platform.AWS, "On AWS this calls sts GetCallerIdentity and reports the account, the ARN, the\nuser id and the profile's region."),
@@ -708,7 +708,7 @@ func ec2Cmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{Use: "ec2", Short: "Elastic Compute Cloud"}
 	instance := &cobra.Command{Use: "instance", Short: "EC2 instances"}
 	instance.AddCommand(ec2ListCmd(rt), ec2StateCmd(rt, "start"), ec2StateCmd(rt, "stop"))
-	cmd.AddCommand(instance)
+	cmd.AddCommand(instance, keyPairCmd(rt))
 	return cmd
 }
 

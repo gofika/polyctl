@@ -971,9 +971,20 @@ aws route53 record delete <zone> --type A --name www               # deletes the
 aws route53domains list                           aws route53domains get <domain>
 aws route53domains ns get <domain>                aws route53domains ns set <domain> <nameserver>...
 aws ec2 instance list [--region <r>]              aws ec2 instance start <instance-id> [--region]     aws ec2 instance stop <instance-id> [--region] [--force]
+aws ec2 key-pair list [--region <r>]
+aws ec2 key-pair import <name> (--ssh-key <public key> | --ssh-key-file <path>) [--region <r>]
+aws ec2 key-pair ensure [<name>] [--ssh-key <public key> | --ssh-key-file <path>] [--region <r>]
 ```
 
-Inventory types: `zone`, `dns_record`, `domain`, `instance`. `route53domains` is this tree's registrar group, the counterpart of `domain` in the other trees.
+Inventory types: `zone`, `dns_record`, `domain`, `instance`, `key_pair`. `route53domains` is this tree's registrar group, the counterpart of `domain` in the other trees.
+
+EC2 key pairs belong to one region: `--region` picks it, the profile's region by default (the region the inventory caches; `key-pair list --region` reads another one live). AWS imports RSA and ED25519 public keys only; any other algorithm (ECDSA, DSA) is refused before anything is sent (exit code 2).
+
+- `--ssh-key` takes the public key itself (one line, `ssh-ed25519 AAAA... comment`); `--ssh-key-file` a file holding it (`~` is expanded, the first public key line is used). A file path given to `--ssh-key`, both flags together, a private key, or text that is not a public key are usage errors (exit code 2). The public key is never printed: reports show its algorithm, the start of its SHA256 fingerprint and the first 20 characters of its comment.
+- `key-pair list` shows `NAME`, `TYPE`, `FINGERPRINT` and `CREATED`. In JSON each key pair is `{"name", "key_pair_id", "type", "fingerprint", "created", "region"}` and `fingerprint` is exactly what AWS reports: unprefixed padded base64 SHA-256 for ED25519, colon-separated hexadecimal for RSA (the MD5 of the key for an imported key, a SHA-1 of the private key for a key pair AWS generated). The table prefixes ED25519 fingerprints with `SHA256:`. No key pairs is an empty list (`[]` with `-o json`), a note on stderr and exit code 0.
+- `key-pair import <name>` imports the key under `<name>` and prints a change report (`key-pair/<name>  created`). A name that is taken is a usage error (exit code 2) whatever key it holds: an existing key pair is never replaced. `--dry-run` checks the key and reports `would create` without sending any request. The tags of `defaults.aws.tags` are set on the new key pair.
+- `key-pair ensure [<name>]` reuses an existing key pair first. With a public key, the region's key pairs are compared with it by their public key (which matches imported key pairs and the ones AWS generated alike; a key pair listed without its public key is compared by fingerprint), and a key pair that holds it is reported `unchanged` (`matched by public key`) under its own name; a `<name>` that does not exist is then ignored, with a note. The same key can be imported under several names: `<name>` picks one of them, otherwise a terminal asks and the non-interactive flow fails with exit code 5, listing the names. When no key pair holds the key, it is imported as `<name>`; without `<name>` a terminal asks for the name (an empty answer creates nothing, exit code 0) and the non-interactive flow is a usage error (exit code 2): no name is ever chosen for you. With `<name>` alone, an existing key pair is used as it is; a missing one needs a public key (a terminal asks for the file, offering `~/.ssh/*.pub`; otherwise exit code 2). A `<name>` that exists with another key is a usage error (exit code 2) and is never replaced. `--dry-run` reports `unchanged` or `would create` without writing.
+- There is no `key-pair delete`: a key pair may still be bound to instances, and polyctl does not remove it.
 
 Route 53 stores a *record set* (name + type) with several values. polyctl exposes **one record per value** both in the inventory and in `dns list`, with a synthetic id of the form `<zone-id>|<TYPE>|<name>|<set-identifier>|<value>` (each part URL-encoded); updating or deleting one of them rewrites the whole record set with that value changed or removed. `record upsert` with several `--value` flags writes the set in one call.
 
@@ -1125,7 +1136,7 @@ Adding a platform means implementing `platform.Provider` (and `DNSService` / `Re
 
 ## Roadmap
 
-- Cloud resources beyond DNS are skeletons: for AWS, GCP and Alibaba Cloud only instance listing, start and stop are implemented (`aws ec2`, `gcp compute`, `aliyun ecs`). Storage, networking, IAM and the rest of each cloud's surface are deliberately out of scope for now.
+- Cloud resources beyond DNS are skeletons: for AWS, GCP and Alibaba Cloud only instance listing, start and stop are implemented (`aws ec2`, `gcp compute`, `aliyun ecs`), plus EC2 key pairs. Storage, networking, IAM and the rest of each cloud's surface are deliberately out of scope for now.
 - GoDaddy and name.com registrar features beyond nameservers, lock, auto-renew and availability (transfers, contacts, purchases) are not planned for the first releases.
 - Cloudflare coverage is limited to zones, DNS, cache purge, development mode, SSL mode and the custom domains of R2 buckets; Workers, Pages, Access and the contents of R2 buckets are not exposed.
 - Planned: record import/export (zone-file and bulk JSON), `polyctl domain expiring` across registrars, encrypted file fallback for the credential store, and a `--watch` mode for `inventory stats`.

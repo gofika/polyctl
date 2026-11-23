@@ -358,6 +358,7 @@ func TestPlatformTreeShapes(t *testing.T) {
 		"cloudflare r2 domain update", "cloudflare r2 domain detach", "cloudflare r2 domain ensure",
 		// Compute trees name the resource.
 		"aws ec2 instance list", "aws ec2 instance start", "aws ec2 instance stop",
+		"aws ec2 key-pair list", "aws ec2 key-pair import", "aws ec2 key-pair ensure",
 		"gcp compute instance list", "gcp compute instance start", "gcp compute instance stop",
 		"aliyun ecs instance list", "aliyun ecs instance start", "aliyun ecs instance stop",
 		// Registrar groups: list, get, ns get|set directly below the group.
@@ -380,7 +381,7 @@ func TestPlatformTreeShapes(t *testing.T) {
 	gone := []string{
 		"aws sts", "aws sts whoami", "aliyun sts", "aliyun sts whoami", "namecom hello", "cloudflare token", "cloudflare token verify",
 		"aws ec2 list", "aws ec2 start", "aws ec2 stop", "gcp compute list", "gcp compute start", "gcp compute stop",
-		"aliyun ecs list", "aliyun ecs start", "aliyun ecs stop",
+		"aliyun ecs list", "aliyun ecs start", "aliyun ecs stop", "aws ec2 key-pair delete",
 		"aws route53domains domain", "aws route53domains domain list", "aws route53domains domain get",
 		"godaddy domain available", "godaddy dns replace", "aliyun dns record add", "dns update",
 	}
