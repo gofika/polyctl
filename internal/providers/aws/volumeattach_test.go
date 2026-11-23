@@ -233,3 +233,18 @@ func TestVolumeDelete(t *testing.T) {
 		t.Errorf("deleted meanwhile = %+v", rep)
 	}
 }
+
+func TestVolumeAttachNameInInstanceRegion(t *testing.T) {
+	h := newVolumeHarness(t, app.Flags{})
+	h.ec2.find.regions = []string{"ap-east-1", "us-west-2"}
+	// The instance is outside the profile's region: a volume name is looked
+	// up in the instance's region, where the volume has to be anyway.
+	h.addInstance("us-west-2", &fakeInstance{id: "i-0bbbbbbbbbbbbbbb1", name: "west", typ: "t3.nano", state: stateRunning})
+	h.addVolume("us-west-2", &fakeVol{id: "vol-0w1", name: "west-data", size: 2})
+	if err := h.run("ec2", "volume", "attach", "west-data", "--instance", "west", "--no-wait"); err != nil {
+		t.Fatalf("attach: %v\n%s", err, h.stderr.String())
+	}
+	if rep := h.report(); rep.Target.Region != "us-west-2" || rep.Changes[0].ID != "vol-0w1" {
+		t.Errorf("report = %+v", rep)
+	}
+}

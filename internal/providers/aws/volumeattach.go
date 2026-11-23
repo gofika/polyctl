@@ -52,7 +52,14 @@ which makes the first reads slow.`,
 			if err != nil {
 				return err
 			}
-			l, err := resolveVolume(ctx, rt, args[0], region)
+			// The volume must be in the instance's region: a name is looked
+			// up there (an id is found wherever the inventory has it, and a
+			// mismatch is reported below).
+			volRegion := region
+			if volRegion == "" && !isVolumeID(strings.TrimSpace(args[0])) {
+				volRegion = li.region
+			}
+			l, err := resolveVolume(ctx, rt, args[0], volRegion)
 			if err != nil {
 				if rt.DryRun() && errors.Is(err, platform.ErrNotFound) && !isVolumeID(strings.TrimSpace(args[0])) {
 					// A volume an earlier step of the same dry run would create.
