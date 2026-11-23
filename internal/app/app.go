@@ -708,7 +708,33 @@ func (rt *Runtime) Open(ctx context.Context, name string, id platform.ID) (platf
 	if err != nil {
 		return nil, p, fmt.Errorf("open %s profile %q: %w", p.Platform, name, err)
 	}
+	if pa, ok := c.(platform.PeerAware); ok {
+		pa.SetPeers(func(ctx context.Context) ([]platform.Peer, error) { return rt.peers(ctx, name, id) })
+	}
 	return c, p, nil
+}
+
+// peers opens the accounts on platform id of every profile but self, in
+// profile order. An account that cannot be opened is left out (with a
+// verbose note): the peers are a fallback, not the subject of the command.
+func (rt *Runtime) peers(ctx context.Context, self string, id platform.ID) ([]platform.Peer, error) {
+	cfg, err := rt.Config()
+	if err != nil {
+		return nil, err
+	}
+	var out []platform.Peer
+	for _, name := range cfg.ProfilesFor(id) {
+		if name == self {
+			continue
+		}
+		c, _, err := rt.Open(ctx, name, id)
+		if err != nil {
+			rt.Verbosef("%s/%s: %v", id, name, err)
+			continue
+		}
+		out = append(out, platform.Peer{Profile: name, Client: c})
+	}
+	return out, nil
 }
 
 // OpenFor resolves the profile for a platform and opens it.

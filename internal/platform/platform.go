@@ -332,6 +332,11 @@ type Record struct {
 	Priority *int           `json:"priority,omitempty" yaml:"priority,omitempty"`
 	Proxied  *bool          `json:"proxied,omitempty" yaml:"proxied,omitempty"`
 	Extra    map[string]any `json:"extra,omitempty" yaml:"extra,omitempty"`
+	// Meta is what the platform says about the record itself, read-only:
+	// on Cloudflare the meta object of the API, which names the R2 bucket
+	// of a record created for a bucket's custom domain (r2_bucket) and
+	// marks records that cannot be edited (read_only). Empty elsewhere.
+	Meta map[string]any `json:"meta,omitempty" yaml:"meta,omitempty"`
 }
 
 // UnmarshalJSON reads a record, accepting the "content" key polyctl 0.1.x
