@@ -20,6 +20,7 @@ type Instance struct {
 	Status            string            `json:"status" yaml:"status"`
 	InternalIP        string            `json:"internal_ip,omitempty" yaml:"internal_ip,omitempty"`
 	ExternalIP        string            `json:"external_ip,omitempty" yaml:"external_ip,omitempty"`
+	Tags              []string          `json:"tags,omitempty" yaml:"tags,omitempty"`
 	CreationTimestamp string            `json:"creation_timestamp,omitempty" yaml:"creation_timestamp,omitempty"`
 	Labels            map[string]string `json:"labels,omitempty" yaml:"labels,omitempty"`
 }
@@ -43,6 +44,9 @@ func instanceFromAPI(in *compute.Instance) Instance {
 		Status:            in.Status,
 		CreationTimestamp: in.CreationTimestamp,
 		Labels:            in.Labels,
+	}
+	if in.Tags != nil {
+		out.Tags = in.Tags.Items
 	}
 	for _, ni := range in.NetworkInterfaces {
 		if out.InternalIP == "" {
