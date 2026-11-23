@@ -141,6 +141,12 @@ func resolveLiveZone(ctx context.Context, rt *app.Runtime, arg string) (*zoneSco
 		if len(zs) == 0 {
 			return nil, fmt.Errorf("%w: zone %s (it no longer exists in cloudflare/%s; removed from the local inventory)", platform.ErrNotFound, name, res.Profile)
 		}
+		if len(zs) > 1 {
+			// The profile is not pinned to an account and the name is
+			// held by several of the accounts its credentials see.
+			return nil, fmt.Errorf("%w: zone %s is held by %d accounts of cloudflare/%s; pin the account with `polyctl auth login cloudflare --profile %s --set account_id=<id>`",
+				platform.ErrAmbiguous, name, len(zs), res.Profile, res.Profile)
+		}
 		z, err = &zs[0], nil
 	}
 	if err != nil {
