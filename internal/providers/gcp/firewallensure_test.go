@@ -377,3 +377,23 @@ func TestFirewallEnsurePresetUsesTheInstanceProfile(t *testing.T) {
 		t.Errorf("report = %+v\n%s", rep, h.stderr.String())
 	}
 }
+
+func TestFirewallEnsureKeepsRuleForEveryInstance(t *testing.T) {
+	h := newGCPHarness(t, app.Flags{}, nil)
+	// No target tags: the rule already applies to every instance, and a
+	// tag would narrow it.
+	h.gce.addFirewall(&compute.Firewall{Name: "allow-ssh", Network: "default", Allowed: []*compute.FirewallAllowed{{IPProtocol: "tcp", Ports: []string{"22"}}},
+		SourceRanges: []string{"10.0.0.0/8"}})
+	if err := h.run("compute", "firewall", "ensure", "allow-ssh", "--allow", "tcp:22", "--source-range", "10.0.0.0/8", "--target-tag", "ssh"); err != nil {
+		t.Fatal(err)
+	}
+	if fw := h.gce.firewall("allow-ssh"); len(fw.TargetTags) != 0 || len(h.gce.firewallWrites()) != 0 || !strings.Contains(rows(h.report())[0], "unchanged") {
+		t.Errorf("rule = %+v writes %v", fw, h.gce.firewallWrites())
+	}
+	// A rule targeting service accounts is left alone.
+	h.gce.addFirewall(&compute.Firewall{Name: "by-sa", Network: "default", Allowed: []*compute.FirewallAllowed{{IPProtocol: "tcp"}},
+		SourceRanges: []string{"10.0.0.0/8"}, TargetServiceAccounts: []string{"sa@example.iam.gserviceaccount.com"}})
+	if err := h.run("compute", "firewall", "ensure", "by-sa", "--allow", "tcp", "--source-range", "10.0.0.0/8", "--target-tag", "web"); exitClass(err) != "general" || len(h.gce.firewallWrites()) != 0 {
+		t.Errorf("service accounts = %v %v", err, h.gce.firewallWrites())
+	}
+}

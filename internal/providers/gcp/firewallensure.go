@@ -272,9 +272,17 @@ func (c *client) ensureFirewallStep(ctx context.Context, s firewallEnsureSpec) (
 		}
 		details = append(details, fmt.Sprintf("+%s (now %s)", strings.Join(added, ", +"), plural(len(union), "range")))
 	}
+	// A rule without target tags or target service accounts already applies
+	// to every instance of the network: adding a tag would narrow it to the
+	// tagged instances, a removal in effect, so it is left as it is. A rule
+	// that targets service accounts cannot take tags as well.
+	everyInstance := len(fw.TargetTags) == 0 && len(fw.TargetServiceAccounts) == 0
+	if len(fw.TargetServiceAccounts) > 0 && len(s.TargetTags) > 0 {
+		return platform.Step{}, fmt.Errorf("firewall rule %s targets service accounts, not network tags: polyctl does not change its targets; fix it by hand, or pass another rule name", s.Name)
+	}
 	tags, addedTags := slices.Clone(fw.TargetTags), []string(nil)
 	for _, t := range s.TargetTags {
-		if !slices.Contains(tags, t) {
+		if !everyInstance && !slices.Contains(tags, t) {
 			tags = append(tags, t)
 			addedTags = append(addedTags, t)
 		}
@@ -481,8 +489,9 @@ an existing one gets the ranges, target tags and allowed protocols it lacks
 added to the ones it has (a union: nothing is ever removed; use update
 --source-range to replace ranges). --priority and --description change an
 existing rule only when given. A rule on another network, with the other
-direction, disabled, or a deny rule is exit code 1: polyctl does not move,
-turn or enable it.
+direction, disabled, a deny rule or one targeting service accounts is exit
+code 1: polyctl does not move, turn, enable or retarget it. A rule without
+target tags applies to every instance and gets no tag.
 
 Without --preset, <name>, --allow and --source-range (or, for --direction
 egress, --destination-range) are required, as for create.
