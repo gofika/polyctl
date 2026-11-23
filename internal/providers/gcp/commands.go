@@ -578,7 +578,9 @@ required argument.`,
 func newComputeCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{Use: "compute", Short: "Compute Engine"}
 	instance := &cobra.Command{Use: "instance", Short: "Compute Engine instances"}
-	instance.AddCommand(newComputeListCmd(rt), newComputePowerCmd(rt, "start"), newComputePowerCmd(rt, "stop"))
+	instance.AddCommand(newComputeListCmd(rt), computeGetCmd(rt), computeCreateCmd(rt), computeDeleteCmd(rt),
+		computeResizeCmd(rt), computeRebootCmd(rt), computeUpdateCmd(rt),
+		newComputePowerCmd(rt, "start"), newComputePowerCmd(rt, "stop"))
 	cmd.AddCommand(instance)
 	return cmd
 }
