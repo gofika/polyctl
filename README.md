@@ -277,7 +277,10 @@ defaults:                         # per-platform defaults: defaults.<platform>.<
     ssh_keys: []
   aliyun:
     region: cn-hongkong
-    resource_group: rg-0123456789
+    resource_group: rg-0123456789   # a name or an rg- id (aliyun eip address allocate / ensure)
+    eip:
+      bandwidth: 200              # Mbps of the EIPs polyctl allocates
+      isp: BGP_PRO
     cas_region: ap-southeast-1
     cas_endpoint: cas.ap-southeast-1.aliyuncs.com
   cloudflare:
@@ -707,7 +710,7 @@ printf '%s\n' "$AK_SECRET" | polyctl auth login aliyun --profile ci --set site=i
 polyctl auth login aliyun --profile acme --set site=cn --set aliyun_profile=default   # import from an `aliyun` CLI profile
 ```
 
-`--set aliyun_profile=<name>` names a profile of the Alibaba Cloud CLI (`~/.aliyun/config.json`, or the file named by `ALIBABA_CLOUD_CLI_CONFIG`; `aliyun_profile=current` picks the CLI's current profile; only AK-mode profiles can be imported). It is the counterpart of `aws_profile` with one difference: the AccessKey of that profile is copied into polyctl's credential store, not referenced, so later changes to the CLI profile are not picked up until the next login. `--set region=` is the default region for ECS (default `cn-hangzhou`); Alidns is region-independent. `--set site=cn|intl` is the account's site (see above); it also selects the Domain (registrar) API site. Grant the RAM user `AliyunDNSFullAccess`, `AliyunDomainFullAccess` and/or `AliyunECSReadOnlyAccess` as needed; the ECS write commands (security groups, key pairs) need `AliyunECSFullAccess`, the VPC lookups of the security group commands and the `aliyun vpc` listings `AliyunVPCReadOnlyAccess`, and the `aliyun vpc` write commands `AliyunVPCFullAccess`.
+`--set aliyun_profile=<name>` names a profile of the Alibaba Cloud CLI (`~/.aliyun/config.json`, or the file named by `ALIBABA_CLOUD_CLI_CONFIG`; `aliyun_profile=current` picks the CLI's current profile; only AK-mode profiles can be imported). It is the counterpart of `aws_profile` with one difference: the AccessKey of that profile is copied into polyctl's credential store, not referenced, so later changes to the CLI profile are not picked up until the next login. `--set region=` is the default region for ECS (default `cn-hangzhou`); Alidns is region-independent. `--set site=cn|intl` is the account's site (see above); it also selects the Domain (registrar) API site. Grant the RAM user `AliyunDNSFullAccess`, `AliyunDomainFullAccess` and/or `AliyunECSReadOnlyAccess` as needed; the ECS write commands (security groups, key pairs) need `AliyunECSFullAccess`, the VPC lookups of the security group commands and the `aliyun vpc` listings `AliyunVPCReadOnlyAccess`, and the `aliyun vpc` and `aliyun eip` write commands `AliyunVPCFullAccess` (plus `AliyunResourceManagerReadOnlyAccess` to look a resource group up by name).
 
 ## Platform-neutral commands
 
@@ -1138,6 +1141,10 @@ aliyun vpc vswitch list [--vpc <id|name>] [--region <r>]
 aliyun vpc vswitch get <name|id> [--vpc <id|name>] [--region <r>]
 aliyun vpc vswitch create <name> --vpc <id|name> --zone <zone-id|suffix> [--cidr <cidr>] [--region <r>]
 aliyun vpc vswitch ensure [--vpc <id|name>] [--zones b,c] [--prefix <name-prefix>] [--netmask 22] [--region <r>]
+aliyun eip address list [--unused | --bound] [--region <r>]
+aliyun eip address allocate [--bandwidth 200] [--isp BGP_PRO] [--resource-group default] [--region <r>]
+aliyun eip address associate <allocation-id|ip> --instance <name|id> [--region <r>]
+aliyun eip address ensure [--count 1] [--instance <name|id>] [--exclude <allocation-id>]... [--bandwidth 200] [--isp BGP_PRO] [--resource-group default] [--region <r>]
 ```
 
 `aliyun ecs instance stop` asks for confirmation on a terminal (default No; declining is a `nothing to do` note and exit code 0) unless `--yes` is given. In the non-interactive flow it never asks: without `--yes` it is a usage error (exit code 2) raised before the account is opened.
@@ -1176,7 +1183,15 @@ VPCs and vSwitches belong to one region (`--region`, the profile's region by def
 - `vswitch ensure` makes sure the VPC `--vpc` (default `naming.aliyun_vpc`, which has to exist: otherwise exit code 2 naming it) holds a vSwitch in each of `--zones` (`b,c` by default: `{region}-b` and `{region}-c`; suffixes or zone ids of the region, each once). They are named `<prefix>-<suffix>` with `--prefix` (no extra hyphen when the prefix ends with one), else by `naming.aliyun_vswitch` (`{region}-switch-{zone}`, `{zone}` being the suffix), and looked up by name in that VPC only: a vSwitch of the name in another VPC never counts. An existing one is `unchanged` whatever its zone or block (a warning in the detail says when its zone differs; vSwitches cannot be changed). The missing ones get the first free `/--netmask` blocks (22 by default, 16 to 29) of the VPC's block, scanned from its start and never overlapping the VPC's other vSwitches, so `--dry-run` shows the blocks a real run creates (`vswitch/<name>  created  vsw-... <zone> <cidr>`). A new vSwitch is waited for up to 30 seconds; running out of time is only a warning.
 - vSwitch creation errors carry the Alibaba Cloud code with a hint: an overlapping block (`InvalidCidrBlock.Overlapped`), a block outside the VPC's (`InvalidParameter`) or not aligned (`IllegalParam.CidrBlock`) are exit code 1; a zone the region does not have (`ResourceNotAvailable`) is exit code 7, with a hint to pass `--zones`.
 
-Inventory types: `zone` (Alidns domains), `dns_record`, `domain` (registered domains), `instance`, `security_group`, `key_pair`. Alidns stores the relative record name as `RR`; both the native `aliyun dns record` commands and the neutral `dns` commands expose it as `--name`. Records also carry a resolution line (`--line`), shown in the `LINE` column.
+Elastic IP addresses (EIPs) belong to one region (`--region`, the profile's region by default) and are named by their allocation id (`eip-...`) or their address. An EIP is billed as long as it exists, bound or not; polyctl has no command that releases one (`list --unused` shows the idle ones).
+
+- New EIPs are allocated with `AllocateEipAddress`: `--bandwidth` Mbps (`defaults.aliyun.eip.bandwidth`, else 200), `--isp` (`defaults.aliyun.eip.isp`, else `BGP_PRO`), pay by traffic, pay as you go, public, paid automatically, in the resource group `--resource-group` (a name, looked up with ResourceManager, or an `rg-...` id taken as it is; default `defaults.aliyun.resource_group`, else the group named `default`). A resource group that does not exist is exit code 4. An ISP the region does not offer is exit code 7 (which code Alibaba Cloud answers with is not verified: an invalid component, or a code naming the ISP, is mapped to it). An allocated EIP is read back (the answer of the allocation lacks most fields) and waited for until it is `Available` (up to 30 seconds).
+- `list` shows `ALLOCATION_ID`, `IP`, `STATUS`, `BOUND_TO` (the instance, network interface or load balancer and its type), `NAME / DESC`, `BANDWIDTH` and `ISP`, every page of the region, cached in the local inventory per region. `--unused` keeps the EIPs bound to nothing, `--bound` the others (both together are exit code 2). JSON: `[{"allocation_id", "ip", "status", "instance_id", "instance_type", "name", "description", "bandwidth", "isp", "charge_type", "internet_charge_type", "service_managed", "resource_group_id", "region"}]`. No EIPs is `[]`, a note on stderr and exit code 0.
+- `allocate` allocates one EIP and prints a change report (`eip/1  created  allocated 203.0.113.20 BGP_PRO 200Mbps PayByTraffic`); `--dry-run` resolves the resource group and reports `would create`.
+- `associate <allocation-id|ip> --instance <name|id>` binds the EIP to an ECS instance (found through the inventory in every selected account; `--instance` is required). The EIP is looked up in the instance's region: a `--region` that differs from it is exit code 2, a missing EIP exit code 4. An EIP bound to the instance already is `unchanged`; an EIP bound elsewhere or not `Available`, an instance that holds an EIP already or is not in a VPC are exit code 1. After the binding the EIP is waited for until it is `InUse` by the instance (up to 30 seconds).
+- `ensure` makes sure `--count` EIPs (1 by default; 2 for a dual-zone load balancer) are there to use, and with `--instance` that the instance holds one; a second run changes nothing. An idle EIP of the account in the region is reused first (`eip/1  unchanged  reuse idle 203.0.113.10`): bound to nothing, `Available`, not managed by a cloud product (`ServiceManaged` 0: a load balancer keeps the EIPs it used managed for up to a minute after letting them go) and of the ISP asked for. Any idle EIP of the account qualifies, whoever allocated it. The EIPs picked by one run are never picked twice, and `--exclude` leaves allocation ids out. The rest are allocated (`created`). `--instance` (with `--count 1` only) binds the EIP to the instance (`instance/<name>  updated  associated eip-... with i-...`); an instance that holds an EIP already is `unchanged` and nothing is reused, allocated or bound. `-o json` adds the EIPs to the report: `"result": {"eips": [{"allocation_id", "ip"}]}` (`(pending)` for one a dry run would allocate). `--dry-run` reads everything, so its `reuse idle` rows are those a real run reports.
+
+Inventory types: `zone` (Alidns domains), `dns_record`, `domain` (registered domains), `instance`, `security_group`, `key_pair`, `eip`. Alidns stores the relative record name as `RR`; both the native `aliyun dns record` commands and the neutral `dns` commands expose it as `--name`. Records also carry a resolution line (`--line`), shown in the `LINE` column.
 
 ## Output formats
 

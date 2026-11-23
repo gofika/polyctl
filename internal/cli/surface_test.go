@@ -376,6 +376,7 @@ func TestPlatformTreeShapes(t *testing.T) {
 		"aliyun ecs key-pair list", "aliyun ecs key-pair import", "aliyun ecs key-pair ensure", "aliyun ecs image latest",
 		"aliyun vpc vpc list", "aliyun vpc vpc get", "aliyun vpc vpc create", "aliyun vpc vpc ensure",
 		"aliyun vpc vswitch list", "aliyun vpc vswitch get", "aliyun vpc vswitch create", "aliyun vpc vswitch ensure",
+		"aliyun eip address list", "aliyun eip address allocate", "aliyun eip address associate", "aliyun eip address ensure",
 		// Registrar groups: list, get, ns get|set directly below the group.
 		"aws route53domains list", "aws route53domains get", "aws route53domains ns get", "aws route53domains ns set",
 		"namecom domain list", "namecom domain get", "namecom domain ns get", "namecom domain ns set", "namecom domain check",

@@ -21,13 +21,13 @@ func Command(rt *app.Runtime) *cobra.Command {
 		Short: "Alibaba Cloud native commands",
 		Long: `Alibaba Cloud native commands: the identity check, Alibaba Cloud DNS (alidns)
 domains and records, the domain registrar, ECS instances, security groups and
-key pairs, VPCs and vSwitches. The profile is chosen with --profile (or the current/only aliyun
+key pairs, VPCs, vSwitches and elastic IP addresses. The profile is chosen with --profile (or the current/only aliyun
 profile); listing commands read the local inventory unless --refresh is given
 or the data has expired.`,
 	}
 	cmd.AddCommand(
 		app.WhoamiCommand(rt, platform.Aliyun, "On Alibaba Cloud this calls sts GetCallerIdentity and reports the account,\nthe ARN and the identity type."),
-		newDNSCmd(rt), newDomainCmd(rt), newECSCmd(rt), newVPCCmd(rt))
+		newDNSCmd(rt), newDomainCmd(rt), newECSCmd(rt), newVPCCmd(rt), newEIPCmd(rt))
 	return cmd
 }
 
