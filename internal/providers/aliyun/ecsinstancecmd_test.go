@@ -170,6 +170,16 @@ func TestInstanceDelete(t *testing.T) {
 			t.Errorf("writes = %v", f.writes)
 		}
 	})
+	t.Run("--wait waits until it is gone", func(t *testing.T) {
+		h, f, _ := computeHarness(t, app.Flags{Yes: true})
+		f.addVM("i-1", "site-a", instStopped, "t", "vpc-1", "vsw-b")
+		if err := h.run("ecs", "instance", "delete", "site-a", "--wait"); err != nil {
+			t.Fatalf("%v\n%s", err, h.stderr.String())
+		}
+		if rep := reportOf(t, h); len(rep.Changes) != 1 || rep.Changes[0].Detail != "deleted; gone" {
+			t.Errorf("changes = %+v", rep.Changes)
+		}
+	})
 	t.Run("deletion protection", func(t *testing.T) {
 		h, f, _ := computeHarness(t, app.Flags{Yes: true})
 		f.addVM("i-1", "site-a", instStopped, "t", "vpc-1", "vsw-b")["DeletionProtection"] = true

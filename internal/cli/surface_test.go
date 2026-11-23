@@ -496,6 +496,44 @@ func TestPlatformTreeShapes(t *testing.T) {
 	}
 }
 
+// The instance commands of the compute trees take the same flags.
+func TestInstanceCommandsAgree(t *testing.T) {
+	rt := app.New(app.Flags{}, strings.NewReader(""), &strings.Builder{}, &strings.Builder{})
+	root := NewRoot(rt)
+	trees := []string{"aws ec2 instance", "gcp compute instance", "aliyun ecs instance"}
+	for _, tree := range trees {
+		// create waits by default and takes --no-wait.
+		if c := find(root, tree+" create"); c == nil {
+			t.Errorf("%s create is missing", tree)
+		} else if f := c.Flags().Lookup("wait"); f == nil || f.DefValue != "true" || c.Flags().Lookup("no-wait") == nil {
+			t.Errorf("%s create: --wait %+v, --no-wait %v", tree, f, c.Flags().Lookup("no-wait") != nil)
+		}
+		// delete, start, stop and reboot take --wait, --no-wait and --timeout.
+		for _, verb := range []string{"delete", "start", "stop", "reboot"} {
+			c := find(root, tree+" "+verb)
+			if c == nil {
+				t.Errorf("%s %s is missing", tree, verb)
+				continue
+			}
+			for _, name := range []string{"wait", "no-wait", "timeout"} {
+				if c.Flags().Lookup(name) == nil {
+					t.Errorf("%s %s has no --%s", tree, verb, name)
+				}
+			}
+		}
+		// delete is also terminate.
+		if c := find(root, tree+" delete"); c != nil && !c.HasAlias("terminate") {
+			t.Errorf("%s delete lacks the terminate alias", tree)
+		}
+		// start, stop, delete, reboot and resize take a name or an id.
+		for _, verb := range []string{"start", "stop", "delete", "reboot", "resize"} {
+			if c := find(root, tree+" "+verb); c != nil && !strings.HasPrefix(c.Use, verb+" <name|id") {
+				t.Errorf("%s %s: use %q", tree, verb, c.Use)
+			}
+		}
+	}
+}
+
 // whoami has the same output shape in every tree.
 func TestWhoamiShape(t *testing.T) {
 	_, cfgPath := setupMulti(t)

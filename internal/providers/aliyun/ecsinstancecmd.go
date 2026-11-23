@@ -701,7 +701,7 @@ func stopAndWait(ctx context.Context, rt *app.Runtime, s *ecsScope, in *Instance
 func ecsDeleteCmd(rt *app.Runtime) *cobra.Command {
 	var region string
 	var force bool
-	var timeout time.Duration
+	var w app.WaitFlags
 	cmd := &cobra.Command{
 		Use:     "delete <name|id>",
 		Aliases: []string{"terminate"},
@@ -717,7 +717,8 @@ until it is Running or Stopped (--timeout bounds every wait). A new
 instance cannot be deleted for about 45 seconds after its creation
 (IncorrectInstanceStatus.Initializing): the delete is retried for up to 2
 minutes. An instance with deletion protection is not deleted (exit code 1):
-switch the protection off in the console first.
+switch the protection off in the console first. --wait then waits until
+the instance is no longer listed.
 
 An EIP bound to the instance is not released: it becomes idle, stays billed
 and is reused by the next ensure.`,
@@ -725,8 +726,9 @@ and is reused by the next ensure.`,
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			if timeout <= 0 {
-				return app.UsageErrf("--timeout must be a positive duration, got %s", timeout)
+			wait, timeout, err := w.Resolve(cmd)
+			if err != nil {
+				return err
 			}
 			if !rt.DryRun() {
 				if err := rt.CanConfirm("delete instance " + args[0]); err != nil {
@@ -790,6 +792,13 @@ and is reused by the next ensure.`,
 			}
 			changes = append(changes, del)
 			rt.Infof("instance %s (%s) deleted", label, in.ID)
+			if wait {
+				if err := waitInstanceStatus(ctx, s, in.ID, label, statusNotFound, timeout); err != nil {
+					return fmt.Errorf("delete of %s was requested: %w", label, err)
+				}
+				del.Detail += "; gone"
+				changes[len(changes)-1] = del
+			}
 			if in.EIP != "" {
 				rt.Infof("note: EIP %s (%s) was unbound and is still billed; ensure reuses idle EIPs, release it in the console if it is no longer needed", in.EIP, in.EIPAllocationID)
 				refreshEIP(ctx, rt, s, in.EIPAllocationID)
@@ -798,7 +807,7 @@ and is reused by the next ensure.`,
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "delete a Running instance at once instead of stopping it first")
-	cmd.Flags().DurationVar(&timeout, "timeout", defaultInstanceTimeout, "upper bound of each wait (a Go duration such as 90s or 10m)")
+	app.AddWaitFlags(cmd, &w, false, defaultInstanceTimeout)
 	cmd.Flags().StringVar(&region, "region", "", "region of the instance (default: look it up in the inventory of every account)")
 	return cmd
 }
