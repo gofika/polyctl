@@ -370,7 +370,14 @@ func (c *client) Sync(ctx context.Context, rt platform.ResourceType) ([]platform
 	case platform.ResInstance:
 		return c.inEveryRegion(ctx, c.instanceResources)
 	case platform.ResLoadBalancer:
-		return c.inEveryRegion(ctx, c.albResources)
+		res, err := c.inEveryRegion(ctx, c.albResources)
+		if err != nil && platform.AsRegionSyncError(err) == nil && errors.Is(err, platform.ErrForbidden) {
+			// A RAM user without ALB permissions: a warning of the sync
+			// and an empty list, not a failure of the account (the list
+			// command reports the denial itself).
+			return nil, &platform.RegionSyncError{Failures: []platform.RegionError{{Region: "every region (no ALB read permission)", Err: err}}}
+		}
+		return res, err
 	case platform.ResSecurityGroup:
 		return c.securityGroupResources(ctx, c.region)
 	case platform.ResKeyPair:

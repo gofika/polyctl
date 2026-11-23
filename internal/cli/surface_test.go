@@ -397,6 +397,13 @@ func TestPlatformTreeShapes(t *testing.T) {
 		"aliyun vpc vpc list", "aliyun vpc vpc get", "aliyun vpc vpc create", "aliyun vpc vpc ensure",
 		"aliyun vpc vswitch list", "aliyun vpc vswitch get", "aliyun vpc vswitch create", "aliyun vpc vswitch ensure",
 		"aliyun eip address list", "aliyun eip address allocate", "aliyun eip address associate", "aliyun eip address ensure",
+		"aliyun alb load-balancer list", "aliyun alb load-balancer get", "aliyun alb load-balancer create", "aliyun alb load-balancer delete",
+		"aliyun alb listener list", "aliyun alb listener get", "aliyun alb listener create", "aliyun alb listener update",
+		"aliyun alb listener delete", "aliyun alb listener cert set",
+		"aliyun alb server-group list", "aliyun alb server-group get", "aliyun alb server-group create", "aliyun alb server-group delete",
+		"aliyun alb server-group server add",
+		"aliyun alb acl list", "aliyun alb acl get", "aliyun alb acl create", "aliyun alb acl delete",
+		"aliyun alb acl entry add", "aliyun alb acl entry remove",
 		"aliyun cas certificate list", "aliyun cas certificate upload", "aliyun cas certificate delete",
 		// Registrar groups: list, get, ns get|set directly below the group.
 		"aws route53domains list", "aws route53domains get", "aws route53domains ns get", "aws route53domains ns set",
