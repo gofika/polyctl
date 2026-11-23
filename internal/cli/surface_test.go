@@ -583,3 +583,84 @@ func TestWhoamiShape(t *testing.T) {
 		}
 	}
 }
+
+// Every command that asks for a confirmation is in the README's one list of
+// them (the Confirmations section), and every command of that list exists.
+// A command that starts to call rt.Confirm belongs in this table and in the
+// README.
+func TestReadmeListsConfirmingCommands(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	readme := string(data)
+	start := strings.Index(readme, "### Confirmations\n")
+	if start < 0 {
+		t.Fatal("README has no Confirmations section")
+	}
+	section := readme[start:]
+	if end := strings.Index(section[1:], "\n#"); end >= 0 {
+		section = section[:end+1]
+	}
+	bullet := func(label string) string {
+		for _, line := range strings.Split(section, "\n") {
+			if strings.HasPrefix(line, "- "+label+":") {
+				return line
+			}
+		}
+		t.Errorf("Confirmations has no %q bullet", label)
+		return ""
+	}
+	rt := app.New(app.Flags{}, strings.NewReader(""), &strings.Builder{}, &strings.Builder{})
+	root := NewRoot(rt)
+	for _, c := range []struct{ path, label, token string }{
+		{"dns delete", "Core", "`dns delete`"},
+		{"cert deploy", "Core", "`cert deploy --prune-expired`"},
+		{"auth logout", "Accounts", "`auth logout`"},
+		{"auth manage", "Accounts", "`auth manage`"},
+		{"aws ec2 instance stop", "AWS", "`ec2 instance stop`"},
+		{"aws ec2 instance delete", "AWS", "`ec2 instance delete`"},
+		{"aws ec2 instance resize", "AWS", "`ec2 instance resize`"},
+		{"aws ec2 security-group delete", "AWS", "`ec2 security-group delete`"},
+		{"aws ec2 security-group rule remove", "AWS", "`rule remove`"},
+		{"aws ec2 volume detach", "AWS", "`ec2 volume detach`"},
+		{"aws ec2 volume delete", "AWS", "`delete`"},
+		{"aws elbv2 load-balancer delete", "AWS", "`elbv2 load-balancer delete`"},
+		{"aws elbv2 target-group delete", "AWS", "`target-group delete`"},
+		{"aws elbv2 listener delete", "AWS", "`listener delete`"},
+		{"aws rds instance delete", "AWS", "`rds instance delete`"},
+		{"gcp compute instance stop", "GCP", "`compute instance stop`"},
+		{"gcp compute instance delete", "GCP", "`delete`"},
+		{"gcp compute instance reboot", "GCP", "`reboot`"},
+		{"gcp compute instance resize", "GCP", "`resize`"},
+		{"gcp compute firewall delete", "GCP", "`compute firewall delete`"},
+		{"gcp compute ssl-certificate delete", "GCP", "`compute ssl-certificate delete`"},
+		{"gcp compute load-balancer delete", "GCP", "`compute load-balancer delete`"},
+		{"gcp compute backend-service delete", "GCP", "`compute backend-service`"},
+		{"gcp compute forwarding-rule delete", "GCP", "`forwarding-rule`"},
+		{"gcp compute health-check delete", "GCP", "`health-check`"},
+		{"gcp compute instance-group delete", "GCP", "`instance-group`"},
+		{"aliyun ecs instance stop", "Alibaba Cloud", "`ecs instance stop`"},
+		{"aliyun ecs instance delete", "Alibaba Cloud", "`delete`"},
+		{"aliyun ecs instance reboot", "Alibaba Cloud", "`reboot --force`"},
+		{"aliyun ecs instance resize", "Alibaba Cloud", "`resize`"},
+		{"aliyun ecs security-group delete", "Alibaba Cloud", "`ecs security-group delete`"},
+		{"aliyun ecs security-group rule remove", "Alibaba Cloud", "`rule remove`"},
+		{"aliyun alb load-balancer delete", "Alibaba Cloud", "`alb load-balancer delete`"},
+		{"aliyun alb listener delete", "Alibaba Cloud", "`listener delete`"},
+		{"aliyun alb server-group delete", "Alibaba Cloud", "`server-group delete`"},
+		{"aliyun alb acl delete", "Alibaba Cloud", "`acl delete`"},
+		{"aliyun cas certificate delete", "Alibaba Cloud", "`cas certificate delete`"},
+		{"cloudflare r2 domain detach", "Cloudflare", "`r2 domain detach`"},
+		{"cloudflare zone delete", "Cloudflare", "`zone delete`"},
+		{"cloudflare cache rule set", "Cloudflare", "`cache rule set --replace`"},
+		{"cloudflare redirect rule set", "Cloudflare", "`redirect rule set --replace`"},
+	} {
+		if find(root, c.path) == nil {
+			t.Errorf("confirming command %q does not exist", c.path)
+		}
+		if line := bullet(c.label); line != "" && !strings.Contains(line, c.token) {
+			t.Errorf("README Confirmations, %s: %s is missing (%s)", c.label, c.token, c.path)
+		}
+	}
+}
