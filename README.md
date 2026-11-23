@@ -1238,7 +1238,7 @@ Adding a platform means implementing `platform.Provider` (and `DNSService` / `Re
 
 ## Roadmap
 
-- Cloud resources beyond DNS are skeletons: for Alibaba Cloud only instance listing, start and stop are implemented (`aliyun ecs`); AWS has the EC2 instance lifecycle (list, get, create, delete, reboot, resize, start, stop) and EC2 key pairs; GCP has the Compute Engine instance lifecycle (list, get, create, delete, resize, reboot, update, start, stop). Storage, networking, IAM and the rest of each cloud's surface are deliberately out of scope for now.
+- Cloud resources beyond DNS are skeletons: for Alibaba Cloud only instance listing, start and stop are implemented (`aliyun ecs`); AWS has the EC2 instance lifecycle (list, get, create, delete, reboot, resize, start, stop) and EC2 key pairs; GCP has the Compute Engine instance lifecycle (list, get, create, delete, resize, reboot, update, start, stop), VPC firewall rules (including the load balancer health check rule) and read-only VPC networks and subnetworks. Storage, networking, IAM and the rest of each cloud's surface are deliberately out of scope for now.
 - GoDaddy and name.com registrar features beyond nameservers, lock, auto-renew and availability (transfers, contacts, purchases) are not planned for the first releases.
 - Cloudflare coverage is limited to zones, DNS, cache purge, development mode, SSL mode and the custom domains of R2 buckets; Workers, Pages, Access and the contents of R2 buckets are not exposed.
 - Planned: record import/export (zone-file and bulk JSON), `polyctl domain expiring` across registrars, encrypted file fallback for the credential store, and a `--watch` mode for `inventory stats`.
