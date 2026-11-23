@@ -175,6 +175,16 @@ func TestDNSDeleteAllFailuresGoOn(t *testing.T) {
 	}
 }
 
+// A zone whose only deletable-looking records have no id is no "nothing
+// to do": the records are reported failed and the exit code is 1.
+func TestDNSDeleteAllOnlyRecordsWithoutID(t *testing.T) {
+	_, cfgPath, fc := ensureZone(t, platform.Record{ZoneID: "z1", Name: "noid.example.com", Type: "A", Value: "192.0.2.9"})
+	code, _, stderr := mainRun(cfgPath, "dns", "delete", "example.com", "--all", "-y")
+	if code != ExitError || writes(fc) != 0 || strings.Contains(stderr, "no records to clean up") || !strings.Contains(stderr, "1 record(s) have no id") {
+		t.Errorf("exit %d, %q, %v", code, stderr, fc.calls)
+	}
+}
+
 // A zone held by two accounts is ambiguous: nothing is deleted anywhere.
 func TestDNSDeleteAllAmbiguous(t *testing.T) {
 	dir, cfgPath := setupMulti(t)

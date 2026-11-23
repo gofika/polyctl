@@ -467,7 +467,11 @@ func runDNSDeleteAll(ctx context.Context, rt *app.Runtime, domain string, rawTyp
 	rt.Infof("zone %s via %s/%s", t.Domain, t.Platform, t.Profile)
 	n := plan.Deletes()
 	if n == 0 {
-		rt.Infof("no records to clean up")
+		if noID := countDisposition(plan.Items, platform.DispNoID); noID > 0 {
+			rt.Infof("nothing can be deleted: %d record(s) have no id", noID)
+		} else {
+			rt.Infof("no records to clean up")
+		}
 	} else if !dryRun && !rt.Flags.Yes {
 		printDeleteAllSummary(rt, t, plan.Items, n)
 		ok, err := rt.Confirm(ctx, fmt.Sprintf("delete %d records in zone %s", n, t.Domain), false)
@@ -499,6 +503,17 @@ func runDNSDeleteAll(ctx context.Context, rt *app.Runtime, domain string, rawTyp
 		return nil
 	}
 	return platform.FailedChanges(changes)
+}
+
+// countDisposition counts the items of the given disposition.
+func countDisposition(items []platform.DeleteAllItem, d platform.Disposition) int {
+	n := 0
+	for _, it := range items {
+		if it.Disposition == d {
+			n++
+		}
+	}
+	return n
 }
 
 // printDeleteAllSummary shows on stderr what dns delete --all is about to
