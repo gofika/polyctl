@@ -67,8 +67,11 @@ func (*provider) LoginOptions() []string {
 }
 
 // RecordTypes are the record types GoDaddy can write.
+// GoDaddy keeps the service, protocol, port and weight of an SRV record in fields
+// of their own, which a record value given as text does not fill, so SRV is
+// left out.
 func (*provider) RecordTypes() []string {
-	return []string{"A", "AAAA", "CNAME", "MX", "NS", "TXT", "SRV", "CAA"}
+	return []string{"A", "AAAA", "CNAME", "MX", "NS", "TXT", "CAA"}
 }
 
 var _ platform.RecordTyper = (*provider)(nil)

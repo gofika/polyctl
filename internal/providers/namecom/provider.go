@@ -61,8 +61,11 @@ func (*provider) LoginOptions() []string {
 }
 
 // RecordTypes are the record types name.com can write.
+// name.com keeps the priority of an SRV record apart from its answer, which a
+// record value given as "<priority> <weight> <port> <target>" text does not
+// do, so SRV is left out.
 func (*provider) RecordTypes() []string {
-	return []string{"A", "AAAA", "CNAME", "MX", "NS", "TXT", "SRV", "CAA"}
+	return []string{"A", "AAAA", "CNAME", "MX", "NS", "TXT", "CAA"}
 }
 
 var _ platform.RecordTyper = (*provider)(nil)
