@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -962,5 +964,41 @@ func TestDNSDeleteUnbindPartialFailure(t *testing.T) {
 	}
 	if n := len(e.f.records["zone-ex"]); n != 1 {
 		t.Errorf("records left = %d, want the R2 CNAME only", n)
+	}
+}
+
+// A failed ensure goes to hooks.on_failure (a dry run notifies nobody).
+func TestR2EnsureFailureHook(t *testing.T) {
+	e := newR2Env(t)
+	e.f.accounts["acc1"].buckets = []string{"assets"}
+	var mu sync.Mutex
+	var events []map[string]any
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var ev map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&ev)
+		mu.Lock()
+		events = append(events, ev)
+		mu.Unlock()
+	}))
+	t.Cleanup(hook.Close)
+	cfgPath := filepath.Join(e.dir, "config.yaml")
+	cfg, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, append(cfg, []byte("hooks:\n  on_failure: "+hook.URL+"\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, stderr := e.run("cloudflare", "r2", "domain", "ensure", "assets", "cdn.pending.test", "--dry-run"); code != cli.ExitError {
+		t.Fatalf("dry run: exit %d, %s", code, stderr)
+	}
+	if code, _, stderr := e.run("cloudflare", "r2", "domain", "ensure", "assets", "cdn.pending.test"); code != cli.ExitError {
+		t.Fatalf("ensure: exit %d, %s", code, stderr)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) != 1 || events[0]["event"] != "cloudflare.r2.domain.ensure.failed" || events[0]["profile"] != "acme" ||
+		!strings.Contains(fmt.Sprint(events[0]["error"]), "not active") {
+		t.Errorf("events = %v", events)
 	}
 }
