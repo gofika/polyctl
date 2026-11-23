@@ -255,6 +255,8 @@ func TestDomainNSCheckUsage(t *testing.T) {
 		"localhost":     {"localhost", "--resolver", srv.Addr},
 		"ip":            {"1.2.3.4", "--resolver", srv.Addr},
 		"bare suffix":   {"co.uk", "--resolver", srv.Addr},
+		"url":           {"https://example.com", "--resolver", srv.Addr},
+		"with port":     {"example.com:443", "--resolver", srv.Addr},
 		"bad resolver":  {"example.com", "--resolver", "dns.google"},
 		"zero timeout":  {"example.com", "--resolver", srv.Addr, "--timeout", "0s"},
 		"no domain":     {},

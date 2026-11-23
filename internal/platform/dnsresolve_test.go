@@ -3,6 +3,7 @@ package platform_test
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,13 +22,18 @@ func TestRegisteredDomain(t *testing.T) {
 		"a.b.example.com.cn":  "example.com.cn",
 		"foo.github.io":       "foo.github.io",
 		"deep.www.example.co": "example.co",
+		"*.example.com":       "example.com",
+		"_acme.example.com":   "example.com",
+		"bücher.example":      "xn--bcher-kva.example",
 	}
 	for in, want := range ok {
 		if got, err := platform.RegisteredDomain(in); err != nil || got != want {
 			t.Errorf("RegisteredDomain(%q) = %q, %v; want %q", in, got, err, want)
 		}
 	}
-	for _, in := range []string{"", "localhost", "1.2.3.4", "::1", "com", "co.uk"} {
+	for _, in := range []string{"", "localhost", "1.2.3.4", "::1", "com", "co.uk",
+		"http://example.com", "example.com/path", "example.com:80", "exa mple.com", "-bad.com", "foo..com",
+		"bad_.com", "a.*.example.com", strings.Repeat("a", 64) + ".com"} {
 		if got, err := platform.RegisteredDomain(in); err == nil {
 			t.Errorf("RegisteredDomain(%q) = %q, want an error", in, got)
 		}

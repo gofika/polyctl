@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"golang.org/x/net/idna"
 	"golang.org/x/net/publicsuffix"
 )
 
@@ -45,8 +46,10 @@ const (
 // RegisteredDomain returns the registered domain (eTLD+1 by the Public
 // Suffix List) of name: www.example.com -> example.com, example.co.uk ->
 // example.co.uk. Private suffixes of the list count (foo.github.io stays
-// foo.github.io). A name that has no registered domain (localhost, an IP
-// address, a bare public suffix, an empty string) is an error.
+// foo.github.io). An internationalized name is converted to its ASCII
+// (punycode) form. A name that has no registered domain (localhost, an IP
+// address, a bare public suffix, an empty string) or that is not a valid
+// host name (a URL, a port, spaces, ...) is an error.
 func RegisteredDomain(name string) (string, error) {
 	d := NormalizeDomain(name)
 	if d == "" {
@@ -55,9 +58,25 @@ func RegisteredDomain(name string) (string, error) {
 	if net.ParseIP(strings.Trim(d, "[]")) != nil {
 		return "", fmt.Errorf("%q is an IP address, not a domain", name)
 	}
+	ascii, err := idna.ToASCII(d)
+	if err != nil {
+		return "", fmt.Errorf("%q is not a valid domain name: %v", name, err)
+	}
+	d = strings.ToLower(ascii)
+	if err := checkHostName(d, true); err != nil {
+		return "", fmt.Errorf("%q is not a valid domain name: %v", name, err)
+	}
 	reg, err := publicsuffix.EffectiveTLDPlusOne(d)
 	if err != nil {
 		return "", fmt.Errorf("%q has no registered domain: %v", name, err)
+	}
+	// The labels of the registered domain itself take letters, digits and
+	// inner hyphens only; underscores and a leading "*" label are accepted
+	// below it.
+	for _, l := range strings.Split(reg, ".") {
+		if strings.ContainsAny(l, "_*") || strings.HasPrefix(l, "-") || strings.HasSuffix(l, "-") {
+			return "", fmt.Errorf("%q is not a valid domain name: bad label %q", name, l)
+		}
 	}
 	return reg, nil
 }
