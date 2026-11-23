@@ -519,7 +519,7 @@ func (r *NSCheckResult) evaluate(noZone bool, zoneErrs []error) {
 		}
 	}
 	if zone.Available && zone.Status == "pending" && r.Status != NSStatusOK {
-		r.Message += " (the platform reports the zone as pending)"
+		r.Message += "; the platform reports the zone as pending"
 	}
 }
 
