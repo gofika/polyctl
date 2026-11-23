@@ -193,6 +193,11 @@ func TestInstanceDelete(t *testing.T) {
 func TestInstanceReboot(t *testing.T) {
 	h, f, _ := computeHarness(t, app.Flags{})
 	f.addVM("i-1", "site-a", instRunning, "t", "vpc-1", "vsw-b")
+	// --force cuts the power: the non-interactive flow needs --yes.
+	if err := h.run("ecs", "instance", "reboot", "site-a", "--force"); !errors.Is(err, app.ErrUsage) || len(h.api.callsFor("RebootInstance")) != 0 {
+		t.Fatalf("--force without --yes = %v", err)
+	}
+	h.rt.Flags.Yes = true
 	if err := h.run("ecs", "instance", "reboot", "site-a", "--wait", "--force"); err != nil {
 		t.Fatalf("%v\n%s", err, h.stderr.String())
 	}

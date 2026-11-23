@@ -813,7 +813,10 @@ func ecsRebootCmd(rt *app.Runtime) *cobra.Command {
 		Use:   "reboot <name|id>",
 		Short: "Reboot a Running ECS instance",
 		Long: `Reboot a Running ECS instance, found like get finds it. --force stops it hard
-(ForceStop) instead of shutting it down. An instance that is not Running is
+(ForceStop, like pulling the power) instead of shutting it down, so it asks
+for a confirmation first (default no; --yes skips it, and the
+non-interactive flow needs --yes: exit code 2 without it); a plain reboot
+asks nothing. An instance that is not Running is
 exit code 1 (start a stopped one with start). --wait waits until it is
 Running again: a Running read counts only after the instance was seen
 leaving Running (or 30 seconds after the reboot), so a read taken before
@@ -826,6 +829,13 @@ accepted for 30 seconds.`,
 			wait, timeout, err := w.Resolve(cmd)
 			if err != nil {
 				return err
+			}
+			// A forced reboot cuts the power: the non-interactive flow
+			// without --yes is refused before any lookup.
+			if force && !rt.DryRun() {
+				if err := rt.CanConfirm("force-reboot instance " + args[0]); err != nil {
+					return err
+				}
 			}
 			s, in, err := resolveECSInstance(ctx, rt, args[0], region)
 			if err != nil {
@@ -841,6 +851,16 @@ accepted for 30 seconds.`,
 			}
 			if done, err := rt.WouldWrite(s.target(), change); done || err != nil {
 				return err
+			}
+			if force {
+				rt.Infof("This is a forced reboot: the operating system is not shut down gracefully (like pulling the power); unsaved data is lost.")
+				ok, err := rt.Confirm(ctx, fmt.Sprintf("Force-reboot instance %s (no graceful OS shutdown)?", label), false)
+				if err != nil {
+					return err
+				}
+				if !ok {
+					return fmt.Errorf("%w: cancelled; instance %s was not rebooted", platform.ErrNothingToDo, label)
+				}
 			}
 			if err := s.c.rebootInstance(ctx, s.region, in.ID, force); err != nil {
 				return err
