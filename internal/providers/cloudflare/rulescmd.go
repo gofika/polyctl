@@ -360,7 +360,8 @@ func ttlText(p map[string]any, key string) string {
 	return words
 }
 
-// secondsText prints a TTL: 300s, 2678400s (31d), 0s (no cache).
+// secondsText prints a TTL: 300s, 2678400s (31d), 90000s (1.0d), 0s (no
+// cache).
 func secondsText(v any) string {
 	n, ok := v.(int64)
 	if !ok {
@@ -370,8 +371,10 @@ func secondsText(v any) string {
 	switch {
 	case n == 0:
 		return s + " (no cache)"
+	case n > 86400 && n%86400 == 0:
+		return s + " (" + strconv.FormatInt(n/86400, 10) + "d)"
 	case n > 86400:
-		return s + " (" + strconv.FormatFloat(float64(n)/86400, 'f', -1, 64) + "d)"
+		return s + " (" + strconv.FormatFloat(float64(n)/86400, 'f', 1, 64) + "d)"
 	}
 	return s
 }

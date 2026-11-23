@@ -28,6 +28,9 @@ func TestCacheDisplayHelpers(t *testing.T) {
 	if got := secondsText(int64(2678400)); got != "2678400s (31d)" {
 		t.Errorf("seconds = %q", got)
 	}
+	if got := secondsText(int64(90000)); got != "90000s (1.0d)" {
+		t.Errorf("fractional days = %q", got)
+	}
 	if got := cutExpression(strings.Repeat("x", 50), false); len(got) != expressionWidth || !strings.HasSuffix(got, "...") {
 		t.Errorf("cut = %q", got)
 	}
