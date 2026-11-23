@@ -52,6 +52,9 @@ type Error struct {
 	Method string
 	URL    string
 	Body   string
+	// Header holds the response headers (request ids such as Cloudflare's
+	// cf-ray live there).
+	Header http.Header
 }
 
 func (e *Error) Error() string {
@@ -141,11 +144,11 @@ func (c *Client) Do(ctx context.Context, method, path string, query url.Values, 
 			continue
 		}
 		if resp.StatusCode == http.StatusTooManyRequests || (resp.StatusCode >= 500 && idempotent) {
-			lastErr = &Error{Status: resp.StatusCode, Method: method, URL: u, Body: string(rb)}
+			lastErr = &Error{Status: resp.StatusCode, Method: method, URL: u, Body: string(rb), Header: resp.Header}
 			continue
 		}
 		if resp.StatusCode < 200 || resp.StatusCode > 299 {
-			return &Error{Status: resp.StatusCode, Method: method, URL: u, Body: string(rb)}
+			return &Error{Status: resp.StatusCode, Method: method, URL: u, Body: string(rb), Header: resp.Header}
 		}
 		if out != nil && len(bytes.TrimSpace(rb)) > 0 {
 			if err := json.Unmarshal(rb, out); err != nil {

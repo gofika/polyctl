@@ -84,7 +84,13 @@ type Error struct {
 	Method string
 	Path   string
 	Errors []message
-	base   error
+	// RayID is the cf-ray header of the response, when there was one: the
+	// id Cloudflare support asks for.
+	RayID string
+	// NotJSON is set when the response body was not the JSON envelope (an
+	// HTML page of Cloudflare's edge, a proxy error).
+	NotJSON bool
+	base    error
 }
 
 func (e *Error) Error() string {
@@ -110,7 +116,43 @@ func (e *Error) Error() string {
 			fmt.Fprintf(&b, "%s (code %d)", m.Message, m.Code)
 		}
 	}
+	// The request id is worth quoting when the failure is on Cloudflare's
+	// side or not an API answer at all.
+	if e.RayID != "" && (e.NotJSON || e.Status == http.StatusTooManyRequests || e.Status >= 500) {
+		fmt.Fprintf(&b, " (cf-ray %s)", e.RayID)
+	}
 	return b.String()
+}
+
+// HasCode reports whether the API answered with one of codes.
+func (e *Error) HasCode(codes ...int) bool {
+	for _, m := range e.Errors {
+		for _, c := range codes {
+			if m.Code == c {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// messageContains reports whether an error message contains s (any case).
+func (e *Error) messageContains(s string) bool {
+	for _, m := range e.Errors {
+		if strings.Contains(strings.ToLower(m.Message), strings.ToLower(s)) {
+			return true
+		}
+	}
+	return false
+}
+
+// apiError returns the Cloudflare API error in err's chain, if any.
+func apiError(err error) *Error {
+	var e *Error
+	if errors.As(err, &e) {
+		return e
+	}
+	return nil
 }
 
 // Unwrap returns the mapped sentinel error, if any.
@@ -125,6 +167,7 @@ var authCodes = map[int]bool{
 	9103:  true, // Unknown X-Auth-Key or X-Auth-Email
 	6003:  true, // Invalid request headers
 	6111:  true, // Invalid format for Authorization header
+	70503: true, // account with given Tag doesn't exist (the pinned account id is wrong)
 }
 
 // Cloudflare error codes that mean the addressed object does not exist.
@@ -206,11 +249,12 @@ func (a *api) doOnce(ctx context.Context, method, path string, query url.Values,
 		if errors.As(err, &he) {
 			var body envelope
 			msgs := []message(nil)
-			if json.Unmarshal([]byte(he.Body), &body) == nil {
+			isJSON := json.Unmarshal([]byte(he.Body), &body) == nil
+			if isJSON {
 				msgs = body.Errors
 			}
+			text := strings.TrimSpace(he.Body)
 			if len(msgs) == 0 {
-				text := strings.TrimSpace(he.Body)
 				if len(text) > 200 {
 					text = text[:200] + "..."
 				}
@@ -218,7 +262,17 @@ func (a *api) doOnce(ctx context.Context, method, path string, query url.Values,
 					msgs = []message{{Message: text}}
 				}
 			}
-			return nil, newError(he.Status, method, path, msgs)
+			e := newError(he.Status, method, path, msgs)
+			e.RayID = he.Header.Get("cf-ray")
+			if !isJSON && strings.HasPrefix(text, "<") {
+				// An HTML page instead of the envelope: Cloudflare's edge
+				// (or a proxy) answered, not the API. It says nothing about
+				// the credentials or the object, so it is a plain failure.
+				e.NotJSON = true
+				e.Errors = []message{{Message: "the response is not the API's JSON (possibly blocked at Cloudflare's edge): " + text}}
+				e.base = nil
+			}
+			return nil, e
 		}
 		return nil, err
 	}
@@ -349,9 +403,14 @@ type apiZone struct {
 		Name string `json:"name"`
 	} `json:"account"`
 	Plan struct {
-		Name string `json:"name"`
+		Name     string `json:"name"`
+		LegacyID string `json:"legacy_id,omitempty"`
 	} `json:"plan"`
-	ModifiedOn string `json:"modified_on,omitempty"`
+	// OriginalNameServers is null for a zone that was just created.
+	OriginalNameServers []string       `json:"original_name_servers"`
+	Meta                map[string]any `json:"meta,omitempty"`
+	CreatedOn           string         `json:"created_on,omitempty"`
+	ModifiedOn          string         `json:"modified_on,omitempty"`
 }
 
 func (a *api) zoneQuery() url.Values {
@@ -411,6 +470,15 @@ func toZone(z apiZone) platform.Zone {
 	}
 	if z.Type != "" {
 		extra["type"] = z.Type
+	}
+	if z.Plan.LegacyID != "" {
+		extra[extraPlanID] = z.Plan.LegacyID
+	}
+	if z.CreatedOn != "" {
+		extra["created_on"] = z.CreatedOn
+	}
+	if z.ModifiedOn != "" {
+		extra["modified_on"] = z.ModifiedOn
 	}
 	return platform.Zone{
 		ID:          z.ID,
