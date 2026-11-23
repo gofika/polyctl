@@ -262,10 +262,10 @@ func pickInstance(ref string, found []*locatedInstance, failure error, allowTerm
 	return nil, fmt.Errorf("%w: %s %q in the selected AWS accounts (pass --region for an instance outside the profile's region)", platform.ErrNotFound, what, ref)
 }
 
-// storeInstance writes an instance to the inventory, when it belongs to
-// the region the inventory holds (the profile's region).
+// storeInstance writes an instance to the inventory, which holds the
+// instances of every enabled region.
 func storeInstance(ctx context.Context, rt *app.Runtime, profile string, c *client, region string, in ec2types.Instance) {
-	if c.regionOr(region) != c.region || awssdk.ToString(in.InstanceId) == "" {
+	if awssdk.ToString(in.InstanceId) == "" {
 		return
 	}
 	db, err := rt.DB()
@@ -274,7 +274,28 @@ func storeInstance(ctx context.Context, rt *app.Runtime, profile string, c *clie
 	}
 	cfg, _ := rt.Config()
 	_ = db.Upsert(ctx, inventory.Set{Platform: platform.AWS, Profile: profile, Type: platform.ResInstance},
-		instanceFrom(c.region, in).resource(), cfg.TTLFor(platform.ResInstance))
+		instanceFrom(c.regionOr(region), in).resource(), cfg.TTLFor(platform.ResInstance))
+}
+
+// profileRegion is the region the account's commands use by default, as
+// stored with the account: its region, else the built-in default for the
+// methods that apply one. "" when it depends on ~/.aws/config.
+func profileRegion(rt *app.Runtime, profile string) string {
+	cfg, err := rt.Config()
+	if err != nil {
+		return ""
+	}
+	a, err := cfg.Account(profile, platform.AWS)
+	if err != nil {
+		return ""
+	}
+	if r := a.Metadata[metaRegion]; r != "" {
+		return r
+	}
+	if a.Metadata[metaMethod] == methodProfile {
+		return ""
+	}
+	return defaultRegion
 }
 
 // dropInstance removes an instance from the inventory.

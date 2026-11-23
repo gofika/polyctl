@@ -131,6 +131,7 @@ type fakeEC2s struct {
 	descErr error // DescribeKeyPairs fails with it when set
 	inst    fakeInstances
 	sg      fakeSGs
+	find    fakeFind
 }
 
 func (s *fakeEC2s) calls() []string {
@@ -203,7 +204,10 @@ func newAWSHarness(t *testing.T, flags app.Flags, defaults map[string]any) *awsH
 	}
 	oldSSM := newSSM
 	newSSM = func(cfg awssdk.Config) ssmAPI { return &fakeSSM{shared: fakes, region: cfg.Region} }
-	t.Cleanup(func() { newEC2, newSSM = old, oldSSM })
+	oldELB, oldRDS := newELB, newRDS
+	newELB = func(cfg awssdk.Config) elbAPI { return &fakeELB{shared: fakes, region: cfg.Region} }
+	newRDS = func(cfg awssdk.Config) rdsAPI { return &fakeRDS{shared: fakes, region: cfg.Region} }
+	t.Cleanup(func() { newEC2, newSSM, newELB, newRDS = old, oldSSM, oldELB, oldRDS })
 
 	dir := t.TempDir()
 	t.Setenv(config.EnvConfigDir, dir)

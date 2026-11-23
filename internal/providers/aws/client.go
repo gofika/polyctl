@@ -57,6 +57,10 @@ type ec2API interface {
 	DeleteSecurityGroup(ctx context.Context, in *ec2.DeleteSecurityGroupInput, optFns ...func(*ec2.Options)) (*ec2.DeleteSecurityGroupOutput, error)
 	AuthorizeSecurityGroupIngress(ctx context.Context, in *ec2.AuthorizeSecurityGroupIngressInput, optFns ...func(*ec2.Options)) (*ec2.AuthorizeSecurityGroupIngressOutput, error)
 	RevokeSecurityGroupIngress(ctx context.Context, in *ec2.RevokeSecurityGroupIngressInput, optFns ...func(*ec2.Options)) (*ec2.RevokeSecurityGroupIngressOutput, error)
+	DescribeRegions(ctx context.Context, in *ec2.DescribeRegionsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeRegionsOutput, error)
+	DescribeAddresses(ctx context.Context, in *ec2.DescribeAddressesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeAddressesOutput, error)
+	DescribeNetworkInterfaces(ctx context.Context, in *ec2.DescribeNetworkInterfacesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeNetworkInterfacesOutput, error)
+	DescribeSubnets(ctx context.Context, in *ec2.DescribeSubnetsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSubnetsOutput, error)
 }
 
 type ssmAPI interface {
@@ -77,6 +81,8 @@ type client struct {
 	r53d   route53domainsAPI
 	ec2For func(region string) ec2API
 	ssmFor func(region string) ssmAPI
+	elbFor func(region string) elbAPI
+	rdsFor func(region string) rdsAPI
 }
 
 var (
@@ -98,6 +104,8 @@ func newClient(cfg awssdk.Config, region string) *client {
 		r53d:   route53domains.NewFromConfig(regional(route53domainsRegion)),
 		ec2For: func(r string) ec2API { return newEC2(regional(r)) },
 		ssmFor: func(r string) ssmAPI { return newSSM(regional(r)) },
+		elbFor: func(r string) elbAPI { return newELB(regional(r)) },
+		rdsFor: func(r string) rdsAPI { return newRDS(regional(r)) },
 	}
 }
 
@@ -153,7 +161,13 @@ func (c *client) Sync(ctx context.Context, rt platform.ResourceType) ([]platform
 		}
 		return app.DomainResources(domains), nil
 	case platform.ResInstance:
-		return c.listInstances(ctx, c.region)
+		return c.inEveryRegion(ctx, c.listInstances)
+	case platform.ResLoadBalancer:
+		return c.inEveryRegion(ctx, c.loadBalancerResources)
+	case platform.ResEIP:
+		return c.inEveryRegion(ctx, c.addressResources)
+	case platform.ResDBInstance:
+		return c.inEveryRegion(ctx, c.dbInstanceResources)
 	case platform.ResKeyPair:
 		return c.keyPairResources(ctx, c.region)
 	case platform.ResSecurityGroup:

@@ -90,7 +90,8 @@ func (*provider) RecordTypes() []string {
 var _ platform.RecordTyper = (*provider)(nil)
 
 func (*provider) ResourceTypes() []platform.ResourceType {
-	return []platform.ResourceType{platform.ResZone, platform.ResDNSRecord, platform.ResDomain, platform.ResInstance, platform.ResKeyPair, platform.ResSecurityGroup}
+	return []platform.ResourceType{platform.ResZone, platform.ResDNSRecord, platform.ResDomain, platform.ResInstance, platform.ResKeyPair, platform.ResSecurityGroup,
+		platform.ResLoadBalancer, platform.ResEIP, platform.ResDBInstance}
 }
 
 // Environment variables read by the keys method, the names the AWS SDKs and

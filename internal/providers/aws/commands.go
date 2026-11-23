@@ -779,6 +779,11 @@ EC2 wildcard pattern it is). Several filters must all match.`,
 				return err
 			}
 			res.Cached = cached
+			if res.Region == "" {
+				res.Region = profileRegion(rt, profName)
+			}
+			// The inventory holds the instances of every enabled region;
+			// the list shows those of the profile's region.
 			for _, r := range rows {
 				var i instanceInfo
 				if err := r.Decode(&i); err != nil {
@@ -786,6 +791,9 @@ EC2 wildcard pattern it is). Several filters must all match.`,
 				}
 				if res.Region == "" {
 					res.Region = i.Region
+				}
+				if i.Region != "" && i.Region != res.Region {
+					continue
 				}
 				res.Instances = append(res.Instances, i)
 			}
