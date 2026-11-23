@@ -95,6 +95,32 @@ func TestLBGetAmbiguous(t *testing.T) {
 	}
 }
 
+// Without --region or --global a regional load balancer wins over a global
+// one of the same name; --global picks the other.
+func TestLBGetPrefersRegional(t *testing.T) {
+	h := lbHarness(t, app.Flags{})
+	ensureHTTP(t, h)
+	h.gce.addURLMap("global", "lb-web-1")
+	h.gce.addHTTPProxy("global", "proxy-global", "lb-web-1")
+	h.gce.addRule("global", "fr-global", "targetHttpProxies/proxy-global", "34.7.7.7", "80-80", nil)
+	h.rt.Flags.Refresh = true
+	if err := h.run("compute", "load-balancer", "get", "lb-web-1"); err != nil {
+		t.Fatal(err)
+	}
+	var d lbDetail
+	h.jsonOut(&d)
+	if d.Scope != "regional" || len(d.ForwardingRules) != 1 || d.ForwardingRules[0].Name != "fr-web-1" {
+		t.Errorf("default = %+v", d)
+	}
+	if err := h.run("compute", "load-balancer", "get", "lb-web-1", "--global"); err != nil {
+		t.Fatal(err)
+	}
+	h.jsonOut(&d)
+	if d.Scope != "global" || len(d.ForwardingRules) != 1 || d.ForwardingRules[0].Name != "fr-global" {
+		t.Errorf("--global = %+v", d)
+	}
+}
+
 func TestLBDelete(t *testing.T) {
 	h := lbHarness(t, app.Flags{})
 	h.gce.addCert("us-central1", "web-cert", newPair(t, []string{"example.com"}, 90).chain)

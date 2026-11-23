@@ -460,6 +460,20 @@ func resolveLBTarget(ctx context.Context, rt *app.Runtime, ref, region string, a
 			hits = append(hits, &lbTarget{name: name, profile: p, c: c, x: x, region: r, entries: list})
 		}
 	}
+	if all {
+		// Without --region or --global a regional load balancer wins over a
+		// global one of the same name.
+		var regional []*lbTarget
+		for _, h := range hits {
+			if h.region != "" {
+				regional = append(regional, h)
+			}
+		}
+		if len(regional) > 0 && len(regional) < len(hits) {
+			rt.Infof("note: load balancer %q also exists in the global scope; using the regional one (pass --global for the other)", ref)
+			hits = regional
+		}
+	}
 	switch len(hits) {
 	case 0:
 		where := ""
@@ -668,8 +682,9 @@ groups with their named ports and members. <name> is the load balancer name
 (the polyctl-lb label of its forwarding rules, else the URL map name, else
 the forwarding rule name) or the name of one of its forwarding rules; the
 inventory tells which account holds it (synced once when unknown), then
-everything is read live. Several matches are exit code 5 (pass --profile,
---region or --global); none is exit code 4.`,
+everything is read live. Without --region or --global a regional load
+balancer wins over a global one of the same name. Several matches are exit
+code 5 (pass --profile, --region or --global); none is exit code 4.`,
 		Example: "  polyctl gcp compute load-balancer get lb-web-1 -o json",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
