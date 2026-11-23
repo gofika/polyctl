@@ -51,12 +51,13 @@ func checkKeyPairName(name string) error {
 	return nil
 }
 
-// keyPairImportErr maps the errors of ImportKeyPair: a taken name is a
-// failure that ensure resolves, a malformed name a usage error.
+// keyPairImportErr maps the errors of ImportKeyPair: a taken name and a
+// malformed name are invalid input (exit code 2), as on AWS; ensure
+// resolves a taken name.
 func keyPairImportErr(name, region string, err error) error {
 	switch {
 	case platform.HasErrorCode(err, errKeyPairExists):
-		return fmt.Errorf("key pair %q already exists in %s (it is never replaced): use `polyctl aliyun ecs key-pair ensure` to reuse the key pair that holds the key: %w", name, region, err)
+		return fmt.Errorf("%w: key pair %q already exists in %s (it is never replaced): use `polyctl aliyun ecs key-pair ensure` to reuse the key pair that holds the key: %v", platform.ErrInvalidInput, name, region, err)
 	case platform.HasErrorCode(err, errKeyPairMalformed):
 		return fmt.Errorf("%w: key pair name %q is not accepted by Alibaba Cloud: %v", platform.ErrInvalidInput, name, err)
 	}
@@ -139,9 +140,9 @@ func keyPairImportCmd(rt *app.Runtime) *cobra.Command {
 		Long: `Import the public key of --ssh-key (the key itself) or --ssh-key-file (a .pub
 file) as the key pair <name>. The key is checked locally (Alibaba Cloud
 accepts almost any text): a malformed key or a private key is a usage error
-(exit code 2). A name that is taken is an error (exit code 1), whatever key
-it holds: the existing key pair is never replaced; key-pair ensure reuses
-the key pair that already holds the key.`,
+(exit code 2). A name that is taken is a usage error too (exit code 2, as on
+AWS), whatever key it holds: the existing key pair is never replaced;
+key-pair ensure reuses the key pair that already holds the key.`,
 		Example: "  polyctl aliyun ecs key-pair import ops --ssh-key-file ~/.ssh/id_ed25519.pub",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -169,7 +170,7 @@ the key pair that already holds the key.`,
 				return err
 			}
 			if len(existing) > 0 {
-				return fmt.Errorf("key pair %q already exists in %s (fingerprint %s; it is never replaced): use `polyctl aliyun ecs key-pair ensure` to reuse the key pair that holds the key", name, s.where(), existing[0].Fingerprint)
+				return fmt.Errorf("%w: key pair %q already exists in %s (fingerprint %s; it is never replaced): use `polyctl aliyun ecs key-pair ensure` to reuse the key pair that holds the key", platform.ErrInvalidInput, name, s.where(), existing[0].Fingerprint)
 			}
 			change := platform.Change{Resource: "key-pair/" + name, Action: platform.Created, Detail: "import from " + key.Source + " (" + key.Summary() + ")"}
 			if done, err := rt.WouldWrite(s.target(), change); done || err != nil {

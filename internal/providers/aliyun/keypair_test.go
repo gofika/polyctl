@@ -141,8 +141,8 @@ func TestKeyPairImport(t *testing.T) {
 	if rep.Changes[0].Action != platform.Created || rep.Changes[0].Attrs["fingerprint"] != md5Hex(t, line) || strings.Contains(h.stdout.String(), "AAAA") {
 		t.Errorf("report = %+v", rep.Changes)
 	}
-	// A taken name is an error whatever key it holds.
-	if err := h.run("ecs", "key-pair", "import", "ops", "--ssh-key", line); err == nil || errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "already exists") {
+	// A taken name is invalid input (exit code 2) whatever key it holds.
+	if err := h.run("ecs", "key-pair", "import", "ops", "--ssh-key", line); !errors.Is(err, platform.ErrInvalidInput) || !strings.Contains(err.Error(), "already exists") {
 		t.Errorf("import of a taken name = %v", err)
 	}
 	if n := len(f.writes); n != 1 {
