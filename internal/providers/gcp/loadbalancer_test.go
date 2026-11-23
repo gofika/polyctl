@@ -89,7 +89,7 @@ func TestLBEnsureCreatesHTTP(t *testing.T) {
 	var out lbEnsureResult
 	h.jsonOut(&out)
 	if out.LoadBalancer.Name != "lb-web-1" || out.LoadBalancer.Protocol != "HTTP" || out.LoadBalancer.IPAddress != fr.IPAddress ||
-		out.LoadBalancer.URL != "http://"+fr.IPAddress+"/" || out.Target.Region != "us-central1" || out.Target.Profile != "lab" {
+		out.LoadBalancer.URL != "http://"+fr.IPAddress+"/" || out.Target.Region != "us-central1" || out.Target.Profile != "lab" || out.Target.Project != "proj" {
 		t.Errorf("result = %+v", out)
 	}
 	if !strings.Contains(h.stderr.String(), "http://"+fr.IPAddress+"/") {

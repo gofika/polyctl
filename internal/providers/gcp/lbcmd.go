@@ -233,7 +233,7 @@ func runLBEnsure(ctx context.Context, rt *app.Runtime, e *lbEnsure, plan *platfo
 			storeRule(ctx, rt, e.profile, fr, e.names.lb)
 		}
 	}
-	res := lbEnsureResult{Target: target, DryRun: rep.DryRun, LoadBalancer: e.summary(), Changes: rep.Changes}
+	res := lbEnsureResult{Target: lbEnsureTarget{Target: target, Project: e.c.project}, DryRun: rep.DryRun, LoadBalancer: e.summary(), Changes: rep.Changes}
 	if rerr := rt.Render(res, func() output.Grid { return app.ChangeGrid(rep.Changes) }); rerr != nil && err == nil {
 		err = rerr
 	}

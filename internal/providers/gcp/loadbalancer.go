@@ -1060,10 +1060,16 @@ type lbSummary struct {
 // lbEnsureResult is the output of ensure: a change report with the load
 // balancer.
 type lbEnsureResult struct {
-	Target       platform.Target   `json:"target" yaml:"target"`
+	Target       lbEnsureTarget    `json:"target" yaml:"target"`
 	DryRun       bool              `json:"dry_run" yaml:"dry_run"`
 	LoadBalancer lbSummary         `json:"load_balancer" yaml:"load_balancer"`
 	Changes      []platform.Change `json:"changes" yaml:"changes"`
+}
+
+// lbEnsureTarget is the target of an ensure with the project it wrote to.
+type lbEnsureTarget struct {
+	platform.Target `yaml:",inline"`
+	Project         string `json:"project" yaml:"project"`
 }
 
 // storeRule upserts a forwarding rule into the inventory as a load
