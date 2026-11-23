@@ -1571,6 +1571,15 @@ Human-readable progress and notes always go to stderr, so stdout is safe to pipe
 
 `ensure` commands, and every write command run with `--dry-run`, print a change report: one row per resource, with what happened to it (or would happen).
 
+Most write commands print the change report when they run for real too. The exceptions are the older single-object writes, which keep their 0.1 output so that scripts reading it go on working: when they run for real they print the object they wrote, and only `--dry-run` prints a change report. They are:
+
+- `dns add`, `dns set`, `dns delete` (the records) and `domain ns set` (the domain);
+- the DNS record writes of the platform trees: `cloudflare dns create|update|delete`, `namecom dns create|update|delete`, `godaddy dns add|upsert|delete`, `aws route53 record upsert|delete`, `gcp dns record upsert|delete`, `aliyun dns record create|update|delete`;
+- the registrar writes: `ns set` of `aws route53domains`, `namecom domain`, `godaddy domain` and `aliyun domain`, and `lock` / `unlock` / `autorenew` of `namecom domain` and `godaddy domain`;
+- `cloudflare cache purge`, `cloudflare dev-mode` / `ssl-mode` with a value, and `aws rds instance create` (the instance).
+
+A script that reads the output of one of these should read the object, not a report.
+
 ```text
 RESOURCE                    ACTION        DETAIL
 security-group/web          unchanged     sg-0abc
