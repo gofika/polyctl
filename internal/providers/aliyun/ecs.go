@@ -13,20 +13,23 @@ import (
 
 // Instance is the inventory representation of an ECS instance.
 type Instance struct {
-	ID           string            `json:"id" yaml:"id"`
-	Name         string            `json:"name" yaml:"name"`
-	Status       string            `json:"status" yaml:"status"`
-	Type         string            `json:"type" yaml:"type"`
-	Zone         string            `json:"zone" yaml:"zone"`
-	Region       string            `json:"region" yaml:"region"`
-	PrivateIP    string            `json:"private_ip,omitempty" yaml:"private_ip,omitempty"`
-	PublicIP     string            `json:"public_ip,omitempty" yaml:"public_ip,omitempty"`
-	CreationTime string            `json:"creation_time,omitempty" yaml:"creation_time,omitempty"`
-	OS           string            `json:"os,omitempty" yaml:"os,omitempty"`
-	CPU          int               `json:"cpu,omitempty" yaml:"cpu,omitempty"`
-	MemoryMB     int               `json:"memory_mb,omitempty" yaml:"memory_mb,omitempty"`
-	ChargeType   string            `json:"charge_type,omitempty" yaml:"charge_type,omitempty"`
-	Tags         map[string]string `json:"tags,omitempty" yaml:"tags,omitempty"`
+	ID           string `json:"id" yaml:"id"`
+	Name         string `json:"name" yaml:"name"`
+	Status       string `json:"status" yaml:"status"`
+	Type         string `json:"type" yaml:"type"`
+	Zone         string `json:"zone" yaml:"zone"`
+	Region       string `json:"region" yaml:"region"`
+	PrivateIP    string `json:"private_ip,omitempty" yaml:"private_ip,omitempty"`
+	PublicIP     string `json:"public_ip,omitempty" yaml:"public_ip,omitempty"`
+	CreationTime string `json:"creation_time,omitempty" yaml:"creation_time,omitempty"`
+	OS           string `json:"os,omitempty" yaml:"os,omitempty"`
+	CPU          int    `json:"cpu,omitempty" yaml:"cpu,omitempty"`
+	MemoryMB     int    `json:"memory_mb,omitempty" yaml:"memory_mb,omitempty"`
+	ChargeType   string `json:"charge_type,omitempty" yaml:"charge_type,omitempty"`
+	VpcID        string `json:"vpc_id,omitempty" yaml:"vpc_id,omitempty"`
+	// SecurityGroupIDs are the security groups the instance is in.
+	SecurityGroupIDs []string          `json:"security_group_ids,omitempty" yaml:"security_group_ids,omitempty"`
+	Tags             map[string]string `json:"tags,omitempty" yaml:"tags,omitempty"`
 }
 
 // instanceFromECS flattens the SDK instance.
@@ -43,6 +46,10 @@ func instanceFromECS(i ecs.Instance) Instance {
 		CPU:          i.Cpu,
 		MemoryMB:     i.Memory,
 		ChargeType:   i.InstanceChargeType,
+		VpcID:        i.VpcAttributes.VpcId,
+	}
+	if len(i.SecurityGroupIds.SecurityGroupId) > 0 {
+		out.SecurityGroupIDs = append([]string(nil), i.SecurityGroupIds.SecurityGroupId...)
 	}
 	if out.OS == "" {
 		out.OS = i.OSName
