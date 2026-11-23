@@ -375,9 +375,20 @@ func (c *client) resolveTypeSize(ctx context.Context, region string, r typeReque
 // price is refused as not available, comes back with an empty Type.
 func (c *client) priceCandidates(ctx context.Context, region string, r typeRequest, cands []typeZone) ([]typeChoice, error) {
 	out := make([]typeChoice, len(cands))
-	errs := make([]error, len(cands))
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	// The first error stops the others: the context errors of the queries
+	// it cancels come later and are not the cause.
+	var mu sync.Mutex
+	var firstErr error
+	fail := func(err error) {
+		mu.Lock()
+		if firstErr == nil {
+			firstErr = err
+		}
+		mu.Unlock()
+		cancel()
+	}
 	sem := make(chan struct{}, typeQueryWorkers)
 	var wg sync.WaitGroup
 	for i, tz := range cands {
@@ -393,8 +404,7 @@ func (c *client) priceCandidates(ctx context.Context, region string, r typeReque
 			if r.Resize == "" {
 				offered, err := c.systemDiskCategories(ctx, region, tz.Type, tz.Zone)
 				if err != nil {
-					errs[i] = err
-					cancel()
+					fail(err)
 					return
 				}
 				if category = pickSystemDisk(offered, r.DiskCategory, r.DiskFixed); category == "" {
@@ -404,8 +414,7 @@ func (c *client) priceCandidates(ctx context.Context, region string, r typeReque
 			price, currency, err := c.instancePrice(ctx, region, priceSpec{Type: tz.Type, Zone: tz.Zone, Image: r.Image, DiskCategory: category, DiskGiB: r.DiskGiB})
 			if err != nil {
 				if !priceSkipped(err) {
-					errs[i] = err
-					cancel()
+					fail(err)
 				}
 				return
 			}
@@ -413,10 +422,8 @@ func (c *client) priceCandidates(ctx context.Context, region string, r typeReque
 		}()
 	}
 	wg.Wait()
-	for _, err := range errs {
-		if err != nil {
-			return nil, err
-		}
+	if firstErr != nil {
+		return nil, firstErr
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err

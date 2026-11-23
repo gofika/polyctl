@@ -41,6 +41,9 @@ type fakeCatalog struct {
 	priceErr map[string]string
 	// typeBatches are the InstanceTypes of every DescribeInstanceTypes.
 	typeBatches [][]string
+	// priceHook, when set, runs first for every DescribePrice and may
+	// answer it.
+	priceHook func(q url.Values) (int, any, bool)
 }
 
 func newFakeCatalog() *fakeCatalog {
@@ -187,6 +190,11 @@ func (c *fakeCatalog) describeInstanceTypes(q url.Values) (int, any) {
 }
 
 func (c *fakeCatalog) describePrice(q url.Values) (int, any) {
+	if c.priceHook != nil {
+		if code, body, ok := c.priceHook(q); ok {
+			return code, body
+		}
+	}
 	if q.Get("ResourceType") != "instance" || q.Get("PriceUnit") != "Hour" || q.Get("ImageId") == "" || q.Get("SystemDisk.Category") == "" ||
 		q.Get("InternetChargeType") != "PayByTraffic" || q.Get("InternetMaxBandwidthOut") != "0" {
 		return 400, apiErr("InvalidParameter", "unexpected price settings")
@@ -394,5 +402,28 @@ func TestPickSystemDisk(t *testing.T) {
 		if got := pickSystemDisk(tc.offered, tc.want, tc.fixed); got != tc.got {
 			t.Errorf("%v %s %v = %q, want %q", tc.offered, tc.want, tc.fixed, got, tc.got)
 		}
+	}
+}
+
+func TestResolveTypeSizeFirstErrorWins(t *testing.T) {
+	api := newFakeAPI(t)
+	cat := sizeCatalog()
+	cat.register(api)
+	// The last candidate (by type name) is refused at once; the others are
+	// still waiting for their answer and are cancelled by that refusal.
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	cat.priceHook = func(q url.Values) (int, any, bool) {
+		if q.Get("InstanceType") == "ecs.u1-c1m2.large" {
+			return 403, apiErr("Forbidden.RAM", "denied"), true
+		}
+		<-release
+		return 0, nil, false
+	}
+	c := api.client()
+	r := typeRequest{Size: size(t, "2H4G"), Zones: []string{"cn-shanghai-b"}, Image: alinux4, DiskGiB: 20, DiskCategory: defaultSystemDiskCat}
+	_, err := c.resolveTypeSize(context.Background(), "cn-shanghai", r)
+	if !errors.Is(err, platform.ErrForbidden) || errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want the Forbidden.RAM refusal", err)
 	}
 }
