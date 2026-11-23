@@ -349,7 +349,13 @@ type casReferences struct {
 }
 
 // of returns the listeners that hold the certificate id, in a stable order.
-func (r *casReferences) of(certID string) []casReference { return r.byCert[certID] }
+// A nil set (no check was made) holds nothing.
+func (r *casReferences) of(certID string) []casReference {
+	if r == nil {
+		return nil
+	}
+	return r.byCert[certID]
+}
 
 // casCheckError is a reference check that could not finish: a region whose
 // listeners could not be read. A certificate is never taken as unused
