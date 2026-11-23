@@ -48,6 +48,10 @@ type client struct {
 	keySecret string
 	// site forces the registrar site ("cn" or "intl"); empty derives it from region.
 	site string
+	// account is the account id of the profile (inventory rows carry it).
+	account string
+	// settings resolves the profile's settings of config.yaml (nil: none).
+	settings func(key string) (string, error)
 
 	// endpoint and scheme override every request's destination (tests).
 	endpoint string
@@ -61,6 +65,7 @@ var (
 	_ platform.DNSService       = (*client)(nil)
 	_ platform.RegistrarService = (*client)(nil)
 	_ platform.ZoneGetter       = (*client)(nil)
+	_ platform.SettingsAware    = (*client)(nil)
 )
 
 // endpointOverride redirects every request of newly created clients to a
@@ -372,6 +377,10 @@ func (c *client) Sync(ctx context.Context, rt platform.ResourceType) ([]platform
 		return c.keyPairResources(ctx, c.region)
 	case platform.ResEIP:
 		return c.inEveryRegion(ctx, c.eipResources)
+	case platform.ResCertificate:
+		// A RAM denial is the error of this type: the caller keeps the
+		// certificates synced before and syncs the other types.
+		return c.casResources(ctx, c.account)
 	}
 	return nil, fmt.Errorf("%s: %w", rt, platform.ErrNotSupported)
 }

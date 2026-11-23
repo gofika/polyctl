@@ -37,7 +37,9 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 	t.Helper()
 	f := &fakeAPI{t: t, handlers: map[string]func(q url.Values) (int, any){}}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query()
+		// The query and the form body (PEM texts travel in the body).
+		_ = r.ParseForm()
+		q := r.Form
 		f.mu.Lock()
 		f.calls = append(f.calls, q)
 		h := f.handlers[q.Get("Action")]
