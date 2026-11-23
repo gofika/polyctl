@@ -27,6 +27,10 @@ type Instance struct {
 	MemoryMB     int    `json:"memory_mb,omitempty" yaml:"memory_mb,omitempty"`
 	ChargeType   string `json:"charge_type,omitempty" yaml:"charge_type,omitempty"`
 	VpcID        string `json:"vpc_id,omitempty" yaml:"vpc_id,omitempty"`
+	// EIP and EIPAllocationID are the elastic IP address bound to the
+	// instance, if any.
+	EIP             string `json:"eip,omitempty" yaml:"eip,omitempty"`
+	EIPAllocationID string `json:"eip_allocation_id,omitempty" yaml:"eip_allocation_id,omitempty"`
 	// SecurityGroupIDs are the security groups the instance is in.
 	SecurityGroupIDs []string          `json:"security_group_ids,omitempty" yaml:"security_group_ids,omitempty"`
 	Tags             map[string]string `json:"tags,omitempty" yaml:"tags,omitempty"`
@@ -47,6 +51,9 @@ func instanceFromECS(i ecs.Instance) Instance {
 		MemoryMB:     i.Memory,
 		ChargeType:   i.InstanceChargeType,
 		VpcID:        i.VpcAttributes.VpcId,
+		EIP:          i.EipAddress.IpAddress,
+		// An address without an allocation id is no EIP of the account.
+		EIPAllocationID: i.EipAddress.AllocationId,
 	}
 	if len(i.SecurityGroupIds.SecurityGroupId) > 0 {
 		out.SecurityGroupIDs = append([]string(nil), i.SecurityGroupIds.SecurityGroupId...)

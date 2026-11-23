@@ -32,6 +32,19 @@ type fakeECS struct {
 	keyPairs  []map[string]any
 	images    []map[string]any
 
+	// The VPC service (see newFakeNet).
+	vswitches      []map[string]any
+	eips           []map[string]any
+	resourceGroups []map[string]any
+	zones          []string
+	// pending counts the reads a new VPC, vSwitch or associating EIP
+	// still answers with its transitional status.
+	pending map[string]int
+	// vpcPending is how many reads a new VPC stays Pending (default 2).
+	vpcPending int
+	// allocateErr, when set, is the answer of every AllocateEipAddress.
+	allocateErr map[string]string
+
 	// rulePage is the page size of DescribeSecurityGroupAttribute (0: the
 	// request's MaxResults).
 	rulePage int
