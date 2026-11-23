@@ -155,10 +155,29 @@ func TestSettingsValidation(t *testing.T) {
 		"cert:\n  key_type: ec384\n":                        "cert.key_type",
 		"defaults:\n  amazon:\n    vpc_id: v\n":             "defaults.amazon: unknown platform",
 		"profiles:\n  a:\n    defaults:\n      azure: {}\n": "profiles.a.defaults.azure",
+		"defaults:\n  cloudflare:\n    ssl: full_strict\n":  "defaults.cloudflare.ssl",
 	} {
 		if _, err := loadYAML(t, body); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%q: %v, want %q", body, err, want)
 		}
+	}
+}
+
+// The keys with a neutral default have it when nothing is configured; a
+// configured value wins.
+func TestBuiltinDefaults(t *testing.T) {
+	cfg, err := loadYAML(t, "defaults:\n  cloudflare:\n    ssl: full\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := cfg.DefaultString("", platform.GCP, "lb_network_tag"); v != "lb-health-check" {
+		t.Errorf("gcp lb_network_tag = %q", v)
+	}
+	if v, _ := cfg.DefaultString("", platform.Cloudflare, "ssl"); v != "full" {
+		t.Errorf("configured cloudflare ssl = %q", v)
+	}
+	if v, _ := cfg.DefaultString("", platform.AWS, "vpc_id"); v != "" {
+		t.Errorf("aws vpc_id = %q, want no default", v)
 	}
 }
 

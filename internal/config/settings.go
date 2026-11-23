@@ -253,9 +253,19 @@ func (c *Config) validate() error {
 }
 
 func validateDefaults(where string, d Defaults) error {
+	names := make([]string, 0, len(d))
 	for p := range d {
+		names = append(names, p)
+	}
+	sort.Strings(names)
+	for _, p := range names {
 		if mustParse(p) != platform.ID(p) {
 			return fmt.Errorf("%s.%s: unknown platform (expected one of: cloudflare, namecom, godaddy, aws, gcp, aliyun)", where, p)
+		}
+	}
+	if v, ok := lookup(d["cloudflare"], "ssl"); ok {
+		if s, isStr := v.(string); !isStr || !slices.Contains(CloudflareSSLModes, s) {
+			return fmt.Errorf("%s.cloudflare.ssl: %v is not one of %s", where, v, strings.Join(CloudflareSSLModes, ", "))
 		}
 	}
 	return nil
@@ -276,18 +286,31 @@ func sortedKeys(m map[string]string) []string {
 	return out
 }
 
+// BuiltinDefaults are the defaults.<platform>.<key> values that have a
+// neutral built-in default; every other key is unset unless configured.
+var BuiltinDefaults = Defaults{
+	"gcp":        {"lb_network_tag": "lb-health-check"},
+	"cloudflare": {"ssl": "strict"},
+}
+
+// CloudflareSSLModes are the accepted values of defaults.cloudflare.ssl.
+var CloudflareSSLModes = []string{"flexible", "full", "strict"}
+
 // Default returns the default value of key for a platform:
 // profiles.<profile>.defaults.<platform>.<key> when the profile sets it,
-// else defaults.<platform>.<key>. key may be a dotted path into a nested
-// mapping ("rds.default_class"). The second result says whether a value
-// was found.
+// else defaults.<platform>.<key>, else the built-in default of
+// BuiltinDefaults. key may be a dotted path into a nested mapping
+// ("rds.default_class"). The second result says whether a value was found.
 func (c *Config) Default(profile string, id platform.ID, key string) (any, bool) {
 	if p := c.Profiles[profile]; p != nil {
 		if v, ok := lookup(p.Defaults[string(id)], key); ok {
 			return v, true
 		}
 	}
-	return lookup(c.Defaults[string(id)], key)
+	if v, ok := lookup(c.Defaults[string(id)], key); ok {
+		return v, true
+	}
+	return lookup(BuiltinDefaults[string(id)], key)
 }
 
 func lookup(m map[string]any, key string) (any, bool) {
