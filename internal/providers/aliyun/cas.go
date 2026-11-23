@@ -110,7 +110,13 @@ func (c *client) SetSettings(setting func(key string) (string, error)) { c.setti
 // cas resolves the CAS store of the account: defaults.aliyun.cas_region
 // (else casRegionFor of the profile region) and defaults.aliyun.cas_endpoint
 // (else the endpoint of that region).
-func (c *client) cas() (casScope, error) {
+func (c *client) cas() (casScope, error) { return c.casFor(c.region) }
+
+// casFor resolves the CAS store whose certificates the ALB listeners of
+// region reference: defaults.aliyun.cas_region (else casRegionFor of
+// region) and defaults.aliyun.cas_endpoint (else the endpoint of that CAS
+// region).
+func (c *client) casFor(albRegion string) (casScope, error) {
 	get := func(key string) (string, error) {
 		if c.settings == nil {
 			return "", nil
@@ -123,7 +129,7 @@ func (c *client) cas() (casScope, error) {
 		return casScope{}, err
 	}
 	if region == "" {
-		region = casRegionFor(c.region)
+		region = casRegionFor(albRegion)
 	}
 	endpoint, err := get(settingCASEndpoint)
 	if err != nil {
@@ -140,6 +146,11 @@ func (c *client) casClient(ctx context.Context) (*cas.Client, casScope, error) {
 	if err != nil {
 		return nil, s, err
 	}
+	return c.casClientFor(ctx, s)
+}
+
+// casClientFor is the CAS client of the store s.
+func (c *client) casClientFor(ctx context.Context, s casScope) (*cas.Client, casScope, error) {
 	region := s.Region
 	if casCentral(region) {
 		region = casRegionCentral
@@ -236,7 +247,16 @@ func casCertificateFrom(it cas.CertificateOrderListItem, endpoint string) casCer
 // list stops when the pages cover TotalCount, or at a short or empty page
 // (a missing TotalCount never ends it early, nor loops).
 func (c *client) listCASCertificates(ctx context.Context) ([]casCertificate, casScope, error) {
-	cl, s, err := c.casClient(ctx)
+	s, err := c.cas()
+	if err != nil {
+		return nil, s, err
+	}
+	return c.listCASCertificatesIn(ctx, s)
+}
+
+// listCASCertificatesIn is listCASCertificates in the store s.
+func (c *client) listCASCertificatesIn(ctx context.Context, s casScope) ([]casCertificate, casScope, error) {
+	cl, s, err := c.casClientFor(ctx, s)
 	if err != nil {
 		return nil, s, err
 	}
