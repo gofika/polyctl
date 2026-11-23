@@ -283,6 +283,13 @@ const errR2Managed = "the CNAME is managed by R2 and cannot be deleted through t
 // lists it (the API reports success for a domain that is not bound).
 func (c *Client) Unbind(ctx context.Context, zone platform.Zone, rec platform.Record) (bool, error) {
 	bucket := R2Bucket(rec)
+	if bucket == "" && zone.ID != "" && rec.ID != "" {
+		// A record served from an inventory written before record metadata
+		// was kept: read it again for the bucket.
+		if cur, err := c.api.getRecord(ctx, zone.ID, rec.ID); err == nil {
+			bucket = R2Bucket(toRecord(*cur))
+		}
+	}
 	if bucket == "" {
 		return false, fmt.Errorf("no R2 bucket is named in the record (meta.r2_bucket); %s: unbind it in the R2 settings of its bucket", errR2Managed)
 	}
@@ -290,6 +297,13 @@ func (c *Client) Unbind(ctx context.Context, zone platform.Zone, rec platform.Re
 	acc := ""
 	if zone.Extra != nil {
 		acc, _ = zone.Extra["account_id"].(string)
+	}
+	if acc == "" && zone.ID != "" {
+		// The zone names no account (the neutral dns commands only know its
+		// id): the account that owns the zone is the one to try first.
+		if z, err := c.api.getZone(ctx, zone.ID); err == nil {
+			acc = z.Account.ID
+		}
 	}
 	if acc == "" {
 		var err error

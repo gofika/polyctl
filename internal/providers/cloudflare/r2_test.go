@@ -3,6 +3,8 @@ package cloudflare
 import (
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"testing"
 
@@ -123,5 +125,39 @@ func TestR2RecordMatch(t *testing.T) {
 	}
 	if rec := toRecord(apiRecord{ID: "r", Name: "a.example.com", Type: "A", Meta: map[string]any{}}); rec.Meta != nil {
 		t.Errorf("empty meta kept: %v", rec.Meta)
+	}
+}
+
+// Unbind of a record whose zone names no account (the neutral dns commands
+// only know the zone id) and whose metadata is missing (an inventory
+// written before it was kept): the zone and the record are read again, and
+// the domain is unbound in the account of the zone, not the pinned one.
+func TestUnbindReadsZoneAccountAndRecordMeta(t *testing.T) {
+	var deletes []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var result any
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/zones/z1":
+			result = map[string]any{"id": "z1", "name": "example.com", "status": "active", "account": map[string]any{"id": "acc1"}}
+		case r.Method == http.MethodGet && r.URL.Path == "/zones/z1/dns_records/r1":
+			result = map[string]any{"id": "r1", "name": "cdn.example.com", "type": "CNAME", "content": "public.r2.dev", "proxied": true,
+				"meta": map[string]any{"r2_bucket": "assets", "read_only": true}}
+		case r.Method == http.MethodDelete:
+			deletes = append(deletes, r.URL.Path)
+			result = map[string]any{"domain": "cdn.example.com"}
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL)
+			w.WriteHeader(http.StatusNotFound)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "errors": []any{}, "result": result})
+	}))
+	defer srv.Close()
+	c := &Client{api: newAPI(srv.URL, "tok", "acc9"), profile: platform.Profile{Name: "acme"}}
+	px := true
+	rec := platform.Record{ID: "r1", Name: "cdn.example.com", Type: "CNAME", Value: "public.r2.dev", Proxied: &px}
+	handled, err := c.Unbind(t.Context(), platform.Zone{ID: "z1", Name: "example.com"}, rec)
+	if err != nil || !handled || len(deletes) != 1 || deletes[0] != "/accounts/acc1/r2/buckets/assets/domains/custom/cdn.example.com" {
+		t.Errorf("handled=%t err=%v deletes=%v", handled, err, deletes)
 	}
 }
