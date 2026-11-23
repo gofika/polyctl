@@ -276,6 +276,8 @@ func TestALBDeployerPermissionAndPrune(t *testing.T) {
 	d.casCert(3333, "upload_example.com_2026-10-01", deployNow.Add(-50*24*time.Hour), "03")
 	d.casCert(4444, "upload_example.com_2026-11-01", deployNow.Add(-19*24*time.Hour), "04")
 	d.casCert(5555, "upload_example.com_2027-02-18", deployNow.Add(90*24*time.Hour), "05")
+	// No dates at all: never taken as expired.
+	d.cas.add(6666, "upload_nodate.com", "")
 	d.alb.addLB("alb-1", "lb-example", "vpc-site", "Active")
 	d.alb.addListener("lsn-1", "alb-1", "HTTPS", 443, "sgp-1", "5555", "4444")
 	rep, err := d.run(cert.DeployOptions{Prune: true, DryRun: true})

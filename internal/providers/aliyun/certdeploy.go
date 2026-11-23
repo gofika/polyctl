@@ -404,7 +404,9 @@ func (d albDeployer) Prune(ctx context.Context, acct *platform.DeployAccount, o 
 		}
 		seen[st.scope.Endpoint] = true
 		for _, cc := range st.certs {
-			if na := cc.notAfter(); cc.Expired || na.IsZero() || !now.Before(na) {
+			// A certificate whose expiry is unknown is never taken as
+			// expired.
+			if na := cc.notAfter(); cc.Expired || !na.IsZero() && !now.Before(na) {
 				expired = append(expired, expiredCert{st, cc})
 			}
 		}
