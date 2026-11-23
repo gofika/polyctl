@@ -199,3 +199,25 @@ func TestDefaultTTLsCoverEveryType(t *testing.T) {
 		}
 	}
 }
+
+func TestDNSSettings(t *testing.T) {
+	cfg, err := loadYAML(t, "profiles: {}\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.NSResolvers(); strings.Join(got, ",") != "1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4" || cfg.NSTimeout() != platform.DefaultNSTimeout {
+		t.Errorf("defaults = %v %v", got, cfg.NSTimeout())
+	}
+	cfg, err = loadYAML(t, "dns:\n  resolvers: [223.5.5.5, \"127.0.0.1:5353\"]\n  timeout: 2s\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.NSResolvers(); strings.Join(got, ",") != "223.5.5.5,127.0.0.1:5353" || cfg.NSTimeout().String() != "2s" {
+		t.Errorf("configured = %v %v", got, cfg.NSTimeout())
+	}
+	for _, body := range []string{"dns:\n  resolvers: [dns.google]\n", "dns:\n  timeout: -1s\n"} {
+		if _, err := loadYAML(t, body); err == nil || !strings.Contains(err.Error(), "dns.") {
+			t.Errorf("%q loaded: %v", body, err)
+		}
+	}
+}

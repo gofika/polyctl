@@ -30,6 +30,31 @@ type CertDNS struct {
 	SettleDelay        Duration `yaml:"settle_delay,omitempty"`
 }
 
+// DNSSettings configures the live DNS queries of `domain ns check`.
+type DNSSettings struct {
+	// Resolvers are the recursive resolvers asked, in order: IP addresses
+	// (port 53) or IP:port. Empty: platform.DefaultNSResolvers.
+	Resolvers []string `yaml:"resolvers,omitempty"`
+	// Timeout is the timeout of one query. Zero: platform.DefaultNSTimeout.
+	Timeout Duration `yaml:"timeout,omitempty"`
+}
+
+// NSResolvers returns dns.resolvers, or the built-in public resolvers.
+func (c *Config) NSResolvers() []string {
+	if len(c.DNS.Resolvers) > 0 {
+		return slices.Clone(c.DNS.Resolvers)
+	}
+	return slices.Clone(platform.DefaultNSResolvers)
+}
+
+// NSTimeout returns dns.timeout, or the built-in default.
+func (c *Config) NSTimeout() time.Duration {
+	if c.DNS.Timeout > 0 {
+		return time.Duration(c.DNS.Timeout)
+	}
+	return platform.DefaultNSTimeout
+}
+
 // CertRegions lists the regions a certificate deployer scans.
 type CertRegions struct {
 	Regions []string `yaml:"regions,omitempty"`
@@ -241,6 +266,14 @@ func (c *Config) validate() error {
 		if _, err := templateVars(t); err != nil {
 			return fmt.Errorf("cert.name_template: %v", err)
 		}
+	}
+	for _, r := range c.DNS.Resolvers {
+		if _, err := platform.ParseResolver(r); err != nil {
+			return fmt.Errorf("dns.resolvers: %v", err)
+		}
+	}
+	if c.DNS.Timeout < 0 {
+		return fmt.Errorf("dns.timeout: must not be negative, got %s", time.Duration(c.DNS.Timeout))
 	}
 	if err := validateDefaults("defaults", c.Defaults); err != nil {
 		return err

@@ -205,6 +205,8 @@ type Config struct {
 	Hooks Hooks `yaml:"hooks,omitempty"`
 	// Cert configures the certificate commands.
 	Cert Cert `yaml:"cert,omitempty"`
+	// DNS configures the live DNS queries of domain ns check.
+	DNS DNSSettings `yaml:"dns,omitempty"`
 	// Defaults are per-platform default values (defaults.<platform>.<key>);
 	// a profile can override them under profiles.<name>.defaults.
 	Defaults Defaults `yaml:"defaults,omitempty"`
