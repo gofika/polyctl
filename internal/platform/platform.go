@@ -312,6 +312,13 @@ type RegistrarService interface {
 	SetNameservers(ctx context.Context, name string, ns []string) error
 }
 
+// ZoneGetter is implemented by DNS clients that can read one zone by its
+// id, with its nameservers and status, without listing every zone. A zone
+// that does not exist is ErrNotFound.
+type ZoneGetter interface {
+	GetZone(ctx context.Context, id string) (*Zone, error)
+}
+
 // Zone is a DNS zone.
 type Zone struct {
 	ID          string         `json:"id" yaml:"id"`

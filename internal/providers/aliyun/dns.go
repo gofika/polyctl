@@ -110,6 +110,39 @@ func (c *client) ListZones(ctx context.Context) ([]platform.Zone, error) {
 	return out, nil
 }
 
+// GetZone reads one alidns domain with DescribeDomainInfo, which returns
+// the nameservers Alibaba Cloud DNS assigned to it. A domain that is not in
+// the account (InvalidDomainName.NoExist) is platform.ErrNotFound.
+func (c *client) GetZone(ctx context.Context, id string) (*platform.Zone, error) {
+	cl, err := c.dnsClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	name := platform.NormalizeDomain(id)
+	req := alidns.CreateDescribeDomainInfoRequest()
+	c.route(req, endpointDNS)
+	req.DomainName = name
+	resp, err := cl.DescribeDomainInfo(req)
+	if err != nil {
+		return nil, wrapErr("alidns DescribeDomainInfo "+name, err)
+	}
+	if resp.DomainName == "" {
+		return nil, fmt.Errorf("alidns domain %s: %w", name, platform.ErrNotFound)
+	}
+	z := zoneFromDomain(alidns.DomainInDescribeDomains{
+		DomainName:  resp.DomainName,
+		DomainId:    resp.DomainId,
+		VersionCode: resp.VersionCode,
+		VersionName: resp.VersionName,
+		GroupName:   resp.GroupName,
+		InstanceId:  resp.InstanceId,
+		AliDomain:   resp.AliDomain,
+		DnsServers:  alidns.DnsServersInDescribeDomains{DnsServer: resp.DnsServers.DnsServer},
+	})
+	delete(z.Extra, "record_count")
+	return &z, nil
+}
+
 // ListRecords lists the records of a zone (paginated).
 func (c *client) ListRecords(ctx context.Context, zoneID string) ([]platform.Record, error) {
 	cl, err := c.dnsClient(ctx)

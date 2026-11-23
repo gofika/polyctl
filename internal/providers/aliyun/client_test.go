@@ -129,6 +129,32 @@ func TestListZonesPaginatesAndMaps(t *testing.T) {
 	}
 }
 
+// GetZone reads the assigned nameservers with DescribeDomainInfo; a domain
+// that is not in the account (HTTP 400 InvalidDomainName.NoExist) is not
+// found, which the NS check reports as "no zone" rather than a failure.
+func TestGetZoneDescribeDomainInfo(t *testing.T) {
+	f := newFakeAPI(t)
+	f.on("DescribeDomainInfo", func(q url.Values) (int, any) {
+		if q.Get("DomainName") != "example.com" {
+			return 400, apiErr("InvalidDomainName.NoExist", "The specified domain name does not exist.")
+		}
+		return 200, map[string]any{
+			"DomainName": "Example.com", "DomainId": "d-1", "VersionCode": "mianfei", "VersionName": "Free",
+			"DnsServers": map[string]any{"DnsServer": []string{"ns1.alidns.com", "ns2.alidns.com"}},
+		}
+	})
+	z, err := f.client().GetZone(context.Background(), "EXAMPLE.com.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if z.ID != "example.com" || z.Name != "example.com" || z.Status != "mianfei" || len(z.Nameservers) != 2 || z.Nameservers[0] != "ns1.alidns.com" || z.Extra["domain_id"] != "d-1" {
+		t.Errorf("zone = %+v", z)
+	}
+	if _, err := f.client().GetZone(context.Background(), "other.com"); !errors.Is(err, platform.ErrNotFound) {
+		t.Errorf("missing zone = %v, want ErrNotFound", err)
+	}
+}
+
 func recordsHandler(t *testing.T) func(q url.Values) (int, any) {
 	return func(q url.Values) (int, any) {
 		if q.Get("DomainName") != "example.com" {

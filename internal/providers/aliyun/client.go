@@ -60,6 +60,7 @@ var (
 	_ platform.Client           = (*client)(nil)
 	_ platform.DNSService       = (*client)(nil)
 	_ platform.RegistrarService = (*client)(nil)
+	_ platform.ZoneGetter       = (*client)(nil)
 )
 
 // endpointOverride redirects every request of newly created clients to a
