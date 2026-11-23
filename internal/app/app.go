@@ -773,12 +773,25 @@ type SyncReport struct {
 // SyncAccount fetches the given resource types (nil = all supported) of one
 // account and replaces them in the inventory.
 func (rt *Runtime) SyncAccount(ctx context.Context, ref config.AccountRef, types []platform.ResourceType) ([]SyncReport, error) {
-	name := ref.Profile
-	client, p, err := rt.Open(ctx, name, ref.Platform)
+	client, p, err := rt.Open(ctx, ref.Profile, ref.Platform)
 	if err != nil {
 		return nil, err
 	}
-	prov, _ := platform.Get(p.Platform)
+	return rt.SyncClient(ctx, p, client, types)
+}
+
+// SyncClient is SyncAccount with the account already open. It may run for
+// several accounts at the same time.
+//
+// A type whose sync failed in some regions only (platform.RegionSyncError)
+// is stored with what the other regions returned, and its report carries
+// the failures.
+func (rt *Runtime) SyncClient(ctx context.Context, p platform.Profile, client platform.Client, types []platform.ResourceType) ([]SyncReport, error) {
+	name := p.Name
+	prov, err := platform.Get(p.Platform)
+	if err != nil {
+		return nil, err
+	}
 	if types == nil {
 		types = prov.ResourceTypes()
 	}
@@ -798,11 +811,13 @@ func (rt *Runtime) SyncAccount(ctx context.Context, ref config.AccountRef, types
 		res, err := client.Sync(ctx, t)
 		if err != nil {
 			rep.Error, rep.Err = err.Error(), err
-			reports = append(reports, rep)
-			if errors.Is(err, platform.ErrUnauthorized) {
-				return reports, err
+			if platform.AsRegionSyncError(err) == nil {
+				reports = append(reports, rep)
+				if errors.Is(err, platform.ErrUnauthorized) {
+					return reports, err
+				}
+				continue
 			}
-			continue
 		}
 		if err := db.Replace(ctx, inventory.Set{Platform: p.Platform, Profile: name, Type: t}, res, cfg.TTLFor(t)); err != nil {
 			return reports, err
