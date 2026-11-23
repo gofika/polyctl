@@ -364,7 +364,7 @@ func (d lbDeployer) PlanBatch(ctx context.Context, acct *platform.DeployAccount,
 				switch {
 				case err == nil:
 					return platform.Change{Detail: "old, no longer referenced"}, nil
-				case isReason(err, reasonInUse):
+				case certInUse(err):
 					return platform.Change{Action: platform.Skipped, Detail: "old, still used by " + inUseBy(err) + "; kept"}, nil
 				}
 				o.Warnf("the old certificate %s was not deleted: %v", name, err)

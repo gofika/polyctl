@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"google.golang.org/api/compute/v1"
+	"google.golang.org/api/googleapi"
 
 	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/cert"
@@ -260,5 +261,15 @@ func TestGCPDeployerPrune(t *testing.T) {
 		!slices.Contains(rows, "gcp-lb/lab/global/ssl-certificate/gone-com deleted cert=gone-com expired (2025-12-29)") ||
 		!slices.Contains(rows, "gcp-lb/lab/us-central1/ssl-certificate/used-com skipped cert=used-com expired (2025-12-31); still used by proxy-u") {
 		t.Errorf("rows = %v", rows)
+	}
+}
+
+func TestCertInUseWithoutReason(t *testing.T) {
+	regional := &googleapi.Error{Code: 400, Message: "The ssl_certificate resource 'projects/p/regions/r/sslCertificates/old' is already being used by 'projects/p/regions/r/targetHttpsProxies/px'"}
+	if !certInUse(regional) || inUseBy(regional) != "px" {
+		t.Errorf("regional in-use error not recognized: %v", regional)
+	}
+	if certInUse(&googleapi.Error{Code: 400, Message: "invalid"}) || certInUse(nil) {
+		t.Error("other errors taken as in use")
 	}
 }

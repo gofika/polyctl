@@ -616,7 +616,7 @@ func ReplaceProxyCertificate(ctx context.Context, spec replaceSpec) (*replacePla
 // still in use: defensive only, as the reference is released when the
 // switch operation is done.
 var certDeleteRetry = platform.RetryPolicy{Initial: 3 * time.Second, Multiplier: 1, MaxAttempts: 3,
-	Match: func(err error) bool { return isReason(err, reasonInUse) }}
+	Match: certInUse}
 
 func deleteRetry(ctx context.Context, s certScope, name string) error {
 	p := certDeleteRetry
@@ -625,6 +625,13 @@ func deleteRetry(ctx context.Context, s certScope, name string) error {
 }
 
 var inUseRe = regexp.MustCompile(`already being used by '([^']+)'`)
+
+// certInUse reports the error of deleting a certificate another resource
+// still uses: the reason resourceInUseByAnotherResource, or, for a
+// regional certificate whose error may lack that reason, the message.
+func certInUse(err error) bool {
+	return err != nil && (isReason(err, reasonInUse) || inUseRe.MatchString(err.Error()))
+}
 
 // inUseBy names the resource an "in use" error says uses the certificate.
 func inUseBy(err error) string {
