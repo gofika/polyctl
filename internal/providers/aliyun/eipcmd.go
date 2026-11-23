@@ -109,11 +109,13 @@ func waitEIP(ctx context.Context, s *ecsScope, id, want string, done func(eipAdd
 	return platform.WaitUntil(ctx, platform.WaitOptions{Resource: "eip/" + id, Want: want, Timeout: shortWaitTimeout,
 		Interval: shortWaitInterval, Clock: netClock()}, func(ctx context.Context) (platform.WaitState, string, error) {
 		e, err := s.c.getEIP(ctx, s.region, id)
-		if err != nil {
+		if err != nil && !errors.Is(err, platform.ErrNotFound) {
 			return platform.KeepWaiting, "", err
 		}
 		if e == nil {
-			return platform.KeepWaiting, "", fmt.Errorf("%w: EIP %s in %s", platform.ErrNotFound, id, s.where())
+			// An EIP just allocated may not be listed yet; the timeout
+			// bounds how long it may stay missing.
+			return platform.KeepWaiting, statusNotFound, nil
 		}
 		if done(*e) {
 			return platform.WaitDone, e.Status, nil

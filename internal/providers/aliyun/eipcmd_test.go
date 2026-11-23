@@ -267,6 +267,22 @@ func TestEIPAllocate(t *testing.T) {
 	}
 }
 
+// An EIP that is not listed yet right after its allocation is waited for,
+// not reported missing.
+func TestEIPAllocateWaitsForUnlistedEIP(t *testing.T) {
+	h, f, clock := netHarness(t, app.Flags{})
+	f.newUnlisted = 2
+	if err := h.run("eip", "address", "allocate"); err != nil {
+		t.Fatalf("allocate: %v", err)
+	}
+	if rep := reportOf(t, h); rep.Changes[0].Action != platform.Created || !strings.HasPrefix(rep.Changes[0].ID, "eip-new") {
+		t.Errorf("changes = %+v", rep.Changes)
+	}
+	if len(clock.sleeps) != 2 {
+		t.Errorf("sleeps = %v, want 2 polls of a missing EIP", clock.sleeps)
+	}
+}
+
 func TestEIPList(t *testing.T) {
 	h, f, _ := netHarness(t, app.Flags{})
 	if err := h.run("eip", "address", "list"); err != nil || strings.TrimSpace(h.stdout.String()) != "[]" || !strings.Contains(h.stderr.String(), "no EIPs") {

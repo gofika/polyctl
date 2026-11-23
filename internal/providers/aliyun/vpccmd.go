@@ -30,6 +30,9 @@ const (
 	vpcWaitInterval     = 2 * time.Second
 	shortWaitInterval   = 2 * time.Second
 	vswitchSkippedLater = "run ensure again once the VPC is Available"
+	// statusNotFound is the status a wait reports while the resource it
+	// awaits is not listed yet (a resource just created may lag).
+	statusNotFound = "NotFound"
 )
 
 // defaultZones are the zone suffixes of vswitch ensure ({region}-b, -c).
@@ -169,6 +172,10 @@ func waitVPC(ctx context.Context, s *ecsScope, id string, timeout time.Duration)
 	return platform.WaitUntil(ctx, platform.WaitOptions{Resource: "vpc/" + id, Want: statusAvailable, Timeout: timeout,
 		Interval: vpcWaitInterval, Clock: netClock()}, func(ctx context.Context) (platform.WaitState, string, error) {
 		st, err := s.c.vpcStatus(ctx, s.region, id)
+		if errors.Is(err, platform.ErrNotFound) {
+			// A resource just created may not be listed yet.
+			return platform.KeepWaiting, statusNotFound, nil
+		}
 		if err != nil {
 			return platform.KeepWaiting, "", err
 		}
@@ -185,6 +192,9 @@ func waitVSwitch(ctx context.Context, rt *app.Runtime, s *ecsScope, id string) {
 	err := platform.WaitUntil(ctx, platform.WaitOptions{Resource: "vswitch/" + id, Want: statusAvailable, Timeout: shortWaitTimeout,
 		Interval: shortWaitInterval, Clock: netClock()}, func(ctx context.Context) (platform.WaitState, string, error) {
 		st, err := s.c.vSwitchStatus(ctx, s.region, id)
+		if errors.Is(err, platform.ErrNotFound) {
+			return platform.KeepWaiting, statusNotFound, nil
+		}
 		if err != nil {
 			return platform.KeepWaiting, "", err
 		}

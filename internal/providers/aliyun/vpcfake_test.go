@@ -16,6 +16,7 @@ import (
 func newFakeNet(t *testing.T, api *fakeAPI) *fakeECS {
 	f := newFakeECS(t, api)
 	f.pending = map[string]int{}
+	f.unlisted = map[string]int{}
 	f.vpcPending = 2
 	f.zones = []string{"cn-shanghai-b", "cn-shanghai-c", "cn-shanghai-d"}
 	f.resourceGroups = []map[string]any{{"Id": "rg-default0001", "Name": "default", "DisplayName": "default resource group", "Status": "OK"}}
@@ -49,6 +50,16 @@ func (f *fakeECS) addEIP(id, ip, status, instance, instanceType string, serviceM
 	return e
 }
 
+// hidden reports whether a new resource is still missing from listings
+// (counting one read).
+func (f *fakeECS) hidden(id string) bool {
+	if f.unlisted[id] > 0 {
+		f.unlisted[id]--
+		return true
+	}
+	return false
+}
+
 // settle answers the status of a resource that may still be transitional.
 func (f *fakeECS) settle(id string, m map[string]any, transitional, final string) {
 	if f.pending[id] > 0 {
@@ -76,6 +87,9 @@ func (f *fakeECS) netDescribeVpcs(q url.Values) (int, any) {
 		if q.Get("IsDefault") == "false" && v["IsDefault"] == true {
 			continue
 		}
+		if f.hidden(v["VpcId"].(string)) {
+			continue
+		}
 		f.settle(v["VpcId"].(string), v, "Pending", "Available")
 		out = append(out, v)
 	}
@@ -90,6 +104,7 @@ func (f *fakeECS) createVpc(q url.Values) (int, any) {
 	id := f.id("vpc-new")
 	f.vpcs = append(f.vpcs, map[string]any{"VpcId": id, "VpcName": q.Get("VpcName"), "CidrBlock": q.Get("CidrBlock"), "Status": "Pending", "IsDefault": false})
 	f.pending[id] = f.vpcPending
+	f.unlisted[id] = f.newUnlisted
 	return 200, map[string]any{"VpcId": id, "VRouterId": "vrt-1", "RouteTableId": "vtb-1", "ResourceGroupId": "rg-default0001", "RequestId": "r"}
 }
 
@@ -191,6 +206,9 @@ func (f *fakeECS) describeEips(q url.Values) (int, any) {
 		if x := q.Get("EipAddress"); x != "" && e["IpAddress"] != x {
 			continue
 		}
+		if f.hidden(e["AllocationId"].(string)) {
+			continue
+		}
 		f.settle(e["AllocationId"].(string), e, "Associating", "InUse")
 		out = append(out, e)
 	}
@@ -208,6 +226,7 @@ func (f *fakeECS) allocateEip(q url.Values) (int, any) {
 	id := f.id("eip-new")
 	ip := fmt.Sprintf("203.0.113.%d", 100+f.nextID)
 	f.addEIP(id, ip, "Available", "", "", 0, q.Get("ISP"))["Bandwidth"] = q.Get("Bandwidth")
+	f.unlisted[id] = f.newUnlisted
 	return 200, map[string]any{"AllocationId": id, "EipAddress": ip, "ResourceGroupId": "rg-default0001", "RequestId": "r"}
 }
 

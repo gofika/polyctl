@@ -44,6 +44,11 @@ type fakeECS struct {
 	vpcPending int
 	// allocateErr, when set, is the answer of every AllocateEipAddress.
 	allocateErr map[string]string
+	// unlisted counts the reads a new VPC or EIP is still missing from
+	// (newUnlisted is the count a new one starts with): listings lag
+	// behind creations.
+	unlisted    map[string]int
+	newUnlisted int
 
 	// rulePage is the page size of DescribeSecurityGroupAttribute (0: the
 	// request's MaxResults).

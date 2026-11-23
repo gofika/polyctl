@@ -328,6 +328,19 @@ func TestVPCAndVSwitchLists(t *testing.T) {
 	}
 }
 
+// A VPC that is not listed yet right after its creation is waited for,
+// not reported missing.
+func TestVPCEnsureWaitsForUnlistedVPC(t *testing.T) {
+	h, f, _ := netHarness(t, app.Flags{})
+	f.newUnlisted = 2
+	if err := h.run("vpc", "vpc", "ensure", "--zones", "b"); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if !slices.Equal(f.writes, []string{"CreateVpc", "CreateVSwitch"}) {
+		t.Fatalf("writes = %v", f.writes)
+	}
+}
+
 // A vSwitch given its block does not need room for a /22: a VPC smaller
 // than that takes it; without --cidr it is a usage error naming --cidr.
 func TestVSwitchCreateInSmallVPC(t *testing.T) {
