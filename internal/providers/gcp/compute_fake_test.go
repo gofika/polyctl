@@ -53,8 +53,12 @@ type fakeCompute struct {
 	networks     map[string]*compute.Network  // project/name
 	subnets      map[string][]*compute.Subnetwork
 	projectMeta  map[string]*compute.Metadata
-	ops          map[string]*compute.Operation
-	calls        []string
+	firewalls    map[string]*compute.Firewall // project/name
+	// busy maps the operation of a firewall write that was not waited for
+	// yet to the rule it writes (writes to a busy rule are not ready).
+	busy  map[string]string
+	ops   map[string]*compute.Operation
+	calls []string
 	// fail answers an error to requests whose "METHOD path" contains the key.
 	fail map[string]fakeErr
 	// opFail makes the operation of an action ("insert", "stop", ...) fail.
@@ -74,6 +78,7 @@ func newFakeCompute(t *testing.T) *fakeCompute {
 		instances: map[string]*compute.Instance{}, addresses: map[string]*compute.Address{}, disks: map[string]*compute.Disk{},
 		images: map[string][]*compute.Image{}, machineTypes: map[string]bool{}, networks: map[string]*compute.Network{},
 		subnets: map[string][]*compute.Subnetwork{}, projectMeta: map[string]*compute.Metadata{}, ops: map[string]*compute.Operation{},
+		firewalls: map[string]*compute.Firewall{}, busy: map[string]string{},
 		fail: map[string]fakeErr{}, opFail: map[string]compute.OperationErrorErrors{}, stuck: map[string]string{}}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.handle))
 	t.Cleanup(f.srv.Close)
@@ -292,6 +297,17 @@ func (f *fakeCompute) handle(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		writeJSONStatus(w, 200, &compute.InstanceAggregatedList{Items: items})
+	case len(rest) >= 2 && rest[0] == "global" && rest[1] == "firewalls":
+		f.handleFirewalls(w, r, project, rest[2:])
+	case len(rest) >= 3 && rest[0] == "global" && rest[1] == "operations":
+		op := f.ops[rest[2]]
+		if op == nil {
+			notFound(w, "operations/"+rest[2])
+			return
+		}
+		op.Status = "DONE"
+		delete(f.busy, op.Name)
+		writeJSONStatus(w, 200, op)
 	case len(rest) == 2 && rest[0] == "global" && rest[1] == "networks":
 		var keys []string
 		for k := range f.networks {

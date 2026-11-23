@@ -73,7 +73,7 @@ func computeErr(err error) error {
 		if reason == "accessNotConfigured" || strings.Contains(ge.Message, "has not been used") || strings.Contains(ge.Message, "is disabled") {
 			return fmt.Errorf("%w: the Compute Engine API is not enabled for the project: %w", platform.ErrUnauthorized, err)
 		}
-		return fmt.Errorf("%w: the credentials lack a Compute Engine permission (compute.instances.*, compute.addresses.*, ...): %w", platform.ErrUnauthorized, err)
+		return fmt.Errorf("%w: the credentials lack a Compute Engine permission (compute.instances.*, compute.addresses.*, compute.firewalls.*, ...): %w", platform.ErrUnauthorized, err)
 	case http.StatusNotFound:
 		return fmt.Errorf("%w: %w", platform.ErrNotFound, err)
 	case http.StatusBadRequest:
