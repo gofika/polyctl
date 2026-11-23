@@ -61,6 +61,14 @@ type ec2API interface {
 	DescribeAddresses(ctx context.Context, in *ec2.DescribeAddressesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeAddressesOutput, error)
 	DescribeNetworkInterfaces(ctx context.Context, in *ec2.DescribeNetworkInterfacesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeNetworkInterfacesOutput, error)
 	DescribeSubnets(ctx context.Context, in *ec2.DescribeSubnetsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSubnetsOutput, error)
+	DescribeVolumesModifications(ctx context.Context, in *ec2.DescribeVolumesModificationsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeVolumesModificationsOutput, error)
+	CreateVolume(ctx context.Context, in *ec2.CreateVolumeInput, optFns ...func(*ec2.Options)) (*ec2.CreateVolumeOutput, error)
+	ModifyVolume(ctx context.Context, in *ec2.ModifyVolumeInput, optFns ...func(*ec2.Options)) (*ec2.ModifyVolumeOutput, error)
+	AttachVolume(ctx context.Context, in *ec2.AttachVolumeInput, optFns ...func(*ec2.Options)) (*ec2.AttachVolumeOutput, error)
+	DetachVolume(ctx context.Context, in *ec2.DetachVolumeInput, optFns ...func(*ec2.Options)) (*ec2.DetachVolumeOutput, error)
+	DeleteVolume(ctx context.Context, in *ec2.DeleteVolumeInput, optFns ...func(*ec2.Options)) (*ec2.DeleteVolumeOutput, error)
+	DescribeSnapshots(ctx context.Context, in *ec2.DescribeSnapshotsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSnapshotsOutput, error)
+	CreateSnapshot(ctx context.Context, in *ec2.CreateSnapshotInput, optFns ...func(*ec2.Options)) (*ec2.CreateSnapshotOutput, error)
 }
 
 type ssmAPI interface {
@@ -172,6 +180,8 @@ func (c *client) Sync(ctx context.Context, rt platform.ResourceType) ([]platform
 		return c.inEveryRegion(ctx, c.dbInstanceResources)
 	case platform.ResCertificate:
 		return c.inEveryRegion(ctx, c.certificateResources)
+	case platform.ResVolume:
+		return c.inEveryRegion(ctx, c.volumeResources)
 	case platform.ResKeyPair:
 		return c.keyPairResources(ctx, c.region)
 	case platform.ResSecurityGroup:

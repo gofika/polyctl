@@ -219,6 +219,8 @@ func (f *fakeEC2) DescribeInstances(_ context.Context, in *ec2.DescribeInstances
 					hit = hit || v == inst.typ
 				case "instance.group-id":
 					hit = hit || containsStr(inst.groupIDs(), v)
+				case "instance-id":
+					hit = hit || v == inst.id
 				}
 			}
 			ok = ok && hit
@@ -454,28 +456,6 @@ func (f *fakeEC2) DescribeImages(_ context.Context, in *ec2.DescribeImagesInput,
 		if ok {
 			out.Images = append(out.Images, im)
 		}
-	}
-	return out, nil
-}
-
-func (f *fakeEC2) DescribeVolumes(_ context.Context, in *ec2.DescribeVolumesInput, _ ...func(*ec2.Options)) (*ec2.DescribeVolumesOutput, error) {
-	f.mu.Lock()
-	f.record("DescribeVolumes")
-	f.mu.Unlock()
-	f.shared.mu.Lock()
-	defer f.shared.mu.Unlock()
-	if f.shared.inst.volErr != nil {
-		return nil, f.shared.inst.volErr
-	}
-	out := &ec2.DescribeVolumesOutput{}
-	id := in.Filters[0].Values[0]
-	inst := f.shared.inst.find(f.region, id)
-	if inst == nil {
-		return out, nil
-	}
-	for _, v := range inst.vols {
-		out.Volumes = append(out.Volumes, ec2types.Volume{VolumeId: awssdk.String(v.id), Size: awssdk.Int32(v.size), State: ec2types.VolumeStateInUse,
-			VolumeType: ec2types.VolumeType(v.typ), Attachments: []ec2types.VolumeAttachment{{InstanceId: awssdk.String(id), Device: awssdk.String(v.device)}}})
 	}
 	return out, nil
 }

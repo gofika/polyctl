@@ -135,6 +135,7 @@ type fakeEC2s struct {
 	elb     fakeELBs
 	acm     fakeACMs
 	rds     fakeRDSs
+	ebs     fakeEBS
 }
 
 func (s *fakeEC2s) calls() []string {
