@@ -161,3 +161,12 @@ func TestSettingsValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestDefaultTTLsCoverEveryType(t *testing.T) {
+	cfg, _ := config.Load(filepath.Join(t.TempDir(), config.FileName))
+	for _, info := range platform.ResourceTypes() {
+		if got := cfg.TTLFor(info.Type); got != info.DefaultTTL {
+			t.Errorf("TTLFor(%s) = %s, want %s", info.Type, got, info.DefaultTTL)
+		}
+	}
+}

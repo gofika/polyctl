@@ -232,7 +232,7 @@ Keys:
 
 - `current_profile`: the profile a **platform-specific** command uses when you did not pass `--profile`, provided it has an account on that platform. If it has none, polyctl falls back to "the only profile with an account on that platform", and errors with the candidate list when there are several. It is also the profile `auth login` adds an account to when `--profile` is not given. Set by `auth use`, and by `auth login` when no profile is current. A value that names no profile (after a hand edit) is treated as not set: `auth login` then says so, uses `default` and makes that profile current.
 - `credential_store`: `auto` tries the keyring and falls back to the file (printing a warning once); `keyring` fails if no keyring is available; `file` always uses `credentials.json`.
-- `ttl`: how long a synced set stays fresh. Unset types use `default`; the built-in defaults are `dns_record: 1h`, `zone: 24h`, `domain: 24h`, `instance: 15m`, `default: 24h`.
+- `ttl`: how long a synced set stays fresh, per resource type (see [Caching](#caching) for the types). Unset types use `default`; the built-in defaults are `dns_record: 1h`, `zone: 24h`, `domain: 24h`, `instance: 15m`, `security_group: 1h`, `load_balancer: 1h`, `certificate: 24h`, `volume: 1h`, `db_instance: 15m`, `eip: 1h`, `key_pair: 24h`, `default: 24h`.
 - `output`: default output format.
 - `profiles.<name>.platforms.<platform>`: the profile's account on one platform; `<platform>` is one of `cloudflare`, `namecom`, `godaddy`, `aws`, `gcp`, `aliyun`. A profile holds at most one account per platform.
 - `profiles.<name>.platforms.<platform>.metadata`: non-secret values the provider needs (account id, region, project, login method...). Populated by `auth login`; you can edit them by hand.
@@ -357,7 +357,7 @@ The inventory is a WAL-mode SQLite database with three tables:
 CREATE TABLE resources (
   platform      TEXT    NOT NULL,     -- cloudflare, aws, ...
   profile       TEXT    NOT NULL,
-  resource_type TEXT    NOT NULL,     -- domain | zone | dns_record | instance
+  resource_type TEXT    NOT NULL,     -- see the resource types under Caching
   resource_id   TEXT    NOT NULL,     -- platform-native id (domain name for type domain)
   name          TEXT    NOT NULL,
   parent_id     TEXT    NOT NULL DEFAULT '',   -- zone id for dns_record
@@ -769,12 +769,28 @@ Every read goes through the inventory:
 | `--refresh` | Always fetched and stored. |
 | `--offline` | Always served from the cache, even if expired. A set that was never synced is an error (exit code 4); any command that must write to a platform fails with exit code 6. |
 
-TTLs are per resource type (`ttl:` in `config.yaml`, defaults `dns_record: 1h`, `zone: 24h`, `domain: 24h`, `instance: 15m`). DNS records are tracked per zone, so listing one zone never forces a fetch of every zone in the account.
+TTLs are per resource type (`ttl:` in `config.yaml`; the defaults are listed under [`config.yaml`](#configyaml)). DNS records are tracked per zone, so listing one zone never forces a fetch of every zone in the account.
+
+The inventory knows these resource types (the values of `--type`); each platform syncs the ones it supports, listed with its commands below:
+
+| Type | Holds |
+| --- | --- |
+| `domain` | registered domains |
+| `zone` | DNS zones |
+| `dns_record` | DNS records |
+| `instance` | compute instances |
+| `security_group` | security groups and firewalls |
+| `load_balancer` | load balancers |
+| `certificate` | certificates held by a platform |
+| `volume` | block storage volumes |
+| `db_instance` | managed database instances |
+| `eip` | elastic / static public IP addresses |
+| `key_pair` | SSH key pairs |
 
 ```text
-polyctl sync [--platform cloudflare,aws] [--profile <name>] [--type domain,zone,dns_record,instance]
+polyctl sync [--platform cloudflare,aws] [--profile <name>] [--type domain,zone,dns_record,instance,...]
 polyctl inventory stats
-polyctl inventory list [--platform cloudflare,aws] [--type domain,zone,dns_record,instance] [--name <exact name>] [--profile <name>]
+polyctl inventory list [--platform cloudflare,aws] [--type domain,zone,dns_record,instance,...] [--name <exact name>] [--profile <name>]
 polyctl inventory path
 ```
 

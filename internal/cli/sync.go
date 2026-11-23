@@ -87,11 +87,11 @@ error.`,
 
 // resourceTypeNames lists the values of the --type filter of sync and
 // inventory list, for their help.
-const resourceTypeNames = "domain, zone, dns_record, instance (comma-separated)"
+var resourceTypeNames = strings.Join(platform.ResourceTypeNames(), ", ") + " (comma-separated)"
 
 // completeResourceTypes completes the --type filter of sync and inventory
 // list.
-var completeResourceTypes = completeList(func() []string { return []string{"domain", "zone", "dns_record", "instance"} })
+var completeResourceTypes = completeList(platform.ResourceTypeNames)
 
 // noSyncAccount is the note for a `sync` whose selection names no account,
 // or that has no account at all: nothing was synced, which is not a failure.

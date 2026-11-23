@@ -436,14 +436,15 @@ func (c *Config) Accounts(profile string) []AccountRef {
 	return out
 }
 
-// DefaultTTLs are used when ttl is not configured.
-var DefaultTTLs = map[string]time.Duration{
-	"default":                     24 * time.Hour,
-	string(platform.ResDNSRecord): time.Hour,
-	string(platform.ResZone):      24 * time.Hour,
-	string(platform.ResDomain):    24 * time.Hour,
-	string(platform.ResInstance):  15 * time.Minute,
-}
+// DefaultTTLs are used when ttl is not configured: "default" and the
+// default of every known resource type.
+var DefaultTTLs = func() map[string]time.Duration {
+	m := map[string]time.Duration{"default": 24 * time.Hour}
+	for _, t := range platform.ResourceTypes() {
+		m[string(t.Type)] = t.DefaultTTL
+	}
+	return m
+}()
 
 // TTLFor returns the freshness window for a resource type.
 func (c *Config) TTLFor(rt platform.ResourceType) time.Duration {

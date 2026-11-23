@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/gofika/polyctl/internal/prompt"
 )
@@ -61,15 +62,71 @@ const (
 	ResDNSRecord ResourceType = "dns_record"
 	// ResInstance is a compute instance (EC2, GCE, ECS).
 	ResInstance ResourceType = "instance"
+	// ResSecurityGroup is a security group or firewall rule set.
+	ResSecurityGroup ResourceType = "security_group"
+	// ResLoadBalancer is a load balancer (ELBv2, ALB, a GCP load balancer).
+	ResLoadBalancer ResourceType = "load_balancer"
+	// ResCertificate is a certificate held by a platform (ACM, CAS, GCP SSL
+	// certificates).
+	ResCertificate ResourceType = "certificate"
+	// ResVolume is a block storage volume (EBS).
+	ResVolume ResourceType = "volume"
+	// ResDBInstance is a managed database instance (RDS).
+	ResDBInstance ResourceType = "db_instance"
+	// ResEIP is an elastic / static public IP address.
+	ResEIP ResourceType = "eip"
+	// ResKeyPair is an SSH key pair registered with a platform.
+	ResKeyPair ResourceType = "key_pair"
 )
+
+// ResourceTypeInfo describes one inventory resource type.
+type ResourceTypeInfo struct {
+	Type ResourceType
+	// DefaultTTL is how long a synced set of this type stays fresh unless
+	// config.yaml says otherwise.
+	DefaultTTL time.Duration
+	// Description is a short help text.
+	Description string
+}
+
+// resourceTypes is the table of known types, in display order. A new type
+// is added here (and synced by the providers that list it in
+// Provider.ResourceTypes); parsing, help, completion and TTLs follow.
+var resourceTypes = []ResourceTypeInfo{
+	{ResDomain, 24 * time.Hour, "registered domains"},
+	{ResZone, 24 * time.Hour, "DNS zones"},
+	{ResDNSRecord, time.Hour, "DNS records"},
+	{ResInstance, 15 * time.Minute, "compute instances"},
+	{ResSecurityGroup, time.Hour, "security groups and firewalls"},
+	{ResLoadBalancer, time.Hour, "load balancers"},
+	{ResCertificate, 24 * time.Hour, "certificates held by a platform"},
+	{ResVolume, time.Hour, "block storage volumes"},
+	{ResDBInstance, 15 * time.Minute, "managed database instances"},
+	{ResEIP, time.Hour, "elastic / static public IP addresses"},
+	{ResKeyPair, 24 * time.Hour, "SSH key pairs"},
+}
+
+// ResourceTypes returns every known inventory resource type, in display
+// order.
+func ResourceTypes() []ResourceTypeInfo { return append([]ResourceTypeInfo(nil), resourceTypes...) }
+
+// ResourceTypeNames returns the names of every known resource type.
+func ResourceTypeNames() []string {
+	out := make([]string, 0, len(resourceTypes))
+	for _, t := range resourceTypes {
+		out = append(out, string(t.Type))
+	}
+	return out
+}
 
 // ParseResourceType validates a user-supplied resource type.
 func ParseResourceType(s string) (ResourceType, error) {
-	switch ResourceType(s) {
-	case ResDomain, ResZone, ResDNSRecord, ResInstance:
-		return ResourceType(s), nil
+	for _, t := range resourceTypes {
+		if string(t.Type) == s {
+			return t.Type, nil
+		}
 	}
-	return "", fmt.Errorf("unknown resource type %q (expected one of: domain, zone, dns_record, instance)", s)
+	return "", fmt.Errorf("unknown resource type %q (expected one of: %s)", s, strings.Join(ResourceTypeNames(), ", "))
 }
 
 // Profile is a configured account on a platform together with its secret.

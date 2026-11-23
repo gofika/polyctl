@@ -45,3 +45,21 @@ func TestCheckLoginOption(t *testing.T) {
 		t.Errorf("unknown option: %v", err)
 	}
 }
+
+func TestResourceTypeTable(t *testing.T) {
+	for _, name := range []string{"domain", "zone", "dns_record", "instance", "security_group", "load_balancer", "certificate", "volume", "db_instance", "eip", "key_pair"} {
+		rt, err := ParseResourceType(name)
+		if err != nil || string(rt) != name {
+			t.Errorf("ParseResourceType(%q) = %q, %v", name, rt, err)
+		}
+	}
+	_, err := ParseResourceType("bucket")
+	if err == nil || !strings.Contains(err.Error(), "key_pair") {
+		t.Errorf("unknown type error = %v", err)
+	}
+	for _, info := range ResourceTypes() {
+		if info.DefaultTTL <= 0 || info.Description == "" {
+			t.Errorf("incomplete entry %+v", info)
+		}
+	}
+}
