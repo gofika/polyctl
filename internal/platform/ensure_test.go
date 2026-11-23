@@ -121,3 +121,17 @@ func TestActionForms(t *testing.T) {
 		t.Error("labels")
 	}
 }
+
+// A write step that names no action is reported as an update, never with
+// an empty action.
+func TestPlanStepWithoutAction(t *testing.T) {
+	newPlan := func() *Plan {
+		return &Plan{Steps: []Step{{Resource: "zone/x/ssl", Apply: func(context.Context) (Change, error) { return Change{}, nil }}}}
+	}
+	for dry, want := range map[bool]Action{true: WouldUpdate, false: Updated} {
+		changes, err := newPlan().Run(t.Context(), dry)
+		if err != nil || len(changes) != 1 || changes[0].Action != want {
+			t.Errorf("dry=%v: %+v, %v", dry, changes, err)
+		}
+	}
+}

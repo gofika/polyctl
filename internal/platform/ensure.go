@@ -100,9 +100,9 @@ type Report struct {
 type Step struct {
 	// Resource names the resource (see Change.Resource).
 	Resource string
-	// Action is what Apply does (Created, Updated or Deleted); a dry run
-	// reports its WouldXxx form. A step without Check and Apply reports
-	// Action as it is (Unchanged, Skipped...).
+	// Action is what Apply does (Created, Updated or Deleted; Updated when
+	// empty); a dry run reports its WouldXxx form. A step without Check
+	// and Apply reports Action as it is (Unchanged when empty, Skipped...).
 	Action Action
 	// Desc is the detail of the change; a dry run prints it.
 	Desc string
@@ -232,8 +232,14 @@ func (p *Plan) runStep(ctx context.Context, s Step, dryRun bool) (Change, error)
 		}
 		return fill(Change{}, act), nil
 	}
+	// A write step that does not say what it does is an update: its
+	// change report row never goes without an action.
+	act := s.Action
+	if act == "" {
+		act = Updated
+	}
 	if dryRun {
-		ch := fill(Change{}, s.Action.DryRun())
+		ch := fill(Change{}, act.DryRun())
 		if ch.ID == "" && s.Action == Created {
 			ch.ID = Pending
 		}
@@ -243,5 +249,5 @@ func (p *Plan) runStep(ctx context.Context, s Step, dryRun bool) (Change, error)
 	if err != nil {
 		return ch, err
 	}
-	return fill(ch, s.Action), nil
+	return fill(ch, act), nil
 }
