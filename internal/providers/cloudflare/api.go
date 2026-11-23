@@ -553,7 +553,11 @@ func toBody(r platform.Record) recordBody {
 				}
 			}
 		}
-		if d, ok := r.Extra["data"].(map[string]any); ok && len(d) > 0 && isDataType(b.Type) {
+		// The components of a record as listed are sent only when its
+		// value is text they cannot be read from: a value that can be
+		// read wins below, so a changed value is not undone by the old
+		// components.
+		if d, ok := r.Extra["data"].(map[string]any); ok && len(d) > 0 && isDataType(b.Type) && !canReadData(b.Type, b.Content, r.Priority) {
 			b.Data = make(map[string]any, len(d))
 			for k, v := range d {
 				b.Data[k] = v
@@ -573,6 +577,15 @@ func toBody(r platform.Record) recordBody {
 		}
 	}
 	return b
+}
+
+// canReadData reports whether dataFromText can read text.
+func canReadData(typ, text string, priority *int) bool {
+	if strings.TrimSpace(text) == "" {
+		return false
+	}
+	_, _, err := dataFromText(typ, text, priority)
+	return err == nil
 }
 
 // dataFromText reads the zone-file text of a record of a data type into

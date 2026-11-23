@@ -1282,6 +1282,21 @@ func TestCreateDataRecordFromText(t *testing.T) {
 	}
 }
 
+// An update of a listed SRV record sends its new value, not the old
+// components it carries in Extra; text that cannot be read falls back to
+// them.
+func TestDataBodyPrefersTheValue(t *testing.T) {
+	old := map[string]any{"data": map[string]any{"priority": 10, "weight": 5, "port": 5060, "target": "old.example.com"}}
+	b := toBody(platform.Record{Name: "_sip._tcp.example.com", Type: "SRV", Value: "6 5061 new.example.com", Priority: intp(20), Extra: old})
+	if b.Data["target"] != "new.example.com" || b.Data["port"] != 5061 || b.Data["priority"] != 20 || b.Content != "" {
+		t.Errorf("body = %+v", b)
+	}
+	b = toBody(platform.Record{Name: "_sip._tcp.example.com", Type: "SRV", Value: "unreadable", Extra: old})
+	if b.Data["target"] != "old.example.com" || b.Content != "" {
+		t.Errorf("fallback body = %+v", b)
+	}
+}
+
 // Every page is read, by total_pages; a page past the end is an empty
 // result, not an error.
 func TestListRecordsReadsEveryPage(t *testing.T) {
@@ -1309,3 +1324,5 @@ func TestListRecordsReadsEveryPage(t *testing.T) {
 		t.Fatalf("records = %d, %v", len(recs), err)
 	}
 }
+
+func intp(n int) *int { return &n }
