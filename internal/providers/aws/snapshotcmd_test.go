@@ -75,8 +75,39 @@ func TestSnapshotList(t *testing.T) {
 	if err := h.run("ec2", "snapshot", "list", "--state", "done"); !isUsage(err) {
 		t.Errorf("bad state = %v", err)
 	}
-	if err := h.run("ec2", "snapshot", "list", "--volume", "vol-0999"); !errors.Is(err, platform.ErrNotFound) {
-		t.Errorf("unknown volume = %v", err)
+	// The id of a volume AWS no longer has still lists its snapshots (they
+	// outlive it): no match is an empty list and exit code 0.
+	h.addSnap("ap-east-1", &fakeSnap{id: "snap-0dead", volID: "vol-0999", size: 8, start: day(4)})
+	if err := h.run("ec2", "snapshot", "list", "--volume", "vol-0999"); err != nil {
+		t.Fatalf("deleted volume: %v", err)
+	}
+	h.jsonOut(&rows)
+	if got := snapIDs(rows); got != "snap-0dead" {
+		t.Errorf("deleted volume = %q", got)
+	}
+	// One the inventory knew: listed where the inventory saw it.
+	h.addVolume("ap-east-1", &fakeVol{id: "vol-0777", size: 8, next: []string{"gone"}})
+	h.addSnap("ap-east-1", &fakeSnap{id: "snap-0777", volID: "vol-0777", size: 8, start: day(5)})
+	if err := h.run("ec2", "volume", "get", "vol-0777", "--region", "ap-east-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.run("ec2", "snapshot", "list", "--volume", "vol-0777"); err != nil {
+		t.Fatalf("gone volume: %v", err)
+	}
+	h.jsonOut(&rows)
+	if got := snapIDs(rows); got != "snap-0777" || rows[0].Region != "ap-east-1" {
+		t.Errorf("gone volume = %+v", rows)
+	}
+	if err := h.run("ec2", "snapshot", "list", "--volume", "vol-0998"); err != nil {
+		t.Fatalf("unknown volume: %v", err)
+	}
+	h.jsonOut(&rows)
+	if len(rows) != 0 {
+		t.Errorf("unknown volume = %+v", rows)
+	}
+	// A name that matches no volume is still not found.
+	if err := h.run("ec2", "snapshot", "list", "--volume", "no-such-volume"); !errors.Is(err, platform.ErrNotFound) {
+		t.Errorf("unknown name = %v", err)
 	}
 }
 

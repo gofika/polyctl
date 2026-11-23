@@ -1,6 +1,7 @@
 package aws
 
 import (
+	"errors"
 	"fmt"
 	"path"
 	"slices"
@@ -46,7 +47,7 @@ func snapshotListCmd(rt *app.Runtime) *cobra.Command {
 		Long: `List the EBS snapshots the account owns in the profile's region (--region
 another one), newest first. --volume keeps the snapshots of that volume (its
 id or Name tag; its account and region are found like volume get finds
-them), --state those in that state (completed, pending, error), --name those
+them; the id of a deleted volume still lists its snapshots), --state those in that state (completed, pending, error), --name those
 whose Name tag matches the value (* and ? are wildcards). --latest shows
 only the newest completed snapshot. No match is an empty list and exit code
 0.`,
@@ -73,12 +74,27 @@ only the newest completed snapshot. No match is an empty list and exit code
 			var profile string
 			if volume != "" {
 				l, err := resolveVolume(ctx, rt, volume, region)
-				if err != nil {
+				var gone *volumeGoneError
+				switch {
+				case err == nil:
+					l.store(ctx, rt)
+					c, profile, region, f.VolumeID = l.c, l.profile, l.region, l.id()
+				case isVolumeID(strings.TrimSpace(volume)) && errors.As(err, &gone):
+					// The snapshots of a deleted volume outlive it: list them
+					// where the inventory last saw the volume.
+					if c, err = openProfile(ctx, rt, gone.profile); err != nil {
+						return err
+					}
+					profile, region, f.VolumeID = gone.profile, gone.region, gone.id
+				case isVolumeID(strings.TrimSpace(volume)) && errors.Is(err, platform.ErrNotFound):
+					// An id the inventory never knew (a volume deleted long
+					// ago): filter by it in the selected profile's region.
+					f.VolumeID = strings.TrimSpace(volume)
+				default:
 					return err
 				}
-				l.store(ctx, rt)
-				c, profile, region, f.VolumeID = l.c, l.profile, l.region, l.id()
-			} else {
+			}
+			if c == nil {
 				var err error
 				if profile, err = rt.ProfileFor(platform.AWS); err != nil {
 					return err
