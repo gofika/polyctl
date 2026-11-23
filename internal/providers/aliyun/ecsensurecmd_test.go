@@ -254,3 +254,19 @@ func TestInstanceEnsureAsksForTheKeyPairName(t *testing.T) {
 		t.Errorf("key pair = %+v", c)
 	}
 }
+
+// A binding that fails reports no public address in the result.
+func TestInstanceEnsureFailedBindingHasNoAddress(t *testing.T) {
+	h, f, _ := computeHarness(t, app.Flags{})
+	f.addVM("i-1", "site-a", instRunning, "ecs.u1-c1m1.large", "vpc-1", "vsw-b")
+	f.addEIP("eip-idle", "203.0.113.10", "Available", "", "", 0, "BGP_PRO")
+	f.associateFails = 100
+	if err := h.run("ecs", "instance", "ensure", "site-a"); err == nil {
+		t.Fatal("the binding did not fail")
+	}
+	var out instanceEnsureReport
+	h.jsonOut(&out)
+	if out.Result.InstanceID != "i-1" || out.Result.PublicIP != "" {
+		t.Errorf("result = %+v", out.Result)
+	}
+}

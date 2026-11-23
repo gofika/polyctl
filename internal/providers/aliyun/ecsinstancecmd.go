@@ -412,11 +412,9 @@ func eipStep(rt *app.Runtime, s *ecsScope, name string, id func() string, p eipP
 		step.Action = platform.Updated
 		step.ID = p.idle.AllocationID
 		step.Desc = "reuse idle " + p.idle.IP + " " + p.idle.AllocationID
-		*result = eipRef{AllocationID: p.idle.AllocationID, IP: p.idle.IP}
 	} else {
 		step.Action = platform.Created
 		step.Desc = "allocate " + p.spec.summary()
-		*result = eipRef{AllocationID: platform.Pending}
 	}
 	step.Apply = func(ctx context.Context) (platform.Change, error) {
 		e := eipAddress{}
@@ -429,11 +427,12 @@ func eipStep(rt *app.Runtime, s *ecsScope, name string, id func() string, p eipP
 			}
 			e = fresh
 		}
-		*result = eipRef{AllocationID: e.AllocationID, IP: e.IP}
 		err := associateRetry(ctx, func(ctx context.Context) error { return s.c.associateEIP(ctx, s.region, e.AllocationID, id()) })
 		if err != nil {
 			return platform.Change{ID: e.AllocationID}, fmt.Errorf("bind EIP %s (%s) to %s: %w", e.AllocationID, e.IP, id(), err)
 		}
+		// Reported only once bound: a failed run reports no address.
+		*result = eipRef{AllocationID: e.AllocationID, IP: e.IP}
 		if err := waitEIP(ctx, s, e.AllocationID, eipInUse+" by "+id(), func(x eipAddress) bool {
 			return x.Status == eipInUse && x.InstanceID == id()
 		}); err != nil {
