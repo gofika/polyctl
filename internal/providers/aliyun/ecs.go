@@ -40,6 +40,16 @@ type Instance struct {
 	// SecurityGroupIDs are the security groups the instance is in.
 	SecurityGroupIDs []string          `json:"security_group_ids,omitempty" yaml:"security_group_ids,omitempty"`
 	Tags             map[string]string `json:"tags,omitempty" yaml:"tags,omitempty"`
+	// PublicIPs, InnerIPs and NatIP are the instance-level addresses: its
+	// own public addresses, the classic network addresses and the VPC NAT
+	// address.
+	PublicIPs []string `json:"public_ips,omitempty" yaml:"public_ips,omitempty"`
+	InnerIPs  []string `json:"inner_ips,omitempty" yaml:"inner_ips,omitempty"`
+	NatIP     string   `json:"nat_ip,omitempty" yaml:"nat_ip,omitempty"`
+	// Interfaces are every network interface with all its addresses
+	// (polyctl find); secondary private addresses come from
+	// DescribeNetworkInterfaces.
+	Interfaces []netIface `json:"interfaces,omitempty" yaml:"interfaces,omitempty"`
 }
 
 // instanceFromECS flattens the SDK instance.
@@ -78,6 +88,17 @@ func instanceFromECS(i ecs.Instance) Instance {
 	}
 	out.PrivateIP = privateIP(i)
 	out.PublicIP = publicIP(i)
+	out.PublicIPs = appendNew(nil, i.PublicIpAddress.IpAddress...)
+	out.InnerIPs = appendNew(nil, i.InnerIpAddress.IpAddress...)
+	out.NatIP = i.VpcAttributes.NatIpAddress
+	for _, n := range i.NetworkInterfaces.NetworkInterface {
+		out.Interfaces = append(out.Interfaces, netIfaceFromInstance(n, out.VSwitchID))
+	}
+	if len(out.Interfaces) == 0 {
+		if ips := appendNew(nil, i.VpcAttributes.PrivateIpAddress.IpAddress...); len(ips) > 0 {
+			out.Interfaces = append(out.Interfaces, netIface{Type: "Primary", VSwitchID: out.VSwitchID, Private: ips})
+		}
+	}
 	if len(i.Tags.Tag) > 0 {
 		out.Tags = map[string]string{}
 		for _, t := range i.Tags.Tag {
@@ -138,7 +159,7 @@ func instanceResource(in Instance) platform.Resource {
 	if name == "" {
 		name = in.ID
 	}
-	return platform.Resource{Type: platform.ResInstance, ID: in.ID, Name: name, ParentID: in.Region, Data: in}
+	return platform.Resource{Type: platform.ResInstance, ID: in.ID, Name: name, ParentID: in.Region, Data: in, IPs: in.ipSet().Refs()}
 }
 
 // ListInstances lists the ECS instances of a region ("" = profile region).

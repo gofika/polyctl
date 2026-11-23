@@ -363,13 +363,15 @@ func (c *client) Sync(ctx context.Context, rt platform.ResourceType) ([]platform
 		}
 		return app.DomainResources(domains), nil
 	case platform.ResInstance:
-		return c.ListInstances(ctx, "")
+		return c.inEveryRegion(ctx, c.instanceResources)
+	case platform.ResLoadBalancer:
+		return c.inEveryRegion(ctx, c.albResources)
 	case platform.ResSecurityGroup:
 		return c.securityGroupResources(ctx, c.region)
 	case platform.ResKeyPair:
 		return c.keyPairResources(ctx, c.region)
 	case platform.ResEIP:
-		return c.eipResources(ctx, c.region)
+		return c.inEveryRegion(ctx, c.eipResources)
 	}
 	return nil, fmt.Errorf("%s: %w", rt, platform.ErrNotSupported)
 }

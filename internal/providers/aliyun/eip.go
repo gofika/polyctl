@@ -82,8 +82,18 @@ func eipFromSDK(e vpc.EipAddress, region string) eipAddress {
 
 // resource is the inventory row of an EIP: named by its address, in its
 // region.
+//
+// For find, an EIP bound to something is indexed as reserved: the instance
+// or load balancer holding it is the match, and the EIP annotates it.
 func (e eipAddress) resource() platform.Resource {
-	return platform.Resource{Type: platform.ResEIP, ID: e.AllocationID, Name: e.IP, ParentID: e.Region, Data: e}
+	var refs []platform.IPRef
+	if r, ok := platform.IPAddr(platform.IPExternal, e.IP); ok {
+		if e.bound() {
+			r.Kind = platform.IPReserved
+		}
+		refs = append(refs, r)
+	}
+	return platform.Resource{Type: platform.ResEIP, ID: e.AllocationID, Name: e.IP, ParentID: e.Region, Data: e, IPs: refs}
 }
 
 // bound reports whether the EIP is bound to anything.

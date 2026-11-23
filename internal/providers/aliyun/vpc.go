@@ -56,6 +56,7 @@ type vSwitch struct {
 	Status       string `json:"status" yaml:"status"`
 	AvailableIPs int64  `json:"available_ips" yaml:"available_ips"`
 	Region       string `json:"region" yaml:"region"`
+	IPv6CIDR     string `json:"ipv6_cidr,omitempty" yaml:"ipv6_cidr,omitempty"`
 }
 
 // vpcEndpoint is the VPC API endpoint of a region. The endpoint's region
@@ -212,7 +213,7 @@ func (c *client) createVPC(ctx context.Context, region, name, cidr string) (stri
 
 func vSwitchFromSDK(v vpc.VSwitch, region string) vSwitch {
 	return vSwitch{ID: v.VSwitchId, Name: v.VSwitchName, VPC: v.VpcId, Zone: v.ZoneId, CIDR: v.CidrBlock, Status: v.Status,
-		AvailableIPs: v.AvailableIpAddressCount, Region: region}
+		AvailableIPs: v.AvailableIpAddressCount, Region: region, IPv6CIDR: v.Ipv6CidrBlock}
 }
 
 // listVSwitches returns the vSwitches of a region, of one VPC when vpcID is

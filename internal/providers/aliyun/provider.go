@@ -85,7 +85,7 @@ func (*provider) RecordTypes() []string {
 var _ platform.RecordTyper = (*provider)(nil)
 
 func (*provider) ResourceTypes() []platform.ResourceType {
-	return []platform.ResourceType{platform.ResZone, platform.ResDNSRecord, platform.ResDomain, platform.ResInstance, platform.ResSecurityGroup, platform.ResKeyPair, platform.ResEIP}
+	return []platform.ResourceType{platform.ResZone, platform.ResDNSRecord, platform.ResDomain, platform.ResInstance, platform.ResSecurityGroup, platform.ResKeyPair, platform.ResEIP, platform.ResLoadBalancer}
 }
 
 // optCLIProfile is the login option that names an aliyun CLI profile to

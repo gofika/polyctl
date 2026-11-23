@@ -53,6 +53,14 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 		_ = json.NewEncoder(w).Encode(body)
 	}))
 	t.Cleanup(f.srv.Close)
+	// The region list and the network interfaces the instance sync reads:
+	// by default the region asked is the only one, without interfaces.
+	f.handlers["DescribeRegions"] = func(q url.Values) (int, any) {
+		return 200, map[string]any{"Regions": map[string]any{"Region": []map[string]any{{"RegionId": q.Get("RegionId")}}}}
+	}
+	f.handlers["DescribeNetworkInterfaces"] = func(q url.Values) (int, any) {
+		return 200, map[string]any{"NextToken": "", "TotalCount": 0, "NetworkInterfaceSets": map[string]any{"NetworkInterfaceSet": []any{}}}
+	}
 	return f
 }
 
