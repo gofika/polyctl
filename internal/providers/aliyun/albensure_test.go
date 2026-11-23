@@ -3,6 +3,7 @@ package aliyun
 import (
 	"context"
 	"errors"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -430,5 +431,28 @@ func TestMatchListeners(t *testing.T) {
 	got = matchListeners([]albListenerWant{{Protocol: "HTTPS", Port: 443}, {Protocol: "HTTPS", Port: 8443}}, existing[:1])
 	if got["https:443"] != nil || got["https:8443"].ID != "lsn-a" {
 		t.Errorf("a listener claimed by port is not taken by a default-port want: %v %v", got["https:443"], got["https:8443"])
+	}
+}
+
+func TestALBEnsureFailedCreateNamesTheIdleEIPsAndReusesThem(t *testing.T) {
+	h, net, alb, _, _ := albHarness(t, app.Flags{})
+	h.api.on("CreateLoadBalancer", net.write(func(q url.Values) (int, any) {
+		return 400, apiErr("OperationDenied.MultiIspType", "isp mismatch")
+	}))
+	err := h.run("alb", "load-balancer", "ensure", "example.com", "--service", "site-a")
+	if err == nil {
+		t.Fatal("ensure succeeded")
+	}
+	allocs := h.api.callsFor("AllocateEipAddress")
+	if len(allocs) != 2 || strings.Count(h.stderr.String(), "stays idle (billed)") != 2 {
+		t.Fatalf("allocations %d, stderr:\n%s", len(allocs), h.stderr.String())
+	}
+	// The next run reuses the two EIPs instead of allocating more.
+	h.api.on("CreateLoadBalancer", net.write(alb.createLoadBalancer))
+	if err := h.run("alb", "load-balancer", "ensure", "example.com", "--service", "site-a"); err != nil {
+		t.Fatalf("ensure again: %v\n%s", err, h.stderr.String())
+	}
+	if got := len(h.api.callsFor("AllocateEipAddress")); got != 2 {
+		t.Errorf("AllocateEipAddress called %d times in all, want 2", got)
 	}
 }

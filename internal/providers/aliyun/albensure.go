@@ -175,7 +175,9 @@ func albLBEnsureCmd(rt *app.Runtime) *cobra.Command {
 (name or id, in the account and region of the command; required) for
 <domain>, with two EIPs, HTTP and HTTPS listeners and the certificate of the
 domain. Running it again changes nothing. Nothing created is rolled back
-when a later step fails: run ensure again to go on.
+when a later step fails: run ensure again to go on (EIPs allocated for a
+load balancer whose creation failed are named on stderr: they stay idle
+and billed until the next run reuses them).
 
 Before anything is written the instance and, when an HTTPS listener is
 wanted, the certificate are looked up: a missing one is exit code 4 with
@@ -614,6 +616,7 @@ func (e *albEnsure) buildNewLB(ctx context.Context) error {
 	}
 	spec.ResourceGroup = rg
 	taken := map[string]bool{}
+	var allocated []*eipAddress
 	for i := range zones {
 		res := "eip/" + strconv.Itoa(i+1)
 		if x := pickIdleEIP(idle, spec.ISP, taken); x != nil {
@@ -626,8 +629,9 @@ func (e *albEnsure) buildNewLB(ctx context.Context) error {
 				}})
 			continue
 		}
-		var fresh eipAddress
-		e.plan.Add(allocateStep(e.rt, sc.ecsScope, res, spec, &fresh))
+		fresh := &eipAddress{}
+		allocated = append(allocated, fresh)
+		e.plan.Add(allocateStep(e.rt, sc.ecsScope, res, spec, fresh))
 	}
 
 	token := clientToken()
@@ -649,6 +653,15 @@ func (e *albEnsure) buildNewLB(ctx context.Context) error {
 	step.Apply = func(ctx context.Context) (platform.Change, error) {
 		ch, err := apply(ctx)
 		e.lbID = id
+		if err != nil && id == "" {
+			// The EIPs allocated for it stay idle and billed; the next
+			// ensure reuses them.
+			for _, x := range allocated {
+				if x.AllocationID != "" {
+					e.rt.Infof("note: EIP %s (%s) was allocated for the load balancer and stays idle (billed); ensure reuses it on the next run, or release it", x.AllocationID, orDash(x.IP))
+				}
+			}
+		}
 		return ch, err
 	}
 	e.plan.Add(step)
