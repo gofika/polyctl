@@ -55,6 +55,38 @@ func (c *Config) NSTimeout() time.Duration {
 	return platform.DefaultNSTimeout
 }
 
+// FindSettings configures `polyctl find`.
+type FindSettings struct {
+	// Concurrency is how many accounts --refresh syncs at the same time
+	// (and how many regions of one account). Zero: DefaultFindConcurrency.
+	Concurrency int `yaml:"concurrency,omitempty"`
+	// DetailTimeout bounds the live lookup of one match of --detail.
+	// Zero: DefaultFindDetailTimeout.
+	DetailTimeout Duration `yaml:"detail_timeout,omitempty"`
+}
+
+// The built-in defaults of find.concurrency and find.detail_timeout.
+const (
+	DefaultFindConcurrency   = 8
+	DefaultFindDetailTimeout = 10 * time.Second
+)
+
+// FindConcurrency returns find.concurrency, or the built-in default.
+func (c *Config) FindConcurrency() int {
+	if c.Find.Concurrency > 0 {
+		return c.Find.Concurrency
+	}
+	return DefaultFindConcurrency
+}
+
+// FindDetailTimeout returns find.detail_timeout, or the built-in default.
+func (c *Config) FindDetailTimeout() time.Duration {
+	if c.Find.DetailTimeout > 0 {
+		return time.Duration(c.Find.DetailTimeout)
+	}
+	return DefaultFindDetailTimeout
+}
+
 // CertRegions lists the regions a certificate deployer scans.
 type CertRegions struct {
 	Regions []string `yaml:"regions,omitempty"`
@@ -277,6 +309,12 @@ func (c *Config) validate() error {
 	}
 	if c.DNS.Timeout < 0 {
 		return fmt.Errorf("dns.timeout: must not be negative, got %s", time.Duration(c.DNS.Timeout))
+	}
+	if c.Find.Concurrency < 0 {
+		return fmt.Errorf("find.concurrency: must not be negative, got %d", c.Find.Concurrency)
+	}
+	if c.Find.DetailTimeout < 0 {
+		return fmt.Errorf("find.detail_timeout: must not be negative, got %s", time.Duration(c.Find.DetailTimeout))
 	}
 	if err := validateDefaults("defaults", c.Defaults); err != nil {
 		return err

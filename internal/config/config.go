@@ -207,6 +207,8 @@ type Config struct {
 	Cert Cert `yaml:"cert,omitempty"`
 	// DNS configures the live DNS queries of domain ns check.
 	DNS DNSSettings `yaml:"dns,omitempty"`
+	// Find configures polyctl find.
+	Find FindSettings `yaml:"find,omitempty"`
 	// Defaults are per-platform default values (defaults.<platform>.<key>);
 	// a profile can override them under profiles.<name>.defaults.
 	Defaults Defaults `yaml:"defaults,omitempty"`

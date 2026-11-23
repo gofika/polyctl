@@ -230,3 +230,25 @@ func TestDNSSettings(t *testing.T) {
 		}
 	}
 }
+
+func TestFindSettings(t *testing.T) {
+	c, err := loadYAML(t, "find:\n  concurrency: 3\n  detail_timeout: 2s\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.FindConcurrency() != 3 || c.FindDetailTimeout().String() != "2s" {
+		t.Errorf("find = %d, %s", c.FindConcurrency(), c.FindDetailTimeout())
+	}
+	c, err = loadYAML(t, "output: json\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.FindConcurrency() != config.DefaultFindConcurrency || c.FindDetailTimeout() != config.DefaultFindDetailTimeout {
+		t.Errorf("defaults = %d, %s", c.FindConcurrency(), c.FindDetailTimeout())
+	}
+	for _, body := range []string{"find:\n  concurrency: -1\n", "find:\n  detail_timeout: -1s\n"} {
+		if _, err := loadYAML(t, body); err == nil || !strings.Contains(err.Error(), "find.") {
+			t.Errorf("%q: err = %v", body, err)
+		}
+	}
+}

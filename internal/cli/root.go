@@ -348,6 +348,7 @@ POLYCTL_NON_INTERACTIVE is set.`,
 		newDNSCmd(rt),
 		newDomainCmd(rt),
 		newCertCmd(rt),
+		newFindCmd(rt),
 		newSyncCmd(rt),
 		newInventoryCmd(rt),
 	} {

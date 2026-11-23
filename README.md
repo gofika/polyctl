@@ -4,7 +4,7 @@
 
 It does two things at once:
 
-- **Platform-neutral commands** (`polyctl dns ...`, `polyctl domain ...`, `polyctl cert ...`) work on any domain regardless of where it lives. polyctl looks the domain up in a local index, finds the account that owns it and routes the call there.
+- **Platform-neutral commands** (`polyctl dns ...`, `polyctl domain ...`, `polyctl cert ...`) work on any domain regardless of where it lives. polyctl looks the domain up in a local index, finds the account that owns it and routes the call there. `polyctl find <ip|dns-name>` answers "whose IP is this?" across every account.
 - **Platform-specific commands** (`polyctl cloudflare ...`, `polyctl aws ...`, ...) expose each platform's native features with that platform's own vocabulary. Nothing is flattened to a lowest common denominator.
 
 Everything it learns about your accounts is cached in a local SQLite inventory, so reads are instant and work offline; writes always go to the platform and update the cache.
@@ -14,6 +14,7 @@ Everything it learns about your accounts is cached in a local SQLite inventory, 
 - Six platforms: Cloudflare, name.com, GoDaddy, AWS, GCP, Alibaba Cloud.
 - Profiles that group accounts: one profile holds one account on each platform a project uses (`acme` = its Cloudflare, name.com and AWS accounts), and you can keep as many profiles as you have projects or customers.
 - Secrets in the OS keyring (macOS Keychain, Windows Credential Manager, Secret Service on Linux) with an automatic fallback to a `0600` file; `config.yaml` never holds a secret.
+- Reverse lookup: `polyctl find 203.0.113.10` lists the instances, load balancers, elastic / static IPs and database endpoints that hold an address or DNS name, in every account, with console links.
 - Domain routing: `polyctl dns list example.com` finds the right zone and account by itself. Conflicts (the same domain in two accounts) are reported instead of guessed; `--profile` and `--platform` pick one.
 - Local inventory (`inventory.db`): per-resource-type TTLs, `--refresh` to force a fetch, `--offline` to forbid the network, `polyctl sync` to bulk-load.
 - `table` (default), `json` and `yaml` output for every command.
@@ -339,6 +340,10 @@ cert:
 dns:                              # live queries of `domain ns check`
   resolvers: [1.1.1.1, 1.0.0.1, 8.8.8.8, 8.8.4.4]   # IP or IP:port, asked in order
   timeout: 5s                     # per query
+
+find:                             # polyctl find
+  concurrency: 8                  # accounts --refresh syncs at the same time
+  detail_timeout: 10s             # live lookup of one match with --detail
 ```
 
 - `defaults.<platform>.<key>`: the value a command uses when its flag is not given. `<platform>` is a platform id (`aws`, `gcp`, `aliyun`, `cloudflare`, `namecom`, `godaddy`; aliases are not accepted here), and a key may be nested (`defaults.aws.rds.default_class`). Values are single values, lists or mappings, as shown. A profile overrides them with `profiles.<name>.defaults.<platform>.<key>`, which wins for that profile's accounts. The order is the usual one: the command-line flag, then the profile's value, then the top-level value, then the built-in default. Only two keys have a built-in default: `defaults.gcp.lb_network_tag` (`lb-health-check`) and `defaults.cloudflare.ssl` (`strict`; it takes `flexible`, `full` or `strict`, and any other value is reported when the config is loaded, exit code 2).
@@ -346,6 +351,7 @@ dns:                              # live queries of `domain ns check`
 - `hooks.on_failure`: called when an `ensure`-style command fails (not for usage errors, not in a dry run), typically from cron. A value starting with `http://` or `https://` is a webhook: it receives a `POST` with a JSON body `{"event": "<command>.failed", "platform", "profile", "target", "domain", "error", "time", "changes"}`. Any other value is a shell command (`/bin/sh -c`, `cmd /C` on Windows) that gets the same JSON on stdin and the fields in `POLYCTL_EVENT`, `POLYCTL_PLATFORM`, `POLYCTL_PROFILE`, `POLYCTL_DEPLOYER`, `POLYCTL_TARGET`, `POLYCTL_DOMAIN` and `POLYCTL_ERROR`. A hook gets 15 seconds; a hook that fails or times out is a warning on stderr and never changes the exit code. Empty (the default): no notification.
 - `cert.*`: the settings of the certificate commands, with the defaults shown (see [Certificates](#certificates)). `cert.email` and `cert.agree_tos` are only used to register the ACME account on the first issuance. `cert.dir` is the certificate store. `cert.acme_directory` is the CA (Let's Encrypt production by default). `cert.key_type` (`ec256`, `ec384`, `rsa2048` or `rsa4096`) is the default of `--key-type` and `cert.renew_days` the default of `--days`. `cert.reuse_key: true` keeps the private key on renewal instead of creating a new one. `cert.dns.*` tune the DNS-01 challenge: the resolvers (IP or IP:port) asked whether the TXT records are visible, how many of them must see them (`min_resolvers`, at most the number of resolvers), the longest wait (`propagation_timeout`), the interval between checks (`poll_interval`) and the pause before the CA validates (`settle_delay`, also waited after stale challenge records were deleted).
 - `dns.resolvers` / `dns.timeout`: the recursive resolvers `domain ns check` asks, in order, and the timeout of one query, with the defaults shown; `--resolver` and `--timeout` override them. A resolver that is not an IP address or IP:port, or a negative timeout, is reported when the config is loaded (exit code 2).
+- `find.concurrency` / `find.detail_timeout`: how many accounts `find --refresh` syncs at the same time, and how long `find --detail` waits for the subnet of one match, with the defaults shown (see [Finding resources by IP or DNS name](#finding-resources-by-ip-or-dns-name)). A negative value is reported when the config is loaded (exit code 2).
 
 Files written by 0.1.x, where a profile was a single platform (`profiles.<name>.platform: cloudflare` with `metadata` next to it), are still read: each such profile becomes a profile holding that one platform. See [Upgrading from 0.1.x](#upgrading-from-01x). A profile that mixes the two layouts is rejected when the config is loaded (exit code 2) instead of being loaded with a part of it dropped: both a `platform:` and a `platforms:` key (keep only `platforms:`), a `platform:` key without a value, or `metadata`, `credential_backend`, `created_at` or `updated_at` set on the profile itself without `platform:` (move them under `platforms.<platform>`).
 
@@ -365,7 +371,7 @@ Force a backend with `credential_store: file` / `keyring` in `config.yaml` or th
 
 ### `inventory.db` schema
 
-The inventory is a WAL-mode SQLite database with three tables:
+The inventory is a WAL-mode SQLite database with four tables:
 
 ```sql
 CREATE TABLE resources (
@@ -392,6 +398,17 @@ CREATE TABLE domain_index (            -- domain -> owning resource (zones and r
   PRIMARY KEY (domain, platform, profile, resource_type, resource_id)
 );
 
+CREATE TABLE ip_index (                -- address / prefix / DNS name -> resource (polyctl find)
+  platform      TEXT    NOT NULL,
+  profile       TEXT    NOT NULL,
+  resource_type TEXT    NOT NULL,     -- instance, load_balancer, eip, db_instance
+  resource_id   TEXT    NOT NULL,
+  ip            TEXT    NOT NULL,     -- canonical address, masked prefix ("10.1.2.0/24") or DNS name
+  kind          TEXT    NOT NULL,     -- internal, external, dns, reserved
+  prefix_bits   INTEGER NOT NULL DEFAULT 0,   -- prefix length of a prefix, 0 otherwise
+  PRIMARY KEY (platform, profile, resource_type, resource_id, ip, kind)
+);
+
 CREATE TABLE sync_state (              -- freshness of each synced set
   platform      TEXT    NOT NULL,
   profile       TEXT    NOT NULL,
@@ -403,7 +420,7 @@ CREATE TABLE sync_state (              -- freshness of each synced set
 );
 ```
 
-`resources.data` keeps each object in its platform-native shape (serialised as JSON), so `-o json` on a cached read shows the same fields a live read would. The version of that JSON is kept in SQLite's `user_version`; whenever a database is opened that still holds DNS records written by 0.1.x, their `content` field is renamed to `value`, so they keep their values without a new sync. `domain_index` is rebuilt from `zone` and `domain` resources on every sync; DNS records are never indexed, they are looked up through their zone. The file is safe to delete at any time: polyctl recreates it and re-fetches on demand.
+`resources.data` keeps each object in its platform-native shape (serialised as JSON), so `-o json` on a cached read shows the same fields a live read would. The version of that JSON is kept in SQLite's `user_version`; whenever a database is opened that still holds DNS records written by 0.1.x, their `content` field is renamed to `value`, so they keep their values without a new sync. `domain_index` is rebuilt from `zone` and `domain` resources on every sync; DNS records are never indexed, they are looked up through their zone. `ip_index` is written with the resources that carry addresses (every network interface, secondary and alias address of an instance, a load balancer's addresses and DNS name, an elastic / static address, a database endpoint) and rebuilt with their set; prefixes (GCP alias ranges, IPv6 prefixes) match every address they contain. A database created by an older version gets the table on first use and fills it on the next sync of those types. The file is safe to delete at any time: polyctl recreates it and re-fetches on demand.
 
 `polyctl inventory path` prints the database actually in use (`POLYCTL_INVENTORY_DB` when set, otherwise `<config dir>/inventory.db`).
 
@@ -719,7 +736,7 @@ polyctl auth login aliyun --profile acme --set site=cn --set aliyun_profile=defa
 
 ## Platform-neutral commands
 
-These commands take a domain name and route it to the account that owns it: a platform and a profile. The `dns` and `domain` command groups and `cert ensure` accept `--profile <name>` and `--platform <platform>` to narrow the choice; `--platform` names one platform here (it routes to the account on that platform) and takes the same names and aliases as `auth login`.
+These commands take a domain name and route it to the account that owns it: a platform and a profile. The `dns` and `domain` command groups and `cert ensure` accept `--profile <name>` and `--platform <platform>` to narrow the choice; `--platform` names one platform here (it routes to the account on that platform) and takes the same names and aliases as `auth login`. `find` takes an IP address or DNS name instead and searches every account (its `--platform` takes a list, as on `sync`).
 
 ### DNS
 
@@ -827,6 +844,31 @@ The store (`cert.dir`, default `<config dir>/certs`) follows the `live/<domain>/
 
 A certificate is replaced by writing the new files next to `live/<root>` and renaming directories, so a reader sees the old certificate or the new one, never a mix; an interrupted replacement is repaired by the next `cert ensure` from the archive. A private key readable by others is reported, and made `0600` by `cert ensure`. A certificate whose key does not belong to it is an error (exit code 1), never used.
 
+### Finding resources by IP or DNS name
+
+```text
+polyctl find <ip|dns-name> [--platform <p>[,<p>...]] [--profile <name>] [--detail]
+                           [--refresh | --offline] [-o table|json|yaml]
+```
+
+```text
+$ polyctl find 203.0.113.10
+PLATFORM  PROFILE  TYPE           NAME      REGION/ZONE   INTERNAL    EXTERNAL      STATE    NETWORK
+gcp       acme     instance       web-1     asia-east1-a  10.140.0.5  203.0.113.10  RUNNING  default
+gcp       acme     load_balancer  fr-web-1  asia-east1    -           203.0.113.10  -        -
+matched 2 resource(s) (local inventory, synced 4m ago)
+```
+
+- The argument is an IPv4 or IPv6 address (compared in its canonical form, so `2001:DB8:0::1` and `::ffff:192.0.2.1` match `2001:db8::1` and `192.0.2.1`) or, when it is not an address, a DNS name: a load balancer's DNS name, an instance's public or private DNS name, a database endpoint, compared without case and trailing dot. Anything else (an empty string, spaces, a URL) is a usage error (exit code 2).
+- It searches the `instance`, `load_balancer`, `eip` and `db_instance` sets of every account of every profile on AWS, GCP and Alibaba Cloud (`--profile` keeps one profile's accounts, `--platform` takes a list of platforms as on `sync`). Every address of a resource counts: every network interface, secondary private addresses, alias ranges and IPv6 prefixes (which match the addresses they contain), public and elastic addresses, and the addresses of load balancers (also those held only by a managed network interface, such as the one of an AWS Network Load Balancer without an elastic IP).
+- **find reads the local inventory only.** It never syncs on its own, not even when the inventory is stale or nothing matches; this is an intended exception to the [caching](#caching) rule, so that looking up an unknown address stays fast and never calls many accounts unasked. `--refresh` syncs those four sets of the selected accounts first (at most `find.concurrency` accounts at a time; each account syncs every enabled region), then searches. `--offline` changes nothing (find is offline already) and is a usage error together with `--refresh` or `--detail`.
+- **Several matches are not ambiguous.** The same private address exists in many networks, so find is the one command that does not route to a single account: it lists every match (exit code 0) with its network, sorted by platform, profile, type and name.
+- `-o json` prints `query`, `kind` (`ip` or `dns`), `cached`, `synced_at` (the oldest sync of the sets searched), `matches` and `errors`. Each match has `platform`, `profile`, `type`, `id`, `name`, `region`, `zone`, `state`, `matched_field` (`internal_ip`, `external_ip`, `dns_name` or `endpoint`), `internal_ips`, `external_ips`, `network`, `url` (the console page, empty where no reliable link is known: Alibaba Cloud load balancers and EIPs), and where they apply `dns_names`, `subnet`, `note` (what a network interface without an instance, or an address, belongs to) and `addresses` (GCP static addresses reserved for the resource). The table shows the console links with `-v` or `--detail`.
+- `--detail` looks up the subnet of each matched instance on its platform (`detail`: `vpc`, `subnet`, `subnet_region`, `subnet_cidr`, `subnet_ipv6_cidr`, `subnet_gateway`), each within `find.detail_timeout`; this uses the network because you asked for it. A lookup that fails leaves the match without `detail` and is listed in `errors`.
+- **Nothing found** exits with code 4. The message says how many accounts were searched and when they were synced, and how to sync: `polyctl find <query> --refresh`, or `polyctl sync --type instance,load_balancer,eip,db_instance` to sync without searching; `-o json` prints the result with empty `matches` and a `hint`. When none of those sets was ever synced, the message says to run `polyctl sync` (exit code 4). Matches from a set older than its TTL are still shown, with a note on stderr that the inventory may be stale.
+- **Failures are isolated.** With `--refresh`, an account (or a region of it) that cannot be synced is listed in `errors` (`platform`, `profile`, `type`, `region`, `error`) and warned about on stderr (an authentication failure points to `polyctl auth status`); the other accounts are searched as usual and the exit code follows the matches. Only when every selected account fails and nothing matches does find exit with code 1.
+- find writes nothing but the inventory, and `--dry-run` changes nothing in it.
+
 ### Routing rules
 
 1. Without `--profile` and `--platform`, every account of every profile is searched. `--profile <name>` restricts the search (and any indexing) to the accounts of that profile, `--platform <platform>` to the accounts on that platform; together they name exactly one account.
@@ -851,6 +893,8 @@ Registrar operations (`domain ns ...`) are not affected in this setup, because o
 
 The status line on stderr always tells you which account was used, as `<platform>/<profile>`, for example `zone example.com via cloudflare/acme (local inventory)`.
 
+`polyctl find` is the exception to these rules: it looks addresses up, which are often held by several accounts, and lists every match instead of choosing one (see [Finding resources by IP or DNS name](#finding-resources-by-ip-or-dns-name)).
+
 Commands that address a resource by its name or id (an instance, a load balancer, ...) find the account the same way, so the profile does not have to be named: the inventory rows of that resource type are searched by id and by name across the accounts able to hold it (those of the command's platform for a platform-specific command; for a platform-neutral one, all platforms or only `--platform`; only the accounts of `--profile` when it is given). An id match wins over name matches. One match is used; several are ambiguous (exit code 5: pass `--profile`, also `--platform` when the matches are on several platforms, or the id when one account holds several resources of that name); none syncs that resource type once for the accounts whose cached set is missing or expired (all of them with `--refresh`, none with `--offline`) and looks again before reporting not found (exit code 4). When an account could not be synced, the lookup fails with that account's error instead of "not found", since the resource may be there.
 
 ## Caching
@@ -863,6 +907,8 @@ Every read goes through the inventory:
 | Set is missing or expired | Fetched from the platform, stored, then served. |
 | `--refresh` | Always fetched and stored. |
 | `--offline` | Always served from the cache, even if expired. A set that was never synced is an error (exit code 4); any command that must write to a platform fails with exit code 6. |
+
+`polyctl find` is the exception: it always reads the inventory as it is and syncs only with `--refresh`.
 
 TTLs are per resource type (`ttl:` in `config.yaml`; the defaults are listed under [`config.yaml`](#configyaml)). DNS records are tracked per zone, so listing one zone never forces a fetch of every zone in the account.
 
@@ -889,7 +935,7 @@ polyctl inventory list [--platform cloudflare,aws] [--type domain,zone,dns_recor
 polyctl inventory path
 ```
 
-- `sync` fetches the selected resource types (default: everything each platform supports) for the selected accounts (default: every account of every profile; `--profile` keeps one profile's accounts, `--platform` keeps the given platforms) and **replaces** them in the inventory atomically, one set at a time. It prints a per-set report (count, duration, failures). An authentication failure stops the sync of that account. An unknown `--profile` is an error (exit code 4), an unknown platform or type a usage error (exit code 2). Having nothing to sync is not an error: when the selection names no account (a `--profile` without an account on the given `--platform`, or a platform nobody is logged in to), when no selected account supports the requested `--type`, or when no account is configured at all, `sync` prints an empty report on stdout (the table header, or `[]` with `-o json`) and a `nothing to do: ...` note on stderr, and exits with code 0.
+- `sync` fetches the selected resource types (default: everything each platform supports) for the selected accounts (default: every account of every profile; `--profile` keeps one profile's accounts, `--platform` keeps the given platforms) and **replaces** them in the inventory atomically, one set at a time. It prints a per-set report (count, duration, failures). An authentication failure stops the sync of that account. The sets of `instance`, `load_balancer`, `eip` and `db_instance` on AWS and Alibaba Cloud cover every enabled region of the account (GCP lists every region in one call); a region that fails is reported in the set's status while the regions that worked are stored, and the set counts as failed for the exit code. An unknown `--profile` is an error (exit code 4), an unknown platform or type a usage error (exit code 2). Having nothing to sync is not an error: when the selection names no account (a `--profile` without an account on the given `--platform`, or a platform nobody is logged in to), when no selected account supports the requested `--type`, or when no account is configured at all, `sync` prints an empty report on stdout (the table header, or `[]` with `-o json`) and a `nothing to do: ...` note on stderr, and exits with code 0.
 - `inventory stats` shows row counts and the synced/expiry time of each set; `inventory list` dumps cached rows, filtered by `--profile`, `--name` and by `--platform` / `--type`, which take lists exactly as on `sync` (comma-separated or repeated; an unknown platform or type is a usage error); `inventory path` prints the database path.
 
 ## Platform-specific commands
@@ -1271,10 +1317,10 @@ A report with nothing in it still prints its header (`"changes": []`). When a st
 | Code | Meaning |
 | --- | --- |
 | `0` | Success, including an `ensure` that found everything unchanged and any `--dry-run`. Also every status `domain ns check` reports (`mismatch`, `no-zone`, ... included): it is a report, not an assertion. Also a menu or selection prompt left with Esc or Ctrl-C, a question of a login flow left with Ctrl-C or Ctrl-D, and a command that had nothing to do: no account to `sync` or `domain index` (none configured, none matching `--profile` / `--platform`, none supporting `--type`), no profile or account to pick from in `auth use` / `auth logout` / `auth manage`, a declined or left confirmation of `dns delete` (also `--all`), `aliyun ecs instance stop`, `delete` or `resize`, `aliyun ecs security-group delete` or `rule remove`, or `cloudflare r2 domain detach`, and the terms of service of the CA declined in `cert ensure`. The prompts in this row exist in the interactive flow only. |
-| `1` | Generic error (API failure, I/O error, a login that was not approved in time, `config.yaml` changed by another process while the command ran, a failed certificate issuance or a certificate lock that did not come free, ...). |
+| `1` | Generic error (API failure, I/O error, `find --refresh` that could sync no account and found nothing, a login that was not approved in time, `config.yaml` changed by another process while the command ran, a failed certificate issuance or a certificate lock that did not come free, ...). |
 | `2` | Usage error: bad flag combination, unknown flag or command (also below a command group: `polyctl dns nosuch`), unknown platform or resource type, missing required flag or argument, an unknown value of a login option (`--set env=`, `--set method=`), an invalid or already used name for `auth rename`, invalid config, an invalid `POLYCTL_NON_INTERACTIVE` value, `auth login` without `--profile` for a platform that only other profiles have. Also everything the non-interactive flow cannot ask for: `auth manage`, a missing argument (`auth login` without a platform, `auth use` without a profile, `auth logout` without `--profile`), a confirmation without `--yes` (`dns delete` of several records, `dns delete --all`, `aliyun ecs instance stop`, `delete` and the `resize` of a running instance, `aliyun ecs security-group delete` and `rule remove`, `cloudflare r2 domain detach`), and a login value or choice that was not passed (the message names the `--set` key or environment variable). Also `cert ensure` without an ACME account address or the agreement to the terms of service when it has to register an account. |
 | `3` | Authentication: missing credentials, no account on the platform in the selected profile, rejected token, expired SSO session, `auth status` with a failing account. Also a request valid credentials were not allowed to make: a RAM / IAM policy denial (the platform's error code is kept in the message), or an account the platform refuses to serve until something is done in its console (Alibaba Cloud basic information not completed, real-name verification missing). Such a denial does not ask for a new login, and `sync` goes on with the account's other resource types. |
-| `4` | Not found: unknown domain / zone / record / profile, a `--profile` / `--platform` selection that names no account able to hold the requested domain (`dns list`, `domain info`, ...), `auth logout <platform>` for a platform the profile has no account on, a set that was never synced in `--offline` mode, a domain no DNS account hosts in `cert ensure`, or a domain without a certificate in `cert get`. |
+| `4` | Not found: unknown domain / zone / record / profile, a `--profile` / `--platform` selection that names no account able to hold the requested domain (`dns list`, `domain info`, ...), `auth logout <platform>` for a platform the profile has no account on, a set that was never synced in `--offline` mode, a domain no DNS account hosts in `cert ensure`, or a domain without a certificate in `cert get`. Also `find` without a match, or with an inventory that never held the sets it searches. |
 | `5` | Ambiguous: the domain has more than one candidate account (pass `--profile` and/or `--platform`, as the message says), or the platform more than one candidate profile (pass `--profile`). Also a `dns ensure` record whose name and type has several records, none of them as desired (pass `--prune-duplicates`). |
 | `6` | Offline: the command needs the network but `--offline` was given. |
 | `7` | Not supported: the platform (or the profile's client) cannot perform the operation. |
@@ -1291,7 +1337,8 @@ internal/cli/                Cobra command tree (root, auth, dns, domain, sync/i
 internal/app/                Runtime shared by all commands: config, credential store, inventory, profile selection,
                              domain routing (ResolveDomain), resource routing (ResolveResource), cache policy
                              (EnsureSet / NeedsRefresh), SyncAccount, --dry-run and change reports, --wait flags,
-                             per-platform defaults and naming, hooks.on_failure, the NS check of domain ns check
+                             per-platform defaults and naming, hooks.on_failure, the NS check of domain ns check,
+                             the search of find
 internal/platform/           Provider-neutral contracts: Provider, Client, DNSService, RegistrarService, Zone/Record/Domain,
                              resource types, sentinel errors, provider registry, DNS name helpers, live NS lookups and
                              the provider guess; the change plan of ensure commands (Plan / Step / Change / Report),
@@ -1305,7 +1352,7 @@ internal/cert/               The certificate store, the ACME account and issuanc
 internal/config/             config.yaml loading/saving (profiles and their accounts), TTL defaults, defaults / naming /
                              hooks / cert / dns settings
 internal/creds/              Keyring store, 0600 file store, Multi (read from any, write to primary)
-internal/inventory/          SQLite schema, Replace/Upsert/Delete, Purge/RenameProfile, domain lookup, stats
+internal/inventory/          SQLite schema, Replace/Upsert/Delete, Purge/RenameProfile, domain lookup, IP index, stats
 internal/output/             table / json / yaml rendering
 internal/dnstest/            Fake DNS resolvers on 127.0.0.1 for tests
 internal/httpx/              Small JSON REST client with retries (Cloudflare, name.com, GoDaddy)
