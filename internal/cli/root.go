@@ -39,9 +39,15 @@ var Version = "dev"
 // ExitCodeFor maps an error to a process exit code.
 func ExitCodeFor(err error) int {
 	var amb *app.AmbiguousError
+	var partial *platform.PartialError
 	switch {
 	case err == nil, errors.Is(err, errNothingToDo):
 		return ExitOK
+	case errors.As(err, &partial):
+		// A batch that went on after failed items fails as a whole with
+		// the general code, whatever the first failure was: the items
+		// failed for different reasons, and the report lists them.
+		return ExitError
 	case errors.As(err, &amb), errors.Is(err, platform.ErrAmbiguous):
 		return ExitAmbiguous
 	case errors.Is(err, platform.ErrUnauthorized), errors.Is(err, platform.ErrForbidden):

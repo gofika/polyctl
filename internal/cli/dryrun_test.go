@@ -133,6 +133,9 @@ func TestExitCodesOfSharedSentinels(t *testing.T) {
 		fmt.Errorf("x: %w", platform.ErrForbidden):     ExitAuth,
 		&platform.WaitTimeoutError{Resource: "r"}:      ExitError,
 		&platform.PartialError{First: errors.New("x")}: ExitError,
+		// The first failure's own code does not leak out of a batch.
+		&platform.PartialError{First: fmt.Errorf("x: %w", platform.ErrNotFound)}:  ExitError,
+		&platform.PartialError{First: fmt.Errorf("x: %w", platform.ErrForbidden)}: ExitError,
 	} {
 		if got := ExitCodeFor(err); got != want {
 			t.Errorf("ExitCodeFor(%v) = %d, want %d", err, got, want)
