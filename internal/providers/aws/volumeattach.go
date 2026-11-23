@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/spf13/cobra"
 
 	"github.com/gofika/polyctl/internal/app"
@@ -193,7 +194,7 @@ func volumeDetachCmd(rt *app.Runtime) *cobra.Command {
 detaching a mounted file system can corrupt it. The volume and its instance
 are shown, then a confirmation is asked (default no; --yes skips it, and the
 non-interactive flow needs --yes). A volume attached to nothing is reported
-unchanged. The root volume of an instance is exit code 1 (stop or terminate
+unchanged, as is one being detached already (detach waits for it). The root volume of an instance is exit code 1 (stop or terminate
 the instance instead). --force detaches forcibly, which can lose data: use
 it only when a normal detach is stuck; it always needs --yes. detach waits
 until the volume is available (5 second polls, --timeout 5m; --no-wait
@@ -222,6 +223,24 @@ returns at once).`,
 					{Resource: l.resource(), Action: platform.Unchanged, ID: l.id(), Detail: "not attached (" + l.state() + ")"}}})
 			}
 			instID, dev := awssdk.ToString(a.InstanceId), awssdk.ToString(a.Device)
+			if a.State == ec2types.VolumeAttachmentStateDetaching && !force {
+				// Requested already: wait for it instead of asking again;
+				// --force is what a stuck detach needs.
+				unchanged := platform.Change{Resource: l.resource(), Action: platform.Unchanged, ID: l.id(), Detail: fmt.Sprintf("detaching from %s (%s) already", instID, dev)}
+				if wait && !rt.DryRun() {
+					rt.Infof("volume %s is being detached already; waiting until it is available...", l.id())
+					got, err := l.c.waitVolume(ctx, l.region, l.id(), volAvailable, timeout, false, volumeIn(volAvailable))
+					if awssdk.ToString(got.VolumeId) != "" {
+						l.vol = got
+						l.store(ctx, rt)
+					}
+					if err != nil {
+						return fmt.Errorf("volume %s is being detached: %w (if it stays detaching, unmount it inside the instance, or retry with --force --yes)", l.id(), err)
+					}
+					unchanged.Detail = fmt.Sprintf("detached from %s (%s); available", instID, dev)
+				}
+				return rt.RenderReport(platform.Report{Target: target, DryRun: rt.DryRun(), Changes: []platform.Change{unchanged}})
+			}
 			instLabel := instID
 			if in, err := l.c.describeInstance(ctx, l.region, instID); err == nil {
 				instLabel = instanceLabel(in)

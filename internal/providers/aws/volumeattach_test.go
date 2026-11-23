@@ -127,6 +127,26 @@ func TestVolumeDetach(t *testing.T) {
 	if rep := h.report(); rep.Changes[0].Action != platform.Unchanged || len(h.ebsWrites()) != 0 {
 		t.Errorf("second = %+v, writes %v", rep, h.ebsWrites())
 	}
+	// Being detached already: unchanged, nothing asked or sent, waited for.
+	h.rt.Flags.Yes = false
+	h.addVolume("ap-east-1", &fakeVol{id: "vol-0666", size: 2, instance: "i-0aaaaaaaaaaaaaaa1", device: "/dev/sdg", attachState: "detaching",
+		next: []string{volInUse, volAvailable}})
+	h.ec2.reset()
+	if err := h.run("ec2", "volume", "detach", "vol-0666"); err != nil {
+		t.Fatalf("detaching: %v", err)
+	}
+	if rep := h.report(); rep.Changes[0].Action != platform.Unchanged || !strings.HasSuffix(rep.Changes[0].Detail, "available") || len(h.ebsWrites()) != 0 {
+		t.Errorf("detaching = %+v, writes %v", rep, h.ebsWrites())
+	}
+	// A stuck detach is forced with --force --yes.
+	h.rt.Flags.Yes = true
+	h.addVolume("ap-east-1", &fakeVol{id: "vol-0667", size: 2, instance: "i-0aaaaaaaaaaaaaaa1", device: "/dev/sdh", attachState: "detaching"})
+	if err := h.run("ec2", "volume", "detach", "vol-0667", "--force", "--no-wait"); err != nil {
+		t.Fatalf("forced: %v", err)
+	}
+	if d := h.ebs().detaches; len(d) == 0 || awssdk.ToString(d[len(d)-1].VolumeId) != "vol-0667" || !awssdk.ToBool(d[len(d)-1].Force) {
+		t.Errorf("DetachVolume = %+v", d)
+	}
 	// VolumeInUse inside the instance is explained.
 	h.addVolume("ap-east-1", &fakeVol{id: "vol-0555", size: 2, instance: "i-0aaaaaaaaaaaaaaa1", device: "/dev/sdf"})
 	h.ebsSetErr("DetachVolume", &fakeAPIError{"VolumeInUse", "busy"})
