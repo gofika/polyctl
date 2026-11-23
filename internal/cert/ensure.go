@@ -435,7 +435,7 @@ func certChange(resource string, action platform.Action, b *Bundle, now time.Tim
 func checkChallengeName(ctx context.Context, route *Route, root string) error {
 	recs, err := route.DNS.ListRecords(ctx, route.ZoneID)
 	if err != nil {
-		return fmt.Errorf("read the records of zone %s: %w", route.Zone, err)
+		return fmt.Errorf("read the records of zone %s on %s: %w", route.Zone, route.Label(), err)
 	}
 	name := challengeFQDN(root)
 	for _, r := range recs {
@@ -508,7 +508,12 @@ func obtain(ctx context.Context, env *Env, o EnsureOptions, route *Route, acct *
 		Resolvers: env.DNS.Resolvers, CertTimeout: env.CertTimeout,
 	})
 	if err != nil {
-		return nil, describeObtainError(err, prop, st.PendingKeyPath(root))
+		err = describeObtainError(err, prop, st.PendingKeyPath(root))
+		if errors.Is(err, platform.ErrUnauthorized) || errors.Is(err, platform.ErrForbidden) || errors.Is(err, platform.ErrNotSupported) {
+			// The DNS account refused the challenge records: name it.
+			err = fmt.Errorf("DNS account %s: %w", route.Label(), err)
+		}
+		return nil, err
 	}
 	b, err := NewBundle(root, chain, keyPEM)
 	if err != nil {

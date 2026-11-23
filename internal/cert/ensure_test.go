@@ -612,3 +612,16 @@ func TestEnsureWithLego(t *testing.T) {
 		t.Errorf("records left %v, challenges %d", s.dns.records, s.acme.challenges)
 	}
 }
+
+// A DNS account that refuses the challenge records is named in the error,
+// which keeps its authentication or unsupported cause (exit codes 3, 7).
+func TestEnsureNamesRefusingDNSAccount(t *testing.T) {
+	for _, cause := range []error{platform.ErrUnauthorized, platform.ErrNotSupported} {
+		fx := newEnsureFixture(t)
+		fx.dns.createErr = fmt.Errorf("%w: refused", cause)
+		_, err := Ensure(context.Background(), fx.env, fx.opts())
+		if !errors.Is(err, cause) || !strings.Contains(err.Error(), "DNS account cloudflare/acme") {
+			t.Fatalf("%v: err = %v", cause, err)
+		}
+	}
+}
