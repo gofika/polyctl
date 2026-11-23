@@ -309,7 +309,7 @@ hooks:
 cert:
   email: ops@example.com          # required by certificate issuance
   agree_tos: false                # must be set to true explicitly
-  dir: ""                         # default <config dir>/certs
+  dir: ""                         # default <config dir>/certs; a leading ~ is the home directory
   acme_directory: https://acme-v02.api.letsencrypt.org/directory
   key_type: ec256                 # ec256 | rsa2048
   reuse_key: false                # keep the private key on renewal

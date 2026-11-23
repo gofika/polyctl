@@ -68,10 +68,11 @@ var DefaultResolvers = []string{"1.1.1.1:53", "8.8.8.8:53", "223.5.5.5:53", "114
 // CertKeyTypes are the accepted values of cert.key_type.
 var CertKeyTypes = []string{"ec256", "rsa2048"}
 
-// CertDir returns cert.dir, or <config dir>/certs.
+// CertDir returns cert.dir (a leading ~ is the home directory), or
+// <config dir>/certs.
 func (c *Config) CertDir() string {
-	if c.Cert.Dir != "" {
-		return c.Cert.Dir
+	if d := strings.TrimSpace(c.Cert.Dir); d != "" {
+		return platform.ExpandHome(d)
 	}
 	return filepath.Join(filepath.Dir(c.path), "certs")
 }

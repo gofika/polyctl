@@ -118,6 +118,16 @@ func TestCertSettingsDefaults(t *testing.T) {
 		len(s.DNS.Resolvers) != 4 || s.Dir != filepath.Join(filepath.Dir(cfg.Path()), "certs") || s.AgreeTOS || s.ReuseKey {
 		t.Errorf("cert settings = %+v", s)
 	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	cfg, err = loadYAML(t, "cert:\n  dir: ~/certs\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.CertDir(); got != filepath.Join(home, "certs") {
+		t.Errorf("cert.dir with ~ = %q", got)
+	}
 }
 
 func TestNamingTemplates(t *testing.T) {
