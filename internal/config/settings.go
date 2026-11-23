@@ -188,11 +188,12 @@ var DefaultNaming = map[string]string{
 	"gcp_instance_external_ip":   "{name}-external-ip",
 	"gcp_instance_internal_ip":   "{name}-internal-ip",
 	"gcp_lb_firewall":            "allow-lb-health-check-{network}",
+	"gcp_ssl_certificate":        "{slug}-cert-{date}",
 }
 
 // NamingVars are the variables naming templates (and cert.name_template,
 // which adds not_after) may use.
-var NamingVars = []string{"name", "service", "protocol", "port", "region", "zone", "network"}
+var NamingVars = []string{"name", "service", "protocol", "port", "region", "zone", "network", "slug", "date"}
 
 // NamingTemplate returns naming.<key>, or its built-in default.
 func (c *Config) NamingTemplate(key string) string {
