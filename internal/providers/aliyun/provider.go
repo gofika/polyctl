@@ -6,8 +6,11 @@
 //
 //	method      always "access_key"
 //	region      default region id used for ECS and signing (e.g. cn-hangzhou)
-//	site        registrar site, "cn" (aliyun.com) or "intl" (alibabacloud.com);
-//	            optional, derived from region when absent (cn-* = cn)
+//	site        the account's site, "cn" (China site, aliyun.com) or "intl"
+//	            (international site, alibabacloud.com); chosen at login, and
+//	            kept by every later login. Accounts added before it was
+//	            required may lack it: the registrar site is then derived
+//	            from the region (cn-* = cn)
 //	account_id  the Alibaba Cloud account id returned by STS
 //	principal   the caller ARN (acs:ram::<account>:user/<name>)
 //	key_prefix  first 8 characters of the AccessKey ID, to tell keys apart
@@ -55,14 +58,16 @@ func (*provider) ID() platform.ID     { return platform.Aliyun }
 func (*provider) DisplayName() string { return "Alibaba Cloud" }
 
 func (*provider) LoginHelp() string {
-	return `RAM AccessKey. Opens ` + accessKeyURL + ` so you can create a RAM user with
-AliyunDNSFullAccess / AliyunDomainFullAccess / AliyunECSReadOnlyAccess (as needed) and prompts
-for the AccessKey ID and Secret. Options: --set region=<id> (default ` + DefaultRegion + `),
---set site=cn|intl to force the registrar site (default: cn for cn-* regions, intl otherwise),
+	return `RAM AccessKey. Asks first for the account's site (cn: China site, aliyun.com;
+intl: International site, alibabacloud.com; no default), then opens ` + accessKeyURL + ` so
+you can create a RAM user with AliyunDNSFullAccess / AliyunDomainFullAccess /
+AliyunECSReadOnlyAccess (as needed) and prompts for the AccessKey ID and Secret.
+Options: --set site=cn|intl (required in the non-interactive flow; a later login keeps the
+site of the first one), --set region=<id> (default ` + DefaultRegion + `),
 --set aliyun_profile=<profile> to import the AccessKey of that aliyun CLI profile
 (~/.aliyun/config.json); the key is copied into polyctl's credential store.
-Non-interactive: --set access_key_id=... --set access_key_secret=- (the secret on stdin),
-or ` + envKeyID + ` / ` + envKeySecret + `, or --set aliyun_profile=<profile>.`
+Non-interactive: --set site=cn|intl and --set access_key_id=... --set access_key_secret=- (the
+secret on stdin), or ` + envKeyID + ` / ` + envKeySecret + `, or --set aliyun_profile=<profile>.`
 }
 
 // LoginOptions lists the --set keys of the login (see LoginHelp).
@@ -93,9 +98,24 @@ const (
 // usage error, and the region falls back to its default.
 func (p *provider) Login(ctx context.Context, in platform.LoginInput) (*platform.LoginResult, error) {
 	io := in.IO(ctx)
+	// The site comes first: it is the account's identity, asked before
+	// anything else and required up front in the non-interactive flow.
+	site, err := loginSite(in, io)
 	region := in.Opt("region", "")
 	keyID := strings.TrimSpace(in.Opt(secretKeyID, ""))
 	keySecret := strings.TrimSpace(in.Opt(secretKeySecret, ""))
+	if errors.Is(err, errSiteMissing) {
+		// Name everything that is missing at once, before anything is
+		// read or printed.
+		envPair := strings.TrimSpace(os.Getenv(envKeyID)) != "" && strings.TrimSpace(os.Getenv(envKeySecret)) != ""
+		if in.Opt(optCLIProfile, "") == "" && (keyID == "" || keySecret == "") && !(keyID == "" && keySecret == "" && envPair) {
+			return nil, app.UsageErrf("%v; it also needs an AccessKey: %s", err, keyHint(keyID, keySecret))
+		}
+		return nil, app.UsageErrf("%v", err)
+	}
+	if err != nil {
+		return nil, err
+	}
 
 	if cliProfile := in.Opt(optCLIProfile, ""); cliProfile != "" {
 		cp, err := loadCLIProfile(cliConfigPath(), cliProfile)
@@ -113,15 +133,7 @@ func (p *provider) Login(ctx context.Context, in platform.LoginInput) (*platform
 		fmt.Fprintf(io.Err, "using the AccessKey from %s / %s\n", envKeyID, envKeySecret)
 	}
 	if (keyID == "" || keySecret == "") && !in.Interactive {
-		var missing []string
-		if keyID == "" {
-			missing = append(missing, "--set access_key_id=<id>")
-		}
-		if keySecret == "" {
-			missing = append(missing, "--set access_key_secret=- (the secret on stdin)")
-		}
-		return nil, app.UsageErrf("aliyun login needs an AccessKey: pass %s, or set %s and %s, or import one with --set aliyun_profile=<profile>",
-			strings.Join(missing, " and "), envKeyID, envKeySecret)
+		return nil, app.UsageErrf("aliyun login needs an AccessKey: %s", keyHint(keyID, keySecret))
 	}
 	if keyID == "" || keySecret == "" {
 		fmt.Fprintln(io.Err, "Alibaba Cloud has no browser login for third-party tools; a RAM AccessKey is used instead.")
@@ -132,7 +144,6 @@ func (p *provider) Login(ctx context.Context, in platform.LoginInput) (*platform
 				fmt.Fprintf(io.Err, "(could not open the browser: %v)\n", err)
 			}
 		}
-		var err error
 		if keyID == "" {
 			if keyID, err = io.Required("AccessKey ID"); err != nil {
 				return nil, err
@@ -150,7 +161,6 @@ func (p *provider) Login(ctx context.Context, in platform.LoginInput) (*platform
 			def = DefaultRegion
 		}
 		if in.Interactive {
-			var err error
 			if region, err = io.Line("Region id", def); err != nil {
 				return nil, err
 			}
@@ -161,10 +171,6 @@ func (p *provider) Login(ctx context.Context, in platform.LoginInput) (*platform
 		}
 	}
 	region = strings.TrimSpace(region)
-	site, err := parseSite(in.Opt(metaSite, in.Existing[metaSite]))
-	if err != nil {
-		return nil, err
-	}
 
 	c := newClient(region, keyID, keySecret)
 	c.site = site
@@ -172,6 +178,7 @@ func (p *provider) Login(ctx context.Context, in platform.LoginInput) (*platform
 	if err != nil {
 		return nil, fmt.Errorf("verify AccessKey: %w", err)
 	}
+	c.checkSite(ctx, id.Extra["identity_type"], site, io.Err)
 	meta := map[string]string{
 		metaMethod:    "access_key",
 		metaRegion:    region,
@@ -179,14 +186,25 @@ func (p *provider) Login(ctx context.Context, in platform.LoginInput) (*platform
 		metaPrincipal: id.User,
 		metaKeyPrefix: keyPrefix(keyID),
 	}
-	if site != "" {
-		meta[metaSite] = site
-	}
+	meta[metaSite] = site
 	return &platform.LoginResult{
 		Secret:   map[string]string{secretKeyID: keyID, secretKeySecret: keySecret},
 		Metadata: meta,
 		Label:    fmt.Sprintf("%s (account %s, region %s)", id.User, id.Account, region),
 	}, nil
+}
+
+// keyHint names the ways to pass the parts of the AccessKey that are
+// missing.
+func keyHint(keyID, keySecret string) string {
+	var missing []string
+	if keyID == "" {
+		missing = append(missing, "--set access_key_id=<id>")
+	}
+	if keySecret == "" {
+		missing = append(missing, "--set access_key_secret=- (the secret on stdin)")
+	}
+	return fmt.Sprintf("pass %s, or set %s and %s, or import one with --set aliyun_profile=<profile>", strings.Join(missing, " and "), envKeyID, envKeySecret)
 }
 
 // parseSite validates the registrar site option ("" keeps the default).

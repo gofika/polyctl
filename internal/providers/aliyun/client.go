@@ -311,6 +311,9 @@ func (c *client) Verify(ctx context.Context) (*platform.Identity, error) {
 		return nil, wrapErr("sts GetCallerIdentity", err)
 	}
 	extra := map[string]string{"identity_type": resp.IdentityType, "region": c.region}
+	if c.site != "" {
+		extra["site"] = c.site
+	}
 	if resp.PrincipalId != "" {
 		extra["principal_id"] = resp.PrincipalId
 	}

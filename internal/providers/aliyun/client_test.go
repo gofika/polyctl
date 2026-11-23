@@ -669,7 +669,7 @@ func TestLoginFromCLIVerifiesAndFillsMetadata(t *testing.T) {
 	t.Setenv("ALIBABA_CLOUD_CLI_CONFIG", writeCLIConfig(t, cliConfigJSON))
 	var stderr bytes.Buffer
 	res, err := (&provider{}).Login(context.Background(), platform.LoginInput{
-		ProfileName: "ali", Options: map[string]string{"aliyun_profile": "work"},
+		ProfileName: "ali", Options: map[string]string{"aliyun_profile": "work", "site": "intl"},
 		Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &stderr, NoBrowser: true,
 	})
 	if err != nil {
@@ -681,7 +681,7 @@ func TestLoginFromCLIVerifiesAndFillsMetadata(t *testing.T) {
 	if res.Secret[secretKeyID] != "LTAIwork00000001" || res.Secret[secretKeySecret] != "s-work" {
 		t.Errorf("secret = %v", res.Secret)
 	}
-	want := map[string]string{metaMethod: "access_key", metaRegion: "cn-shenzhen", metaAccountID: "42", metaPrincipal: "acs:ram::42:user/dev", metaKeyPrefix: "LTAIwork"}
+	want := map[string]string{metaMethod: "access_key", metaRegion: "cn-shenzhen", metaSite: siteIntl, metaAccountID: "42", metaPrincipal: "acs:ram::42:user/dev", metaKeyPrefix: "LTAIwork"}
 	for k, v := range want {
 		if res.Metadata[k] != v {
 			t.Errorf("metadata[%s] = %q, want %q", k, res.Metadata[k], v)
@@ -700,14 +700,14 @@ func TestLoginFromCLIVerifiesAndFillsMetadata(t *testing.T) {
 	}
 	// Region option wins over the CLI region.
 	res, err = (&provider{}).Login(context.Background(), platform.LoginInput{
-		Options: map[string]string{"aliyun_profile": "default", "region": "us-west-1"},
+		Options: map[string]string{"aliyun_profile": "default", "region": "us-west-1", "site": "cn"},
 		Stdin:   strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, NoBrowser: true,
 	})
 	if err != nil || res.Metadata[metaRegion] != "us-west-1" {
 		t.Errorf("region override: %v, %v", res, err)
 	}
-	if _, ok := res.Metadata[metaSite]; ok {
-		t.Errorf("site must not be recorded unless given: %v", res.Metadata)
+	if res.Metadata[metaSite] != siteCN {
+		t.Errorf("site = %q, want cn: %v", res.Metadata[metaSite], res.Metadata)
 	}
 	// --set site=intl is validated and recorded.
 	res, err = (&provider{}).Login(context.Background(), platform.LoginInput{
@@ -740,7 +740,7 @@ func TestLoginInteractiveRejectsBadKey(t *testing.T) {
 	t.Setenv(envKeySecret, "")
 	in := platform.LoginInput{
 		Interactive: true,
-		Stdin:       strings.NewReader("LTAIbad\nverysecret\n\n"), Stdout: &bytes.Buffer{}, Stderr: &stderr,
+		Stdin:       strings.NewReader("intl\nLTAIbad\nverysecret\n\n"), Stdout: &bytes.Buffer{}, Stderr: &stderr,
 		OpenBrowser: func(u string) error { opened = append(opened, u); return errors.New("no browser") },
 		Existing:    map[string]string{metaRegion: "cn-shanghai"},
 	}
@@ -752,7 +752,8 @@ func TestLoginInteractiveRejectsBadKey(t *testing.T) {
 		t.Errorf("browser should have been opened once with %s, got %v", accessKeyURL, opened)
 	}
 	out := stderr.String()
-	if !strings.Contains(out, accessKeyURL) || !strings.Contains(out, "AccessKey ID") || !strings.Contains(out, "[cn-shanghai]") {
+	if !strings.Contains(out, accessKeyURL) || !strings.Contains(out, "AccessKey ID") || !strings.Contains(out, "[cn-shanghai]") ||
+		!strings.Contains(out, "Site: cn") || strings.Index(out, "Site: cn") > strings.Index(out, "AccessKey ID") {
 		t.Errorf("prompts missing: %s", out)
 	}
 	if strings.Contains(out, "verysecret") {
@@ -760,7 +761,7 @@ func TestLoginInteractiveRejectsBadKey(t *testing.T) {
 	}
 
 	opened = nil
-	in.Stdin = strings.NewReader("LTAIgood\nverysecret\nap-southeast-1\n")
+	in.Stdin = strings.NewReader("eu\nintl\nLTAIgood\nverysecret\nap-southeast-1\n")
 	in.NoBrowser = true
 	res, err := (&provider{}).Login(context.Background(), in)
 	if err != nil {
@@ -769,7 +770,7 @@ func TestLoginInteractiveRejectsBadKey(t *testing.T) {
 	if len(opened) != 0 {
 		t.Error("--no-browser must not open the browser")
 	}
-	if res.Metadata[metaRegion] != "ap-southeast-1" || res.Metadata[metaAccountID] != "7" || res.Secret[secretKeySecret] != "verysecret" {
+	if res.Metadata[metaRegion] != "ap-southeast-1" || res.Metadata[metaAccountID] != "7" || res.Secret[secretKeySecret] != "verysecret" || res.Metadata[metaSite] != siteIntl {
 		t.Errorf("result = %+v", res)
 	}
 }
@@ -825,6 +826,13 @@ func TestLoginNonInteractiveNeverAsks(t *testing.T) {
 	t.Setenv(envKeySecret, "")
 	login := func(opts, existing map[string]string) (*platform.LoginResult, string, int, error) {
 		var stderr bytes.Buffer
+		if _, ok := opts["site"]; !ok && existing[metaSite] == "" {
+			o := map[string]string{"site": "cn"}
+			for k, v := range opts {
+				o[k] = v
+			}
+			opts = o
+		}
 		opened := 0
 		res, err := (&provider{}).Login(context.Background(), platform.LoginInput{
 			Options: opts, Existing: existing,

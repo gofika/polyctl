@@ -356,7 +356,7 @@ func profileRows(cfg *config.Config) []profileRow {
 }
 
 func metaSummary(m map[string]string) string {
-	keys := []string{"account", "account_id", "email", "user", "username", "project", "region", "method"}
+	keys := []string{"account", "account_id", "email", "user", "username", "project", "region", "site", "method"}
 	var parts []string
 	for _, k := range keys {
 		if v, ok := m[k]; ok && v != "" {
@@ -546,6 +546,9 @@ func identitySummary(id *platform.Identity) string {
 		if v := id.Extra[k]; v != "" {
 			parts = append(parts, v)
 		}
+	}
+	if v := id.Extra["site"]; v != "" {
+		parts = append(parts, "site="+v)
 	}
 	return strings.Join(parts, " ")
 }

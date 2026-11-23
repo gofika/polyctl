@@ -165,6 +165,9 @@ type LoginInput struct {
 	// Prompt is the shared line reader on Stdin, already in that flow. Nil
 	// (tests) means one is built from the streams below.
 	Prompt *prompt.IO
+	// Picker asks choices with an arrow-key list in the interactive flow.
+	// Nil (tests) means choices are asked as lines on Prompt.
+	Picker prompt.Picker
 	// Options are free-form key=value pairs from `auth login --set k=v`.
 	Options map[string]string
 	// Existing metadata when re-authenticating an existing profile.

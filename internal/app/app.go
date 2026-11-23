@@ -549,9 +549,14 @@ func (rt *Runtime) DB() (*inventory.DB, error) {
 // of the command, and never lets a non-interactive login open a browser.
 func (rt *Runtime) LoginInput(profileName string, opts map[string]string, existing map[string]string) platform.LoginInput {
 	interactive := rt.Interactive()
+	var picker prompt.Picker
+	if interactive {
+		picker = rt.Pick()
+	}
 	return platform.LoginInput{
 		Interactive: interactive,
 		Prompt:      rt.Prompt(),
+		Picker:      picker,
 		ProfileName: profileName,
 		Options:     opts,
 		Existing:    existing,
