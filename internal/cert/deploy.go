@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -59,8 +58,8 @@ type DeployEnv struct {
 	Regions func(ref config.AccountRef) []string
 	// Ensure makes sure the store holds a certificate of root with more
 	// than days whole days left (cert ensure; its dry-run form in a dry
-	// run). An error that is app.ErrDomainUnknown or platform.ErrNotFound
-	// means that no DNS account hosts the domain.
+	// run). An error that is app.ErrDomainUnknown means that no DNS
+	// account hosts the domain.
 	Ensure func(ctx context.Context, root string, days int) (*Result, error)
 	// Stored returns the certificate the store holds for root (nil: none).
 	Stored func(root string) *Bundle
@@ -281,11 +280,20 @@ func (r *deployRun) deployer(ctx context.Context, d platform.CertDeployer, acct 
 		if p := recover(); p != nil {
 			r.total++
 			r.fail(ctx, platform.Change{Resource: platform.DeployResource(d.ID(), acct.Profile, "account")},
-				fmt.Errorf("internal error in deployer %s: %v\n%s", d.ID(), p, debug.Stack()), base, true)
+				fmt.Errorf("internal error in deployer %s: %v", d.ID(), p), base, true)
 		}
 	}()
 	targets, skipped, err := d.Discover(ctx, acct, r.po)
-	r.add(skipped...)
+	for _, ch := range skipped {
+		// With a named domain, what a deployer leaves alone for another
+		// root domain is not reported.
+		if !r.o.All && ch.Attrs["domain"] != "" {
+			if root, err := RootDomain(ch.Attrs["domain"]); err == nil && root != r.o.Domain {
+				continue
+			}
+		}
+		r.add(ch)
+	}
 	if err != nil {
 		r.total++
 		r.fail(ctx, platform.Change{Resource: platform.DeployResource(d.ID(), acct.Profile, "account")}, err, base, true)
@@ -317,6 +325,11 @@ func (r *deployRun) deployer(ctx context.Context, d platform.CertDeployer, acct 
 		attrs["domain"] = root
 		f.Domain = root
 		left := t.DaysLeft(now)
+		if r.o.All && !r.o.Force && t.CurrentNotAfter.IsZero() {
+			r.add(platform.Change{Resource: res, Action: platform.Skipped, ID: t.CurrentCertID, Attrs: attrs,
+				Detail: fmt.Sprintf("the expiry of certificate %s is unknown", t.CurrentCertID)})
+			continue
+		}
 		if r.o.All && !r.o.Force && left > r.o.Days {
 			r.add(platform.Change{Resource: res, Action: platform.Unchanged, ID: t.CurrentCertID, Attrs: attrs,
 				Detail: fmt.Sprintf("days_left=%d", left)})
@@ -484,7 +497,7 @@ func (r *deployRun) bundle(ctx context.Context, root string) *bundleResult {
 	}
 	certRes := "cert/" + root
 	switch {
-	case err != nil && (errors.Is(err, app.ErrDomainUnknown) || errors.Is(err, platform.ErrNotFound)):
+	case err != nil && errors.Is(err, app.ErrDomainUnknown):
 		b.skip = "no DNS account hosts " + root + ", so its certificate cannot be issued here (it is managed elsewhere)"
 		r.add(platform.Change{Resource: certRes, Action: platform.Skipped, Detail: b.skip})
 	case err != nil:

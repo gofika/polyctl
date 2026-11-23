@@ -485,3 +485,53 @@ func TestDeployPrune(t *testing.T) {
 		t.Errorf("dry run: %v %v %v", err, h.confirm, deployRows(rep))
 	}
 }
+
+// skipDeployer reports skipped changes of several domains on top of the
+// targets of fakeDeployer.
+type skipDeployer struct{ *fakeDeployer }
+
+func (s skipDeployer) Discover(ctx context.Context, acct *platform.DeployAccount, o platform.DeployOptions) ([]platform.DeployTarget, []platform.Change, error) {
+	targets, _, err := s.fakeDeployer.Discover(ctx, acct, o)
+	return targets, []platform.Change{
+		{Resource: "fake-lb/acme/managed-example", Action: platform.Skipped, Attrs: map[string]string{"domain": "www.example.com"}},
+		{Resource: "fake-lb/acme/managed-other", Action: platform.Skipped, Attrs: map[string]string{"domain": "other.com"}},
+		{Resource: "fake-lb/acme/stopped", Action: platform.Skipped},
+	}, err
+}
+
+func TestDeployUnknownExpiryNotFoundAndDomainSkips(t *testing.T) {
+	h := newDeployHarness(t, "acme")
+	h.bundles["example.com"] = deployBundle(t, "example.com", 90)
+	d := &fakeDeployer{id: "fake-lb", platform: platform.AWS, targets: map[string][]*fakeTarget{"acme": {
+		{id: "l1", name: "lb-1", domains: []string{"example.com"}, serial: "01"},
+	}}}
+	// --all: a certificate whose expiry is unknown is not taken as due.
+	rep, err := h.run(DeployOptions{All: true}, d)
+	if err != nil || len(d.writes) != 0 || len(h.ensured) != 0 {
+		t.Fatalf("err %v writes %v ensured %v", err, d.writes, h.ensured)
+	}
+	if !slices.ContainsFunc(deployRows(rep), func(r string) bool { return strings.HasPrefix(r, "fake-lb/acme/lb-1 skipped the expiry") }) {
+		t.Errorf("rows = %v", deployRows(rep))
+	}
+	// A not-found error of cert ensure that is not about the DNS account
+	// is a failure, not a skip.
+	d.targets["acme"][0].notAfter = days(3)
+	h.ensureFn = func(root string, days int) (*Result, error) {
+		return nil, fmt.Errorf("%w: TXT record", platform.ErrNotFound)
+	}
+	if _, err := h.run(DeployOptions{All: true}, d); !errors.As(err, new(*platform.PartialError)) || len(h.notified) != 1 {
+		t.Errorf("err %v notified %v", err, h.notified)
+	}
+	// With a named domain, skips of other root domains are left out.
+	h.ensureFn = nil
+	rep, err = h.run(DeployOptions{Domain: "example.com"}, skipDeployer{d})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := deployRows(rep)
+	if !slices.ContainsFunc(rows, func(r string) bool { return strings.HasPrefix(r, "fake-lb/acme/managed-example ") }) ||
+		!slices.ContainsFunc(rows, func(r string) bool { return strings.HasPrefix(r, "fake-lb/acme/stopped ") }) ||
+		slices.ContainsFunc(rows, func(r string) bool { return strings.Contains(r, "managed-other") }) {
+		t.Errorf("rows = %v", rows)
+	}
+}
