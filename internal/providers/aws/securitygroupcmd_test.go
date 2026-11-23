@@ -513,3 +513,39 @@ func TestSGEnsureCreatedMeanwhile(t *testing.T) {
 		t.Errorf("create race = %v", err)
 	}
 }
+
+func TestSGInteractiveConfirmations(t *testing.T) {
+	h := newSGHarness(t, app.Flags{NonInteractiveSet: true})
+	h.rt.Flags.NonInteractive = false
+	h.rt.Picker = &scriptedPicker{t: t} // the flow is interactive; confirmations read stdin
+	g := h.addSG("ap-east-1", &fakeSG{id: "sg-0ccc0000", name: "web", rules: []fakeRule{tcpRule(22, "10.0.0.0/8", "")}})
+
+	// A no (the default) removes nothing and is not a failure.
+	h.rt.Stdin = strings.NewReader("\n")
+	if err := h.run("ec2", "security-group", "rule", "remove", "web", "--rule", "tcp:22:10.0.0.0/8"); err != nil && !errors.Is(err, platform.ErrNothingToDo) {
+		t.Errorf("rule remove declined = %v", err)
+	}
+	h.rt.Stdin = strings.NewReader("n\n")
+	if err := h.run("ec2", "security-group", "delete", "web"); err != nil && !errors.Is(err, platform.ErrNothingToDo) {
+		t.Errorf("delete declined = %v", err)
+	}
+	if w := h.writes(); len(w) != 0 || len(g.rules) != 1 || h.sgByName("ap-east-1", "web", "") == nil {
+		t.Fatalf("declined but wrote %v", w)
+	}
+
+	// A yes goes ahead.
+	h.rt.Stdin = strings.NewReader("y\n")
+	if err := h.run("ec2", "security-group", "rule", "remove", "web", "--rule", "tcp:22:10.0.0.0/8"); err != nil {
+		t.Fatal(err)
+	}
+	if a := actions(h.report()); a["security-group/web/rule deleted"] != 1 || len(g.rules) != 0 {
+		t.Errorf("rule remove accepted = %v, rules %+v", a, g.rules)
+	}
+	h.rt.Stdin = strings.NewReader("y\n")
+	if err := h.run("ec2", "security-group", "delete", "web"); err != nil {
+		t.Fatal(err)
+	}
+	if c := h.report().Changes[0]; c.Action != platform.Deleted || h.sgByName("ap-east-1", "web", "") != nil {
+		t.Errorf("delete accepted = %+v", c)
+	}
+}
