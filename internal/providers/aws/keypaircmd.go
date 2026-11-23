@@ -274,9 +274,16 @@ A key pair <name> that holds another key is never replaced: exit code 2.`,
 					return err
 				}
 				for _, kp := range pairs {
-					if kp.Name == in.Name && !in.Match.Match(in.Key, kp) {
-						return fmt.Errorf("%w: key pair %q already exists in %s with a different public key; choose another name (an existing key pair is never replaced)", platform.ErrInvalidInput, in.Name, region)
+					if kp.Name != in.Name || in.Match.Match(in.Key, kp) {
+						continue
 					}
+					if kp.PublicKey == nil {
+						// Listed without its public key and with a fingerprint
+						// that cannot be computed from the key (a key pair AWS
+						// generated): whether it holds the key is unknown.
+						return fmt.Errorf("%w: key pair %q exists in %s but AWS listed it without its public key, so it cannot be compared with the given key; to use it as it is, run ensure with <name> alone, otherwise choose another name (an existing key pair is never replaced)", platform.ErrInvalidInput, in.Name, region)
+					}
+					return fmt.Errorf("%w: key pair %q already exists in %s with a different public key; choose another name (an existing key pair is never replaced)", platform.ErrInvalidInput, in.Name, region)
 				}
 			}
 			kp, err := platform.ResolveKeyPair(cmd.Context(), lister, in)

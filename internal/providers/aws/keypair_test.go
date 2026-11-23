@@ -681,6 +681,15 @@ func TestKeyPairEnsureRefusals(t *testing.T) {
 	if !errors.Is(err, platform.ErrInvalidInput) || !strings.Contains(err.Error(), "different public key") {
 		t.Errorf("name with another key, key under other names = %v", err)
 	}
+	// The name exists but was listed without its public key and with a
+	// fingerprint AWS generated: refused, without claiming another key.
+	gen := newFakeKeyPair("generated", genRSA(t))
+	gen.hidePublicKey, gen.fingerprint = true, "1f:51:ae:28:bf:89:e9:d8:1f:25:5d:37:2d:7d:b8:ca:9f:f5:f1:6f"
+	h.add("ap-east-1", gen)
+	err = h.run("ec2", "key-pair", "ensure", "generated", "--ssh-key", newKey)
+	if !errors.Is(err, platform.ErrInvalidInput) || !strings.Contains(err.Error(), "without its public key") || strings.Contains(err.Error(), "different public key") {
+		t.Errorf("name listed without public key = %v", err)
+	}
 	// A new key without a name: no name is invented.
 	err = h.run("ec2", "key-pair", "ensure", "--ssh-key", newKey)
 	if !errors.Is(err, platform.ErrInvalidInput) || !strings.Contains(err.Error(), "needs a name: pass <name>") {
