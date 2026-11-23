@@ -310,9 +310,23 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 			if len(matches) == 0 {
 				return fmt.Errorf("%w: no matching record in zone %s", platform.ErrNotFound, t.Domain)
 			}
+			// Records owned by another service of the platform (the CNAME of
+			// an R2 custom domain) are deleted by unbinding them there.
+			zone := platform.Zone{ID: t.ResourceID, Name: t.Domain}
+			unbinder, _ := dns.(platform.RecordUnbinder)
+			owners := make([]string, len(matches))
+			var bound []string
 			var changes []platform.Change
-			for _, r := range matches {
-				changes = append(changes, platform.Change{Resource: app.RecordResource(r.Name, r.Type), Action: platform.Deleted, ID: r.ID, Detail: r.Value})
+			for i, r := range matches {
+				detail := r.Value
+				if unbinder != nil {
+					if owner, ok := unbinder.Match(zone, r); ok {
+						owners[i] = owner
+						bound = append(bound, owner)
+						detail += " (unbound from " + owner + ", which removes the record)"
+					}
+				}
+				changes = append(changes, platform.Change{Resource: app.RecordResource(r.Name, r.Type), Action: platform.Deleted, ID: r.ID, Detail: detail})
 			}
 			// A dry run neither asks nor needs --yes: nothing is deleted.
 			if done, err := rt.WouldWrite(t.ReportTarget(), changes...); done || err != nil {
@@ -322,7 +336,11 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 				// Shown in both flows, so the caller sees what is affected:
 				// before the question, or with the refusal that asks for --yes.
 				_ = output.RenderGrid(rt.Stderr, recordGrid(matches, t.Platform))
-				ok, err := rt.Confirm(cmd.Context(), fmt.Sprintf("delete %d records in zone %s", len(matches), t.Domain), false)
+				question := fmt.Sprintf("delete %d records in zone %s", len(matches), t.Domain)
+				if len(bound) > 0 {
+					question += fmt.Sprintf(" (%d of them by unbinding them from %s)", len(bound), strings.Join(bound, ", "))
+				}
+				ok, err := rt.Confirm(cmd.Context(), question, false)
 				if err != nil {
 					return err
 				}
@@ -331,8 +349,17 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 				}
 			}
 			db, _ := rt.DB()
-			for _, r := range matches {
-				if err := dns.DeleteRecord(cmd.Context(), t.ResourceID, r.ID); err != nil {
+			for i, r := range matches {
+				if owners[i] != "" {
+					rt.Infof("%s %s belongs to %s: unbinding it there removes the record", r.Name, r.Type, owners[i])
+					handled, err := unbinder.Unbind(cmd.Context(), zone, r)
+					if err == nil && !handled {
+						err = fmt.Errorf("%s could not be unbound", owners[i])
+					}
+					if err != nil {
+						return fmt.Errorf("delete %s %s (%s): %w", r.Name, r.Type, r.ID, err)
+					}
+				} else if err := dns.DeleteRecord(cmd.Context(), t.ResourceID, r.ID); err != nil {
 					return fmt.Errorf("delete %s %s (%s): %w", r.Name, r.Type, r.ID, err)
 				}
 				if db != nil {

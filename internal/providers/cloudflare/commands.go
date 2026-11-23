@@ -533,11 +533,36 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			target := platform.Target{Platform: platform.Cloudflare, Profile: profile, Domain: z.Name}
-			if done, err := rt.WouldWrite(target, platform.Change{Resource: "record/" + id, Action: platform.Deleted, ID: id, Detail: "zone " + z.Name}); done || err != nil {
+			// The record is read first: the CNAME of an R2 custom domain
+			// cannot be deleted through the DNS API, only by unbinding the
+			// domain from its bucket.
+			cur, err := s.client.api.getRecord(cmd.Context(), z.ID, id)
+			if err != nil {
+				if errors.Is(err, platform.ErrNotFound) {
+					return fmt.Errorf("%w: record %s in zone %s", platform.ErrNotFound, id, z.Name)
+				}
 				return err
 			}
-			if err := s.client.DeleteRecord(cmd.Context(), z.ID, id); err != nil {
+			rec := toRecord(*cur)
+			owner, bound := s.client.Match(*z, rec)
+			detail := "zone " + z.Name
+			if bound {
+				detail += "; unbound from " + owner + ", which removes the record"
+			}
+			target := platform.Target{Platform: platform.Cloudflare, Profile: profile, Domain: z.Name}
+			if done, err := rt.WouldWrite(target, platform.Change{Resource: "record/" + id, Action: platform.Deleted, ID: id, Detail: detail}); done || err != nil {
+				return err
+			}
+			if bound {
+				rt.Infof("%s %s belongs to %s: unbinding it there removes the record", rec.Name, rec.Type, owner)
+				handled, err := s.client.Unbind(cmd.Context(), *z, rec)
+				if err == nil && !handled {
+					err = fmt.Errorf("%s could not be unbound", owner)
+				}
+				if err != nil {
+					return err
+				}
+			} else if err := s.client.DeleteRecord(cmd.Context(), z.ID, id); err != nil {
 				return err
 			}
 			if db, err := rt.DB(); err == nil {

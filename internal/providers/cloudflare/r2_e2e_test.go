@@ -885,3 +885,59 @@ func TestR2DomainAttachUpdateDetach(t *testing.T) {
 		t.Errorf("detach unbound: exit %d, %v", code, e.f.writes())
 	}
 }
+
+// Deleting the CNAME of an R2 custom domain unbinds the domain: the DNS
+// record itself cannot be deleted through the DNS API.
+func TestDNSDeleteUnbindsR2Domain(t *testing.T) {
+	e := newR2Env(t)
+	e.f.accounts["acc1"].buckets = []string{"assets"}
+	e.f.bind("acc1", "assets", "cdn.example.com", "zone-ex", true, "")
+	recID := e.f.records["zone-ex"][0]["id"].(string)
+
+	// Dry run: says so, deletes nothing.
+	code, stdout, _ := e.run("cloudflare", "dns", "delete", "example.com", recID, "--profile", "acme", "--dry-run")
+	if code != cli.ExitOK || !strings.Contains(stdout, "unbound from r2 bucket assets") || len(e.f.writes()) != 0 {
+		t.Errorf("dry run: exit %d, %q, %v", code, stdout, e.f.writes())
+	}
+	// The R2 DELETE goes out, the DNS DELETE does not.
+	e.f.reset()
+	code, _, stderr := e.run("cloudflare", "dns", "delete", "example.com", recID, "--profile", "acme")
+	if code != cli.ExitOK {
+		t.Fatalf("delete: exit %d, %s", code, stderr)
+	}
+	if w := e.f.writes(); len(w) != 1 || w[0] != "DELETE /accounts/acc1/r2/buckets/assets/domains/custom/cdn.example.com" {
+		t.Errorf("writes = %v", w)
+	}
+
+	// The neutral command does the same.
+	e.f.bind("acc1", "assets", "cdn.example.com", "zone-ex", true, "")
+	e.f.reset()
+	code, _, stderr = e.run("dns", "delete", "example.com", "--type", "CNAME", "--name", "cdn", "--profile", "acme", "--platform", "cloudflare")
+	if code != cli.ExitOK || len(e.f.writes()) != 1 || !strings.HasPrefix(e.f.writes()[0], "DELETE /accounts/acc1/r2/") {
+		t.Errorf("dns delete: exit %d, %s, %v", code, stderr, e.f.writes())
+	}
+
+	// R2 refused for lack of permission: no DNS DELETE, a failure.
+	e.f.bind("acc1", "assets", "cdn.example.com", "zone-ex", true, "")
+	recID = e.f.records["zone-ex"][0]["id"].(string)
+	e.f.accounts["acc1"].r2Disabled = true
+	e.f.reset()
+	code, _, stderr = e.run("cloudflare", "dns", "delete", "example.com", recID, "--profile", "acme")
+	if code == cli.ExitOK || !strings.Contains(stderr, "R2 unbind failed") || !strings.Contains(stderr, "code 1052") || e.f.count("DELETE /zones/") != 0 || e.f.count("GET /accounts/acc2") != 0 {
+		t.Errorf("without R2: exit %d, %s, %v", code, stderr, e.f.requests)
+	}
+
+	// The bucket is in another account: found there through its domain
+	// list, and unbound there only.
+	e.f.accounts["acc1"].r2Disabled = false
+	e.f.accounts["acc1"].buckets = nil
+	e.f.accounts["acc1"].domains = map[string][]map[string]any{}
+	e.f.accounts["acc2"].buckets = []string{"assets"}
+	e.f.accounts["acc2"].domains["assets"] = []map[string]any{{"domain": "cdn.example.com", "enabled": true, "zoneId": "zone-ex"}}
+	e.f.reset()
+	code, _, stderr = e.run("cloudflare", "dns", "delete", "example.com", recID, "--profile", "acme")
+	if w := e.f.writes(); code != cli.ExitOK || len(w) != 2 || w[0] != "DELETE /accounts/acc1/r2/buckets/assets/domains/custom/cdn.example.com" ||
+		w[1] != "DELETE /accounts/acc2/r2/buckets/assets/domains/custom/cdn.example.com" || e.f.count("GET /accounts/acc2/r2/buckets/assets/domains/custom") != 1 {
+		t.Errorf("other account: exit %d, %s, %v", code, stderr, e.f.requests)
+	}
+}
