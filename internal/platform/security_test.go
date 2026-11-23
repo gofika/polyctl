@@ -101,3 +101,44 @@ func TestSecurityGroupRule(t *testing.T) {
 		t.Errorf("range = %q", r.Ports())
 	}
 }
+
+func TestParsePortSpec(t *testing.T) {
+	for in, want := range map[string]string{
+		"80":                "80",
+		"tcp-ignored":       "",
+		"80,443,8000-8100":  "80,443,8000-8100",
+		"443, 80,80":        "80,443",
+		"ssh":               "22",
+		"HTTPS,http":        "80,443",
+		"mysql":             "3306",
+		"8000-8100,22":      "22,8000-8100",
+		"1-65535":           "1-65535",
+		"100-90":            "",
+		"0":                 "",
+		"65536":             "",
+		"":                  "",
+		"80,":               "",
+		"bogus":             "",
+		"ssh-http":          "22-80",
+		"22,22-22,ssh,1000": "22,1000",
+	} {
+		got, err := ParsePortSpec(in)
+		var parts []string
+		for _, r := range got {
+			parts = append(parts, r.String())
+		}
+		s := strings.Join(parts, ",")
+		if want == "" {
+			if err == nil || !strings.Contains(err.Error(), "invalid input") {
+				t.Errorf("ParsePortSpec(%q) = %q, %v; want a usage error", in, s, err)
+			}
+			continue
+		}
+		if err != nil || s != want {
+			t.Errorf("ParsePortSpec(%q) = %q, %v; want %q", in, s, err, want)
+		}
+	}
+	if !(PortRange{From: 1, To: 100}).Contains(PortRange{From: 80, To: 80}) || (PortRange{From: 1, To: 100}).Contains(PortRange{From: 90, To: 110}) {
+		t.Error("PortRange.Contains")
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -125,6 +126,71 @@ func parsePort(s string) (int, error) {
 		return 0, fmt.Errorf("port %d is out of range 1-65535", p)
 	}
 	return p, nil
+}
+
+// PortRange is one port (From == To) or an inclusive range of ports.
+type PortRange struct {
+	From int `json:"from" yaml:"from"`
+	To   int `json:"to" yaml:"to"`
+}
+
+// String renders the range as port lists write it ("443", "8000-8100").
+func (p PortRange) String() string {
+	if p.From == p.To {
+		return strconv.Itoa(p.From)
+	}
+	return fmt.Sprintf("%d-%d", p.From, p.To)
+}
+
+// Contains reports whether every port of o lies in p.
+func (p PortRange) Contains(o PortRange) bool { return p.From <= o.From && o.To <= p.To }
+
+// ParsePortSpec parses a comma-separated port list: port numbers, ranges
+// "from-to" and the aliases of PortAliases ("80,443,8000-8100", "ssh").
+// The result is sorted and has no repeated entries. An empty list, an
+// unknown alias, a port outside 1-65535 or a reversed range is an error
+// that maps to the usage exit code.
+func ParsePortSpec(spec string) ([]PortRange, error) {
+	var out []PortRange
+	seen := map[PortRange]bool{}
+	for _, part := range strings.Split(spec, ",") {
+		part = strings.ToLower(strings.TrimSpace(part))
+		if part == "" {
+			return nil, invalid("port list %q: empty entry (expected ports, from-to ranges or aliases such as ssh, http, https, separated by commas)", spec)
+		}
+		var r PortRange
+		if from, to, ok := strings.Cut(part, "-"); ok {
+			f, err := parsePort(from)
+			if err != nil {
+				return nil, invalid("port list %q: %v", spec, err)
+			}
+			t, err := parsePort(to)
+			if err != nil {
+				return nil, invalid("port list %q: %v", spec, err)
+			}
+			if f > t {
+				return nil, invalid("port list %q: range %d-%d is reversed", spec, f, t)
+			}
+			r = PortRange{From: f, To: t}
+		} else {
+			p, err := parsePort(part)
+			if err != nil {
+				return nil, invalid("port list %q: %v", spec, err)
+			}
+			r = PortRange{From: p, To: p}
+		}
+		if !seen[r] {
+			seen[r] = true
+			out = append(out, r)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].From != out[j].From {
+			return out[i].From < out[j].From
+		}
+		return out[i].To < out[j].To
+	})
+	return out, nil
 }
 
 // ParseRuleSource normalizes the source of a rule: a masked CIDR (a bare
