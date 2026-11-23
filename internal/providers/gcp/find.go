@@ -384,6 +384,7 @@ func (*provider) DescribeMatch(_ map[string]string, m *platform.FindMatch) error
 			for _, u := range a.Users {
 				names = append(names, lastSegment(u))
 			}
+			m.Holders = names
 			m.Note = "static address used by " + strings.Join(names, ", ")
 		} else {
 			m.Note = "static address, not in use"

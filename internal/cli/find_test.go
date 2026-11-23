@@ -70,6 +70,7 @@ type fakeIPData struct {
 	Internal []string `json:"internal"`
 	External []string `json:"external"`
 	Network  string   `json:"network"`
+	Holders  []string `json:"holders,omitempty"`
 }
 
 func (p *ipFake) DescribeMatch(meta map[string]string, m *platform.FindMatch) error {
@@ -78,6 +79,7 @@ func (p *ipFake) DescribeMatch(meta map[string]string, m *platform.FindMatch) er
 		return err
 	}
 	m.Region, m.State, m.InternalIPs, m.ExternalIPs, m.Network = d.Region, d.State, d.Internal, d.External, d.Network
+	m.Holders = d.Holders
 	return nil
 }
 
@@ -442,5 +444,27 @@ func TestFindReservedAddressAnnotates(t *testing.T) {
 	stdout, _, err = run(t, cfgPath, "find", "203.0.113.6", "-o", "json")
 	if r := decodeFind(t, stdout); err != nil || len(r.Matches) != 1 || r.Matches[0].ID != "addr-2" {
 		t.Errorf("alone = %+v, %v", r, err)
+	}
+}
+
+// A reserved address that names its user annotates that match only, not
+// another resource of the account holding the same private address in
+// another network.
+func TestFindReservedAddressAnnotatesItsUser(t *testing.T) {
+	dir, cfgPath := setupFind(t)
+	a := fakeIPRes(platform.ResInstance, "i-1", []string{"10.0.0.5"}, nil)
+	b := fakeIPRes(platform.ResInstance, "i-2", []string{"10.0.0.5"}, nil)
+	addr := platform.Resource{Type: platform.ResEIP, ID: "addr-1", Name: "db-ip", Data: fakeIPData{Holders: []string{"name-i-2"}},
+		IPs: []platform.IPRef{{Value: "10.0.0.5", Kind: platform.IPReserved}}}
+	seedFind(t, dir, platform.GCP, "acme", 0, a, b, addr)
+	stdout, _, err := run(t, cfgPath, "find", "10.0.0.5", "-o", "json")
+	r := decodeFind(t, stdout)
+	if err != nil || len(r.Matches) != 2 {
+		t.Fatalf("matches = %+v, %v", r, err)
+	}
+	for _, m := range r.Matches {
+		if want := m.ID == "i-2"; (len(m.Addresses) == 1) != want {
+			t.Errorf("match %s addresses = %v", m.ID, m.Addresses)
+		}
 	}
 }

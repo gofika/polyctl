@@ -458,6 +458,7 @@ func (*provider) DescribeMatch(_ map[string]string, m *platform.FindMatch) error
 		m.Region, m.State = e.Region, e.Status
 		m.ExternalIPs = appendNew(nil, e.IP)
 		if e.bound() {
+			m.Holders = []string{e.InstanceID}
 			m.Note = "EIP bound to " + e.boundTo()
 		} else {
 			m.Note = "EIP, not bound"

@@ -316,18 +316,32 @@ func (rt *Runtime) findLookup(ctx context.Context, cfg *config.Config, db *inven
 		res.Matches = append(res.Matches, m)
 	}
 	// A static address reserved for a resource that holds the address
-	// annotates that resource; it is a match of its own only when nothing
-	// else of the account holds the address.
+	// annotates that resource (the ones it names as its users, when they
+	// are among the matches; else every match of the account); it is a
+	// match of its own only when nothing else of the account holds the
+	// address.
 	for _, r := range reserved {
-		attached := false
+		var account, users []int
 		for i := range res.Matches {
 			m := &res.Matches[i]
-			if m.Platform == r.Platform && m.Profile == r.Profile && m.Type != platform.ResEIP {
-				m.Addresses = append(m.Addresses, r.Name)
-				attached = true
+			if m.Platform != r.Platform || m.Profile != r.Profile || m.Type == platform.ResEIP {
+				continue
+			}
+			account = append(account, i)
+			for _, h := range r.Holders {
+				if h != "" && (h == m.ID || h == m.Name) {
+					users = append(users, i)
+					break
+				}
 			}
 		}
-		if !attached {
+		if len(users) > 0 {
+			account = users
+		}
+		for _, i := range account {
+			res.Matches[i].Addresses = append(res.Matches[i].Addresses, r.Name)
+		}
+		if len(account) == 0 {
 			res.Matches = append(res.Matches, *r)
 		}
 	}

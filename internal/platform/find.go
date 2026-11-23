@@ -245,6 +245,11 @@ type FindMatch struct {
 	// prefix holding it, or the DNS name. A describer uses it to tell which
 	// network interface of a resource holds the address.
 	Matched string `json:"-" yaml:"-"`
+	// Holders are the ids or names of the resources a reserved address
+	// (IPReserved) is in use by, as the describer knows them; its
+	// annotation goes to the matches among them, else to every match of
+	// the account holding the address.
+	Holders []string `json:"-" yaml:"-"`
 }
 
 // Holds reports whether an address or prefix value (an IPRef value) holds
