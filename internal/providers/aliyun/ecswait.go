@@ -2,6 +2,7 @@ package aliyun
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -160,4 +161,34 @@ func waitRebooted(ctx context.Context, s *ecsScope, id, label string, timeout ti
 func retryInitializing(ctx context.Context, fn func(ctx context.Context) error) error {
 	return platform.Retry(ctx, platform.RetryPolicy{Codes: []string{errInstanceInitializing}, Initial: 3 * time.Second,
 		Max: 5 * time.Second, Multiplier: 1.5, Timeout: initializingRetry, Clock: netClock()}, fn)
+}
+
+// newInstanceListing bounds how long an instance RunInstances answered may
+// be missing from DescribeInstances before it counts as gone. A new
+// instance is listed within about 2 seconds.
+const newInstanceListing = 30 * time.Second
+
+// lookupNewInstance reads the instance RunInstances answered, waiting while
+// it is not listed yet. It is platform.ErrNotFound when it never shows up:
+// the request matched an earlier one of the same content (the ClientToken)
+// whose instance was deleted since.
+func lookupNewInstance(ctx context.Context, s *ecsScope, id string) (*Instance, error) {
+	var in *Instance
+	err := platform.WaitUntil(ctx, platform.WaitOptions{Resource: "instance/" + id, Want: "listed", Timeout: newInstanceListing,
+		Interval: instanceWaitInterval, Clock: netClock()}, func(ctx context.Context) (platform.WaitState, string, error) {
+		got, err := s.c.describeInstance(ctx, s.region, id)
+		if errors.Is(err, platform.ErrNotFound) {
+			return platform.KeepWaiting, statusNotFound, nil
+		}
+		if err != nil {
+			return platform.KeepWaiting, "", err
+		}
+		in = got
+		return platform.WaitDone, got.Status, nil
+	})
+	var te *platform.WaitTimeoutError
+	if errors.As(err, &te) {
+		return nil, fmt.Errorf("%w: instance %s that RunInstances answered is not listed", platform.ErrNotFound, id)
+	}
+	return in, err
 }

@@ -298,3 +298,30 @@ func TestInstanceInteractiveConfirmations(t *testing.T) {
 		}
 	}
 }
+
+func TestInstanceCreateAgainAfterDelete(t *testing.T) {
+	h, f, _ := computeHarness(t, app.Flags{})
+	siteNet(f)
+	f.addKeyPair("ops", "aa", "2026-11-17T16:10Z")
+	args := []string{"ecs", "instance", "create", "site-a", "--type", "ecs.u1-c1m1.large", "--security-group", "sg-common", "--key-pair", "ops"}
+	if err := h.run(args...); err != nil {
+		t.Fatalf("%v\n%s", err, h.stderr.String())
+	}
+	first := f.instances[0]["InstanceId"].(string)
+	// Deleted since: the same request (the same client token) answers the
+	// deleted instance again, so a new token is used.
+	f.instances = nil
+	if err := h.run(args...); err != nil {
+		t.Fatalf("%v\n%s", err, h.stderr.String())
+	}
+	runs := h.api.callsFor("RunInstances")
+	if len(runs) != 3 || runs[1].Get("ClientToken") != runs[0].Get("ClientToken") || runs[2].Get("ClientToken") == runs[1].Get("ClientToken") {
+		t.Fatalf("RunInstances calls = %d", len(runs))
+	}
+	if len(f.instances) != 1 || f.instances[0]["InstanceId"] == first {
+		t.Errorf("instances = %v", f.instances)
+	}
+	if c := changeOf(t, reportOf(t, h), "instance/site-a"); c.ID == first || c.ID == "" {
+		t.Errorf("change = %+v", c)
+	}
+}

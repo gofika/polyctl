@@ -303,24 +303,40 @@ func runStep(rt *app.Runtime, s *ecsScope, name, host string, f *instanceFlags, 
 			spec := runSpec{Name: name, HostName: host, Type: f.typ, Image: image, SecurityGroup: sg(), VSwitch: vsw(), KeyPair: kp(),
 				DiskGiB: f.disk, DiskCategory: f.diskCategory}
 			spec.ClientToken = spec.token(s.profile, s.region)
-			var iid string
-			run := func(ctx context.Context) error {
+			call := func(ctx context.Context) (string, error) {
+				var iid string
+				run := func(ctx context.Context) error {
+					var err error
+					iid, err = s.c.runInstance(ctx, s.region, spec)
+					return err
+				}
 				var err error
-				iid, err = s.c.runInstance(ctx, s.region, spec)
-				return err
+				if fresh != nil && fresh() {
+					err = platform.Retry(ctx, platform.RetryPolicy{Codes: []string{errSGIDNotFound, errVSwitchNotExist}, Initial: 2 * time.Second,
+						Max: 4 * time.Second, MaxAttempts: 5, Clock: netClock()}, run)
+				} else {
+					err = run(ctx)
+				}
+				return iid, err
 			}
-			var err error
-			if fresh != nil && fresh() {
-				err = platform.Retry(ctx, platform.RetryPolicy{Codes: []string{errSGIDNotFound, errVSwitchNotExist}, Initial: 2 * time.Second,
-					Max: 4 * time.Second, MaxAttempts: 5, Clock: netClock()}, run)
-			} else {
-				err = run(ctx)
-			}
+			iid, err := call(ctx)
 			if err != nil {
 				return platform.Change{}, err
 			}
+			in, lerr := lookupNewInstance(ctx, s, iid)
+			if errors.Is(lerr, platform.ErrNotFound) {
+				// The token is derived from the content of the request: an
+				// instance of the same name and settings created and deleted
+				// before is answered again. Ask once more under a new token.
+				rt.Infof("note: RunInstances answered %s, an instance of an earlier identical request that no longer exists; asking again with a new client token", iid)
+				spec.ClientToken = platform.ClientToken(spec.ClientToken, netClock().Now().UnixNano())
+				if iid, err = call(ctx); err != nil {
+					return platform.Change{}, err
+				}
+				in, lerr = lookupNewInstance(ctx, s, iid)
+			}
 			*id = iid
-			if in, err := s.c.describeInstance(ctx, s.region, iid); err == nil {
+			if lerr == nil && in != nil {
 				storeInstance(ctx, rt, s.profile, *in)
 			} else {
 				storeInstance(ctx, rt, s.profile, Instance{ID: iid, Name: name, Type: f.typ, Region: s.region, Status: instPending})
