@@ -360,10 +360,13 @@ CAS deletes a certificate that a listener still uses without a word, and
 the listener keeps a dangling id. So polyctl first reads the HTTPS and QUIC
 listeners of the account's ALB load balancers, in every region of the
 account or in the --region ones, and refuses to delete a certificate one of
-them holds: exit code 1, naming every listener. With --expired such a
+them holds (as its default, an additional or a CA certificate): exit code 1,
+naming every listener. With --expired such a
 certificate is skipped (and reported), and the others are deleted. When the
 listeners of a region cannot be read, nothing is deleted: exit code 3 for a
-permission denial, 1 otherwise, naming the region. Only ALB listeners are
+permission denial, 1 otherwise, naming the region (a region of the account
+without an ALB endpoint has no listeners; a --region one must be readable).
+Only ALB listeners are
 checked (classic load balancers, API gateways, WAF and other products are
 not), which a note on stderr says.
 
@@ -443,12 +446,12 @@ func (d *casDeleter) references(ctx context.Context) (*casReferences, error) {
 	if d.force {
 		return nil, nil
 	}
-	regions, err := d.c.albRegions(ctx, d.regions)
+	regions, named, err := d.c.albRegions(ctx, d.regions)
 	if err != nil {
 		return nil, err
 	}
 	d.rt.Verbosef("checking the ALB listeners of %s", strings.Join(regions, ", "))
-	refs, err := d.c.casCertificateReferences(ctx, regions)
+	refs, err := d.c.casCertificateReferences(ctx, regions, named)
 	if err != nil {
 		return nil, err
 	}

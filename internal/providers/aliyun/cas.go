@@ -384,29 +384,31 @@ func (e *casCheckError) Unwrap() error {
 }
 
 // albRegions are the regions whose ALB listeners a reference check reads:
-// the given ones, else every region of the account (ecs DescribeRegions,
-// the set find uses).
-func (c *client) albRegions(ctx context.Context, only []string) ([]string, error) {
-	var out []string
+// the given ones (named is then true), else every region of the account
+// (ecs DescribeRegions, the set find uses).
+func (c *client) albRegions(ctx context.Context, only []string) (regions []string, named bool, err error) {
 	for _, r := range only {
-		if r = strings.TrimSpace(r); r != "" && !containsString(out, r) {
-			out = append(out, r)
+		if r = strings.TrimSpace(r); r != "" && !containsString(regions, r) {
+			regions = append(regions, r)
 		}
 	}
-	if len(out) > 0 {
-		sort.Strings(out)
-		return out, nil
+	if len(regions) > 0 {
+		sort.Strings(regions)
+		return regions, true, nil
 	}
-	return c.enabledRegions(ctx)
+	regions, err = c.enabledRegions(ctx)
+	return regions, false, err
 }
 
 // casCertificateReferences reads which CAS certificates the ALB listeners
 // of the regions hold: every load balancer, every listener, and for each
 // HTTPS or QUIC listener its server and CA certificates (ListListeners
-// does not carry them). Only read APIs are used. A region whose ALB
-// endpoint does not exist has no load balancers; any other failure of a
-// region fails the check (*casCheckError).
-func (c *client) casCertificateReferences(ctx context.Context, regions []string) (*casReferences, error) {
+// does not carry them). Only read APIs are used. A region of the account
+// whose ALB endpoint does not exist has no load balancers; a region the
+// user named (named) must be readable, so that a mistyped one is never
+// taken as a region without listeners. Any other failure of a region fails
+// the check (*casCheckError).
+func (c *client) casCertificateReferences(ctx context.Context, regions []string, named bool) (*casReferences, error) {
 	type result struct {
 		refs []casReference
 		err  error
@@ -420,7 +422,7 @@ func (c *client) casCertificateReferences(ctx context.Context, regions []string)
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			refs, err := c.regionCertificateReferences(ctx, region)
+			refs, err := c.regionCertificateReferences(ctx, region, named)
 			results[i] = result{refs: refs, err: err}
 		}()
 	}
@@ -445,13 +447,13 @@ func (c *client) casCertificateReferences(ctx context.Context, regions []string)
 	return out, nil
 }
 
-func (c *client) regionCertificateReferences(ctx context.Context, region string) ([]casReference, error) {
+func (c *client) regionCertificateReferences(ctx context.Context, region string, named bool) ([]casReference, error) {
 	a, err := c.albClient(ctx, region)
 	if err != nil {
 		return nil, err
 	}
 	lbs, err := a.listLoadBalancers(ctx)
-	if errors.Is(err, errNoALBEndpoint) {
+	if errors.Is(err, errNoALBEndpoint) && !named {
 		return nil, nil
 	}
 	if err != nil {
@@ -484,11 +486,11 @@ func (c *client) regionCertificateReferences(ctx context.Context, region string)
 // region of the account when none is given) that hold the CAS certificate
 // certID. A check that cannot finish is an error, never "unused".
 func (c *client) casCertificateInUse(ctx context.Context, certID string, regions []string) ([]casReference, error) {
-	regions, err := c.albRegions(ctx, regions)
+	regions, named, err := c.albRegions(ctx, regions)
 	if err != nil {
 		return nil, err
 	}
-	refs, err := c.casCertificateReferences(ctx, regions)
+	refs, err := c.casCertificateReferences(ctx, regions, named)
 	if err != nil {
 		return nil, err
 	}

@@ -117,9 +117,12 @@ func (a *albClient) listListeners(ctx context.Context, lbID string) ([]albListen
 	return out, nil
 }
 
-// listenerCertificates reads the certificate ids of a listener: its server
-// certificates and its CA certificates, as the API writes them (a CAS id,
-// with or without a region suffix).
+// listenerCertificates reads the certificate ids of a listener, as the API
+// writes them (a CAS id, with or without a region suffix): its default
+// server certificate and its CA certificates (GetListenerAttribute), and
+// every server certificate associated with it, the additional ones
+// included (ListListenerCertificates; GetListenerAttribute carries the
+// default certificate only).
 func (a *albClient) listenerCertificates(ctx context.Context, listenerID string) ([]string, error) {
 	req := alb.CreateGetListenerAttributeRequest()
 	a.route(req)
@@ -133,6 +136,28 @@ func (a *albClient) listenerCertificates(ctx context.Context, listenerID string)
 		for _, c := range group {
 			ids = appendNew(ids, strings.TrimSpace(c.CertificateId))
 		}
+	}
+	token := ""
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		lr := alb.CreateListListenerCertificatesRequest()
+		a.route(lr)
+		lr.ListenerId = listenerID
+		lr.MaxResults = requests.NewInteger(albListenerPageSize)
+		lr.NextToken = token
+		resp, err := a.cl.ListListenerCertificates(lr)
+		if err != nil {
+			return nil, wrapErr("alb ListListenerCertificates "+listenerID, err)
+		}
+		for _, c := range resp.Certificates {
+			ids = appendNew(ids, strings.TrimSpace(c.CertificateId))
+		}
+		if resp.NextToken == "" || resp.NextToken == token || len(resp.Certificates) == 0 {
+			break
+		}
+		token = resp.NextToken
 	}
 	return ids, nil
 }

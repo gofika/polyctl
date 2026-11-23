@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -325,5 +327,43 @@ func TestCASReferencesReadEveryHTTPSListener(t *testing.T) {
 	_, err = c.casCertificateInUse(ctx, "1234567", []string{"cn-shanghai"})
 	if !errors.As(err, &ce) || errors.Is(err, platform.ErrForbidden) {
 		t.Errorf("failed region = %v", err)
+	}
+}
+
+// noALBTransport answers the ListLoadBalancers requests of one region with
+// a DNS not-found error, as for a region without an ALB endpoint.
+type noALBTransport struct {
+	region string
+	base   http.RoundTripper
+}
+
+func (t noALBTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	q := r.URL.Query()
+	if q.Get("Action") == "ListLoadBalancers" && q.Get("RegionId") == t.region {
+		return nil, &net.DNSError{Err: "no such host", Name: "alb." + t.region + ".aliyuncs.com", IsNotFound: true}
+	}
+	return t.base.RoundTrip(r)
+}
+
+func TestCASReferenceCheckRegionWithoutALB(t *testing.T) {
+	api := newFakeAPI(t)
+	f := &albFake{lbs: map[string][]map[string]any{}, listeners: map[string][]map[string]any{}, certs: map[string][]string{}}
+	f.install(api)
+	api.on("DescribeRegions", func(url.Values) (int, any) {
+		return 200, map[string]any{"Regions": map[string]any{"Region": []map[string]any{{"RegionId": "cn-shanghai"}, {"RegionId": "xx-noalb-1"}}}}
+	})
+	c := api.client()
+	c.transport = noALBTransport{region: "xx-noalb-1", base: http.DefaultTransport}
+	ctx := context.Background()
+	// A region of the account without an ALB endpoint holds no listeners.
+	if refs, err := c.casCertificateInUse(ctx, "1", nil); err != nil || len(refs) != 0 {
+		t.Fatalf("account regions = %v, %v", refs, err)
+	}
+	// A region the user named must be readable: a mistyped one is never
+	// taken as a region without listeners.
+	_, err := c.casCertificateInUse(ctx, "1", []string{"xx-noalb-1"})
+	var ce *casCheckError
+	if !errors.As(err, &ce) || !strings.Contains(err.Error(), "xx-noalb-1") {
+		t.Errorf("named region without ALB = %v", err)
 	}
 }

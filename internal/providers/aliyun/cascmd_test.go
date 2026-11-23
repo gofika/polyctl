@@ -23,7 +23,7 @@ func casHarness(t *testing.T, flags app.Flags) (*harness, *casFake, *albFake) {
 	t.Helper()
 	h := newHarness(t, flags)
 	f := newCASFake(t, h.api)
-	a := &albFake{lbs: map[string][]map[string]any{}, listeners: map[string][]map[string]any{}, certs: map[string][]string{}}
+	a := &albFake{lbs: map[string][]map[string]any{}, listeners: map[string][]map[string]any{}, certs: map[string][]string{}, extra: map[string][]string{}}
 	a.install(h.api)
 	return h, f, a
 }
@@ -340,6 +340,17 @@ func TestCASDeleteChecksListeners(t *testing.T) {
 	// A missing id is exit code 4.
 	if err := h.run("cas", "certificate", "delete", "999"); !errors.Is(err, platform.ErrNotFound) {
 		t.Errorf("missing = %v", err)
+	}
+}
+
+func TestCASDeleteRefusesAnAdditionalCertificate(t *testing.T) {
+	h, f, a := casHarness(t, app.Flags{Yes: true})
+	f.add(5555555, "extra", "2027-01-01")
+	useListener(a, "alb-1", "lb-example-com", "lsn-1", "1234567")
+	a.extra["lsn-1"] = []string{"5555555"}
+	err := h.run("cas", "certificate", "delete", "5555555")
+	if err == nil || !strings.Contains(h.stderr.String(), "cannot delete certificate 5555555: used by listener lsn-1") || len(f.deletes) != 0 {
+		t.Errorf("delete of an additional certificate = %v, deletes %v:\n%s", err, f.deletes, h.stderr.String())
 	}
 }
 

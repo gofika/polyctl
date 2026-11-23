@@ -19,6 +19,7 @@ type albFake struct {
 	listeners map[string][]map[string]any // load balancer id -> listeners
 	certs     map[string][]string         // listener id -> certificate ids
 	caCerts   map[string][]string         // listener id -> CA certificate ids
+	extra     map[string][]string         // listener id -> additional server certificate ids
 	fail      map[string]string           // region -> error code of ListLoadBalancers
 }
 
@@ -52,6 +53,20 @@ func (f *albFake) install(api *fakeAPI) {
 		}
 		return 200, map[string]any{"ListenerId": id, "Certificates": certs, "CaCertificates": ca}
 	})
+	// ListListenerCertificates lists every server certificate of the
+	// listener: the default one (the first of certs) and the additional ones.
+	api.on("ListListenerCertificates", func(q url.Values) (int, any) {
+		id := q.Get("ListenerId")
+		var list []map[string]any
+		if c := f.certs[id]; len(c) > 0 {
+			list = append(list, map[string]any{"CertificateId": c[0], "IsDefault": true, "CertificateType": "Server", "Status": "Associated"})
+		}
+		for _, c := range f.extra[id] {
+			list = append(list, map[string]any{"CertificateId": c, "IsDefault": false, "CertificateType": "Server", "Status": "Associated"})
+		}
+		s, e, next := tokenPage(q, len(list), 2)
+		return 200, map[string]any{"NextToken": next, "Certificates": list[s:e]}
+	})
 }
 
 // tokenPage pages a list with NextToken "p<start>".
@@ -82,6 +97,7 @@ func TestALBListersFollowPages(t *testing.T) {
 		}},
 		certs:   map[string][]string{"lsn-2": {"1234567-ap-southeast-1", "7654321"}},
 		caCerts: map[string][]string{"lsn-2": {"555"}},
+		extra:   map[string][]string{"lsn-2": {"888-ap-southeast-1", "999-ap-southeast-1"}},
 	}
 	f.install(api)
 	ctx := context.Background()
@@ -101,8 +117,11 @@ func TestALBListersFollowPages(t *testing.T) {
 		t.Errorf("ListListeners calls = %v", q)
 	}
 	certs, err := a.listenerCertificates(ctx, "lsn-2")
-	if err != nil || !slices.Equal(certs, []string{"1234567-ap-southeast-1", "7654321", "555"}) {
+	if err != nil || !slices.Equal(certs, []string{"1234567-ap-southeast-1", "7654321", "555", "888-ap-southeast-1", "999-ap-southeast-1"}) {
 		t.Errorf("certificates = %v, %v", certs, err)
+	}
+	if q := api.callsFor("ListListenerCertificates"); len(q) != 2 || q[0].Get("ListenerId") != "lsn-2" || q[0].Get("MaxResults") != "100" {
+		t.Errorf("ListListenerCertificates calls = %v: every page of the additional certificates is read", q)
 	}
 	if !carriesCertificates("https") || !carriesCertificates("QUIC") || carriesCertificates("HTTP") {
 		t.Error("carriesCertificates")
