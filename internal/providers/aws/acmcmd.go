@@ -437,8 +437,21 @@ func certInventoryHits(ctx context.Context, rt *app.Runtime, accounts []config.A
 		return out, nil
 	}
 	hits, err := lookup()
-	if err != nil || len(hits) > 0 || rt.Flags.Offline {
+	if err != nil || len(hits) > 0 {
 		return hits, err
+	}
+	if rt.Flags.Offline {
+		// No data at all is a set that was never synced, as for list.
+		for _, a := range accounts {
+			st, err := db.GetState(ctx, inventory.Set{Platform: a.Platform, Profile: a.Profile, Type: platform.ResCertificate})
+			if err != nil {
+				return nil, err
+			}
+			if st != nil {
+				return nil, nil
+			}
+		}
+		return nil, fmt.Errorf("%w: certificate for the selected AWS accounts is not in the local inventory", inventory.ErrNeverSynced)
 	}
 	var stale []config.AccountRef
 	for _, a := range accounts {
@@ -879,7 +892,13 @@ them while the certificate is in use (ACM renews it through them).`,
 				rt.Infof("note: %s is an imported certificate: it has no DNS validation records", found.ID)
 			}
 			if pending && !cached {
-				rt.Infof("note: certificate %s waits for DNS validation; unvalidated within 72 hours it becomes VALIDATION_TIMED_OUT and has to be requested again", found.ID)
+				left := ""
+				if found.CreatedAt != nil {
+					if h := int(found.CreatedAt.Add(acmValidationWindow).Sub(acmClock.Now()).Hours()); h >= 0 {
+						left = fmt.Sprintf(" (requested %s: about %d hours left)", timeStr(found.CreatedAt), h)
+					}
+				}
+				rt.Infof("note: certificate %s waits for DNS validation; unvalidated within 72 hours it becomes VALIDATION_TIMED_OUT and has to be requested again%s", found.ID, left)
 				noteDNSEnsure(rt, strings.TrimPrefix(strings.ToLower(found.Domain), "*."), found)
 			}
 			d := acmDetailOf(profile, found, cached, show)

@@ -46,6 +46,10 @@ const (
 	// acmImportPoll and acmImportTimeout bound the read-back of an import.
 	acmImportPoll    = 3 * time.Second
 	acmImportTimeout = 30 * time.Second
+	// acmValidationWindow is how long ACM waits for the DNS validation of
+	// a requested certificate before it becomes VALIDATION_TIMED_OUT (the
+	// AWS documentation; not observed).
+	acmValidationWindow = 72 * time.Hour
 	// acmPageSize is the largest page ListCertificates accepts (1-1000).
 	acmPageSize = 1000
 )

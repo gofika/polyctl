@@ -148,6 +148,12 @@ func TestACMListOfflineNeverSynced(t *testing.T) {
 	if err := h.run("acm", "certificate", "list"); !errors.Is(err, inventory.ErrNeverSynced) {
 		t.Errorf("offline never synced = %v", err)
 	}
+	if err := h.run("acm", "certificate", "get", "example.com"); !errors.Is(err, inventory.ErrNeverSynced) {
+		t.Errorf("offline get never synced = %v", err)
+	}
+	if len(h.acmCalls()) != 0 {
+		t.Errorf("offline calls = %v", h.acmCalls())
+	}
 }
 
 func TestACMGet(t *testing.T) {
@@ -190,14 +196,14 @@ func TestACMGet(t *testing.T) {
 	if err := h.rt.Init(); err != nil {
 		t.Fatal(err)
 	}
-	pending := h.addCert(&fakeCert{region: "ap-east-1", domain: "new.example.org", status: acmPendingValidation})
+	pending := h.addCert(&fakeCert{region: "ap-east-1", domain: "new.example.org", status: acmPendingValidation, created: time.Date(2025, 12, 31, 0, 0, 0, 0, time.UTC)})
 	if err := h.run("acm", "certificate", "get", pending.arn); err != nil {
 		t.Fatal(err)
 	}
 	if s := h.stdout.String(); !strings.Contains(s, "PENDING_VALIDATION") || !strings.Contains(s, "# validation records") || !strings.Contains(s, "acm-validations.aws.") {
 		t.Errorf("table = %s", s)
 	}
-	if s := h.stderr.String(); !strings.Contains(s, "72 hours") || !strings.Contains(s, "polyctl dns ensure new.example.org --record _") || !strings.Contains(s, ":CNAME:") {
+	if s := h.stderr.String(); !strings.Contains(s, "72 hours") || !strings.Contains(s, "about 48 hours left") || !strings.Contains(s, "polyctl dns ensure new.example.org --record _") || !strings.Contains(s, ":CNAME:") {
 		t.Errorf("stderr = %s", s)
 	}
 }
