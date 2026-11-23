@@ -124,6 +124,7 @@ polyctl domain index
 polyctl domain which example.com
 polyctl dns list example.com
 polyctl dns set example.com --type A --name www --value 203.0.113.10
+polyctl dns ensure example.com -r www:A:203.0.113.10:300 -r @:MX:"10 mail.example.com"
 polyctl domain ns set example.com ns1.cloudflare.com ns2.cloudflare.com
 
 #    When several accounts know the domain, say which one you mean
@@ -445,7 +446,7 @@ Two login flows need a person in a browser but nothing typed into polyctl, so th
 
 `auth login cloudflare --set method=oauth` is not one of them: it runs in the interactive flow only, and is a usage error otherwise.
 
-Every other command (`auth list`, `auth status`, `auth rename`, `sync`, `inventory`, `domain`, `dns list` / `set` / `add`, single-record `dns delete`, and the remaining platform-specific commands) asks nothing in either flow.
+Every other command (`auth list`, `auth status`, `auth rename`, `sync`, `inventory`, `domain`, `dns list` / `set` / `add` / `ensure`, single-record `dns delete`, and the remaining platform-specific commands) asks nothing in either flow.
 
 ```sh
 # scripts and CI: nothing is asked
@@ -705,6 +706,7 @@ These commands take a domain name and route it to the account that owns it: a pl
 polyctl dns list   <domain> [--type A] [--name www]
 polyctl dns set    <domain> --type <T> --value <V> [--name www|@] [--ttl 300] [--priority 10] [--proxied[=false]]
 polyctl dns add    <domain> --type <T> --value <V> [--name www|@] [--ttl 300] [--priority 10] [--proxied[=false]]
+polyctl dns ensure <domain> (-r <name:type:value[:ttl[:proxied]]>... | -f records.yaml) [--prune-duplicates]
 polyctl dns delete <domain> (--type <T> [--name www|@] [--value <V>] | --id <record-id>) [-y]
 ```
 
@@ -713,6 +715,22 @@ Every `dns` command also takes `[--profile <name>] [--platform <platform>]`.
 - `<domain>` may be the zone apex or any name under it (`www.example.com` resolves to the `example.com` zone). `--name` is relative to the zone (`www`, `@`); when omitted, the record name is `<domain>` itself.
 - `dns set` creates or updates, keyed on name + type: one existing record is updated (TTL, priority and proxy status are kept unless given), none means create. Several existing records are an error that changes nothing and points to `dns add` and `dns delete`.
 - `dns add` always creates one more record and leaves the existing ones of that name and type alone; this is how round-robin `A` records or several `TXT` / `MX` records are built up.
+- `dns ensure` converges a set of records of one zone in one run, and can be repeated safely. Each record (`--record` / `-r`, repeatable, and/or the records of `--file` / `-f`) is matched on name + type: one that is already as desired is reported `unchanged` and not written, one that differs is updated in place (keeping its id), a missing one is created; records that are not named are never touched. Names are relative to the zone (`www`, `@`, `a.b`) or names in it (`www.example.com`, `www.example.com.`); a name that ends in a top-level domain but is not in the zone (`www.other.com`) is a usage error rather than stored as `www.other.com.example.com`. The TTL (seconds or `auto`) and proxied (`true` / `false`) fields are optional: left out, an existing record keeps what it has and a new one gets the platform default (Cloudflare: automatic TTL, not proxied). Values are compared the way the platforms store them (host names without case or trailing dot, IPv6 addresses compressed, TXT text without quotes and joined), so a record written differently but meaning the same is unchanged. An MX record's priority goes in front of its value (`@:MX:10 mail.example.com`) or in the file's `priority` field, and a new MX record needs one; an SRV value is `<priority> <weight> <port> <target>`. Inline, a value that ends in `:<number>` and an IPv6 address that could also be read with a TTL are refused as ambiguous: put such records in the file. The file is YAML:
+
+  ```yaml
+  records:
+    - name: www
+      type: A
+      value: 203.0.113.10
+      ttl: 300          # optional; a number or auto
+      proxied: true     # optional, Cloudflare only
+    - name: "@"
+      type: MX
+      value: mail.example.com
+      priority: 10      # MX only
+  ```
+
+  Unknown fields, a record given twice, two CNAMEs of one name, a CNAME next to an A / AAAA record of the input, `proxied` on a type other than A, AAAA and CNAME, and `SOA` are usage errors (exit code 2); a type the platform cannot write is exit code 7. All of these are found before the zone is read. A CNAME whose name already has A / AAAA records (or the reverse) is an error before anything is written. Several records with the same name and type form a set: each missing value is created and nothing is updated (several MX or TXT values). One record against several existing ones of that name and type is fine when one of them is as desired (the others are left alone and the detail says so); when none is, the command stops before writing anything (exit code 5), unless `--prune-duplicates` is given, which keeps one (updating the oldest when none matches) and deletes the others, after all creates and updates and without asking. `proxied=true` on a platform other than Cloudflare reports the record as `skipped` and leaves it alone; `proxied=false` there is ignored, and on a proxied Cloudflare record the TTL is not compared (it is always automatic). The zone is always read live, so `--offline` is refused (exit code 6). The first failing write stops the run: the change report shows what was done and the failed record, and running the command again picks up from there. The report names records `dns-record/<name>/<TYPE>` with the name relative to the zone; an update lists its changed fields (`value a -> b; ttl 300 -> 600`) and, in JSON, `attrs.changed` (`value`, `ttl`, `proxied`, `priority`) with the old and new values.
 - A record's data is called its **value** everywhere: the `--value` flag, the `VALUE` table column and the `value` field of `-o json` / `-o yaml`, so what a command prints can be passed back to another.
 - In tables, a TTL that is a platform marker rather than a number of seconds is shown by name: `auto` (Cloudflare automatic TTL, `1` in the API), `alias` (Route 53 alias records, which use the target's TTL) and `default` (a GoDaddy record just written without `--ttl`). `-o json` and `-o yaml` keep the raw value.
 - `dns delete` with a selector that matches several records shows them and asks for confirmation (skip with `-y`). Answering no, or leaving the question, deletes nothing: the command prints `nothing to do: no record was deleted` and exits with code 0. In the non-interactive flow (no terminal, `--non-interactive`, `POLYCTL_NON_INTERACTIVE=1`) the question is never asked and stdin is not read: the records are shown, nothing is deleted, and the command fails with the usage error `confirmation required: pass --yes to proceed (would delete N records in zone <domain>)` (exit code 2) unless `-y` is given. A selector that matches no record is an error (exit code 4). `--value` narrows the match; `--id` deletes exactly one record by platform id (here the id is an optional second way to address a record, so it is a flag).
@@ -976,7 +994,7 @@ A report with nothing in it still prints its header (`"changes": []`). When a st
 | `2` | Usage error: bad flag combination, unknown flag or command (also below a command group: `polyctl dns nosuch`), unknown platform or resource type, missing required flag or argument, an unknown value of a login option (`--set env=`, `--set method=`), an invalid or already used name for `auth rename`, invalid config, an invalid `POLYCTL_NON_INTERACTIVE` value, `auth login` without `--profile` for a platform that only other profiles have. Also everything the non-interactive flow cannot ask for: `auth manage`, a missing argument (`auth login` without a platform, `auth use` without a profile, `auth logout` without `--profile`), a confirmation without `--yes` (`dns delete` of several records, `aliyun ecs instance stop`), and a login value or choice that was not passed (the message names the `--set` key or environment variable). |
 | `3` | Authentication: missing credentials, no account on the platform in the selected profile, rejected token, expired SSO session, `auth status` with a failing account. Also a request valid credentials were not allowed to make: a RAM / IAM policy denial (the platform's error code is kept in the message), or an account the platform refuses to serve until something is done in its console (Alibaba Cloud basic information not completed, real-name verification missing). Such a denial does not ask for a new login, and `sync` goes on with the account's other resource types. |
 | `4` | Not found: unknown domain / zone / record / profile, a `--profile` / `--platform` selection that names no account able to hold the requested domain (`dns list`, `domain info`, ...), `auth logout <platform>` for a platform the profile has no account on, or a set that was never synced in `--offline` mode. |
-| `5` | Ambiguous: the domain has more than one candidate account (pass `--profile` and/or `--platform`, as the message says), or the platform more than one candidate profile (pass `--profile`). |
+| `5` | Ambiguous: the domain has more than one candidate account (pass `--profile` and/or `--platform`, as the message says), or the platform more than one candidate profile (pass `--profile`). Also a `dns ensure` record whose name and type has several records, none of them as desired (pass `--prune-duplicates`). |
 | `6` | Offline: the command needs the network but `--offline` was given. |
 | `7` | Not supported: the platform (or the profile's client) cannot perform the operation. |
 
@@ -996,7 +1014,8 @@ internal/app/                Runtime shared by all commands: config, credential 
 internal/platform/           Provider-neutral contracts: Provider, Client, DNSService, RegistrarService, Zone/Record/Domain,
                              resource types, sentinel errors, provider registry, DNS name helpers; the change plan of
                              ensure commands (Plan / Step / Change / Report), waits and retries, the shared parsers of
-                             ingress rules, listeners and DNS record specs, SSH public keys and key pair resolution
+                             ingress rules, listeners and DNS record specs, the planner of dns ensure, SSH public keys
+                             and key pair resolution
 internal/providers/
   cloudflare/  namecom/  godaddy/  aws/  gcp/  aliyun/
                              One package per platform: provider.go (login, client, sync) and commands.go (native commands)

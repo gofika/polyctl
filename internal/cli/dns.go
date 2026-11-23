@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -23,7 +25,7 @@ account (profile and platform) is looked up in the local domain index; pass
 the platform, --offline to never touch the network.`,
 	}
 	addRouteFlags(rt, cmd)
-	cmd.AddCommand(newDNSListCmd(rt), newDNSSetCmd(rt), newDNSAddCmd(rt), newDNSDeleteCmd(rt))
+	cmd.AddCommand(newDNSListCmd(rt), newDNSSetCmd(rt), newDNSAddCmd(rt), newDNSEnsureCmd(rt), newDNSDeleteCmd(rt))
 	return cmd
 }
 
@@ -346,4 +348,158 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&value, "value", "", "only delete records with this value")
 	cmd.Flags().StringVar(&id, "id", "", "delete the record with this platform id")
 	return cmd
+}
+
+// newDNSEnsureCmd is `dns ensure`: converge a set of records of one zone.
+func newDNSEnsureCmd(rt *app.Runtime) *cobra.Command {
+	var records []string
+	var file string
+	var prune bool
+	cmd := &cobra.Command{
+		Use:   "ensure <domain>",
+		Short: "Converge a set of DNS records: create the missing, update the differing",
+		Long: `Bring a set of records of the zone serving <domain> to the desired state in one
+run. Each record is matched on name + type: one that is already as desired is
+reported unchanged and not written, one that differs is updated in place
+(keeping its id), and a missing one is created. Records that are not named are
+never touched, so the command can be repeated safely.
+
+Records come from --record (repeatable) and/or --file:
+
+  --record name:type:value[:ttl[:proxied]]
+
+name is relative to the zone (www, @ for the apex, a.b) or a name in the zone
+(www.example.com, www.example.com.). The TTL (seconds, or auto) and proxied
+(true or false, Cloudflare only) are optional; left out, an existing record
+keeps what it has and a new one gets the platform default. A value that itself
+ends in ":<number>", or an IPv6 address that could also be read with a TTL,
+cannot be written inline: use a records file. An MX record's priority goes in
+front of its value ("10 mail.example.com"), an SRV value is
+"<priority> <weight> <port> <target>".
+
+  records:
+    - name: www
+      type: A
+      value: 203.0.113.10
+      ttl: 300          # optional
+      proxied: true     # optional
+    - name: "@"
+      type: MX
+      value: mail.example.com
+      priority: 10      # MX only
+
+Several records with the same name and type form a set: each value that is
+missing is created and nothing is updated (several MX or TXT values). One
+record against several existing ones of that name and type is fine when one of
+them is as desired; otherwise the command stops before writing anything (exit
+code 5), unless --prune-duplicates is given: it keeps one record (updating the
+oldest when none is as desired) and deletes the others, after the creates and
+updates. proxied=true on a platform other than Cloudflare reports the record as
+skipped. The zone is always read live: --offline is refused (exit code 6).`,
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeDomains(rt),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			if len(records) == 0 && file == "" {
+				return usageErr("at least one --record or --file is required")
+			}
+			var specs []platform.RecordSpec
+			for _, r := range records {
+				s, err := platform.ParseRecordSpec(r)
+				if err != nil {
+					return err
+				}
+				specs = append(specs, s)
+			}
+			if file != "" {
+				f, err := os.Open(file)
+				if err != nil {
+					return usageErr("records file: %v", err)
+				}
+				fs, err := platform.ParseRecordFile(f)
+				_ = f.Close()
+				if err != nil {
+					return err
+				}
+				specs = append(specs, fs...)
+			}
+			if rt.Flags.Offline {
+				return fmt.Errorf("%w: dns ensure reads the zone live", app.ErrOffline)
+			}
+			t, err := rt.ResolveDomain(ctx, args[0], platform.ResZone)
+			if err != nil {
+				return err
+			}
+			desired, err := platform.NormalizeRecordSpecs(t.Domain, t.Platform, specs, platform.WritableRecordTypes(t.Platform), rt.Infof)
+			if err != nil {
+				return err
+			}
+			if len(desired) == 0 {
+				rt.Infof("note: the records file lists no records")
+			}
+			dns, err := rt.OpenDNS(ctx, t)
+			if err != nil {
+				return err
+			}
+			existing, err := dns.ListRecords(ctx, t.ResourceID)
+			if err != nil {
+				return err
+			}
+			plan, err := platform.PlanDNSEnsure(platform.DNSEnsure{
+				Platform:        t.Platform,
+				ZoneID:          t.ResourceID,
+				Existing:        existing,
+				Desired:         desired,
+				PruneDuplicates: prune,
+				DNS:             dns,
+				Written: func(ctx context.Context, oldID string, r platform.Record) {
+					rememberRecord(ctx, rt, t, oldID, r)
+				},
+				Removed: func(ctx context.Context, id string) {
+					forgetRecord(ctx, rt, t, id)
+				},
+			})
+			if err != nil {
+				return err
+			}
+			rt.Infof("zone %s via %s/%s", t.Domain, t.Platform, t.Profile)
+			return rt.Ensure(ctx, "dns.ensure", t.ReportTarget(), plan)
+		},
+	}
+	cmd.Flags().StringArrayVarP(&records, "record", "r", nil, "desired record name:type:value[:ttl[:proxied]] (repeatable)")
+	cmd.Flags().StringVarP(&file, "file", "f", "", "YAML file of desired records (see the help text); combines with --record")
+	cmd.Flags().BoolVar(&prune, "prune-duplicates", false, "when a name + type has several records, keep one and delete the others")
+	return cmd
+}
+
+// rememberRecord upserts a written record into the inventory. Platforms
+// whose record ids encode the value (Route 53, Cloud DNS, GoDaddy) hand
+// back a new id after an update, so the row under the old id goes.
+func rememberRecord(ctx context.Context, rt *app.Runtime, t *app.Target, oldID string, r platform.Record) {
+	db, err := rt.DB()
+	if err != nil {
+		return
+	}
+	cfg, err := rt.Config()
+	if err != nil {
+		return
+	}
+	set := inventory.Set{Platform: t.Platform, Profile: t.Profile, Type: platform.ResDNSRecord}
+	if oldID != "" && r.ID != oldID {
+		if err := db.Delete(ctx, set, platform.ResDNSRecord, oldID); err != nil {
+			rt.Verbosef("inventory: %v", err)
+		}
+	}
+	if err := db.Upsert(ctx, set, app.RecordResources(t.ResourceID, t.Domain, []platform.Record{r})[0], cfg.TTLFor(platform.ResDNSRecord)); err != nil {
+		rt.Verbosef("inventory: %v", err)
+	}
+}
+
+// forgetRecord removes a deleted record from the inventory.
+func forgetRecord(ctx context.Context, rt *app.Runtime, t *app.Target, id string) {
+	if db, err := rt.DB(); err == nil {
+		if err := db.Delete(ctx, inventory.Set{Platform: t.Platform, Profile: t.Profile}, platform.ResDNSRecord, id); err != nil {
+			rt.Verbosef("inventory: %v", err)
+		}
+	}
 }

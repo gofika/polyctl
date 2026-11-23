@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -32,6 +33,9 @@ var (
 	// ("<profile>/<platform>:<grant>"); fakeRevokeErr fails those calls.
 	fakeRevoked   []string
 	fakeRevokeErr error
+	// fakeRecordTypes, when set, are the record types the fake providers
+	// can write (nil: any).
+	fakeRecordTypes []string
 )
 
 func registerFake() {
@@ -49,6 +53,14 @@ func resetFake() {
 	fakeLoginHook = nil
 	fakeRevoked = nil
 	fakeRevokeErr = nil
+	fakeRecordTypes = nil
+}
+
+// RecordTypes returns fakeRecordTypes.
+func (p *fakeProvider) RecordTypes() []string {
+	fakeMu.Lock()
+	defer fakeMu.Unlock()
+	return fakeRecordTypes
 }
 
 // revokedGrants returns what the fake providers were asked to revoke since
@@ -159,7 +171,11 @@ type fakeClient struct {
 	newIDOnUpdate bool
 	// syncErrs fails Sync for the given resource types.
 	syncErrs map[platform.ResourceType]error
+	// failCreate fails CreateRecord for this record name with errFakeCreate.
+	failCreate string
 }
+
+var errFakeCreate = errors.New("fake create failure")
 
 func (c *fakeClient) record(call string) {
 	c.mu.Lock()
@@ -224,6 +240,9 @@ func (c *fakeClient) CreateRecord(ctx context.Context, zoneID string, r platform
 	c.record("CreateRecord:" + r.Name + ":" + r.Type)
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.failCreate != "" && r.Name == c.failCreate {
+		return nil, errFakeCreate
+	}
 	c.nextID++
 	r.ID = fmt.Sprintf("r%d", c.nextID)
 	r.ZoneID = zoneID
