@@ -491,3 +491,25 @@ func TestSGTables(t *testing.T) {
 		t.Errorf("list table:\n%s", out)
 	}
 }
+
+func TestSGEnsureCreatedMeanwhile(t *testing.T) {
+	h := newSGHarness(t, app.Flags{})
+	// Another writer creates the group between the lookup and the create:
+	// CreateSecurityGroup answers InvalidGroup.Duplicate and ensure reuses
+	// the group it then finds.
+	h.ec2.sg.raceCreate = &fakeSG{id: "sg-0ccc0000", name: "web", vpc: "vpc-0abc", desc: "x"}
+	if err := h.run("ec2", "security-group", "ensure", "web", "--instance", "site-xz7", "--rule", "tcp:443:0.0.0.0/0"); err != nil {
+		t.Fatal(err)
+	}
+	if a := actions(h.report()); a["security-group/web unchanged"] != 1 || a["security-group/web/rule created"] != 1 || a["instance/site-xz7 updated"] != 1 {
+		t.Errorf("report = %v", a)
+	}
+	if got := h.instanceGroups(); strings.Join(got, ",") != "sg-0aaa0000,sg-0bbb0000,sg-0ccc0000" {
+		t.Errorf("instance groups = %v", got)
+	}
+	// create reports the same race as an error.
+	h.ec2.sg.raceCreate = &fakeSG{id: "sg-0ddd0000", name: "api", vpc: "vpc-0abc", desc: "x"}
+	if err := h.run("ec2", "security-group", "create", "api", "--vpc", "vpc-0abc"); err == nil || !strings.Contains(err.Error(), "security-group ensure") {
+		t.Errorf("create race = %v", err)
+	}
+}

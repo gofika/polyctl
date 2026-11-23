@@ -53,6 +53,9 @@ type fakeSGs struct {
 	// revokeNotFound makes revocations of missing rules fail with
 	// InvalidPermission.NotFound (the older behaviour).
 	revokeNotFound bool
+	// raceCreate is added by the next CreateSecurityGroup, which then fails
+	// with InvalidGroup.Duplicate (another writer was faster).
+	raceCreate *fakeSG
 }
 
 func (fs *fakeSGs) init() {
@@ -210,6 +213,10 @@ func (f *fakeEC2) CreateSecurityGroup(_ context.Context, in *ec2.CreateSecurityG
 	fs := &s.sg
 	fs.init()
 	fs.creates = append(fs.creates, in)
+	if g := fs.raceCreate; g != nil {
+		fs.raceCreate = nil
+		fs.byRegion[f.region] = append(fs.byRegion[f.region], g)
+	}
 	name, vpc := awssdk.ToString(in.GroupName), awssdk.ToString(in.VpcId)
 	if awssdk.ToString(in.Description) == "" {
 		return nil, &fakeAPIError{"MissingParameter", "The request must contain the parameter groupDescription"}

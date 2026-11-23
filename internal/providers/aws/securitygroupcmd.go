@@ -736,6 +736,11 @@ nothing.
 					}
 					plan.Add(platform.Step{Resource: l.resource(), Action: platform.Updated, ID: l.id(), Desc: fmt.Sprintf("attach %s (keep: %s)", label, keep),
 						Apply: func(ctx context.Context) (platform.Change, error) {
+							if slices.Contains(current, groupID) {
+								// A group created meanwhile by someone else
+								// may be attached already.
+								return platform.Change{Action: platform.Unchanged, Detail: "already attached " + groupID}, nil
+							}
 							groups := append(slices.Clone(current), groupID)
 							if err := s.c.SetInstanceSecurityGroups(ctx, s.region, l.id(), groups); err != nil {
 								return platform.Change{}, err
