@@ -552,7 +552,10 @@ func newAuthLogoutCmd(rt *app.Runtime) *cobra.Command {
 		Short: "Remove a profile, or one platform account of it, with the stored credentials",
 		Long: "Without a platform, remove the whole profile: every account in it and their\n" +
 			"stored credentials. With a platform, remove only that account; the profile is\n" +
-			"removed too when it was its last one.\n\n" +
+			"removed too when it was its last one. An authorization a login left on the\n" +
+			"platform (a Cloudflare browser login) is revoked there first; when that cannot\n" +
+			"be done (no network, --offline) a note says so and the account is removed all\n" +
+			"the same.\n\n" +
 			"In the interactive flow (a terminal, without --non-interactive) --profile may\n" +
 			"be left out: the accounts to remove are then chosen from a list (only those on\n" +
 			"the platform, when one is given) and confirmed before anything is removed;\n" +
@@ -673,9 +676,47 @@ func removeEmptyProfile(rt *app.Runtime, name string) error {
 	return nil
 }
 
-// removeAccount removes one account: its cached resources (unless
-// keepInventory), its secret and its config entry, and the profile itself
-// when that was its last account. The config is saved before returning.
+// revokeTimeout bounds the call that withdraws an authorization on the
+// platform while an account is removed.
+const revokeTimeout = 20 * time.Second
+
+// revokeAuthorization withdraws the authorization an account holds on its
+// platform (platform.Revoker), before its secret is removed. It is best
+// effort and never keeps the account from being removed: without the
+// network (--offline), or when the platform cannot be told, a note says
+// that the authorization is still valid there.
+func revokeAuthorization(ctx context.Context, rt *app.Runtime, ref config.AccountRef) {
+	prov, err := platform.Get(ref.Platform)
+	if err != nil {
+		return
+	}
+	rv, ok := prov.(platform.Revoker)
+	if !ok {
+		return
+	}
+	p, err := rt.LoadProfile(ref.Profile, ref.Platform)
+	if err != nil || !rv.CanRevoke(p) {
+		// No secret within reach, or nothing on the platform to withdraw.
+		return
+	}
+	const note = "note: the %s authorization of profile %q could not be revoked (%v); the account is removed here, but the authorization stays valid on the platform until it is withdrawn there"
+	if rt.Flags.Offline {
+		rt.Infof(note, ref.Platform, ref.Profile, app.ErrOffline)
+		return
+	}
+	rctx, cancel := context.WithTimeout(ctx, revokeTimeout)
+	defer cancel()
+	if err := rv.Revoke(rctx, p); err != nil {
+		rt.Infof(note, ref.Platform, ref.Profile, err)
+		return
+	}
+	rt.Verbosef("revoked the %s authorization of profile %q", ref.Platform, ref.Profile)
+}
+
+// removeAccount removes one account: the authorization it holds on the
+// platform, where there is one (see revokeAuthorization), its cached
+// resources (unless keepInventory), its secret and its config entry, and
+// the profile itself when that was its last account. The config is saved before returning.
 // Nothing is removed when the config file is no longer the one in memory:
 // the save at the end would be refused, after the steps that cannot be
 // undone.
@@ -715,6 +756,8 @@ func removeAccount(ctx context.Context, rt *app.Runtime, ref config.AccountRef, 
 			return err
 		}
 	}
+	// While the secret is still there: it is what the platform is told with.
+	revokeAuthorization(ctx, rt, ref)
 	if err := store.Delete(creds.Key(name, string(id))); err != nil && !errors.Is(err, creds.ErrNotFound) {
 		return fmt.Errorf("remove credentials: %w", err)
 	}

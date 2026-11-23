@@ -28,6 +28,10 @@ var (
 	// fakeLoginHook, when set, runs inside Login: what another polyctl
 	// process does while a login flow is waiting for the user.
 	fakeLoginHook func()
+	// fakeRevoked lists the grants the fake providers were asked to revoke
+	// ("<profile>/<platform>:<grant>"); fakeRevokeErr fails those calls.
+	fakeRevoked   []string
+	fakeRevokeErr error
 )
 
 func registerFake() {
@@ -43,6 +47,28 @@ func resetFake() {
 	fakeClients = map[string]*fakeClient{}
 	fakeLogins = 0
 	fakeLoginHook = nil
+	fakeRevoked = nil
+	fakeRevokeErr = nil
+}
+
+// revokedGrants returns what the fake providers were asked to revoke since
+// the last reset.
+func revokedGrants() []string {
+	fakeMu.Lock()
+	defer fakeMu.Unlock()
+	return append([]string(nil), fakeRevoked...)
+}
+
+// CanRevoke: an account whose secret holds a "grant" has an authorization
+// on the platform, like a browser login.
+func (p *fakeProvider) CanRevoke(prof platform.Profile) bool { return prof.Secret["grant"] != "" }
+
+// Revoke records the call and fails with fakeRevokeErr when that is set.
+func (p *fakeProvider) Revoke(ctx context.Context, prof platform.Profile) error {
+	fakeMu.Lock()
+	defer fakeMu.Unlock()
+	fakeRevoked = append(fakeRevoked, prof.Name+"/"+string(p.id)+":"+prof.Secret["grant"])
+	return fakeRevokeErr
 }
 
 // loginCalls returns how often a fake provider's Login ran since the last
@@ -274,6 +300,7 @@ func (c *fakeClient) SetNameservers(ctx context.Context, name string, ns []strin
 
 var (
 	_ platform.Provider         = (*fakeProvider)(nil)
+	_ platform.Revoker          = (*fakeProvider)(nil)
 	_ platform.DNSService       = (*fakeClient)(nil)
 	_ platform.RegistrarService = (*fakeClient)(nil)
 )

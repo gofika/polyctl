@@ -586,13 +586,33 @@ func (rt *Runtime) LoadProfile(name string, id platform.ID) (platform.Profile, e
 		}
 		return platform.Profile{}, err
 	}
+	update := func(s map[string]string) error {
+		if err := st.Set(key, s); err != nil {
+			return err
+		}
+		rt.recordBackend(cfg, a, st.Name())
+		return nil
+	}
+	legacy := a.LegacySecret
 	return platform.Profile{Name: name, Platform: id, Metadata: a.Metadata, Secret: secret,
-		UpdateSecret: func(s map[string]string) error {
-			if err := st.Set(key, s); err != nil {
-				return err
-			}
-			rt.recordBackend(cfg, a, st.Name())
-			return nil
+		UpdateSecret: update,
+		RefreshSecret: func(fn func(map[string]string) (map[string]string, error)) error {
+			// The lock is the one every write of the store takes, so the
+			// read, fn and the write are one step for other processes.
+			return st.Locked(func() error {
+				cur, err := st.Get(key)
+				if errors.Is(err, creds.ErrNotFound) && legacy {
+					cur, err = st.Get(name)
+				}
+				if err != nil {
+					return err
+				}
+				next, err := fn(cur)
+				if err != nil || next == nil {
+					return err
+				}
+				return update(next)
+			})
 		}}, nil
 }
 

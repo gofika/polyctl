@@ -1330,3 +1330,104 @@ func TestReloadConfig(t *testing.T) {
 		t.Errorf("Config after a failed reload = %p, %v; want the earlier copy", kept, err)
 	}
 }
+
+// RefreshSecret hands the secret as it is stored now to its function, under
+// the lock of the store, and stores what the function returns. It is what
+// keeps two processes from spending the same rotating refresh token.
+func TestRefreshSecret(t *testing.T) {
+	registerFakes()
+	resetFakes()
+	dir := t.TempDir()
+	t.Setenv(config.EnvConfigDir, dir)
+	t.Setenv("POLYCTL_CREDENTIAL_STORE", "file")
+	t.Setenv("POLYCTL_OUTPUT", "")
+	cfgPath := filepath.Join(dir, "config.yaml")
+	body := "credential_store: file\nprofiles:\n  p:\n    platforms:\n      namecom:\n        credential_backend: file\n"
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file := creds.NewFile(dir)
+	first := map[string]string{"access_token": "a1", "refresh_token": "r1", "expiry": "2030-01-02T03:04:05Z", "scopes": "x y"}
+	if err := file.Set("p/namecom", first); err != nil {
+		t.Fatal(err)
+	}
+	load := func() platform.Profile {
+		t.Helper()
+		// A runtime of its own: another process.
+		rt := app.New(app.Flags{ConfigDir: dir}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+		p, err := rt.LoadProfile("p", platform.NameCom)
+		if err != nil || p.RefreshSecret == nil {
+			t.Fatalf("LoadProfile = %+v, %v", p, err)
+		}
+		return p
+	}
+	stale := load()
+
+	// Another process replaces the secret after this one loaded it.
+	second := map[string]string{"access_token": "a2", "refresh_token": "r2"}
+	if err := load().UpdateSecret(second); err != nil {
+		t.Fatal(err)
+	}
+	var seen map[string]string
+	err := stale.RefreshSecret(func(cur map[string]string) (map[string]string, error) {
+		seen = cur
+		return nil, nil // nothing to store
+	})
+	if err != nil || seen["refresh_token"] != "r2" || seen["access_token"] != "a2" {
+		t.Fatalf("the function saw %v (%v), want the secret as stored now", seen, err)
+	}
+	if s, _ := file.Get("p/namecom"); s["refresh_token"] != "r2" || len(s) != 2 {
+		t.Errorf("returning nil stored something: %v", s)
+	}
+
+	// What it returns is stored as it is, every field of it.
+	third := map[string]string{"access_token": "a3", "refresh_token": "r3", "expiry": "2031-01-01T00:00:00Z", "scopes": "x"}
+	if err := stale.RefreshSecret(func(map[string]string) (map[string]string, error) { return third, nil }); err != nil {
+		t.Fatal(err)
+	}
+	if s, _ := file.Get("p/namecom"); fmt.Sprint(s) != fmt.Sprint(third) {
+		t.Errorf("stored = %v, want %v", s, third)
+	}
+
+	// An error of the function is returned and stores nothing.
+	boom := errors.New("refused")
+	if err := stale.RefreshSecret(func(map[string]string) (map[string]string, error) { return map[string]string{"x": "y"}, boom }); !errors.Is(err, boom) {
+		t.Fatalf("err = %v", err)
+	}
+	if s, _ := file.Get("p/namecom"); s["refresh_token"] != "r3" {
+		t.Errorf("a failed function stored %v", s)
+	}
+
+	// Processes that refresh together take turns: each sees what the one
+	// before it stored, so a counter kept in the secret never loses a step.
+	if err := file.Set("p/namecom", map[string]string{"n": "0"}); err != nil {
+		t.Fatal(err)
+	}
+	const procs, rounds = 4, 10
+	var wg sync.WaitGroup
+	for i := 0; i < procs; i++ {
+		p := load()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < rounds; j++ {
+				err := p.RefreshSecret(func(cur map[string]string) (map[string]string, error) {
+					var n int
+					fmt.Sscan(cur["n"], &n)
+					time.Sleep(time.Millisecond)
+					return map[string]string{"n": fmt.Sprint(n + 1)}, nil
+				})
+				if err != nil {
+					t.Errorf("RefreshSecret: %v", err)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if s, _ := file.Get("p/namecom"); s["n"] != fmt.Sprint(procs*rounds) {
+		t.Errorf("counter = %q, want %d: a step was lost", s["n"], procs*rounds)
+	}
+	if raw, _ := os.ReadFile(cfgPath); string(raw) != body {
+		t.Errorf("refreshing a secret in the recorded backend rewrote the config:\n%s", raw)
+	}
+}

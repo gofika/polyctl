@@ -82,6 +82,14 @@ type Profile struct {
 	// UpdateSecret persists a replacement secret (e.g. refreshed tokens).
 	// It is nil when the profile was not loaded from a credential store.
 	UpdateSecret func(secret map[string]string) error
+	// RefreshSecret replaces the secret in step with other polyctl
+	// processes: fn runs while the credential store is locked and is given
+	// the secret as it is stored at that moment, which another process may
+	// have replaced since Secret was read. The map fn returns is stored;
+	// nil stores nothing. It is how a rotating refresh token is renewed
+	// without two processes spending the same one. It is nil when the
+	// profile was not loaded from a credential store.
+	RefreshSecret func(fn func(current map[string]string) (map[string]string, error)) error
 }
 
 // Meta returns a metadata value or "".
@@ -186,6 +194,18 @@ type Provider interface {
 	Open(ctx context.Context, p Profile) (Client, error)
 	// ResourceTypes lists the inventory resource types this provider can sync.
 	ResourceTypes() []ResourceType
+}
+
+// Revoker is implemented by providers whose logins create an authorization
+// on the platform that outlives the stored secret (an OAuth grant). Removing
+// such an account withdraws it there too, best effort: the account is
+// removed whether or not the platform could be told.
+type Revoker interface {
+	// CanRevoke reports whether the profile holds such an authorization,
+	// without using the network.
+	CanRevoke(p Profile) bool
+	// Revoke withdraws the authorization of the profile on the platform.
+	Revoke(ctx context.Context, p Profile) error
 }
 
 // Client is an authenticated session with a platform. Clients may also

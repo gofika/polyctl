@@ -427,3 +427,34 @@ func TestMigrateSecretsLegacyEntryInAnotherBackend(t *testing.T) {
 		t.Errorf("after the run with the keyring: memory %+v, disk %+v", a, d)
 	}
 }
+
+// The secret is moved as it is: a browser login's tokens, expiry and scopes
+// all arrive under the new key.
+func TestMigrateSecretsKeepsEveryField(t *testing.T) {
+	e := newMigrateEnv(t)
+	secret := map[string]string{"access_token": "at", "refresh_token": "rt", "expiry": "2030-01-02T03:04:05Z", "scopes": "zone.read dns.read"}
+	if err := e.primary.Set("old", secret); err != nil {
+		t.Fatal(err)
+	}
+
+	e.rt.migrateSecrets(e.cfg, e.multi())
+
+	got, err := e.primary.Get(newKey)
+	if err != nil {
+		t.Fatalf("the secret did not arrive under %s: %v", newKey, err)
+	}
+	if len(got) != len(secret) {
+		t.Fatalf("migrated secret = %v, want %v", got, secret)
+	}
+	for k, v := range secret {
+		if got[k] != v {
+			t.Errorf("migrated %s = %q, want %q", k, got[k], v)
+		}
+	}
+	if _, err := e.primary.Get("old"); !errors.Is(err, creds.ErrNotFound) {
+		t.Errorf("the legacy entry survived: %v", err)
+	}
+	if e.account().LegacySecret || e.markedOnDisk() {
+		t.Error("the mark must be cleared after the move")
+	}
+}
