@@ -188,3 +188,15 @@ func TestResolveLBIPsRetries(t *testing.T) {
 		t.Errorf("never resolves = %v after %d sleeps", err, len(clk.slept))
 	}
 }
+
+func TestLBStateWait(t *testing.T) {
+	cases := map[string]platform.WaitState{
+		"active": platform.WaitDone, "active_impaired": platform.WaitDone,
+		"failed": platform.WaitFailed, "provisioning": platform.KeepWaiting,
+	}
+	for state, want := range cases {
+		if got := lbStateWait(state); got != want {
+			t.Errorf("lbStateWait(%s) = %v, want %v", state, got, want)
+		}
+	}
+}

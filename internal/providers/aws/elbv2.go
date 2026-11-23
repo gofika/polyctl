@@ -507,10 +507,12 @@ func (c *client) ModifyLoadBalancerAttributes(ctx context.Context, region, id st
 }
 
 // lbStateWait classifies the state of a load balancer that should become
-// active.
+// active. active_impaired (an Application Load Balancer that routes traffic
+// but lacks the resources to scale) routes traffic too: waiting longer would
+// only run into the timeout.
 func lbStateWait(state string) platform.WaitState {
 	switch state {
-	case string(elbtypes.LoadBalancerStateEnumActive):
+	case string(elbtypes.LoadBalancerStateEnumActive), string(elbtypes.LoadBalancerStateEnumActiveImpaired):
 		return platform.WaitDone
 	case string(elbtypes.LoadBalancerStateEnumFailed):
 		return platform.WaitFailed
