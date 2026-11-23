@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"context"
 	"fmt"
 	"net/netip"
 	"strconv"
@@ -256,3 +257,112 @@ func ParseListener(s string) (Listener, error) {
 
 // String renders "tcp:80".
 func (l Listener) String() string { return l.Protocol + ":" + strconv.Itoa(l.Port) }
+
+// SecurityGroupRule is an ingress rule as a platform stores it, one source
+// per rule: platforms that group several sources under one protocol and
+// port range (AWS IpPermission) are flattened. Protocol is the platform's
+// stored form (tcp, udp, icmp, icmpv6, all, or a protocol number), and the
+// ports are -1 when the protocol has none.
+type SecurityGroupRule struct {
+	Protocol string `json:"protocol" yaml:"protocol"`
+	FromPort int    `json:"from_port" yaml:"from_port"`
+	ToPort   int    `json:"to_port" yaml:"to_port"`
+	Source   string `json:"source" yaml:"source"`
+	// SourceType is SourceIPv4, SourceIPv6, SourceGroup or
+	// SourcePrefixList.
+	SourceType  string `json:"source_type" yaml:"source_type"`
+	Description string `json:"description" yaml:"description"`
+}
+
+// SourcePrefixList is the source type of a rule whose source is a managed
+// prefix list (pl-...), which polyctl shows but never writes.
+const SourcePrefixList = "prefix-list"
+
+// Key identifies the rule: protocol, ports and source, never the
+// description (platforms do not compare it either).
+func (r SecurityGroupRule) Key() string {
+	return fmt.Sprintf("%s|%d|%d|%s", r.Protocol, r.FromPort, r.ToPort, r.Source)
+}
+
+// Ports renders the port part ("443", "8000-8999", "all").
+func (r SecurityGroupRule) Ports() string {
+	switch {
+	case r.FromPort < 0:
+		return "all"
+	case r.FromPort == r.ToPort:
+		return strconv.Itoa(r.FromPort)
+	}
+	return fmt.Sprintf("%d-%d", r.FromPort, r.ToPort)
+}
+
+// String renders the rule as a change report shows it ("tcp 443 0.0.0.0/0").
+func (r SecurityGroupRule) String() string { return r.Protocol + " " + r.Ports() + " " + r.Source }
+
+// SecurityGroup is a security group with its ingress rules.
+type SecurityGroup struct {
+	ID          string              `json:"id" yaml:"id"`
+	Name        string              `json:"name" yaml:"name"`
+	VPC         string              `json:"vpc_id" yaml:"vpc_id"`
+	Description string              `json:"description" yaml:"description"`
+	Region      string              `json:"region" yaml:"region"`
+	Tags        map[string]string   `json:"tags" yaml:"tags"`
+	Ingress     []SecurityGroupRule `json:"ingress" yaml:"ingress"`
+}
+
+// SecurityGroupSpec describes a security group to create.
+type SecurityGroupSpec struct {
+	Region      string
+	Name        string
+	Description string
+	VPC         string
+	// Tags are set on the group when it is created, Name included.
+	Tags map[string]string
+}
+
+// SecurityGroupFilter narrows a security group listing; empty fields do
+// not filter.
+type SecurityGroupFilter struct {
+	VPC string
+	// Name is a group name, or a pattern holding *.
+	Name string
+	IDs  []string
+}
+
+// RuleOutcome is what happened to one rule of AddIngressRules or
+// RemoveIngressRules: Done is false when the rule already was as asked (a
+// rule to add that was present, a rule to remove that was not).
+type RuleOutcome struct {
+	Rule IngressRule
+	Done bool
+	// ID is the platform id of an added rule, when the platform reports it.
+	ID string
+}
+
+// SecurityGroupService is the security group side of a compute platform.
+// Each method is one platform operation: the comparison of the rules asked
+// for with the rules present happens before (MissingIngressRules), and the
+// confirmations and the order of the steps belong to the command.
+type SecurityGroupService interface {
+	// ListSecurityGroups lists the security groups of a region.
+	ListSecurityGroups(ctx context.Context, region string, f SecurityGroupFilter) ([]SecurityGroup, error)
+	// FindSecurityGroups returns the groups ref names (an id, or a name
+	// within vpc when vpc is not ""); none is not an error.
+	FindSecurityGroups(ctx context.Context, region, ref, vpc string) ([]SecurityGroup, error)
+	// CreateSecurityGroup creates a group and returns its id.
+	CreateSecurityGroup(ctx context.Context, spec SecurityGroupSpec) (string, error)
+	// DeleteSecurityGroup deletes a group.
+	DeleteSecurityGroup(ctx context.Context, region, id string) error
+	// MissingIngressRules splits want into the rules sg lacks and the ones
+	// it already has, comparing protocol, ports and source only.
+	MissingIngressRules(sg SecurityGroup, want []IngressRule) (missing, present []IngressRule, err error)
+	// AddIngressRules adds rules to a group, each with description.
+	AddIngressRules(ctx context.Context, region, id string, rules []IngressRule, description string) ([]RuleOutcome, error)
+	// RemoveIngressRules removes rules from a group.
+	RemoveIngressRules(ctx context.Context, region, id string, rules []IngressRule) ([]RuleOutcome, error)
+	// SetInstanceSecurityGroups replaces the whole set of groups of an
+	// instance with groups.
+	SetInstanceSecurityGroups(ctx context.Context, region, instanceID string, groups []string) error
+	// SecurityGroupInstances returns the ids of the instances a group is
+	// attached to.
+	SecurityGroupInstances(ctx context.Context, region, id string) ([]string, error)
+}

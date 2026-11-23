@@ -19,6 +19,11 @@ func TestParseIngressRule(t *testing.T) {
 		"tcp:443:2001:db8::/32":     "tcp 443 2001:db8::/32",
 		"all:all:sg-0123456789abc":  "all all sg-0123456789abc",
 		"tcp:postgres:192.0.2.0/24": "tcp 5432 192.0.2.0/24",
+		"tcp:ssh-http:10.0.0.0/8":   "tcp 22-80 10.0.0.0/8",
+		"tcp:80:10.0.0.1":           "tcp 80 10.0.0.1/32",
+		"icmp:all:0.0.0.0/0":        "icmp all 0.0.0.0/0",
+		"tcp:mongo:10.0.0.0/8":      "tcp 27017 10.0.0.0/8",
+		"tcp:elastic:10.0.0.0/8":    "tcp 9200 10.0.0.0/8",
 	} {
 		r, err := ParseIngressRule(in)
 		if err != nil || r.String() != want {
@@ -39,6 +44,7 @@ func TestParseIngressRule(t *testing.T) {
 		"sctp:1:0.0.0.0/0":  "unknown protocol",
 		"tcp:0:0.0.0.0/0":   "out of range",
 		"tcp:70000:1.2.3.4": "out of range",
+		"tcp:65536:1.2.3.4": "out of range",
 		"tcp:9-1:1.2.3.4":   "reversed",
 		"tcp:foo:1.2.3.4":   "unknown port or alias",
 		"icmp:80:1.2.3.4":   "icmp takes no port",
@@ -78,5 +84,20 @@ func TestParseListener(t *testing.T) {
 		if _, err := ParseListener(in); err == nil {
 			t.Errorf("ParseListener(%q) accepted", in)
 		}
+	}
+}
+
+func TestSecurityGroupRule(t *testing.T) {
+	a := SecurityGroupRule{Protocol: "tcp", FromPort: 443, ToPort: 443, Source: "0.0.0.0/0", Description: "web"}
+	b := a
+	b.Description = ""
+	if a.Key() != b.Key() || a.String() != "tcp 443 0.0.0.0/0" {
+		t.Errorf("key %q vs %q, string %q", a.Key(), b.Key(), a.String())
+	}
+	if r := (SecurityGroupRule{Protocol: "all", FromPort: -1, ToPort: -1, Source: "sg-1"}); r.String() != "all all sg-1" {
+		t.Errorf("all = %q", r.String())
+	}
+	if r := (SecurityGroupRule{Protocol: "udp", FromPort: 8000, ToPort: 8999, Source: "::/0"}); r.Ports() != "8000-8999" {
+		t.Errorf("range = %q", r.Ports())
 	}
 }
