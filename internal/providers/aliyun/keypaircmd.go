@@ -236,56 +236,71 @@ A key pair <name> that holds another key is never replaced: exit code 2.`,
 			if err != nil {
 				return err
 			}
-			if in.Key != nil && in.Name != "" {
-				// The key pair named on the command line must hold the key
-				// when it exists: ensure never settles for another name while
-				// the one asked for holds a different key.
-				named, err := s.c.listKeyPairs(ctx, s.region, in.Name, "")
-				if err != nil {
-					return err
-				}
-				for _, kp := range named {
-					if !in.Match.Match(in.Key, platform.KeyPair{Name: kp.Name, Fingerprint: kp.Fingerprint}) {
-						return fmt.Errorf("%w: key pair %q already exists in %s with a different public key (fingerprint %s, the key's is %s); choose another name (an existing key pair is never replaced)",
-							platform.ErrInvalidInput, in.Name, s.where(), kp.Fingerprint, in.Key.FingerprintMD5Hex())
-					}
-				}
-			}
-			kp, err := platform.ResolveKeyPair(ctx, &keyPairLister{c: s.c, region: s.region, key: in.Key, name: in.Name}, in)
+			_, step, err := resolveKeyPairStep(ctx, rt, s, in)
 			if err != nil {
 				return err
 			}
-			if kp.Create {
-				if err := checkKeyPairName(kp.Name); err != nil {
-					return err
-				}
-			}
-			for _, n := range kp.Notes {
-				rt.Infof("%s", n)
-			}
 			var plan platform.Plan
-			plan.Add(kp.Step(func(ctx context.Context, name string, key *platform.PublicKey) (string, error) {
-				info, err := s.c.importKeyPair(ctx, s.region, name, key)
-				if platform.HasErrorCode(err, errKeyPairExists) {
-					// Imported meanwhile by someone else: fine when it holds
-					// the key.
-					named, lerr := s.c.listKeyPairs(ctx, s.region, name, "")
-					if lerr == nil && len(named) == 1 && named[0].Fingerprint == key.FingerprintMD5Hex() {
-						storeKeyPair(ctx, rt, s.profile, named[0])
-						return name, nil
-					}
-					return "", fmt.Errorf("%w: key pair %q was created meanwhile with a different public key: %v", platform.ErrInvalidInput, name, err)
-				}
-				if err != nil {
-					return "", keyPairImportErr(name, s.region, err)
-				}
-				storeKeyPair(ctx, rt, s.profile, info)
-				return info.Name, nil
-			}))
+			plan.Add(step)
 			return rt.Ensure(ctx, "aliyun.ecs.key-pair.ensure", s.target(), &plan)
 		},
 	}
 	app.AddPublicKeyFlags(cmd, &keys)
 	cmd.Flags().StringVar(&region, "region", "", "region of the key pair (default: the profile's region)")
 	return cmd
+}
+
+// resolveKeyPairStep decides which key pair of the scope's region a
+// command binds, existing first (platform.ResolveKeyPair), and returns the
+// plan step that reports it or imports the key. A key pair named on the
+// command line that holds another key is a usage error: it is never
+// replaced, and the command never settles for another name meanwhile.
+func resolveKeyPairStep(ctx context.Context, rt *app.Runtime, s *ecsScope, in platform.KeyInput) (platform.KeyPairPlan, platform.Step, error) {
+	if in.Key != nil {
+		if err := in.Key.CheckType(platform.AliyunKeyTypes); err != nil {
+			return platform.KeyPairPlan{}, platform.Step{}, err
+		}
+	}
+	if in.Key != nil && in.Name != "" {
+		named, err := s.c.listKeyPairs(ctx, s.region, in.Name, "")
+		if err != nil {
+			return platform.KeyPairPlan{}, platform.Step{}, err
+		}
+		for _, kp := range named {
+			if !in.Match.Match(in.Key, platform.KeyPair{Name: kp.Name, Fingerprint: kp.Fingerprint}) {
+				return platform.KeyPairPlan{}, platform.Step{}, fmt.Errorf("%w: key pair %q already exists in %s with a different public key (fingerprint %s, the key's is %s); choose another name (an existing key pair is never replaced)",
+					platform.ErrInvalidInput, in.Name, s.where(), kp.Fingerprint, in.Key.FingerprintMD5Hex())
+			}
+		}
+	}
+	kp, err := platform.ResolveKeyPair(ctx, &keyPairLister{c: s.c, region: s.region, key: in.Key, name: in.Name}, in)
+	if err != nil {
+		return platform.KeyPairPlan{}, platform.Step{}, err
+	}
+	if kp.Create {
+		if err := checkKeyPairName(kp.Name); err != nil {
+			return platform.KeyPairPlan{}, platform.Step{}, err
+		}
+	}
+	for _, n := range kp.Notes {
+		rt.Infof("%s", n)
+	}
+	step := kp.Step(func(ctx context.Context, name string, key *platform.PublicKey) (string, error) {
+		info, err := s.c.importKeyPair(ctx, s.region, name, key)
+		if platform.HasErrorCode(err, errKeyPairExists) {
+			// Imported meanwhile by someone else: fine when it holds the key.
+			named, lerr := s.c.listKeyPairs(ctx, s.region, name, "")
+			if lerr == nil && len(named) == 1 && named[0].Fingerprint == key.FingerprintMD5Hex() {
+				storeKeyPair(ctx, rt, s.profile, named[0])
+				return name, nil
+			}
+			return "", fmt.Errorf("%w: key pair %q was created meanwhile with a different public key: %v", platform.ErrInvalidInput, name, err)
+		}
+		if err != nil {
+			return "", keyPairImportErr(name, s.region, err)
+		}
+		storeKeyPair(ctx, rt, s.profile, info)
+		return info.Name, nil
+	})
+	return kp, step, nil
 }

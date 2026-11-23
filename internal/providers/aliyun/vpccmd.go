@@ -248,6 +248,8 @@ type vswPlan struct {
 	fixedMask bool
 	wait      bool
 	skip      string
+	// created, when set, is told the id of each vSwitch created.
+	created func(name, id string)
 }
 
 type vswWant struct {
@@ -350,6 +352,9 @@ func (p vswPlan) add(plan *platform.Plan, wants []vswWant) error {
 				id, err := p.s.c.createVSwitch(ctx, p.s.region, p.vpcID(), w.Zone.ID, w.Name, cidr)
 				if err != nil {
 					return platform.Change{}, err
+				}
+				if p.created != nil {
+					p.created(w.Name, id)
 				}
 				if p.wait {
 					waitVSwitch(ctx, p.rt, p.s, id)
