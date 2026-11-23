@@ -370,6 +370,9 @@ func TestPlatformTreeShapes(t *testing.T) {
 		"gcp compute firewall list", "gcp compute firewall get", "gcp compute firewall create", "gcp compute firewall update",
 		"gcp compute firewall delete", "gcp compute firewall ensure",
 		"aliyun ecs instance list", "aliyun ecs instance start", "aliyun ecs instance stop",
+		"aliyun ecs security-group list", "aliyun ecs security-group get", "aliyun ecs security-group create",
+		"aliyun ecs security-group delete", "aliyun ecs security-group ensure",
+		"aliyun ecs security-group rule add", "aliyun ecs security-group rule remove",
 		// Registrar groups: list, get, ns get|set directly below the group.
 		"aws route53domains list", "aws route53domains get", "aws route53domains ns get", "aws route53domains ns set",
 		"namecom domain list", "namecom domain get", "namecom domain ns get", "namecom domain ns set", "namecom domain check",

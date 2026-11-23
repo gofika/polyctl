@@ -360,6 +360,8 @@ func (c *client) Sync(ctx context.Context, rt platform.ResourceType) ([]platform
 		return app.DomainResources(domains), nil
 	case platform.ResInstance:
 		return c.ListInstances(ctx, "")
+	case platform.ResSecurityGroup:
+		return c.securityGroupResources(ctx, c.region)
 	}
 	return nil, fmt.Errorf("%s: %w", rt, platform.ErrNotSupported)
 }

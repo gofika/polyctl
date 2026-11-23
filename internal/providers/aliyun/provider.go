@@ -1,6 +1,6 @@
 // Package aliyun implements the Alibaba Cloud provider: Alibaba Cloud DNS
-// (alidns) zones and records, the domain registrar and ECS instances,
-// authenticated with a RAM AccessKey.
+// (alidns) zones and records, the domain registrar, ECS instances and
+// security groups, authenticated with a RAM AccessKey.
 //
 // Profile metadata keys (persisted in config.yaml, never sensitive):
 //
@@ -61,7 +61,8 @@ func (*provider) LoginHelp() string {
 	return `RAM AccessKey. Asks first for the account's site (cn: China site, aliyun.com;
 intl: International site, alibabacloud.com; no default), then opens ` + accessKeyURL + ` so
 you can create a RAM user with AliyunDNSFullAccess / AliyunDomainFullAccess /
-AliyunECSReadOnlyAccess (as needed) and prompts for the AccessKey ID and Secret.
+AliyunECSReadOnlyAccess (AliyunECSFullAccess and AliyunVPCReadOnlyAccess for the
+ECS write commands) as needed, and prompts for the AccessKey ID and Secret.
 Options: --set site=cn|intl (required in the non-interactive flow; a later login keeps the
 site of the first one), --set region=<id> (default ` + DefaultRegion + `),
 --set aliyun_profile=<profile> to import the AccessKey of that aliyun CLI profile
@@ -83,7 +84,7 @@ func (*provider) RecordTypes() []string {
 var _ platform.RecordTyper = (*provider)(nil)
 
 func (*provider) ResourceTypes() []platform.ResourceType {
-	return []platform.ResourceType{platform.ResZone, platform.ResDNSRecord, platform.ResDomain, platform.ResInstance}
+	return []platform.ResourceType{platform.ResZone, platform.ResDNSRecord, platform.ResDomain, platform.ResInstance, platform.ResSecurityGroup}
 }
 
 // optCLIProfile is the login option that names an aliyun CLI profile to

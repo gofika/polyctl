@@ -315,6 +315,10 @@ func flowCases() []flowCase {
 			name: "aliyun ecs stop: confirmation", setup: setupOne, args: []string{"aliyun", "ecs", "instance", "stop", "i-1"},
 			piped: "y\n", wantCode: ExitUsage, wantMsg: []string{"confirmation required: pass --yes to proceed", "would stop instance i-1"},
 		},
+		{
+			name: "aliyun ecs security-group delete: confirmation", setup: setupOne, args: []string{"aliyun", "ecs", "security-group", "delete", "web"},
+			piped: "y\n", wantCode: ExitUsage, wantMsg: []string{"confirmation required: pass --yes to proceed", "would delete security group web"},
+		},
 
 		// Login flows of the real providers: each is refused before its
 		// first request, naming the --set keys. Their interactive rows, and
