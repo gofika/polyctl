@@ -784,8 +784,8 @@ func (rt *Runtime) SyncAccount(ctx context.Context, ref config.AccountRef, types
 // several accounts at the same time.
 //
 // A type whose sync failed in some regions only (platform.RegionSyncError)
-// is stored with what the other regions returned, and its report carries
-// the failures.
+// is stored with what the other regions returned, the rows stored before
+// for the failed regions are kept, and its report carries the failures.
 func (rt *Runtime) SyncClient(ctx context.Context, p platform.Profile, client platform.Client, types []platform.ResourceType) ([]SyncReport, error) {
 	name := p.Name
 	prov, err := platform.Get(p.Platform)
@@ -819,7 +819,7 @@ func (rt *Runtime) SyncClient(ctx context.Context, p platform.Profile, client pl
 				continue
 			}
 		}
-		if err := db.Replace(ctx, inventory.Set{Platform: p.Platform, Profile: name, Type: t}, res, cfg.TTLFor(t)); err != nil {
+		if err := db.ReplaceKeeping(ctx, inventory.Set{Platform: p.Platform, Profile: name, Type: t}, res, cfg.TTLFor(t), failedRegions(err)); err != nil {
 			return reports, err
 		}
 		rep.Count = len(res)
@@ -827,6 +827,20 @@ func (rt *Runtime) SyncClient(ctx context.Context, p platform.Profile, client pl
 		reports = append(reports, rep)
 	}
 	return reports, nil
+}
+
+// failedRegions returns the regions of a sync that failed in some regions
+// only, whose stored rows are kept (nil for any other error or none).
+func failedRegions(err error) []string {
+	rse := platform.AsRegionSyncError(err)
+	if rse == nil {
+		return nil
+	}
+	out := make([]string, 0, len(rse.Failures))
+	for _, f := range rse.Failures {
+		out = append(out, f.Region)
+	}
+	return out
 }
 
 // NeedsRefresh decides whether a set must be re-fetched given the flags and TTL.
@@ -865,10 +879,15 @@ func (rt *Runtime) EnsureSet(ctx context.Context, s inventory.Set, fetch func(ct
 	if need {
 		rt.Verbosef("refreshing %s/%s %s %s", s.Platform, s.Profile, s.Type, s.Scope)
 		res, err := fetch(ctx)
-		if err != nil {
+		if err != nil && platform.AsRegionSyncError(err) == nil {
 			return nil, false, err
 		}
-		if err := db.Replace(ctx, s, res, cfg.TTLFor(s.Type)); err != nil {
+		if err != nil {
+			// Some regions failed: the others are stored, the failed
+			// ones keep what the inventory held for them.
+			rt.Infof("warning: %s/%s %s: %v", s.Platform, s.Profile, s.Type, err)
+		}
+		if err := db.ReplaceKeeping(ctx, s, res, cfg.TTLFor(s.Type), failedRegions(err)); err != nil {
 			return nil, false, err
 		}
 	} else if rt.Flags.Offline {

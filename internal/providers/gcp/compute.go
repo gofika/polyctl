@@ -66,9 +66,10 @@ func instanceFromAPI(in *compute.Instance) Instance {
 }
 
 // instanceResource wraps an Instance for the inventory, with every address
-// of every interface for the IP index.
+// of every interface for the IP index. Its parent is its zone, the scope an
+// aggregated list reports unreachable.
 func instanceResource(i Instance) platform.Resource {
-	return platform.Resource{Type: platform.ResInstance, ID: i.ID, Name: i.Name, Data: i, IPs: i.ipSet().Refs()}
+	return platform.Resource{Type: platform.ResInstance, ID: i.ID, Name: i.Name, ParentID: i.Zone, Data: i, IPs: i.ipSet().Refs()}
 }
 
 // ListInstances lists every instance of the project across all zones.

@@ -468,3 +468,26 @@ func TestFindReservedAddressAnnotatesItsUser(t *testing.T) {
 		}
 	}
 }
+
+// A region that fails during --refresh keeps what the inventory held for
+// it, so its resources are still found.
+func TestFindRefreshKeepsFailedRegion(t *testing.T) {
+	dir, cfgPath := setupFind(t)
+	old := fakeIPRes(platform.ResInstance, "i-far", []string{"10.9.9.9"}, nil)
+	old.ParentID = "ap-south-2"
+	seedFind(t, dir, platform.AWS, "acme", 0, old)
+	ipState.resources["acme/aws"] = map[platform.ResourceType][]platform.Resource{
+		platform.ResInstance: {fakeIPRes(platform.ResInstance, "i-1", []string{"10.0.0.1"}, nil)},
+	}
+	ipState.partial["acme/aws"] = errors.New("dial tcp: no such host")
+	stdout, stderr, err := run(t, cfgPath, "find", "10.9.9.9", "--refresh", "--profile", "acme", "--platform", "aws", "-o", "json")
+	if err != nil {
+		t.Fatalf("refresh: %v (%s)", err, stderr)
+	}
+	if r := decodeFind(t, stdout); len(r.Matches) != 1 || r.Matches[0].ID != "i-far" {
+		t.Errorf("result = %+v", r)
+	}
+	if stdout, _, err := run(t, cfgPath, "find", "10.0.0.1", "-o", "json"); err != nil || len(decodeFind(t, stdout).Matches) != 1 {
+		t.Errorf("synced region: %s, %v", stdout, err)
+	}
+}

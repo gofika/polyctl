@@ -200,6 +200,21 @@ func (d *DB) GetState(ctx context.Context, s Set) (*State, error) {
 // the sync time, and rebuilds the domain index and the IP index for the set. For an
 // unscoped dns_record set it also clears every per-zone scope of the profile.
 func (d *DB) Replace(ctx context.Context, s Set, resources []platform.Resource, ttl time.Duration) error {
+	return d.ReplaceKeeping(ctx, s, resources, ttl, nil)
+}
+
+// ReplaceKeeping is Replace for a sync that could not read some parents of
+// an unscoped set (the regions of a multi-region sync that failed): the
+// stored rows whose ParentID is in keep stay, with their index entries,
+// unless resources holds a row of the same id. A scoped set ignores keep.
+func (d *DB) ReplaceKeeping(ctx context.Context, s Set, resources []platform.Resource, ttl time.Duration, keep []string) error {
+	if s.Scope != "" || len(keep) == 0 {
+		return d.replace(ctx, s, resources, ttl, nil)
+	}
+	return d.replace(ctx, s, resources, ttl, keep)
+}
+
+func (d *DB) replace(ctx context.Context, s Set, resources []platform.Resource, ttl time.Duration, keep []string) error {
 	now := d.now()
 	exp := now.Add(ttl)
 	tx, err := d.sql.BeginTx(ctx, nil)
@@ -208,7 +223,28 @@ func (d *DB) Replace(ctx context.Context, s Set, resources []platform.Resource, 
 	}
 	defer tx.Rollback()
 
-	if s.Scope == "" {
+	if s.Scope == "" && len(keep) > 0 {
+		// Only the rows outside the kept parents go, and their index
+		// entries before them.
+		ph := strings.TrimSuffix(strings.Repeat("?,", len(keep)), ",")
+		args := []any{string(s.Platform), s.Profile, string(s.Type)}
+		for _, k := range keep {
+			args = append(args, k)
+		}
+		dropped := `SELECT resource_id FROM resources WHERE platform=? AND profile=? AND resource_type=? AND parent_id NOT IN (` + ph + `)`
+		for _, t := range []string{"domain_index", "ip_index"} {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM `+t+` WHERE platform=? AND profile=? AND resource_type=? AND resource_id IN (`+dropped+`)`,
+				append([]any{string(s.Platform), s.Profile, string(s.Type)}, args...)...); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM resources WHERE platform=? AND profile=? AND resource_type=? AND parent_id NOT IN (`+ph+`)`, args...); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM sync_state WHERE platform=? AND profile=? AND resource_type=?`, string(s.Platform), s.Profile, string(s.Type)); err != nil {
+			return err
+		}
+	} else if s.Scope == "" {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM resources WHERE platform=? AND profile=? AND resource_type=?`, string(s.Platform), s.Profile, string(s.Type)); err != nil {
 			return err
 		}
@@ -254,6 +290,12 @@ func (d *DB) Replace(ctx context.Context, s Set, resources []platform.Resource, 
 			return fmt.Errorf("encode %s %s: %w", r.Type, r.ID, err)
 		}
 		dom := platform.NormalizeDomain(r.Domain)
+		if len(keep) > 0 {
+			// The row may replace a kept one: its old domain goes.
+			if _, err := tx.ExecContext(ctx, `DELETE FROM domain_index WHERE platform=? AND profile=? AND resource_type=? AND resource_id=?`, string(s.Platform), s.Profile, string(r.Type), r.ID); err != nil {
+				return err
+			}
+		}
 		if _, err := ins.ExecContext(ctx, string(s.Platform), s.Profile, string(r.Type), r.ID, r.Name, r.ParentID, dom, string(b), now.Unix(), exp.Unix()); err != nil {
 			return err
 		}

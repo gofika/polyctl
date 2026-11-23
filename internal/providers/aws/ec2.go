@@ -73,7 +73,7 @@ func instanceFrom(region string, in ec2types.Instance) instanceInfo {
 }
 
 func (i instanceInfo) resource() platform.Resource {
-	return platform.Resource{Type: platform.ResInstance, ID: i.ID, Name: i.Name, Data: i, IPs: i.ipSet().Refs()}
+	return platform.Resource{Type: platform.ResInstance, ID: i.ID, Name: i.Name, ParentID: i.Region, Data: i, IPs: i.ipSet().Refs()}
 }
 
 // describeInstances lists every instance of a region.

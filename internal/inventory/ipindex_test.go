@@ -149,3 +149,44 @@ func TestIPIndexScopedReplace(t *testing.T) {
 		t.Errorf("other scope = %v", hits)
 	}
 }
+
+// A sync that failed in some regions keeps the stored rows of those regions
+// (and their index entries); the rows of the other regions are replaced.
+func TestReplaceKeepingFailedRegions(t *testing.T) {
+	db, _ := openDB(t)
+	set := inventory.Set{Platform: platform.AWS, Profile: "a", Type: platform.ResInstance}
+	if err := db.Replace(ctx, set, []platform.Resource{
+		ipRes(platform.ResInstance, "i-east", "us-east-1", ref(platform.IPInternal, "10.0.0.1")),
+		ipRes(platform.ResInstance, "i-west", "us-west-2", ref(platform.IPInternal, "10.0.0.2")),
+		ipRes(platform.ResInstance, "i-gone", "eu-west-1", ref(platform.IPInternal, "10.0.0.3")),
+	}, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	// us-west-2 failed: i-west stays; eu-west-1 worked and no longer has
+	// i-gone; us-east-1 worked and i-east moved to another address.
+	if err := db.ReplaceKeeping(ctx, set, []platform.Resource{
+		ipRes(platform.ResInstance, "i-east", "us-east-1", ref(platform.IPInternal, "10.0.0.9")),
+	}, time.Hour, []string{"us-west-2"}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := db.List(ctx, inventory.Query{Platform: platform.AWS, Profile: "a", Type: platform.ResInstance})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, r := range rows {
+		ids = append(ids, r.ID)
+	}
+	if len(ids) != 2 || ids[0] != "i-east" || ids[1] != "i-west" {
+		t.Fatalf("rows = %v, want i-east and i-west", ids)
+	}
+	for ip, want := range map[string]int{"10.0.0.1": 0, "10.0.0.9": 1, "10.0.0.2": 1, "10.0.0.3": 0} {
+		hits, err := db.LookupIP(ctx, netip.MustParseAddr(ip))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(hits) != want {
+			t.Errorf("LookupIP(%s) = %v, want %d hit(s)", ip, hitIDs(hits), want)
+		}
+	}
+}

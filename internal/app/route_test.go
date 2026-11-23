@@ -813,3 +813,35 @@ func TestResolveDomainSameProfileDuplicateZonesAmbiguous(t *testing.T) {
 		t.Errorf("--profile and --platform cannot pick between two zones of one account: %v", err)
 	}
 }
+
+// A fetch that failed in some regions only stores what the others returned,
+// keeps the stored rows of the failed regions and warns.
+func TestEnsureSetPartialRegionFailure(t *testing.T) {
+	h := newHarness(t, app.Flags{}, nil)
+	s := inventory.Set{Platform: platform.AWS, Profile: "a", Type: platform.ResInstance}
+	res := func(id, region string) platform.Resource {
+		return platform.Resource{Type: platform.ResInstance, ID: id, Name: id, ParentID: region, Data: map[string]string{"id": id}}
+	}
+	if _, _, err := h.rt.EnsureSet(ctx, s, func(context.Context) ([]platform.Resource, error) {
+		return []platform.Resource{res("i-1", "r1"), res("i-2", "r2")}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.rt.Flags.Refresh = true
+	rows, cached, err := h.rt.EnsureSet(ctx, s, func(context.Context) ([]platform.Resource, error) {
+		return []platform.Resource{res("i-3", "r1")}, &platform.RegionSyncError{Failures: []platform.RegionError{{Region: "r2", Err: errors.New("unreachable")}}}
+	})
+	if err != nil || cached {
+		t.Fatalf("partial: cached=%v err=%v", cached, err)
+	}
+	var ids []string
+	for _, r := range rows {
+		ids = append(ids, r.ID)
+	}
+	if strings.Join(ids, ",") != "i-2,i-3" {
+		t.Errorf("rows = %v, want i-2 (kept) and i-3", ids)
+	}
+	if !strings.Contains(h.stderr.String(), "r2: unreachable") {
+		t.Errorf("stderr = %q", h.stderr.String())
+	}
+}
