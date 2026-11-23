@@ -649,11 +649,11 @@ it, else the current-generation x86_64 type of exactly that shape offered
 there whose family comes first in t3, t3a, m7i, m6i, c7i, c6i, r7i, r6i,
 m5, c5, r5, then any other family, alphabetically. The choice is printed
 on stderr ("2H4G -> t3.medium (ap-east-1a, T3 preset)") and shown in the
-change report; no fit is exit code 4, a size of 0 vCPUs or 0 GiB exit
-code 2. The network goes into one network interface
-with a public IP unless --public-ip=false. --ssh-key / --ssh-key-file bind
-the key pair that holds that public key, importing it under --key-pair when
-none does. Without any key pair the instance gets no SSH key.
+change report; no fit is exit code 4, a size of 0 vCPUs or 0 GiB or a
+size with --arch arm64 exit code 2. The network goes into one network
+interface with a public IP unless --public-ip=false. --ssh-key /
+--ssh-key-file bind the key pair that holds that public key, importing it
+under --key-pair when none does. Without any key pair the instance gets no SSH key.
 
 --disk adds a data disk (/dev/sdb, gp3, 3000 IOPS, 125 MiB/s by default)
 that is kept when the instance is deleted; encryption follows the
@@ -711,6 +711,9 @@ running and prints its addresses.`,
 			size, isSize, err := platform.ParseTypeShorthand(typ)
 			if err != nil {
 				return err
+			}
+			if isSize && arch == "arm64" {
+				return app.UsageErrf("--type %s with --arch arm64: a size resolves to an x86_64 type; pass an exact arm64 type such as t4g.medium", typ)
 			}
 			if subnet, err = rt.RequireSetting(profile, platform.AWS, "subnet_id", "subnet", subnet); err != nil {
 				return err

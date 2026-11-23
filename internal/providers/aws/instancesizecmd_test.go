@@ -80,8 +80,12 @@ func TestInstanceCreateSizeErrors(t *testing.T) {
 		t.Errorf("malformed sizes called %v", h.ec2.calls())
 	}
 	// An arm64 --arch with a size (x86_64 types only): usage error.
-	if err := h.run("ec2", "instance", "create", "x", "--type", "2H2G", "--arch", "arm64"); !errors.Is(err, app.ErrUsage) {
+	h.ec2.reset()
+	if err := h.run("ec2", "instance", "create", "x", "--type", "2H2G", "--arch", "arm64"); !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "x86_64") {
 		t.Errorf("arm64 size = %v", err)
+	}
+	if n := len(h.ec2.calls()); n != 0 {
+		t.Errorf("arm64 size called %v", h.ec2.calls())
 	}
 	if w := h.writes(); len(w) != 0 {
 		t.Errorf("errors wrote: %v", w)
