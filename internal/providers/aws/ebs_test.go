@@ -136,3 +136,18 @@ func TestSyncVolumesEveryRegion(t *testing.T) {
 		}
 	}
 }
+
+func TestVolumeErrorsNameTheIAMAction(t *testing.T) {
+	h := newInstanceHarness(t, app.Flags{})
+	h.ebsSetErr("DescribeVolumes", &fakeAPIError{"UnauthorizedOperation", "You are not authorized to perform this operation."})
+	err := h.run("ec2", "volume", "list")
+	if !errors.Is(err, platform.ErrUnauthorized) || !strings.Contains(err.Error(), "ec2:DescribeVolumes") {
+		t.Errorf("denied = %v", err)
+	}
+	h.ebsSetErr("DescribeVolumes", nil)
+	h.addVolume("ap-east-1", &fakeVol{id: "vol-0222", size: 10})
+	h.ebsSetErr("CreateSnapshot", &fakeAPIError{"UnauthorizedOperation", "denied"})
+	if err := h.run("ec2", "snapshot", "create", "vol-0222", "--region", "ap-east-1"); !errors.Is(err, platform.ErrUnauthorized) || !strings.Contains(err.Error(), "ec2:CreateSnapshot") {
+		t.Errorf("denied snapshot = %v", err)
+	}
+}
