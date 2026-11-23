@@ -239,6 +239,41 @@ func (c *Client) r2Account(ctx context.Context) (string, error) {
 		platform.ErrAmbiguous, c.profile.Name, len(accounts), accountNames(accounts), c.profile.Name)
 }
 
+// syncBuckets lists the R2 buckets of the account (default jurisdiction)
+// for the inventory. An account the credentials cannot use for R2 (R2 not
+// enabled, no R2 permission, several accounts and none pinned) syncs as an
+// empty set with a warning, as `r2 bucket list` skips it: the other types of
+// a sync are not failed for it, and a bucket the inventory does not know is
+// still looked up live.
+func (c *Client) syncBuckets(ctx context.Context) ([]platform.Resource, error) {
+	out, err := c.bucketResources(ctx)
+	if err != nil && (errors.Is(err, platform.ErrNotSupported) || errors.Is(err, platform.ErrUnauthorized) ||
+		errors.Is(err, platform.ErrForbidden) || errors.Is(err, platform.ErrAmbiguous)) {
+		warnf("cloudflare/%s: skipped r2 buckets: %v", c.profile.Name, err)
+		return []platform.Resource{}, nil
+	}
+	return out, err
+}
+
+// bucketResources lists the R2 buckets of the account (default
+// jurisdiction) as inventory resources; every failure is returned.
+func (c *Client) bucketResources(ctx context.Context) ([]platform.Resource, error) {
+	acc, err := c.r2Account(ctx)
+	var buckets []r2Bucket
+	if err == nil {
+		buckets, err = c.api.listBuckets(ctx, acc, "")
+	}
+	if err != nil {
+		return nil, err
+	}
+	out := make([]platform.Resource, 0, len(buckets))
+	for _, b := range buckets {
+		out = append(out, platform.Resource{Type: platform.ResR2Bucket, ID: b.Name, Name: b.Name,
+			Data: r2BucketRow{Profile: c.profile.Name, AccountID: acc, Name: b.Name, CreationDate: b.CreationDate}})
+	}
+	return out, nil
+}
+
 // IsR2Record reports whether rec looks like the CNAME of an R2 custom
 // domain: a proxied CNAME whose target is an r2.dev host. The bucket is
 // named by rec.Meta["r2_bucket"] when Cloudflare created the record.

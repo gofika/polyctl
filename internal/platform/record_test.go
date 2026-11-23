@@ -47,7 +47,7 @@ func TestCheckLoginOption(t *testing.T) {
 }
 
 func TestResourceTypeTable(t *testing.T) {
-	for _, name := range []string{"domain", "zone", "dns_record", "instance", "security_group", "load_balancer", "certificate", "volume", "db_instance", "eip", "key_pair"} {
+	for _, name := range []string{"domain", "zone", "dns_record", "instance", "security_group", "load_balancer", "certificate", "volume", "db_instance", "eip", "key_pair", "r2_bucket"} {
 		rt, err := ParseResourceType(name)
 		if err != nil || string(rt) != name {
 			t.Errorf("ParseResourceType(%q) = %q, %v", name, rt, err)

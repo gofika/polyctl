@@ -132,7 +132,7 @@ func (*provider) RecordTypes() []string {
 }
 
 func (*provider) ResourceTypes() []platform.ResourceType {
-	return []platform.ResourceType{platform.ResZone, platform.ResDNSRecord}
+	return []platform.ResourceType{platform.ResZone, platform.ResDNSRecord, platform.ResR2Bucket}
 }
 
 // isOAuthMethod reads the method metadata of a stored account.
@@ -590,6 +590,8 @@ func (c *Client) Sync(ctx context.Context, rt platform.ResourceType) ([]platform
 		return app.ZoneResources(zones), nil
 	case platform.ResDNSRecord:
 		return c.syncRecords(ctx)
+	case platform.ResR2Bucket:
+		return c.syncBuckets(ctx)
 	}
 	return nil, fmt.Errorf("%s: %w", rt, platform.ErrNotSupported)
 }

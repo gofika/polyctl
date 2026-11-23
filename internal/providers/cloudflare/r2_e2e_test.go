@@ -550,20 +550,26 @@ func TestR2BucketList(t *testing.T) {
 		t.Errorf("beta --wide: exit %d, %q", code, stdout)
 	}
 
+	// The listing is kept in the inventory: a second one sends no
+	// listing request.
+	e.f.reset()
+	if code, stdout, _ := e.run("cloudflare", "r2", "bucket", "list"); code != cli.ExitOK || !strings.Contains(stdout, "assets") || e.f.count("GET /accounts/acc1/r2/buckets?") != 0 {
+		t.Errorf("cached listing: exit %d, requests %v", code, e.f.requests)
+	}
 	// An account without R2 is skipped silently; the other one is listed.
 	e.f.accounts["acc1"].r2Disabled = true
-	code, stdout, stderr = e.run("cloudflare", "r2", "bucket", "list")
+	code, stdout, stderr = e.run("--refresh", "cloudflare", "r2", "bucket", "list")
 	if code != cli.ExitOK || !strings.Contains(stdout, "media") || strings.Contains(stderr, "warning") {
 		t.Errorf("acme without R2: exit %d, %q, %q", code, stdout, stderr)
 	}
 	// With --profile it is not supported (exit code 7).
-	code, _, stderr = e.run("cloudflare", "r2", "bucket", "list", "--profile", "acme")
+	code, _, stderr = e.run("--refresh", "cloudflare", "r2", "bucket", "list", "--profile", "acme")
 	if code != cli.ExitNotSupported || !strings.Contains(stderr, "R2 is not enabled") {
 		t.Errorf("--profile acme without R2: exit %d, %q", code, stderr)
 	}
 	// No bucket at all: an empty list and exit code 0.
 	e.f.accounts["acc2"].buckets = nil
-	code, stdout, _ = e.run("cloudflare", "r2", "bucket", "list", "-o", "json")
+	code, stdout, _ = e.run("--refresh", "cloudflare", "r2", "bucket", "list", "-o", "json")
 	if code != cli.ExitOK || strings.TrimSpace(stdout) != "[]" {
 		t.Errorf("no buckets: exit %d, %q", code, stdout)
 	}
@@ -573,9 +579,16 @@ func TestR2BucketList(t *testing.T) {
 	if code, _, stderr := e.run("cloudflare", "r2", "bucket", "list", "--jurisdiction", "eu"); code != cli.ExitOK || len(e.f.headers) != 2 || e.f.headers[0] != "eu" {
 		t.Errorf("--jurisdiction: exit %d, headers %v, %s", code, e.f.headers, stderr)
 	}
-	// Offline: R2 is not cached.
-	if code, _, _ := e.run("--offline", "cloudflare", "r2", "bucket", "list"); code != cli.ExitOffline {
-		t.Errorf("--offline: exit %d", code)
+	// Offline: the inventory answers, without a request; --wide and
+	// --jurisdiction need the network.
+	e.f.reset()
+	if code, _, stderr := e.run("--offline", "cloudflare", "r2", "bucket", "list"); code != cli.ExitOK || len(e.f.requests) != 0 {
+		t.Errorf("--offline: exit %d, requests %v, %s", code, e.f.requests, stderr)
+	}
+	for _, extra := range []string{"--wide", "--jurisdiction=eu"} {
+		if code, _, _ := e.run("--offline", "cloudflare", "r2", "bucket", "list", extra); code != cli.ExitOffline {
+			t.Errorf("--offline %s: exit %d", extra, code)
+		}
 	}
 	if w := e.f.writes(); len(w) != 0 {
 		t.Errorf("a listing wrote: %v", w)
@@ -607,6 +620,20 @@ func TestR2DomainRouting(t *testing.T) {
 	if st, _ := d["status"].(map[string]any); st["ownership"] != "pending" || st["ssl"] != "initializing" {
 		t.Errorf("status = %v", d["status"])
 	}
+	// Once the buckets are synced, the inventory names the account: no
+	// profile's buckets are listed.
+	if code, _, stderr := e.run("sync", "--type", "r2_bucket"); code != cli.ExitOK {
+		t.Fatalf("sync --type r2_bucket: exit %d, %s", code, stderr)
+	}
+	e.f.reset()
+	code, _, stderr = e.run("cloudflare", "r2", "domain", "list", "assets")
+	listed := false
+	for _, r := range e.f.requests {
+		listed = listed || strings.Contains(r, "/r2/buckets?")
+	}
+	if code != cli.ExitOK || !strings.Contains(stderr, "bucket assets via cloudflare/beta (local inventory)") || listed {
+		t.Errorf("routed by the inventory: exit %d, %s, requests %v", code, stderr, e.f.requests)
+	}
 	// Table: MIN_TLS is "-" when never set.
 	code, stdout, _ = e.run("cloudflare", "r2", "domain", "list", "assets")
 	if code != cli.ExitOK || !strings.Contains(stdout, "MIN_TLS") || !strings.Contains(stdout, "example.net") || !strings.Contains(stdout, " - ") {
@@ -623,10 +650,11 @@ func TestR2DomainRouting(t *testing.T) {
 	if code != cli.ExitNotFound || !strings.Contains(stderr, "bucket nosuch not found in any cloudflare profile") || !strings.Contains(stderr, "acme (R2 is not enabled)") {
 		t.Errorf("missing bucket: exit %d, %s", code, stderr)
 	}
-	// Two accounts with the bucket: ambiguous.
+	// Two accounts with the bucket: ambiguous (--refresh: the inventory
+	// synced above does not know the new bucket yet).
 	e.f.accounts["acc1"].r2Disabled = false
 	e.f.accounts["acc1"].buckets = []string{"assets"}
-	code, _, stderr = e.run("cloudflare", "r2", "domain", "list", "assets")
+	code, _, stderr = e.run("--refresh", "cloudflare", "r2", "domain", "list", "assets")
 	if code != cli.ExitAmbiguous || !strings.Contains(stderr, "--profile") {
 		t.Errorf("ambiguous: exit %d, %s", code, stderr)
 	}

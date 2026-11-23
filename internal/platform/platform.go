@@ -77,6 +77,8 @@ const (
 	ResEIP ResourceType = "eip"
 	// ResKeyPair is an SSH key pair registered with a platform.
 	ResKeyPair ResourceType = "key_pair"
+	// ResR2Bucket is a Cloudflare R2 bucket (of the default jurisdiction).
+	ResR2Bucket ResourceType = "r2_bucket"
 )
 
 // ResourceTypeInfo describes one inventory resource type.
@@ -104,6 +106,7 @@ var resourceTypes = []ResourceTypeInfo{
 	{ResDBInstance, 15 * time.Minute, "managed database instances"},
 	{ResEIP, time.Hour, "elastic / static public IP addresses"},
 	{ResKeyPair, 24 * time.Hour, "SSH key pairs"},
+	{ResR2Bucket, time.Hour, "Cloudflare R2 buckets"},
 }
 
 // ResourceTypes returns every known inventory resource type, in display

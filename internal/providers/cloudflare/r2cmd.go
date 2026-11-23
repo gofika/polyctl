@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -108,7 +109,11 @@ func skipReason(err error) string {
 }
 
 // findBucket returns the account that holds bucket: the account of
-// --profile, or the only account among all profiles that lists it.
+// --profile, or the only account among all profiles that lists it. In the
+// default jurisdiction the inventory (r2_bucket) is asked first: when it
+// names exactly one account for the bucket, that account is used without
+// listing the buckets of every profile. Otherwise (no inventory, no or
+// several matches, --refresh) every profile is asked live.
 func findBucket(ctx context.Context, rt *app.Runtime, bucket, jurisdiction string) (*r2Acct, error) {
 	names, explicit, err := r2Profiles(rt)
 	if err != nil {
@@ -121,6 +126,16 @@ func findBucket(ctx context.Context, rt *app.Runtime, bucket, jurisdiction strin
 		}
 		rt.Infof("bucket %s via cloudflare/%s", bucket, a.profile)
 		return a, nil
+	}
+	if jurisdiction == "" && !rt.Flags.Refresh {
+		if name := inventoryBucketProfile(ctx, rt, names, bucket); name != "" {
+			a, err := openR2(ctx, rt, name, jurisdiction)
+			if err != nil {
+				return nil, err
+			}
+			rt.Infof("bucket %s via cloudflare/%s (local inventory)", bucket, a.profile)
+			return a, nil
+		}
 	}
 	var hits []*r2Acct
 	var skipped []string
@@ -170,6 +185,43 @@ func findBucket(ctx context.Context, rt *app.Runtime, bucket, jurisdiction strin
 		msg += "; these profiles were skipped: " + strings.Join(skipped, ", ")
 	}
 	return nil, fmt.Errorf("%w: %s", platform.ErrNotFound, msg)
+}
+
+// inventoryBucketProfile returns the profile whose synced buckets hold
+// bucket, when the bucket sets of all the given profiles are fresh and
+// name exactly one account that has it; "" otherwise.
+func inventoryBucketProfile(ctx context.Context, rt *app.Runtime, names []string, bucket string) string {
+	db, err := rt.DB()
+	if err != nil {
+		return ""
+	}
+	for _, name := range names {
+		st, err := db.GetState(ctx, inventory.Set{Platform: platform.Cloudflare, Profile: name, Type: platform.ResR2Bucket})
+		if err != nil || st == nil || !st.Fresh(time.Now()) {
+			return ""
+		}
+	}
+	rows, err := db.List(ctx, inventory.Query{Platform: platform.Cloudflare, Type: platform.ResR2Bucket, Name: bucket})
+	if err != nil {
+		return ""
+	}
+	profile, account := "", ""
+	for _, r := range rows {
+		if !slices.Contains(names, r.Profile) {
+			continue
+		}
+		var row r2BucketRow
+		if r.Decode(&row) != nil {
+			return ""
+		}
+		switch {
+		case account == "":
+			profile, account = r.Profile, row.AccountID
+		case row.AccountID != account:
+			return "" // several accounts: let the live search report it
+		}
+	}
+	return profile
 }
 
 // r2Err explains an error of an R2 request of account a.
@@ -295,15 +347,19 @@ func newR2BucketListCmd(rt *app.Runtime, jur *string) *cobra.Command {
 		Short: "List the R2 buckets of every Cloudflare profile (or of --profile)",
 		Long: `List the R2 buckets of every Cloudflare profile, or of the account of --profile.
 
-The listing names each bucket and its creation date; --wide also reads each
-bucket for its location, storage class and jurisdiction (one more request per
-bucket). Without --profile, an account that has not enabled R2 is skipped
-silently and one that fails is reported as a warning; the command fails only
-when no account could be read.`,
+The buckets of the default jurisdiction come from the local inventory
+(resource type r2_bucket, kept fresh for an hour; --refresh reads them
+again, --offline only reads the inventory); with --jurisdiction they are
+read live. The listing names each bucket and its creation date; --wide also
+reads each bucket for its location, storage class and jurisdiction (one
+more request per bucket, so not with --offline). Without --profile, an
+account that has not enabled R2 is skipped silently and one that fails is
+reported as a warning; the command fails only when no account could be
+read.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			if rt.Flags.Offline {
+			if rt.Flags.Offline && (*jur != "" || wide) {
 				return app.ErrOffline
 			}
 			names, explicit, err := r2Profiles(rt)
@@ -313,20 +369,19 @@ when no account could be read.`,
 			rows := []r2BucketRow{}
 			seen := map[string]bool{}
 			var failures []error
-			read := 0
+			read, cachedSets := 0, 0
 			for _, name := range names {
-				a, err := openR2(ctx, rt, name, *jur)
-				if err == nil && seen[a.account] {
-					rt.Verbosef("cloudflare/%s: account %s is listed already", name, a.account)
-					continue
-				}
-				var buckets []r2Bucket
-				if err == nil {
-					seen[a.account] = true
-					buckets, err = a.api.listBuckets(ctx, a.account, "")
-					if err != nil {
-						err = r2Err(err, a, "")
+				var list []r2BucketRow
+				var a *r2Acct
+				var err error
+				if *jur == "" {
+					var cached bool
+					list, cached, err = cachedBuckets(ctx, rt, name)
+					if cached {
+						cachedSets++
 					}
+				} else {
+					list, a, err = liveBuckets(ctx, rt, name, *jur)
 				}
 				if err != nil {
 					if explicit {
@@ -340,13 +395,24 @@ when no account could be read.`,
 					failures = append(failures, err)
 					continue
 				}
+				if len(list) > 0 && seen[list[0].AccountID] {
+					rt.Verbosef("cloudflare/%s: account %s is listed already", name, list[0].AccountID)
+					continue
+				}
+				if len(list) > 0 {
+					seen[list[0].AccountID] = true
+				}
 				read++
-				for _, b := range buckets {
-					row := r2BucketRow{Profile: a.profile, AccountID: a.account, Name: b.Name, CreationDate: b.CreationDate}
+				for _, row := range list {
 					if wide {
-						full, err := a.api.getBucket(ctx, a.account, b.Name)
+						if a == nil {
+							if a, err = openR2(ctx, rt, name, *jur); err != nil {
+								return err
+							}
+						}
+						full, err := a.api.getBucket(ctx, a.account, row.Name)
 						if err != nil {
-							return r2Err(err, a, b.Name)
+							return r2Err(err, a, row.Name)
 						}
 						row.Location, row.StorageClass, row.Jurisdiction = full.Location, full.StorageClass, full.Jurisdiction
 					}
@@ -362,7 +428,11 @@ when no account could be read.`,
 				}
 				return rows[i].Name < rows[j].Name
 			})
-			rt.Infof("%d bucket(s) in %d account(s)", len(rows), read)
+			note := ""
+			if cachedSets > 0 {
+				note = " (local inventory)"
+			}
+			rt.Infof("%d bucket(s) in %d account(s)%s", len(rows), read, note)
 			return rt.Render(rows, func() output.Grid {
 				g := output.Grid{Headers: []string{"PROFILE", "BUCKET", "CREATED"}, Empty: "no buckets"}
 				if wide {
@@ -381,6 +451,50 @@ when no account could be read.`,
 	}
 	cmd.Flags().BoolVar(&wide, "wide", false, "also show location, storage class and jurisdiction (one request per bucket)")
 	return cmd
+}
+
+// cachedBuckets serves the buckets of a profile's account (default
+// jurisdiction) through the inventory.
+func cachedBuckets(ctx context.Context, rt *app.Runtime, profile string) ([]r2BucketRow, bool, error) {
+	set := inventory.Set{Platform: platform.Cloudflare, Profile: profile, Type: platform.ResR2Bucket}
+	res, cached, err := rt.EnsureSet(ctx, set, func(ctx context.Context) ([]platform.Resource, error) {
+		a, err := openR2(ctx, rt, profile, "")
+		if err != nil {
+			return nil, err
+		}
+		out, err := a.client.bucketResources(ctx)
+		return out, r2Err(err, a, "")
+	})
+	if err != nil {
+		return nil, cached, err
+	}
+	out := make([]r2BucketRow, 0, len(res))
+	for _, r := range res {
+		var row r2BucketRow
+		if err := r.Decode(&row); err != nil {
+			return nil, cached, fmt.Errorf("decode cached bucket %s: %w", r.ID, err)
+		}
+		row.Profile = profile
+		out = append(out, row)
+	}
+	return out, cached, nil
+}
+
+// liveBuckets reads the buckets of a profile's account in a jurisdiction.
+func liveBuckets(ctx context.Context, rt *app.Runtime, profile, jurisdiction string) ([]r2BucketRow, *r2Acct, error) {
+	a, err := openR2(ctx, rt, profile, jurisdiction)
+	if err != nil {
+		return nil, nil, err
+	}
+	buckets, err := a.api.listBuckets(ctx, a.account, "")
+	if err != nil {
+		return nil, a, r2Err(err, a, "")
+	}
+	out := make([]r2BucketRow, 0, len(buckets))
+	for _, b := range buckets {
+		out = append(out, r2BucketRow{Profile: a.profile, AccountID: a.account, Name: b.Name, CreationDate: b.CreationDate})
+	}
+	return out, a, nil
 }
 
 // --- domain list / get -------------------------------------------------------
