@@ -1,0 +1,502 @@
+package gcp
+
+import (
+	"context"
+	"fmt"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/spf13/cobra"
+	"google.golang.org/api/compute/v1"
+
+	"github.com/gofika/polyctl/internal/app"
+	"github.com/gofika/polyctl/internal/output"
+	"github.com/gofika/polyctl/internal/platform"
+)
+
+// The components of load balancers on their own: backend services,
+// forwarding rules and health checks (regional or global) and instance
+// groups (zonal), for troubleshooting and clean-up. They are read live:
+// list reads the profile's project; get and delete search every selected
+// GCP account for the name.
+
+// ---------------------------------------------------------------- listing
+
+// component is one component found by name: its scope (region "" for a
+// global one; zone for an instance group) and the object read.
+type component struct {
+	kind   lbKind
+	name   string
+	region string
+	zone   string
+	obj    any
+}
+
+func (c component) where() string {
+	if c.kind == kindInstanceGroup {
+		return "zone " + c.zone
+	}
+	return (certScope{region: c.region}).label()
+}
+
+// listComponents lists every component of kind in every scope of the
+// project, and the scopes that could not be read.
+func (c *client) listComponents(ctx context.Context, kind lbKind) ([]component, []string, error) {
+	var out []component
+	var unreachable []string
+	p, cs := c.project, c.compute
+	var err error
+	switch kind {
+	case kindBackendService:
+		err = cs.BackendServices.AggregatedList(p).Pages(ctx, func(l *compute.BackendServiceAggregatedList) error {
+			for _, s := range l.Items {
+				for _, v := range s.BackendServices {
+					out = append(out, component{kind: kind, name: v.Name, region: lastSegment(v.Region), obj: v})
+				}
+			}
+			unreachable = append(unreachable, l.Unreachables...)
+			return nil
+		})
+	case kindHealthCheck:
+		err = cs.HealthChecks.AggregatedList(p).Pages(ctx, func(l *compute.HealthChecksAggregatedList) error {
+			for _, s := range l.Items {
+				for _, v := range s.HealthChecks {
+					out = append(out, component{kind: kind, name: v.Name, region: lastSegment(v.Region), obj: v})
+				}
+			}
+			unreachable = append(unreachable, l.Unreachables...)
+			return nil
+		})
+	case kindRule:
+		seen := map[string]bool{}
+		err = cs.ForwardingRules.AggregatedList(p).Pages(ctx, func(l *compute.ForwardingRuleAggregatedList) error {
+			for _, s := range l.Items {
+				for _, v := range s.ForwardingRules {
+					k := v.SelfLink
+					if k == "" {
+						k = v.Region + "/" + v.Name
+					}
+					if !seen[k] {
+						seen[k] = true
+						out = append(out, component{kind: kind, name: v.Name, region: lastSegment(v.Region), obj: v})
+					}
+				}
+			}
+			unreachable = append(unreachable, l.Unreachables...)
+			return nil
+		})
+	case kindInstanceGroup:
+		err = cs.InstanceGroups.AggregatedList(p).Pages(ctx, func(l *compute.InstanceGroupAggregatedList) error {
+			for _, s := range l.Items {
+				for _, v := range s.InstanceGroups {
+					out = append(out, component{kind: kind, name: v.Name, zone: lastSegment(v.Zone), obj: v})
+				}
+			}
+			unreachable = append(unreachable, l.Unreachables...)
+			return nil
+		})
+	default:
+		return nil, nil, fmt.Errorf("cannot list %s", kind)
+	}
+	if err != nil {
+		return nil, nil, computeErr(err)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.name != b.name {
+			return a.name < b.name
+		}
+		return a.region+a.zone < b.region+b.zone
+	})
+	sort.Strings(unreachable)
+	return out, unreachable, nil
+}
+
+// componentQuery is the scope given on the command line: region / global
+// (all: neither), or a zone for instance groups.
+type componentQuery struct {
+	region string
+	all    bool
+	zone   string
+}
+
+func (q componentQuery) fits(x component) bool {
+	if x.kind == kindInstanceGroup {
+		return q.zone == "" || x.zone == q.zone
+	}
+	return q.all || x.region == q.region
+}
+
+// located is a component found in one account.
+type located struct {
+	component
+	profile string
+	c       *client
+}
+
+// locateComponent finds a component by name in every selected GCP account.
+// Without --region or --global a regional match wins over a global one.
+// Several matches are ambiguous (exit code 5), none is exit code 4.
+func locateComponent(ctx context.Context, rt *app.Runtime, kind lbKind, name string, q componentQuery) (*located, error) {
+	if rt.Flags.Offline {
+		return nil, fmt.Errorf("%w: %ss are read live", app.ErrOffline, kind)
+	}
+	if rt.Flags.Profile != "" {
+		if _, err := gcpProfile(rt); err != nil {
+			return nil, err
+		}
+	}
+	accounts, err := gcpAccounts(rt)
+	if err != nil {
+		return nil, err
+	}
+	var hits []located
+	var searched []string
+	for _, a := range accounts {
+		searched = append(searched, "gcp/"+a.Profile)
+		c, err := openProfile(ctx, rt, a.Profile)
+		if err != nil {
+			return nil, err
+		}
+		list, unreachable, err := c.listComponents(ctx, kind)
+		if err != nil {
+			return nil, fmt.Errorf("%w (gcp/%s)", err, a.Profile)
+		}
+		if len(unreachable) > 0 {
+			rt.Infof("warning: gcp/%s: unreachable scopes: %s", a.Profile, strings.Join(unreachable, ", "))
+		}
+		for _, x := range list {
+			if x.name == name && q.fits(x) {
+				hits = append(hits, located{component: x, profile: a.Profile, c: c})
+			}
+		}
+	}
+	if kind != kindInstanceGroup && q.all {
+		var regional []located
+		for _, h := range hits {
+			if h.region != "" {
+				regional = append(regional, h)
+			}
+		}
+		if len(regional) > 0 {
+			hits = regional
+		}
+	}
+	switch len(hits) {
+	case 0:
+		return nil, fmt.Errorf("%w: %s %q in %s", platform.ErrNotFound, kind, name, strings.Join(searched, ", "))
+	case 1:
+		return &hits[0], nil
+	}
+	var names []string
+	for _, h := range hits {
+		names = append(names, fmt.Sprintf("gcp/%s (%s)", h.profile, h.where()))
+	}
+	hint := "pass --profile <name>, --region <r> or --global to choose"
+	if kind == kindInstanceGroup {
+		hint = "pass --profile <name> or --zone <z> to choose"
+	}
+	return nil, &app.AmbiguousError{What: fmt.Sprintf("%s %q", kind, name), Candidates: names, Hint: hint}
+}
+
+// ---------------------------------------------------------------- commands
+
+// componentSpec describes the commands of one kind of component.
+type componentSpec struct {
+	kind   lbKind
+	use    string
+	short  string
+	plural string
+	// zonal components take --zone instead of --region / --global.
+	zonal bool
+	// usedBy names what a delete in use waits for ("the URL map or proxy").
+	usedBy string
+	// rows renders the list; detail renders get.
+	headers []string
+	row     func(component) (any, []string)
+	detail  func(ctx context.Context, l *located) (any, output.Grid)
+	example string
+}
+
+func newComponentCmd(rt *app.Runtime, spec componentSpec) *cobra.Command {
+	cmd := &cobra.Command{Use: spec.use, Short: spec.short}
+	cmd.AddCommand(componentListCmd(rt, spec), componentGetCmd(rt, spec), componentDeleteCmd(rt, spec))
+	return cmd
+}
+
+// queryFlags registers the scope flags of a kind and returns the reader of
+// the query.
+func queryFlags(cmd *cobra.Command, spec componentSpec, what string) func() (componentQuery, error) {
+	if spec.zonal {
+		var zone string
+		cmd.Flags().StringVar(&zone, "zone", "", "zone of the "+what)
+		return func() (componentQuery, error) { return componentQuery{zone: strings.TrimSpace(zone), all: true}, nil }
+	}
+	var sf scopeFlags
+	sf.register(cmd, what)
+	return func() (componentQuery, error) {
+		region, all, err := sf.resolve(false)
+		return componentQuery{region: region, all: all}, err
+	}
+}
+
+func componentListCmd(rt *app.Runtime, spec componentSpec) *cobra.Command {
+	var query func() (componentQuery, error)
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List the " + spec.plural + " of the project",
+		Long: "List the " + spec.plural + " of the project, read live in every scope (" + scopeHelp(spec) + `
+narrows it). No match is exit code 0 with an empty list and a note.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			q, err := query()
+			if err != nil {
+				return err
+			}
+			c, profile, err := openGCP(ctx, rt)
+			if err != nil {
+				return err
+			}
+			list, unreachable, err := c.listComponents(ctx, spec.kind)
+			if err != nil {
+				return fmt.Errorf("%w (gcp/%s)", err, profile)
+			}
+			if len(unreachable) > 0 {
+				rt.Infof("warning: unreachable scopes: %s", strings.Join(unreachable, ", "))
+			}
+			values := []any{}
+			var cells [][]string
+			for _, x := range list {
+				if !q.fits(x) {
+					continue
+				}
+				v, row := spec.row(x)
+				values = append(values, v)
+				cells = append(cells, row)
+			}
+			if len(values) == 0 {
+				rt.Infof("note: no %s in project %s (gcp/%s)", spec.plural, c.project, profile)
+			} else {
+				rt.Infof("%d %s in project %s via gcp/%s", len(values), spec.plural, c.project, profile)
+			}
+			return rt.Render(values, func() output.Grid {
+				return output.Grid{Headers: spec.headers, Rows: cells, Empty: "no " + spec.plural}
+			})
+		},
+	}
+	query = queryFlags(cmd, spec, string(spec.kind)+" (default: every scope)")
+	return cmd
+}
+
+func deleteHelp(spec componentSpec) string {
+	h := "Delete a " + string(spec.kind) + " (found like get finds it). "
+	if spec.usedBy != "" {
+		h += "A " + string(spec.kind) + " that " + spec.usedBy + ` still uses cannot be
+deleted: exit code 1, naming the user (delete it first; load-balancer delete
+removes a whole load balancer in order). `
+	} else {
+		h += "An ephemeral IP goes with it; a static address stays reserved. "
+	}
+	return h + `The component is shown first, then a
+confirmation is asked (default no; --yes skips it, and the non-interactive
+flow needs --yes). The operation is waited for (--timeout, 10m). --dry-run
+reports what would be deleted.`
+}
+
+func scopeHelp(spec componentSpec) string {
+	if spec.zonal {
+		return "--zone"
+	}
+	return "--region or --global"
+}
+
+func componentGetCmd(rt *app.Runtime, spec componentSpec) *cobra.Command {
+	var query func() (componentQuery, error)
+	cmd := &cobra.Command{
+		Use:   "get <name>",
+		Short: "Show a " + string(spec.kind),
+		Long: "Show a " + string(spec.kind) + `, read live. Every selected GCP account is searched for
+the name (` + scopeHelp(spec) + ` narrows the search; without them a regional match wins
+over a global one). Several matches are exit code 5, none is exit code 4.`,
+		Example: spec.example,
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			q, err := query()
+			if err != nil {
+				return err
+			}
+			l, err := locateComponent(ctx, rt, spec.kind, args[0], q)
+			if err != nil {
+				return err
+			}
+			v, g := spec.detail(ctx, l)
+			return rt.Render(v, func() output.Grid { return g })
+		},
+	}
+	query = queryFlags(cmd, spec, string(spec.kind))
+	return cmd
+}
+
+func componentDeleteCmd(rt *app.Runtime, spec componentSpec) *cobra.Command {
+	var query func() (componentQuery, error)
+	var timeout time.Duration
+	cmd := &cobra.Command{
+		Use:   "delete <name>",
+		Short: "Delete a " + string(spec.kind) + " nothing uses (asks first)",
+		Long:  deleteHelp(spec),
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			q, err := query()
+			if err != nil {
+				return err
+			}
+			if timeout <= 0 {
+				return app.UsageErrf("--timeout must be a positive duration, got %s", timeout)
+			}
+			l, err := locateComponent(ctx, rt, spec.kind, args[0], q)
+			if err != nil {
+				return err
+			}
+			res := string(spec.kind) + "/" + l.name
+			rt.Infof("%s (%s, gcp/%s, project %s)", res, l.where(), l.profile, l.c.project)
+			if _, g := spec.detail(ctx, l); len(g.Rows) > 0 {
+				for _, r := range g.Rows {
+					rt.Infof("  %s", strings.Join(r, "  "))
+				}
+			}
+			target := platform.Target{Platform: platform.GCP, Profile: l.profile, Region: l.region, Zone: l.zone}
+			change := platform.Change{Resource: res, Action: platform.Deleted, Detail: l.where()}
+			if done, err := rt.WouldWrite(target, change); done || err != nil {
+				return err
+			}
+			ok, err := rt.Confirm(ctx, fmt.Sprintf("Delete %s %s (%s, project %s)?", spec.kind, l.name, l.where(), l.c.project), false)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return fmt.Errorf("%w: cancelled; %s %s was not deleted", platform.ErrNothingToDo, spec.kind, l.name)
+			}
+			if spec.kind == kindInstanceGroup {
+				err = l.c.deleteInstanceGroup(ctx, l.zone, l.name, timeout)
+			} else {
+				err = (certScope{c: l.c, region: l.region, timeout: timeout}).deleteComponent(ctx, spec.kind, l.name)
+			}
+			if err != nil {
+				if isReason(err, reasonInUse) {
+					by := inUseByRef(err)
+					return fmt.Errorf("%s is used by %s: delete %s first", res, by, by)
+				}
+				return err
+			}
+			if spec.kind == kindRule {
+				if db, derr := rt.DB(); derr == nil {
+					v := forwardingRuleFrom(l.obj.(*compute.ForwardingRule))
+					_ = db.Delete(ctx, inventorySetLB(l.profile), platform.ResLoadBalancer, fallbackID(v.ID, v.SelfLink, v.Region, v.Name))
+				}
+			}
+			rt.Infof("deleted %s in project %s via gcp/%s", res, l.c.project, l.profile)
+			return rt.RenderReport(platform.Report{Target: target, Changes: []platform.Change{change}})
+		},
+	}
+	query = queryFlags(cmd, spec, string(spec.kind))
+	cmd.Flags().DurationVar(&timeout, "timeout", app.DefaultWaitTimeout, "upper bound of the wait for the deletion (a Go duration such as 90s or 10m)")
+	return cmd
+}
+
+// ---------------------------------------------------------------- kinds
+
+func newBackendServiceCmd(rt *app.Runtime) *cobra.Command {
+	return newComponentCmd(rt, componentSpec{kind: kindBackendService, use: "backend-service", plural: "backend services",
+		short:   "Backend services of load balancers (regional and global)",
+		usedBy:  "a URL map, a target proxy or a forwarding rule",
+		headers: []string{"NAME", "SCOPE", "REGION", "PROTOCOL", "SCHEME", "PORT-NAME", "HEALTH-CHECKS", "BACKENDS"},
+		example: "  polyctl gcp compute backend-service get bs-web-1 --region <region>",
+		row: func(x component) (any, []string) {
+			v := backendViewOf(x.obj.(*compute.BackendService))
+			var groups []string
+			for _, b := range v.Backends {
+				groups = append(groups, b.Group)
+			}
+			return v, []string{v.Name, v.Scope, dash(v.Region), v.Protocol, v.Scheme, dash(v.PortName), dash(strings.Join(v.HealthChecks, ",")), dash(strings.Join(groups, ","))}
+		},
+		detail: func(ctx context.Context, l *located) (any, output.Grid) {
+			bs := l.obj.(*compute.BackendService)
+			v := backendViewOf(bs)
+			v.withHealth(ctx, l.c, bs)
+			kv := []string{"name", v.Name, "scope", v.Scope, "region", dash(v.Region), "protocol", v.Protocol, "scheme", v.Scheme,
+				"port_name", dash(v.PortName), "health_checks", dash(strings.Join(v.HealthChecks, ",")), "health", v.Health}
+			for _, b := range v.Backends {
+				kv = append(kv, "backend "+b.Group, dash(strings.Join(b.Health, ",")))
+			}
+			return v, output.KV(kv...)
+		},
+	})
+}
+
+func newForwardingRuleCmd(rt *app.Runtime) *cobra.Command {
+	return newComponentCmd(rt, componentSpec{kind: kindRule, use: "forwarding-rule", plural: "forwarding rules",
+		short:   "Forwarding rules of load balancers (regional and global)",
+		headers: []string{"NAME", "SCOPE", "REGION", "IP", "PORT", "PROTOCOL", "SCHEME", "TARGET"},
+		example: "  polyctl gcp compute forwarding-rule get fr-web-1",
+		row: func(x component) (any, []string) {
+			v := ruleRowOf(x.obj.(*compute.ForwardingRule))
+			target := v.Target
+			if target == "" {
+				target = v.Backend
+			}
+			return v, []string{v.Name, v.Scope, dash(v.Region), v.IPAddress, v.Port, v.IPProtocol, v.Scheme, dash(target)}
+		},
+		detail: func(_ context.Context, l *located) (any, output.Grid) {
+			v := ruleRowOf(l.obj.(*compute.ForwardingRule))
+			return v, output.KV("name", v.Name, "scope", v.Scope, "region", dash(v.Region), "ip_address", v.IPAddress, "port", v.Port,
+				"ip_protocol", v.IPProtocol, "scheme", v.Scheme, "target", dash(v.Target), "backend_service", dash(v.Backend),
+				"network", dash(v.Network), "network_tier", dash(v.NetworkTier), "load_balancer", dash(v.LoadBalancer))
+		},
+	})
+}
+
+func newHealthCheckCmd(rt *app.Runtime) *cobra.Command {
+	return newComponentCmd(rt, componentSpec{kind: kindHealthCheck, use: "health-check", plural: "health checks",
+		short:   "Health checks of load balancers (regional and global)",
+		usedBy:  "a backend service",
+		headers: []string{"NAME", "SCOPE", "REGION", "TYPE", "PORT", "INTERVAL", "TIMEOUT"},
+		example: "  polyctl gcp compute health-check get check-80 --region <region>",
+		row: func(x component) (any, []string) {
+			v := healthCheckRowOf(x.obj.(*compute.HealthCheck))
+			return v, []string{v.Name, v.Scope, dash(v.Region), v.Type, dash(v.Port), strconv.FormatInt(v.Interval, 10) + "s", strconv.FormatInt(v.Timeout, 10) + "s"}
+		},
+		detail: func(_ context.Context, l *located) (any, output.Grid) {
+			v := healthCheckRowOf(l.obj.(*compute.HealthCheck))
+			return v, output.KV("name", v.Name, "scope", v.Scope, "region", dash(v.Region), "type", v.Type, "port", dash(v.Port),
+				"check_interval_sec", strconv.FormatInt(v.Interval, 10), "timeout_sec", strconv.FormatInt(v.Timeout, 10),
+				"healthy_threshold", strconv.FormatInt(v.Healthy, 10), "unhealthy_threshold", strconv.FormatInt(v.Unhealty, 10))
+		},
+	})
+}
+
+func newInstanceGroupCmd(rt *app.Runtime) *cobra.Command {
+	return newComponentCmd(rt, componentSpec{kind: kindInstanceGroup, use: "instance-group", plural: "instance groups", zonal: true,
+		short:   "Unmanaged instance groups (zonal) behind load balancers",
+		usedBy:  "a backend service",
+		headers: []string{"NAME", "ZONE", "SIZE", "NAMED-PORTS", "NETWORK"},
+		example: "  polyctl gcp compute instance-group get ig-web-1 --zone <zone>",
+		row: func(x component) (any, []string) {
+			v := groupRowOf(x.obj.(*compute.InstanceGroup))
+			return v, []string{v.Name, v.Zone, strconv.FormatInt(v.Size, 10), dash(strings.Join(v.NamedPorts, ",")), dash(v.Network)}
+		},
+		detail: func(ctx context.Context, l *located) (any, output.Grid) {
+			d := groupDetailOf(ctx, l.c, l.obj.(*compute.InstanceGroup))
+			var members []string
+			for _, m := range d.Members {
+				members = append(members, m.Instance+" ("+dash(m.Status)+")")
+			}
+			return d, output.KV("name", d.Name, "zone", d.Zone, "size", strconv.FormatInt(d.Size, 10), "named_ports", dash(strings.Join(d.NamedPorts, ",")),
+				"network", dash(d.Network), "members", dash(strings.Join(members, ", ")))
+		},
+	})
+}
