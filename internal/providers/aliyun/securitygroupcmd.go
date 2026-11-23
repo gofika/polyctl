@@ -296,6 +296,11 @@ cached in the local inventory per region. --vpc keeps the groups of one VPC
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+			if vpc != "" && !looksLikeVPCID(vpc) {
+				// The list is served from the inventory, which knows VPC ids
+				// only: a name would silently match nothing.
+				return app.UsageErrf("--vpc %q: list takes a VPC id (vpc-...)", vpc)
+			}
 			prof, err := rt.ProfileFor(platform.Aliyun)
 			if err != nil {
 				return err

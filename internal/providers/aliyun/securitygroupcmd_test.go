@@ -396,6 +396,9 @@ func TestSGListUsesInventoryPerRegion(t *testing.T) {
 	if len(sgs) != 1 || sgs[0].ID != "sg-a" || len(h.api.callsFor("DescribeSecurityGroups")) != calls {
 		t.Errorf("cached list --vpc = %+v (calls %d -> %d)", sgs, calls, len(h.api.callsFor("DescribeSecurityGroups")))
 	}
+	if err := h.run("ecs", "security-group", "list", "--vpc", "cn-shanghai-vpc"); !errors.Is(err, app.ErrUsage) {
+		t.Errorf("list --vpc <name> = %v, want a usage error", err)
+	}
 	f.groups = nil
 	if err := h.run("ecs", "security-group", "list", "--region", "cn-hongkong"); err != nil {
 		t.Fatal(err)
