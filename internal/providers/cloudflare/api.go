@@ -63,6 +63,9 @@ type resultInfo struct {
 	Count      int `json:"count"`
 	TotalCount int `json:"total_count"`
 	TotalPages int `json:"total_pages"`
+	// Cursor is the opaque position of the next page of a cursor-paged
+	// listing (R2 buckets); absent on the last page.
+	Cursor string `json:"cursor,omitempty"`
 }
 
 type envelope struct {
@@ -130,7 +133,17 @@ var notFoundCodes = map[int]bool{
 	81044: true, // Record does not exist
 }
 
+// codeR2NotEnabled is the answer of every R2 endpoint of an account that has
+// not enabled R2 (HTTP 403).
+const codeR2NotEnabled = 10042
+
 func classify(status int, msgs []message) error {
+	for _, m := range msgs {
+		if m.Code == codeR2NotEnabled {
+			// The account cannot serve R2 at all: not a credentials problem.
+			return platform.ErrNotSupported
+		}
+	}
 	switch status {
 	case http.StatusUnauthorized, http.StatusForbidden:
 		return platform.ErrUnauthorized
@@ -424,6 +437,7 @@ type apiRecord struct {
 	Comment    string         `json:"comment,omitempty"`
 	Tags       []string       `json:"tags,omitempty"`
 	Data       map[string]any `json:"data,omitempty"`
+	Meta       map[string]any `json:"meta,omitempty"`
 	CreatedOn  string         `json:"created_on,omitempty"`
 	ModifiedOn string         `json:"modified_on,omitempty"`
 }
@@ -455,6 +469,21 @@ func isDataType(t string) bool { return dataTypes[strings.ToUpper(t)] }
 
 func (a *api) listRecords(ctx context.Context, zoneID string) ([]apiRecord, error) {
 	return paginate[apiRecord](ctx, a, "/zones/"+url.PathEscape(zoneID)+"/dns_records", nil, recordsPerPage)
+}
+
+// listRecordsNamed returns the records of a zone with the exact name fqdn.
+func (a *api) listRecordsNamed(ctx context.Context, zoneID, fqdn string) ([]apiRecord, error) {
+	q := url.Values{}
+	q.Set("name", fqdn)
+	return paginate[apiRecord](ctx, a, "/zones/"+url.PathEscape(zoneID)+"/dns_records", q, recordsPerPage)
+}
+
+func (a *api) getRecord(ctx context.Context, zoneID, recordID string) (*apiRecord, error) {
+	var r apiRecord
+	if _, err := a.do(ctx, http.MethodGet, "/zones/"+url.PathEscape(zoneID)+"/dns_records/"+url.PathEscape(recordID), nil, nil, &r); err != nil {
+		return nil, err
+	}
+	return &r, nil
 }
 
 func (a *api) createRecord(ctx context.Context, zoneID string, body recordBody) (*apiRecord, error) {
@@ -508,7 +537,7 @@ func toRecord(r apiRecord) platform.Record {
 	if r.ModifiedOn != "" {
 		extra["modified_on"] = r.ModifiedOn
 	}
-	return platform.Record{
+	rec := platform.Record{
 		ID:       r.ID,
 		ZoneID:   r.ZoneID,
 		Name:     platform.NormalizeDomain(r.Name),
@@ -519,6 +548,10 @@ func toRecord(r apiRecord) platform.Record {
 		Proxied:  r.Proxied,
 		Extra:    extra,
 	}
+	if len(r.Meta) > 0 {
+		rec.Meta = r.Meta
+	}
+	return rec
 }
 
 // toBody converts a neutral Record into the write payload. TTL 0 becomes 1

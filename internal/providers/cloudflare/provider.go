@@ -496,6 +496,11 @@ func (p *provider) Open(ctx context.Context, prof platform.Profile) (platform.Cl
 type Client struct {
 	api     *api
 	profile platform.Profile
+	// peers opens the other Cloudflare accounts (set by the runtime).
+	peers func(ctx context.Context) ([]platform.Peer, error)
+	// r2AccountID caches the account R2 requests go to when the profile
+	// pins none.
+	r2AccountID string
 }
 
 var (

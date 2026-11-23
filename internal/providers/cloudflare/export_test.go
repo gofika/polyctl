@@ -67,3 +67,12 @@ const (
 	SecretExpiry       = secretExpiry
 	SecretScopes       = secretScopes
 )
+
+// UseBaseURL points the registered provider at a fake API for the duration
+// of the test.
+func UseBaseURL(t *testing.T, url string) {
+	t.Helper()
+	old := apiBaseURL
+	apiBaseURL = url
+	t.Cleanup(func() { apiBaseURL = old })
+}

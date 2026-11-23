@@ -89,6 +89,10 @@ func scopeFor(method, path string) string {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	switch parts[0] {
 	case "accounts":
+		if len(parts) >= 3 && parts[2] == "r2" {
+			// R2 is not among the scopes of polyctl's OAuth client.
+			return ""
+		}
 		return scopeAccountRead
 	case "user":
 		return scopeUserRead
