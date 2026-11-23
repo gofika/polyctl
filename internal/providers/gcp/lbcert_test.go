@@ -3,6 +3,7 @@ package gcp
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/cert"
+	"github.com/gofika/polyctl/internal/config"
 	"github.com/gofika/polyctl/internal/platform"
 )
 
@@ -359,5 +361,31 @@ func TestLBCertSetRouting(t *testing.T) {
 	defer func() { h.rt.Flags.Offline = false }()
 	if err := h.run(args...); exitClass(err) != "offline" {
 		t.Errorf("offline = %v", err)
+	}
+}
+
+func TestLBCertSetProfileWithoutGCPAccount(t *testing.T) {
+	h := newGCPHarness(t, app.Flags{}, nil)
+	cfg, err := config.Load(filepath.Join(h.dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Profiles["dns"] = &config.Profile{Platforms: map[platform.ID]*config.Account{platform.Cloudflare: {Metadata: map[string]string{}}}}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.rt.ReloadConfig(); err != nil {
+		t.Fatal(err)
+	}
+	p := newPair(t, []string{"example.com"}, 90)
+	args := []string{"compute", "load-balancer", "cert", "set", "lb-web-1", "--domain", "example.com", "--cert-file", p.certFile, "--key-file", p.keyFile}
+	h.rt.Flags.Profile = "dns"
+	defer func() { h.rt.Flags.Profile = "" }()
+	if err := h.run(args...); exitClass(err) != "unsupported" {
+		t.Errorf("profile without gcp = %v", err)
+	}
+	h.rt.Flags.Profile = "nope"
+	if err := h.run(args...); exitClass(err) != "notfound" {
+		t.Errorf("unknown profile = %v", err)
 	}
 }

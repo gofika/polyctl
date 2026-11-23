@@ -155,6 +155,13 @@ func (c *client) urlMapScopes(ctx context.Context, name string) ([]string, error
 // accepts any scope.
 func resolveLB(ctx context.Context, rt *app.Runtime, ref, region string, all bool, timeout time.Duration) (*lbRef, error) {
 	fits := func(r string) bool { return all || r == region }
+	if rt.Flags.Profile != "" {
+		// A --profile without a GCP account is exit code 7, an unknown
+		// one exit code 4, before anything is searched.
+		if _, err := gcpProfile(rt); err != nil {
+			return nil, err
+		}
+	}
 	res, err := rt.ResolveResource(ctx, platform.GCP, platform.ResLoadBalancer, ref)
 	switch {
 	case err == nil:
@@ -637,8 +644,10 @@ func ensureHTTPSRule(ctx context.Context, rt *app.Runtime, s certScope, lb *lbRe
 			}
 			steps = append(steps, platform.Step{Resource: "address/" + addrName, Action: platform.Created, Desc: "promote ephemeral " + ip,
 				Apply: func(ctx context.Context) (platform.Change, error) {
-					_, err := s.c.insertAddress(ctx, s.region, &compute.Address{Name: addrName, Address: ip, AddressType: addrExternal, NetworkTier: tier})
-					return platform.Change{Detail: "promoted from ephemeral " + ip}, err
+					wctx, cancel, conv := deadline(ctx, s.timeout, "address/"+addrName, "RESERVED")
+					defer cancel()
+					_, err := s.c.insertAddress(wctx, s.region, &compute.Address{Name: addrName, Address: ip, AddressType: addrExternal, NetworkTier: tier})
+					return platform.Change{Detail: "promoted from ephemeral " + ip}, conv(err)
 				}})
 		}
 	}
@@ -664,6 +673,9 @@ func ensureHTTPSRule(ctx context.Context, rt *app.Runtime, s certScope, lb *lbRe
 				return platform.Change{}, computeErr(err)
 			}
 			if !o.wait {
+				if len(labels) > 0 {
+					rt.Infof("warning: --no-wait: the labels of %s were not copied to forwarding rule %s", rule80.Name, name)
+				}
 				return platform.Change{Detail: desc + " (requested)"}, opError(op)
 			}
 			if err := s.wait(ctx, op); err != nil {
