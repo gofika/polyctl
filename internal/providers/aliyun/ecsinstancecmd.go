@@ -1,0 +1,956 @@
+package aliyun
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"github.com/gofika/polyctl/internal/app"
+	"github.com/gofika/polyctl/internal/output"
+	"github.com/gofika/polyctl/internal/platform"
+)
+
+// ------------------------------------------------------------ routing
+
+// resolveECSInstance finds the instance ref names (an id, i-..., or a
+// name) and opens the account that holds it in its region. With region,
+// the selected profile is asked directly in that region. Otherwise the
+// inventory tells which account and region hold it (one sync of the stale
+// accounts when none does; several matches are ambiguous, exit code 5),
+// and the instance is then read live by id. Names are compared
+// case-sensitively: Alibaba Cloud does not keep them unique, and its name
+// filter ignores case.
+func resolveECSInstance(ctx context.Context, rt *app.Runtime, ref, region string) (*ecsScope, *Instance, error) {
+	if strings.TrimSpace(ref) == "" {
+		return nil, nil, app.UsageErrf("the instance name or id is empty")
+	}
+	if rt.Flags.Offline {
+		return nil, nil, app.ErrOffline
+	}
+	if region != "" {
+		s, err := openECSScope(ctx, rt, region)
+		if err != nil {
+			return nil, nil, err
+		}
+		in, err := findInstanceIn(ctx, s, ref)
+		if err != nil {
+			return nil, nil, err
+		}
+		storeInstance(ctx, rt, s.profile, *in)
+		return s, in, nil
+	}
+	res, err := rt.ResolveResource(ctx, platform.Aliyun, platform.ResInstance, ref)
+	if err != nil {
+		if errors.Is(err, platform.ErrNotFound) {
+			return nil, nil, fmt.Errorf("%w (an instance outside the profile's region is found with --region <region>)", err)
+		}
+		return nil, nil, err
+	}
+	var cached Instance
+	_ = res.Decode(&cached)
+	instRegion := cached.Region
+	if instRegion == "" {
+		instRegion = res.ParentID
+	}
+	c, err := openNamed(rt, ctx, res.Profile)
+	if err != nil {
+		return nil, nil, err
+	}
+	s := &ecsScope{c: c, profile: res.Profile, region: c.regionOr(instRegion)}
+	in, err := c.describeInstance(ctx, s.region, res.ID)
+	if errors.Is(err, platform.ErrNotFound) {
+		dropInstance(ctx, rt, res.Profile, res.ID)
+		return nil, nil, fmt.Errorf("%w: instance %s (%s) no longer exists in %s (removed from the local inventory)", platform.ErrNotFound, ref, res.ID, s.where())
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	storeInstance(ctx, rt, s.profile, *in)
+	return s, in, nil
+}
+
+// findInstanceIn returns the instance ref names in the scope's region.
+func findInstanceIn(ctx context.Context, s *ecsScope, ref string) (*Instance, error) {
+	if looksLikeInstanceID(ref) {
+		return s.c.describeInstance(ctx, s.region, ref)
+	}
+	found, err := s.c.findInstances(ctx, s.region, ref)
+	if err != nil {
+		return nil, err
+	}
+	switch len(found) {
+	case 0:
+		return nil, fmt.Errorf("%w: instance %q in %s", platform.ErrNotFound, ref, s.where())
+	case 1:
+		return &found[0], nil
+	}
+	return nil, ambiguousInstances(ref, s, found)
+}
+
+func ambiguousInstances(ref string, s *ecsScope, found []Instance) error {
+	var ids []string
+	for _, in := range found {
+		ids = append(ids, in.ID+" ("+in.Status+")")
+	}
+	return &app.AmbiguousError{What: fmt.Sprintf("instance %q in %s", ref, s.where()), Candidates: ids,
+		Hint: "Alibaba Cloud lets several instances share a name; pass the instance id"}
+}
+
+// ---------------------------------------------------------------- get
+
+// instanceDetail is the output of `instance get`.
+type instanceDetail struct {
+	Name             string   `json:"name" yaml:"name"`
+	ID               string   `json:"id" yaml:"id"`
+	Profile          string   `json:"profile" yaml:"profile"`
+	Region           string   `json:"region" yaml:"region"`
+	Zone             string   `json:"zone" yaml:"zone"`
+	Type             string   `json:"type" yaml:"type"`
+	Status           string   `json:"status" yaml:"status"`
+	PublicIP         string   `json:"public_ip" yaml:"public_ip"`
+	PrivateIP        string   `json:"private_ip" yaml:"private_ip"`
+	EIP              *eipRef  `json:"eip" yaml:"eip"`
+	VpcID            string   `json:"vpc_id" yaml:"vpc_id"`
+	VSwitchID        string   `json:"vswitch_id" yaml:"vswitch_id"`
+	SecurityGroupIDs []string `json:"security_group_ids" yaml:"security_group_ids"`
+	KeyPair          string   `json:"key_pair" yaml:"key_pair"`
+	CreatedAt        string   `json:"created_at" yaml:"created_at"`
+	Cached           bool     `json:"cached" yaml:"cached"`
+}
+
+func detailOf(profile string, in Instance, cached bool) instanceDetail {
+	d := instanceDetail{Name: in.Name, ID: in.ID, Profile: profile, Region: in.Region, Zone: in.Zone, Type: in.Type, Status: in.Status,
+		PublicIP: in.PublicIP, PrivateIP: in.PrivateIP, VpcID: in.VpcID, VSwitchID: in.VSwitchID, KeyPair: in.KeyPair,
+		SecurityGroupIDs: in.SecurityGroupIDs, CreatedAt: createdAt(in.CreationTime), Cached: cached}
+	if d.SecurityGroupIDs == nil {
+		d.SecurityGroupIDs = []string{}
+	}
+	if in.EIP != "" {
+		d.EIP = &eipRef{AllocationID: in.EIPAllocationID, IP: in.EIP}
+	}
+	return d
+}
+
+// createdAt writes a creation time as RFC 3339; Alibaba Cloud keeps minutes
+// only (2026-11-17T16:10Z). A value it cannot read is kept as it is.
+func createdAt(s string) string {
+	if t, ok := parseKeyPairTime(s); ok {
+		return t.UTC().Format(time.RFC3339)
+	}
+	return s
+}
+
+func detailGrid(d instanceDetail) output.Grid {
+	eip := "no"
+	if d.EIP != nil {
+		eip = "yes"
+	}
+	return output.Grid{Headers: []string{"NAME", "ID", "REGION", "TYPE", "STATUS", "PUBLIC_IP", "PRIVATE_IP", "EIP"},
+		Rows: [][]string{{d.Name, d.ID, d.Region, d.Type, d.Status, d.PublicIP, d.PrivateIP, eip}}}
+}
+
+func ecsGetCmd(rt *app.Runtime) *cobra.Command {
+	var region string
+	cmd := &cobra.Command{
+		Use:   "get <name|id>",
+		Short: "Show an ECS instance with its addresses",
+		Long: `Show an ECS instance: its type, status, public and private address and EIP.
+<name|id> is an instance id (i-...) or a name. Without --region the local
+inventory tells which account and region hold it (synced once when it does
+not know the instance; several instances of the name are ambiguous, exit
+code 5, pass the id), and the instance is then read live. With --region the
+selected profile is asked in that region. The public address is the
+instance's own one, else its EIP's; the private address is the primary
+address of its network interface. With --offline the local inventory is
+shown as it is (exit code 6 when it does not hold the instance).`,
+		Example: "  polyctl aliyun ecs instance get site-a -o json",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			if rt.Flags.Offline {
+				res, err := rt.ResolveResource(ctx, platform.Aliyun, platform.ResInstance, args[0])
+				if errors.Is(err, platform.ErrNotFound) {
+					return fmt.Errorf("%w: instance %q is not in the local inventory", app.ErrOffline, args[0])
+				}
+				if err != nil {
+					return err
+				}
+				var in Instance
+				if err := res.Decode(&in); err != nil {
+					return fmt.Errorf("decode cached instance %s: %w", res.ID, err)
+				}
+				d := detailOf(res.Profile, in, true)
+				rt.Infof("instance %s via aliyun/%s (local inventory; --refresh reads it again)", in.ID, res.Profile)
+				return rt.Render(d, func() output.Grid { return detailGrid(d) })
+			}
+			s, in, err := resolveECSInstance(ctx, rt, args[0], region)
+			if err != nil {
+				return err
+			}
+			d := detailOf(s.profile, *in, false)
+			if d.Region == "" {
+				d.Region = s.region
+			}
+			rt.Infof("instance %s in %s", in.ID, s.where())
+			return rt.Render(d, func() output.Grid { return detailGrid(d) })
+		},
+	}
+	cmd.Flags().StringVar(&region, "region", "", "region of the instance (default: look it up in the inventory of every account)")
+	return cmd
+}
+
+// ------------------------------------------------------------- create
+
+// instanceFlags are the flags create and ensure share.
+type instanceFlags struct {
+	typ, image, osName, diskCategory, vswitch, securityGroup string
+	disk                                                     int
+	keys                                                     app.KeyFlags
+	eip                                                      bool
+	wait                                                     app.WaitFlags
+	region                                                   string
+}
+
+func (f *instanceFlags) add(cmd *cobra.Command, eipDefault, waitDefault bool, typeHelp, sgHelp string) {
+	cmd.Flags().StringVar(&f.typ, "type", "", typeHelp)
+	cmd.Flags().StringVar(&f.image, "image", "", "image id (default: the newest image of --os)")
+	cmd.Flags().StringVar(&f.osName, "os", osAlibabaCloudLinux, "operating system of the image when --image is not given: "+osAlibabaCloudLinux)
+	cmd.Flags().IntVar(&f.disk, "disk", defaultSystemDiskGiB, "system disk size in GiB (at least the image's size)")
+	cmd.Flags().StringVar(&f.diskCategory, "disk-category", defaultSystemDiskCat, "system disk category (cloud_essd_entry, cloud_essd, cloud_auto, ...)")
+	cmd.Flags().StringVar(&f.vswitch, "vswitch", "", "vSwitch of the instance, id or name (it decides the zone)")
+	cmd.Flags().StringVar(&f.securityGroup, "security-group", "", sgHelp)
+	app.AddKeyFlags(cmd, &f.keys)
+	eipHelp := "bind an EIP once the instance is Running (an idle EIP is reused, else one is allocated)"
+	if eipDefault {
+		eipHelp += "; --eip=false skips it"
+	}
+	cmd.Flags().BoolVar(&f.eip, "eip", eipDefault, eipHelp)
+	app.AddWaitFlags(cmd, &f.wait, waitDefault, defaultInstanceTimeout)
+	cmd.Flags().StringVar(&f.region, "region", "", "region id (default: the profile's region)")
+}
+
+// check validates the flags that need no account.
+func (f *instanceFlags) check(cmd *cobra.Command) error {
+	if f.disk <= 0 {
+		return app.UsageErrf("--disk must be a positive number of GiB, got %d", f.disk)
+	}
+	if strings.TrimSpace(f.diskCategory) == "" {
+		return app.UsageErrf("--disk-category is empty")
+	}
+	if f.image == "" && f.osName != osAlibabaCloudLinux {
+		return app.UsageErrf("unsupported os %q: --os takes %s (or pass --image <id>)", f.osName, osAlibabaCloudLinux)
+	}
+	if f.image != "" && cmd.Flags().Changed("os") {
+		return app.UsageErrf("--image and --os are mutually exclusive")
+	}
+	return nil
+}
+
+// resolveImage returns --image, else the newest image of --os (a read-only
+// call, made in a dry run too).
+func (f *instanceFlags) resolveImage(ctx context.Context, s *ecsScope) (string, error) {
+	if f.image != "" {
+		return f.image, nil
+	}
+	im, err := s.c.latestAlinuxImage(ctx, s.region, archX86)
+	if err != nil {
+		return "", err
+	}
+	return im.ImageID, nil
+}
+
+// keyInput is the key pair input of create and ensure.
+func (f *instanceFlags) keyInput(rt *app.Runtime) (platform.KeyInput, error) {
+	if f.keys.KeyPair != "" {
+		if err := checkKeyPairName(f.keys.KeyPair); err != nil {
+			return platform.KeyInput{}, err
+		}
+	}
+	in, err := rt.KeyInput(&f.keys, platform.KeyInput{Match: platform.MatchByFingerprintMD5,
+		AllowedTypes: platform.AliyunKeyTypes, MinNameLength: keyPairNameMin})
+	if err != nil {
+		return in, err
+	}
+	if in.Key != nil {
+		if err := in.Key.CheckType(platform.AliyunKeyTypes); err != nil {
+			return in, err
+		}
+	}
+	return in, nil
+}
+
+// createDesc describes the instance a step creates.
+func createDesc(typ string, disk int, category, image string) string {
+	return fmt.Sprintf("%s, system disk %dGiB %s, image %s", typ, disk, category, image)
+}
+
+// runStep is the step that creates the instance; the ids of the security
+// group, the vSwitch and the key pair are read when it runs (an earlier
+// step may create them). It stores the new id in *id.
+// fresh reports that the group or the vSwitch was created by this run: a
+// RunInstances that does not find them yet is then retried a few times.
+func runStep(rt *app.Runtime, s *ecsScope, name, host string, f *instanceFlags, image string, sg, vsw, kp func() string, fresh func() bool, id *string) platform.Step {
+	desc := createDesc(f.typ, f.disk, f.diskCategory, image)
+	if host != name {
+		desc += ", host name " + host
+	}
+	return platform.Step{Resource: "instance/" + name, Action: platform.Created, Desc: desc,
+		Apply: func(ctx context.Context) (platform.Change, error) {
+			spec := runSpec{Name: name, HostName: host, Type: f.typ, Image: image, SecurityGroup: sg(), VSwitch: vsw(), KeyPair: kp(),
+				DiskGiB: f.disk, DiskCategory: f.diskCategory}
+			spec.ClientToken = spec.token(s.profile, s.region)
+			var iid string
+			run := func(ctx context.Context) error {
+				var err error
+				iid, err = s.c.runInstance(ctx, s.region, spec)
+				return err
+			}
+			var err error
+			if fresh != nil && fresh() {
+				err = platform.Retry(ctx, platform.RetryPolicy{Codes: []string{errSGIDNotFound, errVSwitchNotExist}, Initial: 2 * time.Second,
+					Max: 4 * time.Second, MaxAttempts: 5, Clock: netClock()}, run)
+			} else {
+				err = run(ctx)
+			}
+			if err != nil {
+				return platform.Change{}, err
+			}
+			*id = iid
+			if in, err := s.c.describeInstance(ctx, s.region, iid); err == nil {
+				storeInstance(ctx, rt, s.profile, *in)
+			} else {
+				storeInstance(ctx, rt, s.profile, Instance{ID: iid, Name: name, Type: f.typ, Region: s.region, Status: instPending})
+			}
+			detail := iid + " " + f.typ
+			if host != name {
+				detail += " (host name " + host + ")"
+			}
+			return platform.Change{ID: iid, Detail: detail}, nil
+		}}
+}
+
+// waitStep is the "instance/<name> status" step: it waits until the
+// instance is Running.
+func waitStep(rt *app.Runtime, s *ecsScope, name string, id func() string, timeout time.Duration) platform.Step {
+	return platform.Step{Resource: "instance/" + name + " status", Action: platform.Updated, Desc: "wait " + instRunning,
+		Apply: func(ctx context.Context) (platform.Change, error) {
+			took, err := waitInstanceRunning(ctx, s, id(), name, timeout)
+			if err != nil {
+				return platform.Change{ID: id()}, fmt.Errorf("instance %s (%s) was created and is kept; run ensure again to go on: %w", name, id(), err)
+			}
+			if in, err := s.c.describeInstance(ctx, s.region, id()); err == nil {
+				storeInstance(ctx, rt, s.profile, *in)
+			}
+			return platform.Change{ID: id(), Detail: fmt.Sprintf("%s (waited %s)", instRunning, took.Round(time.Second))}, nil
+		}}
+}
+
+// eipPlan decides how an instance without an EIP gets one: an idle EIP of
+// the region (read now, in a dry run too), else a new one.
+type eipPlan struct {
+	idle *eipAddress
+	spec eipSpec
+}
+
+func planEIP(ctx context.Context, rt *app.Runtime, s *ecsScope) (eipPlan, error) {
+	spec, err := eipSettings(rt, s.profile, "", "")
+	if err != nil {
+		return eipPlan{}, err
+	}
+	eips, err := s.c.listEIPs(ctx, s.region, eipFilter{})
+	if err != nil {
+		return eipPlan{}, err
+	}
+	for _, e := range eips {
+		storeEIP(ctx, rt, s.profile, e)
+	}
+	if e := pickIdleEIP(eips, spec.ISP, nil); e != nil {
+		return eipPlan{idle: e, spec: spec}, nil
+	}
+	if spec.ResourceGroup, err = resolveResourceGroup(ctx, rt, s, ""); err != nil {
+		return eipPlan{}, err
+	}
+	return eipPlan{spec: spec}, nil
+}
+
+// associateRetry retries a binding refused because the EIP or the instance
+// is not ready yet: 3 seconds apart, 10 attempts. Which codes ECS answers
+// then is not verified, so every status refusal counts.
+func associateRetry(ctx context.Context, fn func(ctx context.Context) error) error {
+	return platform.Retry(ctx, platform.RetryPolicy{Initial: 3 * time.Second, Max: 3 * time.Second, Multiplier: 1, MaxAttempts: 10,
+		Timeout: time.Minute, Clock: netClock(), Match: func(err error) bool {
+			code := platform.ErrorCode(err)
+			return strings.HasPrefix(code, "Incorrect") || strings.Contains(code, "Status") || strings.Contains(code, "TaskConflict")
+		}}, fn)
+}
+
+// eipStep binds an EIP to the instance: the idle one of p, else a new one.
+// The address reported is the EIP's own (the instance's EipAddress may lag).
+func eipStep(rt *app.Runtime, s *ecsScope, name string, id func() string, p eipPlan, result *eipRef) platform.Step {
+	step := platform.Step{Resource: "eip/" + name}
+	if p.idle != nil {
+		step.Action = platform.Updated
+		step.ID = p.idle.AllocationID
+		step.Desc = "reuse idle " + p.idle.IP + " " + p.idle.AllocationID
+		*result = eipRef{AllocationID: p.idle.AllocationID, IP: p.idle.IP}
+	} else {
+		step.Action = platform.Created
+		step.Desc = "allocate " + p.spec.summary()
+		*result = eipRef{AllocationID: platform.Pending}
+	}
+	step.Apply = func(ctx context.Context) (platform.Change, error) {
+		e := eipAddress{}
+		if p.idle != nil {
+			e = *p.idle
+		} else {
+			fresh, err := allocateAndRead(ctx, rt, s, p.spec)
+			if err != nil {
+				return platform.Change{ID: fresh.AllocationID}, err
+			}
+			e = fresh
+		}
+		*result = eipRef{AllocationID: e.AllocationID, IP: e.IP}
+		err := associateRetry(ctx, func(ctx context.Context) error { return s.c.associateEIP(ctx, s.region, e.AllocationID, id()) })
+		if err != nil {
+			return platform.Change{ID: e.AllocationID}, fmt.Errorf("bind EIP %s (%s) to %s: %w", e.AllocationID, e.IP, id(), err)
+		}
+		if err := waitEIP(ctx, s, e.AllocationID, eipInUse+" by "+id(), func(x eipAddress) bool {
+			return x.Status == eipInUse && x.InstanceID == id()
+		}); err != nil {
+			rt.Infof("warning: EIP %s: %v", e.AllocationID, err)
+		}
+		refreshEIP(ctx, rt, s, e.AllocationID)
+		refreshInstance(rt, ctx, s.c, s.profile, s.region, id())
+		verb := "associated"
+		if p.idle == nil {
+			verb = "allocated and associated"
+		}
+		return platform.Change{ID: e.AllocationID, Detail: fmt.Sprintf("%s %s %s", e.IP, e.AllocationID, verb),
+			Attrs: map[string]string{"ip": e.IP, "allocation_id": e.AllocationID}}, nil
+	}
+	return step
+}
+
+func ecsCreateCmd(rt *app.Runtime) *cobra.Command {
+	var f instanceFlags
+	cmd := &cobra.Command{
+		Use:   "create <name>",
+		Short: "Create an ECS instance from existing network resources",
+		Long: `Create the ECS instance <name>, pay as you go, without a public address of its
+own (outbound bandwidth 0): the public address is an EIP (--eip). Nothing
+else is created except the key pair: use ensure to create the VPC, the
+vSwitches and the security group as well.
+
+- --type is required (or defaults.aliyun.ecs_instance_type).
+- --vswitch (id or name) places the instance and decides its zone; default
+  the vSwitch named by naming.aliyun_vswitch for zone b ({region}-switch-b)
+  in the VPC named by naming.aliyun_vpc, which must exist.
+- --security-group (name or id; required) is looked up in the vSwitch's
+  VPC.
+- The key pair: an existing one first (--key-pair, or the key pair that
+  holds --ssh-key / --ssh-key-file, compared by fingerprint), else the key
+  is imported under --key-pair (asked for on a terminal; no name is ever
+  chosen for you).
+- The image is --image, else the newest image of --os (alibaba-cloud-linux).
+  The system disk is --disk GiB of --disk-category.
+- The host name is the name with every character other than letters,
+  digits, hyphens and dots replaced by a hyphen, cut to 64 characters.
+- An instance of the name in the region is exit code 1: use ensure.
+- --wait waits until it is Running (polled every 2 seconds, --timeout);
+  --eip waits too, then binds an idle EIP of the region, else a new one.`,
+		Example: `  polyctl aliyun ecs instance create site-a --type ecs.u1-c1m1.large --security-group sg-common \
+    --key-pair ops --ssh-key-file ~/.ssh/id_ed25519.pub --wait`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			name := args[0]
+			if err := checkInstanceName(name); err != nil {
+				return err
+			}
+			host, renamed, err := normalizeHostName(name)
+			if err != nil {
+				return err
+			}
+			if err := f.check(cmd); err != nil {
+				return err
+			}
+			if f.securityGroup == "" {
+				return app.UsageErrf("--security-group is required: pass the name or id of a security group of the vSwitch's VPC (or use ensure)")
+			}
+			wait, timeout, err := f.wait.Resolve(cmd)
+			if err != nil {
+				return err
+			}
+			in, err := f.keyInput(rt)
+			if err != nil {
+				return err
+			}
+			if rt.Flags.Offline {
+				return app.ErrOffline
+			}
+			s, err := openECSScope(ctx, rt, f.region)
+			if err != nil {
+				return err
+			}
+			if f.typ, err = rt.RequireSetting(s.profile, platform.Aliyun, "ecs_instance_type", "type", f.typ); err != nil {
+				return err
+			}
+			vsw, err := createVSwitch(ctx, rt, s, f.vswitch)
+			if err != nil {
+				return err
+			}
+			sg, err := findInstanceSG(ctx, s, f.securityGroup, vsw.VPC)
+			if err != nil {
+				return err
+			}
+			if sg == nil {
+				return fmt.Errorf("%w: security group %q in %s (%s)", platform.ErrNotFound, f.securityGroup, s.where(), vsw.VPC)
+			}
+			if sg.VPC != vsw.VPC {
+				return fmt.Errorf("security group %s is in VPC %s and vSwitch %s in VPC %s: they must be in the same VPC", sg.ID, sg.VPC, vsw.ID, vsw.VPC)
+			}
+			if found, err := s.c.findInstances(ctx, s.region, name); err != nil {
+				return err
+			} else if len(found) > 0 {
+				return fmt.Errorf("instance %q already exists in %s (%s): use `polyctl aliyun ecs instance ensure %s` to reuse it", name, s.where(), found[0].ID, name)
+			}
+			image, err := f.resolveImage(ctx, s)
+			if err != nil {
+				return err
+			}
+			kp, kpStep, err := resolveKeyPairStep(ctx, rt, s, in)
+			if err != nil {
+				return err
+			}
+			if renamed {
+				rt.Infof("note: the host name of %s is %s (host names hold letters, digits, hyphens and dots only)", name, host)
+			}
+			var ep eipPlan
+			if f.eip {
+				if ep, err = planEIP(ctx, rt, s); err != nil {
+					return err
+				}
+				if !wait {
+					rt.Infof("note: --eip waits until the instance is Running before binding the EIP")
+				}
+			}
+			var plan platform.Plan
+			var instID string
+			id := func() string { return instID }
+			plan.Add(kpStep)
+			plan.Add(runStep(rt, s, name, host, &f, image, func() string { return sg.ID }, func() string { return vsw.ID }, func() string { return kp.Name }, nil, &instID))
+			if wait || f.eip {
+				plan.Add(waitStep(rt, s, name, id, timeout))
+			}
+			if f.eip {
+				var res eipRef
+				plan.Add(eipStep(rt, s, name, id, ep, &res))
+			}
+			return rt.Ensure(ctx, "aliyun.ecs.instance.create", s.target(), &plan)
+		},
+	}
+	f.add(cmd, false, false, "instance type (required, unless defaults.aliyun.ecs_instance_type is set)", "security group of the instance, name or id (required)")
+	return cmd
+}
+
+// findInstanceSG finds the security group of an instance: the group of
+// that id when ref is written like one (sg-...) and such a group exists,
+// else the group of that exact name in vpc ("" when the VPC is still to be
+// created: nothing to look in). The default name sg-common starts like an
+// id, so a reference that is no group id is always looked up as a name too.
+func findInstanceSG(ctx context.Context, s *ecsScope, ref, vpc string) (*securityGroup, error) {
+	if looksLikeGroupID(ref) {
+		found, err := s.c.listSecurityGroups(ctx, s.region, "", "", fmt.Sprintf("[%q]", ref))
+		if err != nil {
+			code := platform.ErrorCode(err)
+			if !errors.Is(err, platform.ErrNotFound) && !strings.Contains(code, "Malformed") && code != "InvalidParameter" {
+				return nil, err
+			}
+		}
+		for i := range found {
+			if found[i].ID == ref {
+				return &found[i], nil
+			}
+		}
+	}
+	if vpc == "" {
+		return nil, nil
+	}
+	found, err := s.c.listSecurityGroups(ctx, s.region, vpc, ref, "")
+	if err != nil {
+		return nil, err
+	}
+	var named []securityGroup
+	for _, g := range found {
+		if g.Name == ref && g.VPC == vpc {
+			named = append(named, g)
+		}
+	}
+	switch len(named) {
+	case 0:
+		return nil, nil
+	case 1:
+		return &named[0], nil
+	}
+	var ids []string
+	for _, g := range named {
+		ids = append(ids, g.ID)
+	}
+	return nil, &app.AmbiguousError{What: fmt.Sprintf("security group %q in %s (%s)", ref, s.where(), vpc), Candidates: ids,
+		Hint: "Alibaba Cloud lets several groups share a name; pass the security group id"}
+}
+
+// checkInstanceSGName refuses a security group name Alibaba Cloud refuses.
+func checkInstanceSGName(name string) error {
+	switch {
+	case strings.TrimSpace(name) == "":
+		return app.UsageErrf("the security group name is empty")
+	case strings.HasPrefix(name, "http://"), strings.HasPrefix(name, "https://"):
+		return app.UsageErrf("security group name %q may not start with http:// or https://", name)
+	case len([]rune(name)) > sgNameMaxLength:
+		return app.UsageErrf("security group name %q is longer than %d characters", name, sgNameMaxLength)
+	}
+	return nil
+}
+
+// createVSwitch resolves the --vswitch of create: the vSwitch given (id or
+// name), else the default vSwitch of zone b in the default VPC.
+func createVSwitch(ctx context.Context, rt *app.Runtime, s *ecsScope, ref string) (*vSwitch, error) {
+	if ref != "" {
+		return resolveVSwitch(ctx, s, ref, "")
+	}
+	vpcName, err := rt.ResourceName("aliyun_vpc", "", map[string]string{"region": s.region})
+	if err != nil {
+		return nil, err
+	}
+	vswName, err := vswName(rt, s.region, "", zoneTarget{ID: s.region + "-" + defaultZones[0], Suffix: defaultZones[0]})
+	if err != nil {
+		return nil, err
+	}
+	v, err := resolveVSwitch(ctx, s, vswName, vpcName)
+	if errors.Is(err, platform.ErrNotFound) {
+		return nil, app.UsageErrf("no vSwitch for the instance: the default vSwitch %q of VPC %q does not exist in %s; pass --vswitch <id|name>, or use ensure", vswName, vpcName, s.region)
+	}
+	return v, err
+}
+
+// ------------------------------------------------------------- delete
+
+// showInstance prints an instance on stderr before a confirmation.
+func showInstance(rt *app.Runtime, s *ecsScope, in *Instance) {
+	rt.Infof("instance %s in %s", instanceLabel(in), s.where())
+	rt.Infof("  id          %s", in.ID)
+	rt.Infof("  type        %s", in.Type)
+	rt.Infof("  status      %s", in.Status)
+	rt.Infof("  private ip  %s", orNone(in.PrivateIP))
+	rt.Infof("  public ip   %s", orNone(in.PublicIP))
+	if in.EIP != "" {
+		rt.Infof("  eip         %s (%s)", in.EIP, in.EIPAllocationID)
+	}
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "none"
+	}
+	return s
+}
+
+// settle waits for an instance that is Pending, Starting or Stopping to be
+// Running or Stopped, and returns its status.
+func settle(ctx context.Context, rt *app.Runtime, s *ecsScope, in *Instance, timeout time.Duration) (string, error) {
+	switch in.Status {
+	case instRunning, instStopped:
+		return in.Status, nil
+	}
+	rt.Infof("instance %s is %s: waiting until it is Running or Stopped", instanceLabel(in), in.Status)
+	return waitInstanceSettled(ctx, s, in.ID, instanceLabel(in), timeout)
+}
+
+// stopAndWait stops a running instance and waits until it is Stopped.
+func stopAndWait(ctx context.Context, rt *app.Runtime, s *ecsScope, in *Instance, timeout time.Duration) error {
+	if err := retryInitializing(ctx, func(ctx context.Context) error { return s.c.StopInstance(ctx, s.region, in.ID, false) }); err != nil {
+		return err
+	}
+	if err := waitInstanceStatus(ctx, s, in.ID, instanceLabel(in), instStopped, timeout); err != nil {
+		return fmt.Errorf("stop of %s was requested: %w", instanceLabel(in), err)
+	}
+	refreshInstance(rt, ctx, s.c, s.profile, s.region, in.ID)
+	return nil
+}
+
+func ecsDeleteCmd(rt *app.Runtime) *cobra.Command {
+	var region string
+	var force bool
+	var timeout time.Duration
+	cmd := &cobra.Command{
+		Use:   "delete <name|id>",
+		Short: "Delete an ECS instance (asks first)",
+		Long: `Delete an ECS instance, found like get finds it. The instance and its
+addresses are shown, then a confirmation is asked (default no; --yes skips
+it, and the non-interactive flow needs --yes: exit code 2 without it).
+
+A Running instance is stopped first and deleted once Stopped; --force
+deletes it at once (DeleteInstance with Force). A Stopped instance is
+deleted. An instance that is Pending, Starting or Stopping is waited for
+until it is Running or Stopped (--timeout bounds every wait). A new
+instance cannot be deleted for about 45 seconds after its creation
+(IncorrectInstanceStatus.Initializing): the delete is retried for up to 2
+minutes. An instance with deletion protection is not deleted (exit code 1):
+switch the protection off in the console first.
+
+An EIP bound to the instance is not released: it becomes idle, stays billed
+and is reused by the next ensure.`,
+		Example: "  polyctl aliyun ecs instance delete site-a --yes",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			if timeout <= 0 {
+				return app.UsageErrf("--timeout must be a positive duration, got %s", timeout)
+			}
+			if !rt.DryRun() {
+				if err := rt.CanConfirm("delete instance " + args[0]); err != nil {
+					return err
+				}
+			}
+			s, in, err := resolveECSInstance(ctx, rt, args[0], region)
+			if err != nil {
+				return err
+			}
+			label := instanceLabel(in)
+			res := "instance/" + label
+			showInstance(rt, s, in)
+			if in.DeletionProtection {
+				return fmt.Errorf("instance %s (%s) has deletion protection: switch it off in the Alibaba Cloud console first (polyctl never does)", label, in.ID)
+			}
+			var changes []platform.Change
+			stopFirst := in.Status != instStopped && !force
+			if stopFirst {
+				changes = append(changes, platform.Change{Resource: res, Action: platform.Updated, ID: in.ID, Detail: "stop"})
+			}
+			del := platform.Change{Resource: res, Action: platform.Deleted, ID: in.ID, Detail: "delete"}
+			if force && in.Status != instStopped {
+				del.Detail = "delete (forced)"
+			}
+			changes = append(changes, del)
+			if done, err := rt.WouldWrite(s.target(), changes...); done || err != nil {
+				return err
+			}
+			rt.Infof("This cannot be undone! The instance and its system disk will be permanently deleted.")
+			ok, err := rt.Confirm(ctx, fmt.Sprintf("Delete instance %s (%s)?", label, in.ID), false)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return fmt.Errorf("%w: cancelled; instance %s was not deleted", platform.ErrNothingToDo, label)
+			}
+			st, err := settle(ctx, rt, s, in, timeout)
+			if err != nil {
+				return err
+			}
+			changes = changes[:0]
+			if st == instRunning && !force {
+				if err := stopAndWait(ctx, rt, s, in, timeout); err != nil {
+					return err
+				}
+				changes = append(changes, platform.Change{Resource: res, Action: platform.Updated, ID: in.ID, Detail: "stop; stopped"})
+			}
+			forced := st == instRunning && force
+			err = retryInitializing(ctx, func(ctx context.Context) error { return s.c.deleteInstance(ctx, s.region, in.ID, forced) })
+			if platform.HasErrorCode(err, errDeletionProtection) {
+				return fmt.Errorf("instance %s (%s) has deletion protection: switch it off in the Alibaba Cloud console first: %w", label, in.ID, err)
+			}
+			if err != nil {
+				return err
+			}
+			dropInstance(ctx, rt, s.profile, in.ID)
+			del.Detail = "deleted"
+			if forced {
+				del.Detail = "deleted (forced)"
+			}
+			changes = append(changes, del)
+			rt.Infof("instance %s (%s) deleted", label, in.ID)
+			if in.EIP != "" {
+				rt.Infof("note: EIP %s (%s) was unbound and is still billed; ensure reuses idle EIPs, release it in the console if it is no longer needed", in.EIP, in.EIPAllocationID)
+				refreshEIP(ctx, rt, s, in.EIPAllocationID)
+			}
+			return rt.RenderReport(platform.Report{Target: s.target(), Changes: changes})
+		},
+	}
+	cmd.Flags().BoolVar(&force, "force", false, "delete a Running instance at once instead of stopping it first")
+	cmd.Flags().DurationVar(&timeout, "timeout", defaultInstanceTimeout, "upper bound of each wait (a Go duration such as 90s or 10m)")
+	cmd.Flags().StringVar(&region, "region", "", "region of the instance (default: look it up in the inventory of every account)")
+	return cmd
+}
+
+// ------------------------------------------------------------- reboot
+
+func ecsRebootCmd(rt *app.Runtime) *cobra.Command {
+	var region string
+	var force bool
+	var w app.WaitFlags
+	cmd := &cobra.Command{
+		Use:   "reboot <name|id>",
+		Short: "Reboot a Running ECS instance",
+		Long: `Reboot a Running ECS instance, found like get finds it. --force stops it hard
+(ForceStop) instead of shutting it down. An instance that is not Running is
+exit code 1 (start a stopped one with start). --wait waits until it is
+Running again: a Running read counts only after the instance was seen
+leaving Running (or 30 seconds after the reboot), so a read taken before
+the reboot began does not end the wait.`,
+		Example: "  polyctl aliyun ecs instance reboot site-a --wait",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			wait, timeout, err := w.Resolve(cmd)
+			if err != nil {
+				return err
+			}
+			s, in, err := resolveECSInstance(ctx, rt, args[0], region)
+			if err != nil {
+				return err
+			}
+			label := instanceLabel(in)
+			if in.Status != instRunning {
+				return fmt.Errorf("instance %s (%s) is %s: only a Running instance can be rebooted (start a stopped one with `polyctl aliyun ecs instance start %s`)", label, in.ID, in.Status, in.ID)
+			}
+			change := platform.Change{Resource: "instance/" + label, Action: platform.Updated, ID: in.ID, Detail: "reboot"}
+			if force {
+				change.Detail = "reboot (force stop)"
+			}
+			if done, err := rt.WouldWrite(s.target(), change); done || err != nil {
+				return err
+			}
+			if err := s.c.rebootInstance(ctx, s.region, in.ID, force); err != nil {
+				return err
+			}
+			if wait {
+				took, err := waitRebooted(ctx, s, in.ID, label, timeout)
+				if err != nil {
+					return fmt.Errorf("reboot of %s was requested: %w", label, err)
+				}
+				change.Detail += fmt.Sprintf("; Running (waited %s)", took.Round(time.Second))
+			} else {
+				rt.Infof("reboot of %s requested; it is Running again within about 15 seconds", label)
+			}
+			refreshInstance(rt, ctx, s.c, s.profile, s.region, in.ID)
+			return rt.RenderReport(platform.Report{Target: s.target(), Changes: []platform.Change{change}})
+		},
+	}
+	cmd.Flags().BoolVar(&force, "force", false, "force the stop (ForceStop: like pulling the power)")
+	cmd.Flags().StringVar(&region, "region", "", "region of the instance (default: look it up in the inventory of every account)")
+	app.AddWaitFlags(cmd, &w, false, defaultInstanceTimeout)
+	return cmd
+}
+
+// ------------------------------------------------------------- resize
+
+func ecsResizeCmd(rt *app.Runtime) *cobra.Command {
+	var region, typ string
+	var w app.WaitFlags
+	cmd := &cobra.Command{
+		Use:   "resize <name|id>",
+		Short: "Change the type of an ECS instance: stop, modify, start",
+		Long: `Change the instance type of an ECS instance, found like get finds it. ECS
+changes the type of a Stopped instance only, so a Running instance is
+stopped (after a confirmation, default no; --yes skips it, the
+non-interactive flow needs --yes: exit code 2), its type is changed
+(ModifyInstanceSpec), and it is started again. A Stopped instance stays
+Stopped and needs no confirmation. An instance that is Pending, Starting or
+Stopping is waited for first. The stop is always waited for; --wait also
+waits until the instance is Running again (--timeout bounds every wait).
+The same type is unchanged. A type the zone has no stock of, or that the
+instance cannot change to, is exit code 1 with the Alibaba Cloud message;
+the instance is then Stopped with its old type: start it, or run the
+command again with another type.`,
+		Example: "  polyctl aliyun ecs instance resize site-a --type ecs.u1-c1m2.large --yes --wait",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			if typ == "" {
+				return app.UsageErrf("--type is required")
+			}
+			wait, timeout, err := w.Resolve(cmd)
+			if err != nil {
+				return err
+			}
+			s, in, err := resolveECSInstance(ctx, rt, args[0], region)
+			if err != nil {
+				return err
+			}
+			label := instanceLabel(in)
+			res := "instance/" + label
+			if in.Type == typ {
+				rt.Infof("instance %s already is %s", label, typ)
+				return rt.RenderReport(platform.Report{Target: s.target(), DryRun: rt.DryRun(), Changes: []platform.Change{
+					{Resource: res, Action: platform.Unchanged, ID: in.ID, Detail: "type " + typ}}})
+			}
+			running := in.Status != instStopped
+			var plan platform.Plan
+			cur := in.Type
+			if running {
+				plan.Add(platform.Step{Resource: res, Action: platform.Updated, ID: in.ID, Desc: "stop", Apply: func(ctx context.Context) (platform.Change, error) {
+					st, err := settle(ctx, rt, s, in, timeout)
+					if err != nil {
+						return platform.Change{}, err
+					}
+					if st == instStopped {
+						running = false
+						return platform.Change{Detail: "already Stopped"}, nil
+					}
+					if err := stopAndWait(ctx, rt, s, in, timeout); err != nil {
+						return platform.Change{}, err
+					}
+					return platform.Change{Detail: "stop; stopped"}, nil
+				}})
+			}
+			plan.Add(platform.Step{Resource: res, Action: platform.Updated, ID: in.ID, Desc: fmt.Sprintf("modify type %s -> %s", cur, typ), Apply: func(ctx context.Context) (platform.Change, error) {
+				if err := s.c.modifyInstanceSpec(ctx, s.region, in.ID, typ); err != nil {
+					return platform.Change{}, fmt.Errorf("%w; the instance is Stopped with its type %s: start it with `polyctl aliyun ecs instance start %s`, or run resize again", err, cur, in.ID)
+				}
+				refreshInstance(rt, ctx, s.c, s.profile, s.region, in.ID)
+				return platform.Change{}, nil
+			}})
+			if running {
+				plan.Add(platform.Step{Resource: res, Action: platform.Updated, ID: in.ID, Desc: "start", Apply: func(ctx context.Context) (platform.Change, error) {
+					if !running {
+						return platform.Change{Action: platform.Skipped, Detail: "was Stopped: stays Stopped"}, nil
+					}
+					if err := s.c.StartInstance(ctx, s.region, in.ID); err != nil {
+						return platform.Change{}, fmt.Errorf("instance %s is Stopped with type %s: %w", label, typ, err)
+					}
+					detail := "start"
+					if wait {
+						took, err := waitInstanceRunning(ctx, s, in.ID, label, timeout)
+						if err != nil {
+							return platform.Change{}, fmt.Errorf("start of %s was requested: %w", label, err)
+						}
+						detail = fmt.Sprintf("start; Running (waited %s)", took.Round(time.Second))
+					}
+					refreshInstance(rt, ctx, s.c, s.profile, s.region, in.ID)
+					return platform.Change{Detail: detail}, nil
+				}})
+			} else {
+				rt.Infof("note: instance %s is Stopped and stays Stopped", label)
+			}
+			if running && !rt.DryRun() {
+				ok, err := rt.Confirm(ctx, fmt.Sprintf("Stop instance %s to change its type from %s to %s? It is unavailable until it runs again.", label, cur, typ), false)
+				if err != nil {
+					return err
+				}
+				if !ok {
+					return fmt.Errorf("%w: cancelled; instance %s was not changed", platform.ErrNothingToDo, label)
+				}
+			}
+			return rt.Ensure(ctx, "aliyun.ecs.instance.resize", s.target(), &plan)
+		},
+	}
+	cmd.Flags().StringVar(&typ, "type", "", "new instance type (required)")
+	cmd.Flags().StringVar(&region, "region", "", "region of the instance (default: look it up in the inventory of every account)")
+	app.AddWaitFlags(cmd, &w, false, defaultInstanceTimeout)
+	return cmd
+}

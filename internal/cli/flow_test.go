@@ -316,6 +316,10 @@ func flowCases() []flowCase {
 			piped: "y\n", wantCode: ExitUsage, wantMsg: []string{"confirmation required: pass --yes to proceed", "would stop instance i-1"},
 		},
 		{
+			name: "aliyun ecs instance delete: confirmation", setup: setupOne, args: []string{"aliyun", "ecs", "instance", "delete", "site-a"},
+			piped: "y\n", wantCode: ExitUsage, wantMsg: []string{"confirmation required: pass --yes to proceed", "would delete instance site-a"},
+		},
+		{
 			name: "aliyun ecs security-group delete: confirmation", setup: setupOne, args: []string{"aliyun", "ecs", "security-group", "delete", "web"},
 			piped: "y\n", wantCode: ExitUsage, wantMsg: []string{"confirmation required: pass --yes to proceed", "would delete security group web"},
 		},

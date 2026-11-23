@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -628,7 +629,8 @@ func instanceGrid(list []Instance) output.Grid {
 func newECSCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{Use: "ecs", Short: "Elastic Compute Service: instances, security groups, key pairs and images"}
 	instance := &cobra.Command{Use: "instance", Short: "ECS instances"}
-	instance.AddCommand(newECSListCmd(rt), newECSStartCmd(rt), newECSStopCmd(rt))
+	instance.AddCommand(newECSListCmd(rt), ecsGetCmd(rt), ecsCreateCmd(rt), ecsDeleteCmd(rt), ecsRebootCmd(rt), ecsResizeCmd(rt),
+		newECSStartCmd(rt), newECSStopCmd(rt))
 	cmd.AddCommand(instance, newSecurityGroupCmd(rt), newKeyPairCmd(rt), newImageCmd(rt))
 	return cmd
 }
@@ -706,20 +708,24 @@ func refreshInstance(rt *app.Runtime, ctx context.Context, c *client, prof, regi
 	if err != nil {
 		return nil
 	}
-	if db, err := rt.DB(); err == nil {
-		cfg, _ := rt.Config()
-		_ = db.Upsert(ctx, inventory.Set{Platform: platform.Aliyun, Profile: prof, Type: platform.ResInstance}, instanceResource(*in), cfg.TTLFor(platform.ResInstance))
-	}
+	storeInstance(ctx, rt, prof, *in)
 	return in
 }
 
 func newECSStartCmd(rt *app.Runtime) *cobra.Command {
 	var region string
+	var w app.WaitFlags
 	cmd := &cobra.Command{
 		Use:   "start <instance-id>",
 		Short: "Start a stopped ECS instance",
-		Args:  cobra.ExactArgs(1),
+		Long: "Start a stopped ECS instance. --wait waits until it is Running (polled every\n" +
+			"2 seconds, bounded by --timeout).",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			wait, timeout, err := w.Resolve(cmd)
+			if err != nil {
+				return err
+			}
 			c, p, err := openClient(rt, cmd.Context())
 			if err != nil {
 				return err
@@ -731,6 +737,14 @@ func newECSStartCmd(rt *app.Runtime) *cobra.Command {
 				return err
 			}
 			rt.Infof("start requested for %s via aliyun/%s", args[0], p.Name)
+			if wait {
+				s := &ecsScope{c: c, profile: p.Name, region: c.regionOr(region)}
+				took, err := waitInstanceRunning(cmd.Context(), s, args[0], args[0], timeout)
+				if err != nil {
+					return fmt.Errorf("start of %s was requested: %w", args[0], err)
+				}
+				rt.Infof("instance %s is Running (waited %s)", args[0], took.Round(time.Second))
+			}
 			in := refreshInstance(rt, cmd.Context(), c, p.Name, region, args[0])
 			if in == nil {
 				return rt.Render(map[string]string{"profile": p.Name, "instance": args[0], "action": "start"}, func() output.Grid {
@@ -741,21 +755,28 @@ func newECSStartCmd(rt *app.Runtime) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&region, "region", "", "region id (default: the profile's region)")
+	app.AddWaitFlags(cmd, &w, false, defaultInstanceTimeout)
 	return cmd
 }
 
 func newECSStopCmd(rt *app.Runtime) *cobra.Command {
 	var region string
 	var force bool
+	var w app.WaitFlags
 	cmd := &cobra.Command{
 		Use:   "stop <instance-id>",
 		Short: "Stop a running ECS instance",
 		Long: "Stop a running ECS instance. In the interactive flow the stop is confirmed\n" +
 			"first (default no); --yes skips the question. In the non-interactive flow\n" +
 			"(no terminal, --non-interactive or POLYCTL_NON_INTERACTIVE=1) nothing is asked:\n--yes is " +
-			"required, and without it the command is a usage error (exit code 2).",
+			"required, and without it the command is a usage error (exit code 2).\n" +
+			"--wait waits until it is Stopped (polled every 2 seconds, bounded by --timeout).",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			wait, timeout, err := w.Resolve(cmd)
+			if err != nil {
+				return err
+			}
 			action := fmt.Sprintf("stop instance %s", args[0])
 			// Before anything else: the non-interactive flow without --yes
 			// is refused without needing credentials or the network. A dry
@@ -787,6 +808,13 @@ func newECSStopCmd(rt *app.Runtime) *cobra.Command {
 				return err
 			}
 			rt.Infof("stop requested for %s via aliyun/%s", args[0], p.Name)
+			if wait {
+				s := &ecsScope{c: c, profile: p.Name, region: c.regionOr(region)}
+				if err := waitInstanceStatus(cmd.Context(), s, args[0], args[0], instStopped, timeout); err != nil {
+					return fmt.Errorf("stop of %s was requested: %w", args[0], err)
+				}
+				rt.Infof("instance %s is Stopped", args[0])
+			}
 			in := refreshInstance(rt, cmd.Context(), c, p.Name, region, args[0])
 			if in == nil {
 				return rt.Render(map[string]string{"profile": p.Name, "instance": args[0], "action": "stop"}, func() output.Grid {
@@ -798,5 +826,6 @@ func newECSStopCmd(rt *app.Runtime) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&region, "region", "", "region id (default: the profile's region)")
 	cmd.Flags().BoolVar(&force, "force", false, "force stop (like pulling the power)")
+	app.AddWaitFlags(cmd, &w, false, defaultInstanceTimeout)
 	return cmd
 }
