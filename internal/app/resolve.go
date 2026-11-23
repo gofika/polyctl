@@ -14,12 +14,14 @@ import (
 // user (an instance, a load balancer, ...) without the user naming the
 // account, the way domains are routed: the inventory rows of kind are
 // searched by id and by name across the accounts able to hold kind,
-// restricted to the platform id (when not "") and to --profile. An id
-// match wins over name matches. One match is the answer; several are
-// ambiguous (exit code 5) with a hint naming --profile; none triggers one
-// sync of the candidate accounts whose set of kind is missing or expired
-// (all of them with --refresh, none with --offline), and the lookup is
-// retried before it reports "not found".
+// restricted to the platform id (when not "", else to --platform) and to
+// --profile. An id match wins over name matches. One match is the answer;
+// several are ambiguous (exit code 5) with a hint naming --profile (and
+// --platform when they are on several platforms). None triggers one sync
+// of the candidate accounts whose set of kind is missing or expired (all
+// of them with --refresh, none with --offline), and the lookup is retried
+// before it reports "not found" or, when an account could not be synced,
+// the error of that sync (the resource may be in that account).
 func (rt *Runtime) ResolveResource(ctx context.Context, id platform.ID, kind platform.ResourceType, ref string) (inventory.Resource, error) {
 	accounts, err := rt.resourceAccounts(id, kind)
 	if err != nil {
@@ -74,13 +76,33 @@ func (rt *Runtime) ResolveResource(ctx context.Context, id platform.ID, kind pla
 		}
 		if len(stale) > 0 {
 			rt.Infof("looking up %s %q: syncing %s of %d account(s)...", what, ref, kind, len(stale))
+			var syncErr error
 			for _, a := range stale {
-				if _, err := rt.SyncAccount(ctx, a, []platform.ResourceType{kind}); err != nil {
+				reps, err := rt.SyncAccount(ctx, a, []platform.ResourceType{kind})
+				if err == nil {
+					// A failed resource type is reported in the sync
+					// report, not as the error of the account.
+					for _, r := range reps {
+						if r.Err != nil {
+							err = r.Err
+							break
+						}
+					}
+				}
+				if err != nil {
 					rt.Infof("warning: sync %s: %v", a.Label(), err)
+					if syncErr == nil {
+						syncErr = fmt.Errorf("sync %s: %w", a.Label(), err)
+					}
 				}
 			}
 			if found, err = lookup(); err != nil {
 				return inventory.Resource{}, err
+			}
+			if len(found) == 0 && syncErr != nil {
+				// An account that could not be listed may hold it: that
+				// is not "not found".
+				return inventory.Resource{}, fmt.Errorf("cannot tell where %s %q is: %w", what, ref, syncErr)
 			}
 		}
 	}
@@ -95,14 +117,19 @@ func (rt *Runtime) ResolveResource(ctx context.Context, id platform.ID, kind pla
 		return found[0], nil
 	}
 	var names []string
-	profiles := map[string]bool{}
+	accountsHit := map[string]bool{}
+	platformsHit := map[platform.ID]bool{}
 	for _, r := range found {
 		names = append(names, fmt.Sprintf("%s/%s (%s)", r.Platform, r.Profile, r.ID))
-		profiles[string(r.Platform)+"/"+r.Profile] = true
+		accountsHit[string(r.Platform)+"/"+r.Profile] = true
+		platformsHit[r.Platform] = true
 	}
 	hint := "pass --profile <name> to choose"
-	if len(profiles) == 1 {
+	switch {
+	case len(accountsHit) == 1:
 		hint = "the account holds several of them with this name; pass the id"
+	case len(platformsHit) > 1:
+		hint = "pass --profile <name> and/or --platform <name> to choose"
 	}
 	return inventory.Resource{}, &AmbiguousError{What: fmt.Sprintf("%s %q", what, ref), Candidates: names, Hint: hint}
 }
@@ -117,6 +144,13 @@ func (rt *Runtime) resourceAccounts(id platform.ID, kind platform.ResourceType) 
 	if rt.Flags.Profile != "" {
 		if _, err := cfg.Profile(rt.Flags.Profile); err != nil {
 			return nil, fmt.Errorf("%w: %v", platform.ErrNotFound, err)
+		}
+	}
+	// --platform narrows the search of a platform-neutral command, as it
+	// narrows domain routing.
+	if id == "" && rt.Flags.Platform != "" {
+		if id, err = platform.Parse(rt.Flags.Platform); err != nil {
+			return nil, UsageErrf("--platform: %v", err)
 		}
 	}
 	var out []config.AccountRef

@@ -739,6 +739,9 @@ type SyncReport struct {
 	Count    int                   `json:"count" yaml:"count"`
 	Error    string                `json:"error,omitempty" yaml:"error,omitempty"`
 	Duration time.Duration         `json:"-" yaml:"-"`
+	// Err is the error behind Error, for callers that map it to an exit
+	// code.
+	Err error `json:"-" yaml:"-"`
 }
 
 // SyncAccount fetches the given resource types (nil = all supported) of one
@@ -768,7 +771,7 @@ func (rt *Runtime) SyncAccount(ctx context.Context, ref config.AccountRef, types
 		rt.Verbosef("sync %s/%s %s ...", p.Platform, name, t)
 		res, err := client.Sync(ctx, t)
 		if err != nil {
-			rep.Error = err.Error()
+			rep.Error, rep.Err = err.Error(), err
 			reports = append(reports, rep)
 			if errors.Is(err, platform.ErrUnauthorized) {
 				return reports, err

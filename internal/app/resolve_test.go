@@ -64,3 +64,37 @@ func TestResolveResourceSyncsOnAMiss(t *testing.T) {
 		t.Errorf("offline = %v", err)
 	}
 }
+
+func TestResolveResourcePlatformFlagAndHints(t *testing.T) {
+	h := newHarness(t, app.Flags{}, nil)
+	h.seedStandard()
+	h.seedZones("c", zone("z-shared-c", "shared.com"))
+	// On several platforms: the hint names --platform too.
+	_, err := h.rt.ResolveResource(ctx, "", platform.ResZone, "shared.com")
+	var amb *app.AmbiguousError
+	if !errors.As(err, &amb) || !strings.Contains(err.Error(), "--platform") {
+		t.Errorf("cross-platform ambiguity = %v", err)
+	}
+	// --platform narrows a platform-neutral lookup.
+	h.rt.Flags.Platform = "godaddy"
+	if r, err := h.rt.ResolveResource(ctx, "", platform.ResZone, "shared.com"); err != nil || r.ID != "z-shared-c" {
+		t.Errorf("--platform = %+v, %v", r, err)
+	}
+	h.rt.Flags.Platform = "nosuch"
+	if _, err := h.rt.ResolveResource(ctx, "", platform.ResZone, "shared.com"); !errors.Is(err, app.ErrUsage) {
+		t.Errorf("unknown --platform = %v", err)
+	}
+	h.rt.Flags.Platform = ""
+}
+
+func TestResolveResourceReportsAFailedSync(t *testing.T) {
+	h := newHarness(t, app.Flags{}, nil)
+	// The only account able to say cannot be listed: that is its error,
+	// not "not found".
+	h.rt.Flags.Profile = "c"
+	h.client("c").syncErr = platform.ErrForbidden
+	_, err := h.rt.ResolveResource(ctx, "", platform.ResZone, "new.example")
+	if !errors.Is(err, platform.ErrForbidden) || errors.Is(err, platform.ErrNotFound) {
+		t.Errorf("failed sync = %v", err)
+	}
+}
