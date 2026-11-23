@@ -234,3 +234,29 @@ func TestRetryInitializing(t *testing.T) {
 		t.Errorf("sleeps = %v", clock.sleeps)
 	}
 }
+
+func TestRunInstanceParameterErrorsAreNotNotFound(t *testing.T) {
+	// ECS answers these invalid parameters with HTTP 404.
+	for _, code := range []string{"InvalidSystemDiskSize.LessThanImageSize", "HOSTNAME_ILLEGAL"} {
+		if isNotFoundCode(code, 404) {
+			t.Errorf("%s reads as not found", code)
+		}
+	}
+	for _, code := range []string{"InvalidImageId.NotFound", "InvalidVSwitchId.NotExist", "InvalidKeyPairName.NotFound"} {
+		if !isNotFoundCode(code, 404) {
+			t.Errorf("%s does not read as not found", code)
+		}
+	}
+}
+
+func TestModifyInstanceSpecHasNoClientToken(t *testing.T) {
+	api := newFakeAPI(t)
+	f := newFakeCompute(t, api)
+	f.addVM("i-1", "a", instStopped, "ecs.u1-c1m1.large", "vpc-1", "vsw-1")
+	if err := api.client().modifyInstanceSpec(context.Background(), "cn-shanghai", "i-1", "ecs.u1-c1m2.large"); err != nil {
+		t.Fatal(err)
+	}
+	if q := api.callsFor("ModifyInstanceSpec")[0]; q.Get("ClientToken") != "" || q.Get("InstanceType") != "ecs.u1-c1m2.large" {
+		t.Errorf("query = %v", q)
+	}
+}

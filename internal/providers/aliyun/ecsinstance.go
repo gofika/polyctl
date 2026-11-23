@@ -241,7 +241,9 @@ func (c *client) modifyInstanceSpec(ctx context.Context, region, id, typ string)
 	req.RegionId = region
 	req.InstanceId = id
 	req.InstanceType = typ
-	req.ClientToken = platform.ClientToken("aliyun.ecs.ModifyInstanceSpec", region, id, typ)
+	// No ClientToken: one derived from the content would make a later
+	// change back to an earlier type (a -> b -> a -> b) replay the answer of
+	// the first request and change nothing.
 	if _, err := cl.ModifyInstanceSpec(req); err != nil {
 		return wrapErr("ecs ModifyInstanceSpec "+id, err)
 	}

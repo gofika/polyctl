@@ -295,6 +295,10 @@ func isNotFoundCode(code string, status int) bool {
 	case strings.Contains(code, "NotFound"), strings.Contains(code, "NoExist"), strings.Contains(code, "NotExist"),
 		code == "DomainRecordNotBelongToUser", code == "InvalidDomainName", code == "InvalidInstanceId.NotFound":
 		return true
+	case code == "InvalidSystemDiskSize.LessThanImageSize", code == "HOSTNAME_ILLEGAL":
+		// ECS answers these invalid RunInstances parameters with HTTP 404:
+		// nothing is missing.
+		return false
 	}
 	return status == http.StatusNotFound
 }
