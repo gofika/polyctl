@@ -398,6 +398,7 @@ func TestPlatformTreeShapes(t *testing.T) {
 		"aliyun vpc vswitch list", "aliyun vpc vswitch get", "aliyun vpc vswitch create", "aliyun vpc vswitch ensure",
 		"aliyun eip address list", "aliyun eip address allocate", "aliyun eip address associate", "aliyun eip address ensure",
 		"aliyun alb load-balancer list", "aliyun alb load-balancer get", "aliyun alb load-balancer create", "aliyun alb load-balancer delete",
+		"aliyun alb load-balancer ensure",
 		"aliyun alb listener list", "aliyun alb listener get", "aliyun alb listener create", "aliyun alb listener update",
 		"aliyun alb listener delete", "aliyun alb listener cert set",
 		"aliyun alb server-group list", "aliyun alb server-group get", "aliyun alb server-group create", "aliyun alb server-group delete",

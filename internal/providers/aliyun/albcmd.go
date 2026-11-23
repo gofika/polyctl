@@ -41,7 +41,7 @@ region by default). Alibaba Cloud keeps none of their names unique: a name
 held by several is ambiguous (exit code 5); pass the id.`,
 	}
 	lb := &cobra.Command{Use: "load-balancer", Short: "ALB load balancers"}
-	lb.AddCommand(albLBListCmd(rt), albLBGetCmd(rt), albLBCreateCmd(rt), albLBDeleteCmd(rt))
+	lb.AddCommand(albLBListCmd(rt), albLBGetCmd(rt), albLBCreateCmd(rt), albLBDeleteCmd(rt), albLBEnsureCmd(rt))
 	lsn := &cobra.Command{Use: "listener", Short: "Listeners of a load balancer"}
 	cert := &cobra.Command{Use: "cert", Short: "The certificate of an HTTPS listener"}
 	cert.AddCommand(albListenerCertSetCmd(rt))
