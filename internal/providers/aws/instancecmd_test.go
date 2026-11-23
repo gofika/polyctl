@@ -17,16 +17,16 @@ import (
 
 func TestInstanceGet(t *testing.T) {
 	h := newInstanceHarness(t, app.Flags{})
-	h.addInstance("ap-east-1", running("i-0aaaaaaaaaaaaaaa1", "site-xz7"))
+	h.addInstance("ap-east-1", running("i-0aaaaaaaaaaaaaaa1", "web-01"))
 	h.addInstance("ap-east-1", &fakeInstance{id: "i-0aaaaaaaaaaaaaaa2", name: "stopped-one", typ: "t3.nano", state: stateStopped, priv: "10.0.1.5"})
 	h.addInstance("ap-east-1", &fakeInstance{id: "i-0aaaaaaaaaaaaaaa3", name: "gone", typ: "t3.nano", state: stateTerminated})
 
-	if err := h.run("ec2", "instance", "get", "site-xz7"); err != nil {
+	if err := h.run("ec2", "instance", "get", "web-01"); err != nil {
 		t.Fatal(err)
 	}
 	var d map[string]any
 	h.jsonOut(&d)
-	for k, want := range map[string]any{"instance_id": "i-0aaaaaaaaaaaaaaa1", "instance_name": "site-xz7", "profile": "lab", "region": "ap-east-1",
+	for k, want := range map[string]any{"instance_id": "i-0aaaaaaaaaaaaaaa1", "instance_name": "web-01", "profile": "lab", "region": "ap-east-1",
 		"availability_zone": "ap-east-1a", "instance_type": "c6a.large", "state": "running", "platform": "linux", "architecture": "x86_64",
 		"private_ip": "10.0.1.23", "public_ip": "198.51.100.7", "vpc_id": "vpc-0abc", "subnet_id": "subnet-0def", "launch_time": "2026-01-02T03:04:05Z", "root_device": "/dev/xvda"} {
 		if d[k] != want {
@@ -43,7 +43,7 @@ func TestInstanceGet(t *testing.T) {
 	}
 
 	// --field prints the raw value.
-	if err := h.run("ec2", "instance", "get", "site-xz7", "--field", "public_ip"); err != nil || h.stdout.String() != "198.51.100.7\n" {
+	if err := h.run("ec2", "instance", "get", "web-01", "--field", "public_ip"); err != nil || h.stdout.String() != "198.51.100.7\n" {
 		t.Errorf("--field public_ip = %q, %v", h.stdout.String(), err)
 	}
 	// A stopped instance is shown, with a note; its empty public ip is exit code 1.
@@ -54,7 +54,7 @@ func TestInstanceGet(t *testing.T) {
 	if err == nil || errors.Is(err, app.ErrUsage) || errors.Is(err, platform.ErrNotFound) || !strings.Contains(err.Error(), "new public IP") {
 		t.Errorf("empty --field = %v", err)
 	}
-	if err := h.run("ec2", "instance", "get", "site-xz7", "--field", "bogus"); !errors.Is(err, app.ErrUsage) {
+	if err := h.run("ec2", "instance", "get", "web-01", "--field", "bogus"); !errors.Is(err, app.ErrUsage) {
 		t.Errorf("--field bogus = %v", err)
 	}
 
@@ -67,9 +67,9 @@ func TestInstanceGet(t *testing.T) {
 	}
 
 	// Two live instances of one name are ambiguous.
-	h.addInstance("ap-east-1", &fakeInstance{id: "i-0aaaaaaaaaaaaaaa4", name: "site-xz7", typ: "t3.nano", state: stateStopped})
+	h.addInstance("ap-east-1", &fakeInstance{id: "i-0aaaaaaaaaaaaaaa4", name: "web-01", typ: "t3.nano", state: stateStopped})
 	var amb *app.AmbiguousError
-	if err := h.run("ec2", "instance", "get", "site-xz7"); !errors.As(err, &amb) || !strings.Contains(amb.Hint, "instance id") {
+	if err := h.run("ec2", "instance", "get", "web-01"); !errors.As(err, &amb) || !strings.Contains(amb.Hint, "instance id") {
 		t.Errorf("duplicate name = %v", err)
 	}
 	// The id still works.

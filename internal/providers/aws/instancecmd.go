@@ -451,8 +451,8 @@ the profile's account). Instances in any state but terminated are shown;
 --include-terminated also finds a terminated one. --field prints the raw
 value of one field (public_ip, private_ip, instance_id, ...) for scripts;
 an empty value is exit code 1.`,
-		Example: `  polyctl aws ec2 instance get site-xz7
-  polyctl aws ec2 instance get site-xz7 --field public_ip`,
+		Example: `  polyctl aws ec2 instance get web-01
+  polyctl aws ec2 instance get web-01 --field public_ip`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if field != "" && !slices.Contains(detailFields, field) {
@@ -924,7 +924,7 @@ A reboot keeps the instance running with its addresses, so there is no
 state to wait for: --wait applies to the start of a stopped instance only,
 which waits until it runs and prints its new public IP (it changes unless
 the instance has an Elastic IP).`,
-		Example: "  polyctl aws ec2 instance reboot site-xz7",
+		Example: "  polyctl aws ec2 instance reboot web-01",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -1012,7 +1012,7 @@ the new one are printed. --wait-port waits until that TCP port (22 for SSH,
 
 A gradual path that works well: c6a.large (2 vCPU, 4 GiB), c6a.xlarge,
 c6a.2xlarge, c6a.4xlarge; burstable t3 types can stall under steady load.`,
-		Example: "  polyctl aws ec2 instance resize site-xz7 --type c6a.2xlarge --yes",
+		Example: "  polyctl aws ec2 instance resize web-01 --type c6a.2xlarge --yes",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()

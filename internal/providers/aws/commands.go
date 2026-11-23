@@ -736,7 +736,7 @@ the filters ask AWS directly, bypassing the inventory: --state and --type
 take one or more comma-separated values (repeatable), --name matches the
 Name tags that contain the value (a value holding * or ? is used as the
 EC2 wildcard pattern it is). Several filters must all match.`,
-		Example: "  polyctl aws ec2 instance list --state running --type c6a.large,c6a.xlarge --name xz7 -o json",
+		Example: "  polyctl aws ec2 instance list --state running --type c6a.large,c6a.xlarge --name web -o json",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			for _, s := range filters.States {

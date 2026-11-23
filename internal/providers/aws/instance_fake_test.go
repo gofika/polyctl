@@ -551,7 +551,7 @@ func running(id, name string) *fakeInstance {
 }
 
 func TestNamePattern(t *testing.T) {
-	for in, want := range map[string]string{"xz7": "*xz7*", "web*": "web*", "a?c": "a?c", `back\slash`: `*back\\slash*`} {
+	for in, want := range map[string]string{"web": "*web*", "web*": "web*", "a?c": "a?c", `back\slash`: `*back\\slash*`} {
 		if got := namePattern(in); got != want {
 			t.Errorf("namePattern(%q) = %q, want %q", in, got, want)
 		}

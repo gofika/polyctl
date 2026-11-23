@@ -12,17 +12,17 @@ import (
 
 func TestInstanceListFilters(t *testing.T) {
 	h := newInstanceHarness(t, app.Flags{})
-	h.addInstance("ap-east-1", running("i-0aaaaaaaaaaaaaaa1", "site-xz7"))
-	h.addInstance("ap-east-1", &fakeInstance{id: "i-0aaaaaaaaaaaaaaa2", name: "site-xz8", typ: "c6a.xlarge", state: stateStopped})
+	h.addInstance("ap-east-1", running("i-0aaaaaaaaaaaaaaa1", "web-01"))
+	h.addInstance("ap-east-1", &fakeInstance{id: "i-0aaaaaaaaaaaaaaa2", name: "web-02", typ: "c6a.xlarge", state: stateStopped})
 	h.addInstance("ap-east-1", &fakeInstance{id: "i-0aaaaaaaaaaaaaaa3", name: "db", typ: "c6a.large", state: stateRunning})
 	h.ec2.inst.pageSize = 1
 
-	if err := h.run("ec2", "instance", "list", "--state", "running", "--type", "c6a.large,c6a.xlarge", "--name", "xz"); err != nil {
+	if err := h.run("ec2", "instance", "list", "--state", "running", "--type", "c6a.large,c6a.xlarge", "--name", "web-0"); err != nil {
 		t.Fatal(err)
 	}
 	var res instanceResult
 	h.jsonOut(&res)
-	if len(res.Instances) != 1 || res.Instances[0].Name != "site-xz7" || res.Region != "ap-east-1" {
+	if len(res.Instances) != 1 || res.Instances[0].Name != "web-01" || res.Region != "ap-east-1" {
 		t.Fatalf("filtered list = %+v", res)
 	}
 	flt := h.ec2.inst.filters[0]
@@ -30,18 +30,18 @@ func TestInstanceListFilters(t *testing.T) {
 	for _, f := range flt {
 		got[awssdk.ToString(f.Name)] = strings.Join(f.Values, ",")
 	}
-	if got["instance-state-name"] != "running" || got["instance-type"] != "c6a.large,c6a.xlarge" || got["tag:Name"] != "*xz*" {
+	if got["instance-state-name"] != "running" || got["instance-type"] != "c6a.large,c6a.xlarge" || got["tag:Name"] != "*web-0*" {
 		t.Errorf("filters = %v", got)
 	}
 
 	// Two pages, every state: no filter drops anything.
 	h.ec2.reset()
-	if err := h.run("ec2", "instance", "list", "--name", "site"); err != nil {
+	if err := h.run("ec2", "instance", "list", "--name", "web"); err != nil {
 		t.Fatal(err)
 	}
 	h.jsonOut(&res)
 	if len(res.Instances) != 2 || h.ec2.count("DescribeInstances") != 2 {
-		t.Errorf("--name site = %+v in %d page(s)", res.Instances, h.ec2.count("DescribeInstances"))
+		t.Errorf("--name web = %+v in %d page(s)", res.Instances, h.ec2.count("DescribeInstances"))
 	}
 
 	// Nothing matches: an empty list, a note, exit code 0.
