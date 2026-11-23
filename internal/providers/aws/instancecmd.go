@@ -592,8 +592,14 @@ func diskDesc(d *platform.InstanceDisk) string {
 	return fmt.Sprintf("%dGB(%s, %s, %s)", d.SizeGB, d.Device, d.Type, keep)
 }
 
-func createDesc(spec platform.CreateSpec) string {
-	parts := []string{"type=" + spec.Type, "ami=" + spec.Image, "subnet=" + spec.Subnet}
+// createDesc is the detail of the instance row of create; size is the size
+// the type was resolved from (nil: none).
+func createDesc(spec platform.CreateSpec, size *typeChoice) string {
+	typ := "type=" + spec.Type
+	if size != nil {
+		typ += size.label()
+	}
+	parts := []string{typ, "ami=" + spec.Image, "subnet=" + spec.Subnet}
 	if len(spec.SecurityGroups) > 0 {
 		parts = append(parts, "sgs="+strings.Join(spec.SecurityGroups, ","))
 	} else {
@@ -634,7 +640,17 @@ parameter cannot be read (the two may use different kernels).
 
 --type, --subnet, --sg and --key-pair default to defaults.aws.instance_type,
 subnet_id, security_group_ids and key_name in config.yaml; a missing type
-or subnet is a usage error. The network goes into one network interface
+or subnet is a usage error. The type may also be a size <cores>H<memory>G
+(2H2G, 2H4G, 4H8G, 2H0.5G), resolved in the subnet's availability zone on
+every run (in a dry run too, never remembered): the T3 type of exactly
+that shape (2H0.5G t3.nano, 2H1G t3.micro, 2H2G t3.small, 2H4G t3.medium,
+2H8G t3.large, 4H16G t3.xlarge, 8H32G t3.2xlarge) when the zone offers
+it, else the current-generation x86_64 type of exactly that shape offered
+there whose family comes first in t3, t3a, m7i, m6i, c7i, c6i, r7i, r6i,
+m5, c5, r5, then any other family, alphabetically. The choice is printed
+on stderr ("2H4G -> t3.medium (ap-east-1a, T3 preset)") and shown in the
+change report; no fit is exit code 4, a size of 0 vCPUs or 0 GiB exit
+code 2. The network goes into one network interface
 with a public IP unless --public-ip=false. --ssh-key / --ssh-key-file bind
 the key pair that holds that public key, importing it under --key-pair when
 none does. Without any key pair the instance gets no SSH key.
@@ -646,6 +662,7 @@ account's EBS default. The Name tag and the tags of defaults.aws.tags and
 on every platform; --no-wait returns at once) until the instance is
 running and prints its addresses.`,
 		Example: `  polyctl aws ec2 instance create site-new --type c6a.xlarge --disk 400 --dry-run
+  polyctl aws ec2 instance create site-new --type 2H4G --dry-run
   polyctl aws ec2 instance create site-new --type t4g.small --ssh-key-file ~/.ssh/id_ed25519.pub --key-pair ops`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -678,6 +695,9 @@ running and prints its addresses.`,
 			if _, err := keys.PublicKey(); err != nil {
 				return err
 			}
+			if _, _, err := platform.ParseTypeShorthand(typ); err != nil {
+				return err
+			}
 			if rt.Flags.Offline {
 				return app.ErrOffline
 			}
@@ -686,6 +706,10 @@ running and prints its addresses.`,
 				return err
 			}
 			if typ, err = rt.RequireSetting(profile, platform.AWS, "instance_type", "type", typ); err != nil {
+				return err
+			}
+			size, isSize, err := platform.ParseTypeShorthand(typ)
+			if err != nil {
 				return err
 			}
 			if subnet, err = rt.RequireSetting(profile, platform.AWS, "subnet_id", "subnet", subnet); err != nil {
@@ -730,6 +754,19 @@ running and prints its addresses.`,
 			if live := liveInstances(existing); len(live) > 0 {
 				return fmt.Errorf("instance %q already exists in %s (%s, %s): use `polyctl aws ec2 instance get %s`, or choose another name",
 					name, region, awssdk.ToString(live[0].InstanceId), instanceState(live[0]), name)
+			}
+			var choice *typeChoice
+			if isSize {
+				az, err := c.subnetAZ(ctx, region, subnet)
+				if err != nil {
+					return err
+				}
+				ch, err := c.resolveTypeSize(ctx, region, az, size)
+				if err != nil {
+					return err
+				}
+				rt.Infof("%s", ch.note())
+				typ, choice = ch.Type, &ch
 			}
 			archs, err := c.instanceTypeArchs(ctx, region, typ)
 			if err != nil {
@@ -791,8 +828,12 @@ running and prints its addresses.`,
 			if len(sgs) == 0 {
 				rt.Infof("note: no security group given (--sg or defaults.aws.security_group_ids): the VPC's default security group is used")
 			}
-			desc := createDesc(spec)
-			plan.Add(platform.Step{Resource: "instance/" + name, Action: platform.Created, Desc: desc, Apply: func(ctx context.Context) (platform.Change, error) {
+			desc := createDesc(spec, choice)
+			var sizeAttrs map[string]string
+			if choice != nil {
+				sizeAttrs = choice.attrs()
+			}
+			plan.Add(platform.Step{Resource: "instance/" + name, Action: platform.Created, Desc: desc, Attrs: sizeAttrs, Apply: func(ctx context.Context) (platform.Change, error) {
 				id, err := c.CreateInstance(ctx, spec)
 				if err != nil {
 					return platform.Change{}, err
@@ -812,13 +853,16 @@ running and prints its addresses.`,
 				pub, priv := awssdk.ToString(in.PublicIpAddress), awssdk.ToString(in.PrivateIpAddress)
 				ch.Detail = fmt.Sprintf("%s; running, public ip %s, private ip %s", desc, orNone(pub), orNone(priv))
 				ch.Attrs = map[string]string{"state": stateRunning, "public_ip": pub, "private_ip": priv}
+				for k, v := range sizeAttrs {
+					ch.Attrs[k] = v
+				}
 				rt.Infof("instance %s (%s) is running: public ip %s, private ip %s", name, id, orNone(pub), orNone(priv))
 				return ch, nil
 			}})
 			return rt.Ensure(ctx, "aws.ec2.instance.create", target, &plan)
 		},
 	}
-	cmd.Flags().StringVar(&typ, "type", "", "instance type (default: defaults.aws.instance_type)")
+	cmd.Flags().StringVar(&typ, "type", "", "instance type such as c6a.xlarge, or a size <cores>H<memory>G such as 2H4G (default: defaults.aws.instance_type)")
 	cmd.Flags().StringVar(&ami, "ami", "", "image id (default: the latest image of --os)")
 	cmd.Flags().StringVar(&osName, "os", "al2023", "system whose latest image is used when --ami is not given (al2023 only)")
 	cmd.Flags().StringVar(&arch, "arch", "", "image architecture, x86_64 or arm64 (default: from the instance type)")
@@ -1032,14 +1076,29 @@ Without an Elastic IP the public IP changes with the restart: the old and
 the new one are printed. --wait-port waits until that TCP port (22 for SSH,
 3389 for RDP) accepts connections after the start.
 
+--type also takes a size <cores>H<memory>G (2H4G, 4H8G), resolved in the
+instance's availability zone before anything changes (in a dry run too,
+never remembered), as create resolves it: an instance whose type already
+has that shape is unchanged; otherwise the T3 type of exactly that shape
+when the zone offers it, else a current-generation x86_64 type of that
+shape by family preference. The choice is printed on stderr and shown in
+the change report; no fit is exit code 4, a size of 0 vCPUs or 0 GiB exit
+code 2. A size resolves to an x86_64 type: an arm64 instance needs an
+exact type.
+
 A gradual path that works well: c6a.large (2 vCPU, 4 GiB), c6a.xlarge,
 c6a.2xlarge, c6a.4xlarge; burstable t3 types can stall under steady load.`,
-		Example: "  polyctl aws ec2 instance resize web-01 --type c6a.2xlarge --yes",
-		Args:    cobra.ExactArgs(1),
+		Example: `  polyctl aws ec2 instance resize web-01 --type c6a.2xlarge --yes
+  polyctl aws ec2 instance resize web-01 --type 4H8G --dry-run`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			if typ == "" {
 				return app.UsageErrf("--type is required")
+			}
+			size, isSize, err := platform.ParseTypeShorthand(typ)
+			if err != nil {
+				return err
 			}
 			if timeout <= 0 {
 				return app.UsageErrf("--timeout must be a positive duration, got %s", timeout)
@@ -1062,6 +1121,33 @@ c6a.2xlarge, c6a.4xlarge; burstable t3 types can stall under steady load.`,
 			if cmd.Flags().Changed("start") {
 				wantStart = start
 			}
+			az := ""
+			if l.inst.Placement != nil {
+				az = awssdk.ToString(l.inst.Placement.AvailabilityZone)
+			}
+			typeDesc := typ
+			if isSize {
+				cores, mem, err := l.c.typeShape(ctx, l.region, cur)
+				if err != nil && !errors.Is(err, platform.ErrInvalidInput) {
+					return err
+				}
+				if err == nil && size.Matches(cores, mem) {
+					rt.Infof("instance %s already is %s (%s)", instanceLabel(l.inst), size, cur)
+					typ = cur
+				} else {
+					ch, err := l.c.resolveTypeSize(ctx, l.region, az, size)
+					if err != nil {
+						return err
+					}
+					rt.Infof("%s", ch.note())
+					typ = ch.Type
+				}
+				typeDesc = typ + "(" + size.String() + ")"
+			}
+			var sizeAttrs map[string]string
+			if isSize {
+				sizeAttrs = map[string]string{"instance_type": typ, "size": size.String()}
+			}
 			same := cur == typ
 			if !same {
 				archs, err := l.c.instanceTypeArchs(ctx, l.region, typ)
@@ -1071,11 +1157,8 @@ c6a.2xlarge, c6a.4xlarge; burstable t3 types can stall under steady load.`,
 				if a := string(l.inst.Architecture); a != "" && !slices.Contains(archs, a) {
 					return fmt.Errorf("instance %s is %s and type %s runs %s: x86_64 and arm64 cannot be swapped by a type change", instanceLabel(l.inst), a, typ, strings.Join(archs, ", "))
 				}
-				az := ""
-				if l.inst.Placement != nil {
-					az = awssdk.ToString(l.inst.Placement.AvailabilityZone)
-				}
-				if az != "" {
+				// A size was resolved to a type offered in the zone already.
+				if az != "" && !isSize {
 					offered, zones, err := l.c.typeOffered(ctx, l.region, typ, az)
 					if err != nil {
 						return err
@@ -1093,9 +1176,11 @@ c6a.2xlarge, c6a.4xlarge; burstable t3 types can stall under steady load.`,
 			needStop := !same && orig != stateStopped
 			needStart := wantStart && (needStop || !running)
 			if same && !needStart {
-				rt.Infof("instance %s already is %s", instanceLabel(l.inst), typ)
+				if !isSize {
+					rt.Infof("instance %s already is %s", instanceLabel(l.inst), typ)
+				}
 				return rt.RenderReport(platform.Report{Target: target, DryRun: rt.DryRun(), Changes: []platform.Change{
-					{Resource: l.resource(), Action: platform.Unchanged, ID: l.id(), Detail: "type " + typ}}})
+					{Resource: l.resource(), Action: platform.Unchanged, ID: l.id(), Detail: "type " + typeDesc}}})
 			}
 			label := l.name()
 			var plan platform.Plan
@@ -1124,7 +1209,7 @@ c6a.2xlarge, c6a.4xlarge; burstable t3 types can stall under steady load.`,
 				}})
 			}
 			if !same {
-				plan.Add(platform.Step{Resource: l.resource(), Action: platform.Updated, ID: l.id(), Desc: fmt.Sprintf("modify-type %s -> %s", cur, typ), Apply: func(ctx context.Context) (platform.Change, error) {
+				plan.Add(platform.Step{Resource: l.resource(), Action: platform.Updated, ID: l.id(), Desc: fmt.Sprintf("modify-type %s -> %s", cur, typeDesc), Attrs: sizeAttrs, Apply: func(ctx context.Context) (platform.Change, error) {
 					if err := l.c.ResizeInstance(ctx, l.region, l.id(), platform.ResizeSpec{Type: typ}); err != nil {
 						return platform.Change{}, fmt.Errorf("%w; the instance is stopped and its type is still %s: run the same command again to continue (with --start to start it afterwards)", err, cur)
 					}
@@ -1189,7 +1274,7 @@ c6a.2xlarge, c6a.4xlarge; burstable t3 types can stall under steady load.`,
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&typ, "type", "", "new instance type (required)")
+	cmd.Flags().StringVar(&typ, "type", "", "new instance type, or a size <cores>H<memory>G such as 2H4G (required)")
 	cmd.Flags().BoolVar(&start, "start", false, "start the instance after the change (default: the power state it had; --start=false leaves it stopped)")
 	cmd.Flags().DurationVar(&timeout, "timeout", defaultInstanceTimeout, "upper bound of each wait (a Go duration such as 90s or 10m)")
 	cmd.Flags().IntVar(&waitPort, "wait-port", 0, "after the start, wait until this TCP port accepts connections (22 for SSH, 3389 for RDP)")
