@@ -119,4 +119,17 @@ func TestRulesErrorHint(t *testing.T) {
 	if !noEntrypoint(newError(404, "GET", "/x", []message{{Code: 10003, Message: "could not find entrypoint ruleset"}})) {
 		t.Error("404 / 10003 is not taken for a missing entrypoint")
 	}
+	if !noEntrypoint(newError(404, "GET", "/x", []message{{Message: "could not find entrypoint ruleset in the http_request_cache_settings phase"}})) {
+		t.Error("404 with the message and no code is not taken for a missing entrypoint")
+	}
+	for _, e := range []*Error{
+		newError(404, "GET", "/x", []message{{Message: "Not Found"}}),
+		newError(404, "GET", "/x", nil),
+		newError(404, "GET", "/x", []message{{Code: 7003, Message: "Could not route"}}),
+		newError(403, "GET", "/x", []message{{Code: 10003, Message: "could not find entrypoint ruleset"}}),
+	} {
+		if noEntrypoint(e) {
+			t.Errorf("%v is taken for a missing entrypoint", e)
+		}
+	}
 }

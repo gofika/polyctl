@@ -231,10 +231,16 @@ func entrypointPath(zoneID, phase string) string {
 
 // noEntrypoint reports whether err says the zone has no entrypoint ruleset
 // in the phase (HTTP 404, code 10003): the phase was never configured. The
-// zone exists then; a zone that does not exist answers HTTP 403.
+// zone exists then; a zone that does not exist answers HTTP 403. Any other
+// 404 (one without that code or message, or not an API answer at all) is an
+// error: taking it for "no rules" would make set overwrite the rules that
+// exist.
 func noEntrypoint(err error) bool {
 	e := apiError(err)
-	return e != nil && (e.HasCode(codeNoEntrypoint) || e.Status == http.StatusNotFound && !e.HasCode(7003))
+	if e == nil || e.Status != http.StatusNotFound && e.Status != 0 {
+		return false
+	}
+	return e.HasCode(codeNoEntrypoint) || e.Status == http.StatusNotFound && e.messageContains("could not find entrypoint ruleset")
 }
 
 // getEntrypoint reads the entrypoint ruleset of a phase. A phase that was
