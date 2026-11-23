@@ -263,6 +263,12 @@ func Ensure(ctx context.Context, env *Env, o EnsureOptions) (*Result, error) {
 			if email, err = askEmail(ctx, env); err != nil {
 				return res, err
 			}
+			if acct != nil && acct.Email == "" {
+				// A key left without account.json was never registered
+				// (account.json is written before registering): start a
+				// new account under the address just given.
+				acct = nil
+			}
 		}
 		if !agreed {
 			if agreed, err = confirmTOS(ctx, env); err != nil || !agreed {
@@ -447,11 +453,22 @@ func findAccount(st *Store, email string) (*Account, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	switch len(all) {
-	case 0:
-		return nil, "", nil
-	case 1:
+	if len(all) == 1 {
 		return all[0], all[0].Email, nil
+	}
+	// A key whose registration the CA refused (a rejected address) stays in
+	// the store; it must not make the one registered account ambiguous.
+	var registered []*Account
+	for _, a := range all {
+		if a.URI != "" {
+			registered = append(registered, a)
+		}
+	}
+	switch {
+	case len(all) == 0:
+		return nil, "", nil
+	case len(registered) == 1:
+		return registered[0], registered[0].Email, nil
 	}
 	return nil, "", usage("the store holds %d ACME accounts for %s: pass --email or set cert.email to choose", len(all), st.Directory)
 }

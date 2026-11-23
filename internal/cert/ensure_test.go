@@ -368,6 +368,49 @@ func TestEnsureAccountQuestions(t *testing.T) {
 	if err != nil || res.Changes[0].Action != platform.Created || fx.iss.registers != 2 {
 		t.Fatalf("forgotten account: %+v %v", res, err)
 	}
+	// A key whose registration the CA refused does not make the registered
+	// account ambiguous.
+	if _, err := fx.env.Store.NewAccount("refused@example.org"); err != nil {
+		t.Fatal(err)
+	}
+	res, err = Ensure(context.Background(), fx.env, o)
+	if err != nil || res.Changes[0].Action != platform.Unchanged || res.Changes[0].ID == "" {
+		t.Fatalf("unregistered key next to the account: %+v %v", res, err)
+	}
+	if _, err := fx.env.Store.NewAccount("second@example.net"); err != nil {
+		t.Fatal(err)
+	}
+	acct, _ := fx.env.Store.LoadAccount("second@example.net")
+	acct.URI = "https://ca.test/acme/acct/999"
+	if err := fx.env.Store.SaveAccount(acct); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Ensure(context.Background(), fx.env, o); !errors.Is(err, platform.ErrInvalidInput) {
+		t.Fatalf("two registered accounts: %v", err)
+	}
+}
+
+// A key left without account.json does not swallow the address asked for:
+// the account is registered under that address.
+func TestEnsureAskedEmailFillsKeyWithoutAddress(t *testing.T) {
+	fx := newEnsureFixture(t)
+	a, err := fx.env.Store.NewAccount("lost@example.net")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(a.Dir, fileAccountJSON)); err != nil {
+		t.Fatal(err)
+	}
+	fx.env.AskEmail = func(ctx context.Context) (string, error) { return "me@example.net", nil }
+	o := fx.opts()
+	o.Email = ""
+	if _, err := Ensure(context.Background(), fx.env, o); err != nil {
+		t.Fatal(err)
+	}
+	got, err := fx.env.Store.LoadAccount("me@example.net")
+	if err != nil || got == nil || got.Email != "me@example.net" || got.URI == "" {
+		t.Fatalf("account = %+v %v", got, err)
+	}
 }
 
 func TestEnsureConcurrentRunsIssueOnce(t *testing.T) {
