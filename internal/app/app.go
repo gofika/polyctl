@@ -740,6 +740,27 @@ func (rt *Runtime) peers(ctx context.Context, self string, id platform.ID) ([]pl
 	return out, nil
 }
 
+// Unselected returns a runtime that shares the configuration, the
+// credential store, the inventory and the streams of rt but ignores
+// --profile and --platform. cert deploy selects the accounts it deploys to
+// with those flags, while the DNS account that issues a certificate is
+// found among every account. rt keeps owning what they share: the copy is
+// never closed.
+func (rt *Runtime) Unselected() (*Runtime, error) {
+	if _, err := rt.Config(); err != nil {
+		return nil, err
+	}
+	if _, err := rt.Creds(); err != nil {
+		return nil, err
+	}
+	if _, err := rt.DB(); err != nil {
+		return nil, err
+	}
+	c := *rt
+	c.Flags.Profile, c.Flags.Platform = "", ""
+	return &c, nil
+}
+
 // OpenFor resolves the profile for a platform and opens it.
 func (rt *Runtime) OpenFor(ctx context.Context, id platform.ID) (platform.Client, platform.Profile, error) {
 	name, err := rt.ProfileFor(id)
