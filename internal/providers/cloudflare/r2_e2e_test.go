@@ -1002,3 +1002,75 @@ func TestR2EnsureFailureHook(t *testing.T) {
 		t.Errorf("events = %v", events)
 	}
 }
+
+// dns delete --all unbinds the CNAME of an R2 custom domain instead of
+// deleting it, deletes the other records (a non-proxied CNAME to r2.dev
+// is an ordinary record) and keeps the apex NS.
+func TestDNSDeleteAllUnbindsR2Domains(t *testing.T) {
+	setup := func(e *r2Env) {
+		e.f.accounts["acc1"].buckets = []string{"assets"}
+		e.f.records["zone-ex"] = nil
+		e.f.bind("acc1", "assets", "cdn.example.com", "zone-ex", true, "")
+		e.f.records["zone-ex"] = append(e.f.records["zone-ex"],
+			map[string]any{"id": "a1", "zone_id": "zone-ex", "zone_name": "example.com", "name": "www.example.com", "type": "A", "content": "203.0.113.10", "ttl": 300, "proxied": false},
+			map[string]any{"id": "c2", "zone_id": "zone-ex", "zone_name": "example.com", "name": "files.example.com", "type": "CNAME", "content": "pub-1.r2.dev", "ttl": 300, "proxied": false},
+			map[string]any{"id": "ns1", "zone_id": "zone-ex", "zone_name": "example.com", "name": "example.com", "type": "NS", "content": "ns1.example.net", "ttl": 300, "proxied": false},
+		)
+		e.f.reset()
+	}
+	all := []string{"dns", "delete", "example.com", "--all", "--profile", "acme", "--platform", "cloudflare", "-o", "json"}
+
+	// Dry run: nothing written, no other account searched.
+	e := newR2Env(t)
+	setup(e)
+	code, stdout, stderr := e.run(append(all, "--dry-run")...)
+	rep := e.report(stdout)
+	if code != cli.ExitOK || len(e.f.writes()) != 0 || e.f.count("GET /accounts/acc2") != 0 || len(rep.Changes) != 4 ||
+		rep.Changes[0].Action != platform.WouldDelete || rep.Changes[0].Attrs["via"] != "unbind:cloudflare" || rep.Changes[3].Action != platform.Skipped {
+		t.Fatalf("dry run: exit %d, %s, %+v, %v", code, stderr, rep, e.f.requests)
+	}
+
+	// For real: one R2 DELETE, two DNS DELETEs, never the CNAME itself.
+	code, stdout, stderr = e.run(append(all, "--yes")...)
+	rep = e.report(stdout)
+	w := e.f.writes()
+	if code != cli.ExitOK || len(w) != 3 || w[0] != "DELETE /accounts/acc1/r2/buckets/assets/domains/custom/cdn.example.com" ||
+		w[1] != "DELETE /zones/zone-ex/dns_records/a1" || w[2] != "DELETE /zones/zone-ex/dns_records/c2" || *rep.Summary != (platform.Summary{Deleted: 3, Skipped: 1}) {
+		t.Errorf("delete --all: exit %d, %s, %v, %+v", code, stderr, w, rep.Summary)
+	}
+
+	// --keep-bound: the R2 CNAME is skipped and left alone.
+	e = newR2Env(t)
+	setup(e)
+	code, stdout, stderr = e.run(append(all, "--yes", "--keep-bound")...)
+	rep = e.report(stdout)
+	if code != cli.ExitOK || e.f.count("DELETE /accounts/") != 0 || e.f.count("DELETE /zones/") != 2 || rep.Changes[0].Action != platform.Skipped ||
+		!strings.Contains(rep.Changes[0].Detail, "--keep-bound") {
+		t.Errorf("--keep-bound: exit %d, %s, %v", code, stderr, e.f.requests)
+	}
+
+	// No R2 permission: the CNAME fails without a DNS DELETE and without
+	// searching the other account; the rest is deleted; exit code 1.
+	e = newR2Env(t)
+	setup(e)
+	e.f.accounts["acc1"].r2Disabled = true
+	code, stdout, stderr = e.run(append(all, "--yes")...)
+	rep = e.report(stdout)
+	if code != cli.ExitError || e.f.count("DELETE /accounts/acc1/r2/") != 1 || e.f.count("GET /accounts/acc2") != 0 ||
+		e.f.count("DELETE /zones/zone-ex/dns_records/cname") != 0 || e.f.count("DELETE /zones/") != 2 ||
+		rep.Changes[0].Action != platform.Failed || !strings.Contains(rep.Changes[0].Detail, "R2 unbind failed") || rep.Summary.Failed != 1 {
+		t.Errorf("without R2: exit %d, %s, %v, %+v", code, stderr, e.f.requests, rep)
+	}
+
+	// The bucket lives in another account: found there and unbound there.
+	e = newR2Env(t)
+	setup(e)
+	e.f.accounts["acc1"].buckets = nil
+	e.f.accounts["acc1"].domains = map[string][]map[string]any{}
+	e.f.accounts["acc2"].buckets = []string{"assets"}
+	e.f.accounts["acc2"].domains["assets"] = []map[string]any{{"domain": "cdn.example.com", "enabled": true, "zoneId": "zone-ex"}}
+	code, _, stderr = e.run(append(all, "--yes")...)
+	if code != cli.ExitOK || e.f.count("DELETE /accounts/acc2/r2/buckets/assets/domains/custom/cdn.example.com") != 1 || e.f.count("DELETE /zones/zone-ex/dns_records/cname") != 0 {
+		t.Errorf("other account: exit %d, %s, %v", code, stderr, e.f.requests)
+	}
+}
