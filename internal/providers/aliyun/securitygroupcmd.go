@@ -463,7 +463,8 @@ nothing.
 
 - The VPC is the instance's with --instance (another --vpc is a usage
   error), else --vpc (id or name), else the VPC named by naming.aliyun_vpc
-  ({region}-vpc), which must exist (otherwise exit code 2: pass --vpc).
+  ({region}-vpc), which must exist (otherwise exit code 2: pass --vpc). A
+  group given by id without --vpc or --instance keeps its own VPC.
 - The group is looked up by name in that VPC: none is created (with
   --description), one is used as it is, several are ambiguous (exit code 5).
   A group given by id that is in another VPC is an error (exit code 1): a
@@ -535,6 +536,12 @@ nothing.
 					}
 				}
 				vpc = inst.VpcID
+			} else if byID && vpcFlag == "" {
+				// A group given by id already has its VPC: the default VPC
+				// is not looked up (it may not exist, or be another VPC).
+				if s, err = openECSScope(ctx, rt, region); err != nil {
+					return err
+				}
 			} else {
 				if s, err = openECSScope(ctx, rt, region); err != nil {
 					return err
@@ -563,6 +570,9 @@ nothing.
 				if sg == nil {
 					return fmt.Errorf("%w: security group %q in %s", platform.ErrNotFound, name, s.where())
 				}
+				if vpc == "" {
+					vpc = sg.VPC
+				}
 				if sg.VPC != vpc {
 					return fmt.Errorf("security group %s is in VPC %s, not in %s; a security group cannot move to another VPC: ensure a group by name to create one there", sg.ID, sg.VPC, vpc)
 				}
@@ -585,6 +595,7 @@ nothing.
 				if desc != "" && desc != sg.Description {
 					rt.Infof("note: security group %s keeps its description %q", sg.ID, sg.Description)
 				}
+				storeSG(ctx, rt, s, *sg)
 				plan.Add(platform.Step{Resource: resource, Action: platform.Unchanged, ID: sg.ID, Desc: sg.ID + " " + sg.VPC})
 				if len(rules) > 0 {
 					have, err := s.c.securityGroupRules(ctx, s.region, sg.ID)

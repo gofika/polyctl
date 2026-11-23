@@ -437,3 +437,30 @@ func TestSGInteractiveConfirmations(t *testing.T) {
 		}
 	}
 }
+
+func TestSGEnsureByIDUsesTheGroupsVPC(t *testing.T) {
+	h, f := sgHarness(t, app.Flags{})
+	f.addGroup("sg-o", "api", "vpc-other")
+	// The default VPC (cn-shanghai-vpc = vpc-main) is another VPC: a group
+	// given by id keeps its own VPC.
+	if err := h.run("ecs", "security-group", "ensure", "sg-o", "--rule", "tcp:80:0.0.0.0/0"); err != nil {
+		t.Fatalf("ensure by id: %v", err)
+	}
+	if !slices.Equal(f.writes, []string{"AuthorizeSecurityGroup"}) {
+		t.Errorf("writes = %v, want one AuthorizeSecurityGroup", f.writes)
+	}
+	// Without any default VPC it still works.
+	f.vpcs = nil
+	if err := h.run("ecs", "security-group", "ensure", "sg-o", "--rule", "tcp:80:0.0.0.0/0"); err != nil {
+		t.Fatalf("ensure by id without a default VPC: %v", err)
+	}
+	if rep := reportOf(t, h); countActions(rep, platform.Unchanged) != 2 {
+		t.Errorf("second run = %+v, want everything unchanged", rep.Changes)
+	}
+	// An explicit --vpc that is not the group's is still refused.
+	f.addVPC("vpc-main", "cn-shanghai-vpc")
+	err := h.run("ecs", "security-group", "ensure", "sg-o", "--vpc", "vpc-main")
+	if err == nil || errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "cannot move") {
+		t.Errorf("ensure by id with another --vpc = %v, want a general failure", err)
+	}
+}
