@@ -41,7 +41,12 @@ type ec2API interface {
 	DescribeInstances(ctx context.Context, in *ec2.DescribeInstancesInput, optFns ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
 	StartInstances(ctx context.Context, in *ec2.StartInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error)
 	StopInstances(ctx context.Context, in *ec2.StopInstancesInput, optFns ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error)
+	DescribeKeyPairs(ctx context.Context, in *ec2.DescribeKeyPairsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeKeyPairsOutput, error)
+	ImportKeyPair(ctx context.Context, in *ec2.ImportKeyPairInput, optFns ...func(*ec2.Options)) (*ec2.ImportKeyPairOutput, error)
 }
+
+// newEC2 creates the EC2 client of a region; tests replace it with a fake.
+var newEC2 = func(cfg awssdk.Config) ec2API { return ec2.NewFromConfig(cfg) }
 
 // client is an authenticated AWS session.
 type client struct {
@@ -69,7 +74,7 @@ func newClient(cfg awssdk.Config, region string) *client {
 		sts:    sts.NewFromConfig(regional(region)),
 		r53:    route53.NewFromConfig(regional(region)),
 		r53d:   route53domains.NewFromConfig(regional(route53domainsRegion)),
-		ec2For: func(r string) ec2API { return ec2.NewFromConfig(regional(r)) },
+		ec2For: func(r string) ec2API { return newEC2(regional(r)) },
 	}
 }
 
@@ -126,6 +131,8 @@ func (c *client) Sync(ctx context.Context, rt platform.ResourceType) ([]platform
 		return app.DomainResources(domains), nil
 	case platform.ResInstance:
 		return c.listInstances(ctx, c.region)
+	case platform.ResKeyPair:
+		return c.keyPairResources(ctx, c.region)
 	}
 	return nil, fmt.Errorf("%s: %w", rt, platform.ErrNotSupported)
 }
