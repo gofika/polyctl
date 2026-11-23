@@ -761,6 +761,8 @@ Registrar operations (`domain ns ...`) are not affected in this setup, because o
 
 The status line on stderr always tells you which account was used, as `<platform>/<profile>`, for example `zone example.com via cloudflare/acme (local inventory)`.
 
+Platform-specific commands that address a resource by its name or id (an instance, a load balancer, ...) find the account the same way, so the profile does not have to be named: the inventory rows of that resource type are searched by id and by name across the platform's accounts (only those of `--profile` when it is given). An id match wins over name matches. One match is used; several are ambiguous (exit code 5, pass `--profile`, or the id when one account holds several resources of that name); none syncs that resource type once for the accounts whose cached set is missing or expired (all of them with `--refresh`, none with `--offline`) and looks again before reporting not found (exit code 4).
+
 ## Caching
 
 Every read goes through the inventory:
