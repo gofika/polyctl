@@ -389,7 +389,7 @@ REGIONAL_MANAGED_PROXY, GLOBAL_MANAGED_PROXY or INTERNAL_HTTPS_LOAD_BALANCER).`,
 			if err != nil {
 				return err
 			}
-			subnets, err := c.listSubnets(ctx, region, network)
+			subnets, err := c.listSubnets(ctx, region, lastSegment(network))
 			if err != nil {
 				return err
 			}

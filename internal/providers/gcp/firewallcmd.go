@@ -57,6 +57,7 @@ of that network, matched by its exact name.`,
 			if err != nil {
 				return err
 			}
+			network := lastSegment(network)
 			var list []*compute.Firewall
 			for _, fw := range all {
 				if network == "" || lastSegment(fw.Network) == network {
