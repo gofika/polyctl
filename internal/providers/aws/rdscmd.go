@@ -58,14 +58,14 @@ func rdsCmd(rt *app.Runtime) *cobra.Command {
 	}
 	inst := &cobra.Command{
 		Use:   "instance",
-		Short: "RDS database instances: list, get, create, start, stop, resize, delete",
+		Short: "RDS database instances: list, get, create, start, stop, resize, delete, ensure",
 		Long: `RDS database instances. An instance is named by its identifier, or by its
 endpoint DNS name (identifiers cannot hold a dot): the inventory tells which
 account and region hold it, as for domains. The inventory (db_instance)
 holds the instances of every enabled region.`,
 	}
 	inst.AddCommand(rdsListCmd(rt), rdsGetCmd(rt), rdsCreateCmd(rt), rdsPowerCmd(rt, true), rdsPowerCmd(rt, false),
-		rdsResizeCmd(rt), rdsDeleteCmd(rt))
+		rdsResizeCmd(rt), rdsDeleteCmd(rt), rdsEnsureCmd(rt))
 	cmd.AddCommand(inst)
 	return cmd
 }
@@ -967,7 +967,8 @@ Any other status is exit code 1. --wait waits until the instance is available
 reported unchanged and nothing is sent; a stopping one too (--wait waits until
 it is stopped). Any other status is exit code 1. --wait waits until the
 instance is stopped (15 second polls, --timeout 30m). AWS starts a stopped
-instance again after 7 days.`
+instance again after 7 days: run ` + "`rds instance ensure <id> --state stopped`" + `
+daily (cron) to keep it stopped.`
 	}
 	cmd := &cobra.Command{
 		Use:     verb + " <id|endpoint-dns>",
