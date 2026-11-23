@@ -831,6 +831,12 @@ func (e *lbEnsure) compareRule(fr *compute.ForwardingRule, addressIP string) err
 func (e *lbEnsure) ruleSteps(ctx context.Context) ([]platform.Step, error) {
 	var steps []platform.Step
 	region := e.scope.region
+	name := e.names.rule
+	res := string(kindRule) + "/" + name
+	fr, err := e.scope.findRule(ctx, name)
+	if err != nil {
+		return nil, err
+	}
 	addressIP := ""
 	if e.address != "" {
 		a, err := e.c.getAddress(ctx, region, e.address)
@@ -839,12 +845,22 @@ func (e *lbEnsure) ruleSteps(ctx context.Context) ([]platform.Step, error) {
 		}
 		switch {
 		case a == nil:
+			// A forwarding rule that exists keeps its IP (it cannot change in
+			// place), so the missing address is reserved with that IP: the
+			// rule's ephemeral IP becomes static. A new rule gets a new
+			// address.
 			addr := e.address
-			steps = append(steps, platform.Step{Resource: "address/" + addr, Action: platform.Created, Desc: "external, premium tier, " + region,
+			body := &compute.Address{Name: addr, AddressType: addrExternal, NetworkTier: "PREMIUM"}
+			desc := "external, premium tier, " + region
+			if fr != nil && fr.IPAddress != "" {
+				body.Address = fr.IPAddress
+				desc = "promote " + fr.IPAddress + " of forwarding rule " + fr.Name + ", premium tier, " + region
+			}
+			steps = append(steps, platform.Step{Resource: "address/" + addr, Action: platform.Created, Desc: desc,
 				Apply: func(ctx context.Context) (platform.Change, error) {
 					wctx, cancel, conv := deadline(ctx, e.timeout, "address/"+addr, "RESERVED")
 					defer cancel()
-					got, err := e.c.insertAddress(wctx, region, &compute.Address{Name: addr, AddressType: addrExternal, NetworkTier: "PREMIUM"})
+					got, err := e.c.insertAddress(wctx, region, body)
 					if err != nil {
 						return platform.Change{}, conv(err)
 					}
@@ -856,12 +872,6 @@ func (e *lbEnsure) ruleSteps(ctx context.Context) ([]platform.Step, error) {
 			addressIP = a.Address
 			steps = append(steps, platform.Step{Resource: "address/" + e.address, Action: platform.Unchanged, Desc: "reserved " + a.Address})
 		}
-	}
-	name := e.names.rule
-	res := string(kindRule) + "/" + name
-	fr, err := e.scope.findRule(ctx, name)
-	if err != nil {
-		return nil, err
 	}
 	portLabel := ":" + strconv.FormatInt(e.port, 10)
 	if fr != nil {

@@ -244,6 +244,24 @@ func TestLBEnsurePartial(t *testing.T) {
 	}
 }
 
+// An existing rule on an ephemeral IP and a missing --address: the address
+// is reserved with the rule's IP, and the rule stays as it is.
+func TestLBEnsureAddressPromotesRuleIP(t *testing.T) {
+	h := lbHarness(t, app.Flags{})
+	ensureHTTP(t, h)
+	ip := h.gce.rule("us-central1", "fr-web-1").IPAddress
+	rep := ensureHTTP(t, h, "--address", "lb-web-1-ip")
+	if !slices.Contains(rows(rep), "address/lb-web-1-ip created reserved "+ip) || !slices.Contains(rows(rep), "forwarding-rule/fr-web-1 unchanged "+ip+":80") {
+		t.Errorf("report =\n%s", strings.Join(rows(rep), "\n"))
+	}
+	if a := h.gce.address("us-central1", "lb-web-1-ip"); a == nil || a.Address != ip {
+		t.Errorf("address = %+v, want %s", a, ip)
+	}
+	if ops := h.gce.lbOps(); !slices.Equal(ops, []string{"POST us-central1/addresses"}) {
+		t.Errorf("writes %v", ops)
+	}
+}
+
 func TestLBEnsureTCPReusesGroup(t *testing.T) {
 	h := lbHarness(t, app.Flags{})
 	ensureHTTP(t, h)
