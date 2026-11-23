@@ -114,8 +114,14 @@ func TestLiveNSAnswers(t *testing.T) {
 	if r := platform.LiveNS(ctx, "broken.com", res, time.Second); r.Kind != platform.NSServFail || !r.Available() {
 		t.Errorf("servfail = %+v", r)
 	}
-	if r := platform.LiveNS(ctx, "refused.com", res, time.Second); r.Kind != "REFUSED" || !r.Available() {
+	// A resolver that refuses says nothing about the name.
+	if r := platform.LiveNS(ctx, "refused.com", res, time.Second); r.Kind != "REFUSED" || r.Available() {
 		t.Errorf("refused = %+v", r)
+	}
+	// A refusal is passed over for a definite answer of another resolver.
+	other := dnstest.Start(t, map[string]dnstest.Answer{"refused.com": {SOA: "com"}})
+	if r := platform.LiveNS(ctx, "refused.com", []string{srv.Addr, other.Addr}, time.Second); r.Kind != platform.NSNoData || r.Resolver != other.Addr || r.ZoneApex != "com" {
+		t.Errorf("refused then nodata = %+v", r)
 	}
 }
 

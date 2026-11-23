@@ -197,10 +197,16 @@ type LiveNSResult struct {
 	Err error
 }
 
-// Available reports whether a resolver gave an answer at all; NXDOMAIN,
-// NODATA and SERVFAIL are answers (the name has no NS), a timeout is not.
+// Available reports whether the resolvers told something about the name:
+// NS records, or NXDOMAIN, NODATA or SERVFAIL (the name has no usable NS).
+// A timeout, an unreachable resolver or another response code (a resolver
+// that refuses to answer) says nothing about the name.
 func (r LiveNSResult) Available() bool {
-	return r.Kind != NSTimeout && r.Kind != NSUnavailable
+	switch r.Kind {
+	case NSOK, NSNXDomain, NSNoData, NSServFail:
+		return true
+	}
+	return false
 }
 
 // nsAnswer is the outcome of one query to one resolver.
@@ -270,15 +276,16 @@ func queryNS(ctx context.Context, domain, addr string, timeout time.Duration) ns
 // LiveNS asks the resolvers, one after the other, for the NS records of
 // domain and returns the first answer that has NS records. A resolver that
 // times out, fails or answers without NS records is followed by the next.
-// When none has NS records, the first definite answer (NXDOMAIN, NODATA,
-// SERVFAIL, another RCODE) is returned; when no resolver answered at all,
-// Kind is NSTimeout (every failure was a timeout) or NSUnavailable. The
-// resolvers must be host:port addresses (see ParseResolver).
+// When none has NS records, the first NXDOMAIN, NODATA or SERVFAIL answer is
+// returned, else the first answer with another response code; when no
+// resolver answered at all, Kind is NSTimeout (every failure was a timeout)
+// or NSUnavailable. The resolvers must be host:port addresses (see
+// ParseResolver).
 func LiveNS(ctx context.Context, domain string, resolvers []string, timeout time.Duration) LiveNSResult {
 	if timeout <= 0 {
 		timeout = DefaultNSTimeout
 	}
-	var definite *LiveNSResult
+	var definite, other *LiveNSResult
 	allTimeouts := true
 	var lastErr error
 	for _, addr := range resolvers {
@@ -295,14 +302,21 @@ func LiveNS(ctx context.Context, domain string, resolvers []string, timeout time
 				allTimeouts = false
 			}
 			lastErr = a.err
-		default:
+		case NSNXDomain, NSNoData, NSServFail:
 			if definite == nil {
 				definite = &LiveNSResult{Kind: a.kind, Resolver: addr, ZoneApex: a.apex}
+			}
+		default:
+			if other == nil {
+				other = &LiveNSResult{Kind: a.kind, Resolver: addr}
 			}
 		}
 	}
 	if definite != nil {
 		return *definite
+	}
+	if other != nil {
+		return *other
 	}
 	kind := NSTimeout
 	if !allTimeouts || len(resolvers) == 0 {
