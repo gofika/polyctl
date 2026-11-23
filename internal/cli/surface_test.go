@@ -366,6 +366,7 @@ func TestPlatformTreeShapes(t *testing.T) {
 		"gcp compute instance list", "gcp compute instance start", "gcp compute instance stop",
 		"gcp compute instance get", "gcp compute instance create", "gcp compute instance delete",
 		"gcp compute instance resize", "gcp compute instance reboot", "gcp compute instance update",
+		"gcp compute network list", "gcp compute network get", "gcp compute subnet list",
 		"aliyun ecs instance list", "aliyun ecs instance start", "aliyun ecs instance stop",
 		// Registrar groups: list, get, ns get|set directly below the group.
 		"aws route53domains list", "aws route53domains get", "aws route53domains ns get", "aws route53domains ns set",

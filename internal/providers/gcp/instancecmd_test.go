@@ -35,6 +35,8 @@ func exitClass(err error) string {
 		return "ambiguous"
 	case errors.Is(err, app.ErrOffline):
 		return "offline"
+	case errors.Is(err, platform.ErrNotSupported):
+		return "unsupported"
 	}
 	return "general"
 }

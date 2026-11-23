@@ -1053,6 +1053,8 @@ gcp compute instance delete <name|id> [--zone <z>] [--release-ips] [--yes] [--wa
 gcp compute instance resize <name|id> --machine-type <t> [--zone <z>] [--yes] [--wait-ssh] [--timeout 10m]
 gcp compute instance reboot <name|id|ip> [--zone <z>] [--yes] [--wait [--timeout 3m]]
 gcp compute instance update <name|id> --ip-forward[=false] [--zone <z>]
+gcp compute network list                          gcp compute network get <name>
+gcp compute subnet list [--network <n>] [--region <r>] [--proxy-only]
 ```
 
 Inventory types: `zone`, `dns_record`, `instance`. Cloud DNS record sets are split one record per value exactly like Route 53 (see above); writes are applied as a single atomic change.
@@ -1072,6 +1074,13 @@ Compute Engine instances:
 - `reboot` is a hard reset (`instances.reset`, like `gcloud compute instances reset`): the virtual machine restarts at once without a graceful shutdown of the operating system, keeps its addresses and stays `RUNNING`; it is never emulated by a stop and a start. It also takes an internal or external IP, looked up in the inventory; an IP that instances of several projects share is ambiguous (exit code 5), and the interactive flow lets you choose. The status is read live: an instance that is not `RUNNING` is exit code 1. The project, zone, addresses and status are shown and a confirmation is asked (as for `delete`). `--wait` waits for the reset (`--timeout`, 3m); a failed operation is exit code 1 with its error code.
 - `update --ip-forward[=false]` switches ip forwarding in place, on a running or a stopped instance: the instance is sent back whole with its fingerprint and only `canIpForward` changed, allowing at most a refresh (never a restart), and read again to check the value. A value that is already set is `unchanged`; a stale fingerprint (the instance changed in between) is re-read and retried once. `update` without a setting is exit code 2.
 - Errors: a disabled Compute Engine API and a missing permission (`compute.instances.*`, `compute.addresses.*`, ...) are exit code 3 and say which; quota and capacity errors (`QUOTA_EXCEEDED`, `ZONE_RESOURCE_POOL_EXHAUSTED`) are exit code 1 with a hint to try another zone or machine type, whatever HTTP status carries them; an operation that finishes with an error (`IP_IN_USE_BY_ANOTHER_RESOURCE`, ...) is exit code 1 with its code.
+
+VPC networks and subnetworks (read-only, always read live, never kept in the inventory; `--profile` picks the project, and several GCP profiles without a default one are exit code 5):
+
+- `network list` shows each network's mode (`auto`, `custom`, or `legacy` for a network with a single IPv4 range), routing mode, MTU (a network that never set one reads back 0 and is shown as `1460(default)`) and number of subnetworks. JSON: `[{"name", "mode", "routing_mode", "mtu", "ipv4_range", "subnetworks": ["<region>/<name>", ...], "description", "creation_timestamp"}]`.
+- `network get <name>` adds the subnetworks of every region with their ranges (`subnets`, shaped like the rows of `subnet list`). A missing network is exit code 4.
+- `subnet list` lists every region (`--region` one), optionally the subnetworks of one `--network`: the network is matched by its exact name, so `net-a` never lists the subnetworks of `net-a-2`. Columns `NAME REGION NETWORK RANGE SECONDARY-RANGES PURPOSE ROLE`; JSON `[{"name", "region", "network", "ip_cidr_range", "secondary_ranges": [{"range_name", "ip_cidr_range"}], "purpose", "role"}]`. `--proxy-only` keeps the proxy-only subnetworks (purpose `REGIONAL_MANAGED_PROXY`, `GLOBAL_MANAGED_PROXY` or the older `INTERNAL_HTTPS_LOAD_BALANCER`). No match is exit code 0 with `[]` and a note on stderr.
+- A `--profile` that exists but holds no GCP account is exit code 7.
 
 ### Alibaba Cloud (`polyctl aliyun`)
 

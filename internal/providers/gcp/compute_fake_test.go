@@ -292,6 +292,27 @@ func (f *fakeCompute) handle(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		writeJSONStatus(w, 200, &compute.InstanceAggregatedList{Items: items})
+	case len(rest) == 2 && rest[0] == "global" && rest[1] == "networks":
+		var keys []string
+		for k := range f.networks {
+			if strings.HasPrefix(k, project+"/") {
+				keys = append(keys, k)
+			}
+		}
+		sort.Strings(keys)
+		var items []*compute.Network
+		for _, k := range keys {
+			items = append(items, f.networks[k])
+		}
+		writeJSONStatus(w, 200, &compute.NetworkList{Items: items})
+	case len(rest) == 2 && rest[0] == "aggregated" && rest[1] == "subnetworks":
+		items := map[string]compute.SubnetworksScopedList{}
+		for key, list := range f.subnets {
+			if p, region, ok := strings.Cut(key, "/"); ok && p == project {
+				items["regions/"+region] = compute.SubnetworksScopedList{Subnetworks: list}
+			}
+		}
+		writeJSONStatus(w, 200, &compute.SubnetworkAggregatedList{Items: items})
 	case len(rest) == 3 && rest[0] == "global" && rest[1] == "networks":
 		if n := f.networks[project+"/"+rest[2]]; n != nil {
 			writeJSONStatus(w, 200, n)

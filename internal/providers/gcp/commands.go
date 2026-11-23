@@ -581,7 +581,7 @@ func newComputeCmd(rt *app.Runtime) *cobra.Command {
 	instance.AddCommand(newComputeListCmd(rt), computeGetCmd(rt), computeCreateCmd(rt), computeDeleteCmd(rt),
 		computeResizeCmd(rt), computeRebootCmd(rt), computeUpdateCmd(rt),
 		newComputePowerCmd(rt, "start"), newComputePowerCmd(rt, "stop"))
-	cmd.AddCommand(instance)
+	cmd.AddCommand(instance, newNetworkCmd(rt), newSubnetCmd(rt))
 	return cmd
 }
 
