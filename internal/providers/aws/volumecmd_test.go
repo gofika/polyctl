@@ -283,3 +283,16 @@ func isAmbiguous(err error) bool {
 	var amb *app.AmbiguousError
 	return errors.As(err, &amb)
 }
+
+func TestVolumeCreateWaitNotVisibleYet(t *testing.T) {
+	h := newVolumeHarness(t, app.Flags{})
+	// EC2 is eventually consistent: the first reads after CreateVolume may
+	// not see the new volume. The wait goes on instead of failing.
+	h.ebs().createHidden = 2
+	if err := h.run("ec2", "volume", "create", "late", "--size", "5", "--az", "ap-east-1a", "--wait"); err != nil {
+		t.Fatalf("create: %v\n%s", err, h.stderr.String())
+	}
+	if c := h.report().Changes[0]; c.ID != "vol-0new1" || !strings.Contains(c.Detail, "available") {
+		t.Errorf("report = %+v", c)
+	}
+}

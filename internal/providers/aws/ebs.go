@@ -620,7 +620,9 @@ func (t *tolerant) check(err error) error {
 
 // waitVolume polls a volume every volumePollInterval until done says so,
 // and returns it as last read. A volume in the error state, or one that
-// disappears, fails the wait (unless goneIsDone).
+// disappears after it was seen, fails the wait (unless goneIsDone); one not
+// seen yet (EC2 is eventually consistent right after CreateVolume) is
+// waited for.
 func (c *client) waitVolume(ctx context.Context, region, id, want string, timeout time.Duration, goneIsDone bool, done func(ec2types.Volume) bool) (ec2types.Volume, error) {
 	region = c.regionOr(region)
 	var last ec2types.Volume
@@ -633,6 +635,9 @@ func (c *client) waitVolume(ctx context.Context, region, id, want string, timeou
 			if errors.Is(err, platform.ErrNotFound) {
 				if goneIsDone {
 					return platform.WaitDone, "deleted", nil
+				}
+				if last.VolumeId == nil {
+					return platform.KeepWaiting, "not visible yet", tol.check(nil)
 				}
 				return platform.WaitFailed, "gone", nil
 			}

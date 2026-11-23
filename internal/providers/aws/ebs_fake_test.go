@@ -26,6 +26,7 @@ type fakeVol struct {
 	dot                      bool
 	next, attachNext         []string
 	tags                     []ec2types.Tag
+	hidden                   int // reads that do not see it yet
 }
 
 // fakeMod is the latest modification of a volume.
@@ -50,22 +51,23 @@ type fakeSnap struct {
 
 // fakeEBS is the volume and snapshot part of the shared fake state.
 type fakeEBS struct {
-	vols        map[string][]*fakeVol // region -> volumes
-	mods        map[string]*fakeMod   // volume id -> latest modification
-	snaps       map[string][]*fakeSnap
-	errs        map[string]error // call -> error of that call
-	createNext  []string         // states of a new volume after creating
-	modNext     []string         // states of a new modification after modifying
-	modHidden   int              // polls that do not see a new modification
-	snapNext    []string         // states of a new snapshot after pending
-	creates     []*ec2.CreateVolumeInput
-	modifies    []*ec2.ModifyVolumeInput
-	attaches    []*ec2.AttachVolumeInput
-	detaches    []*ec2.DetachVolumeInput
-	snapCreates []*ec2.CreateSnapshotInput
-	snapOwners  [][]string
-	snapPage    int
-	nextID      int
+	vols         map[string][]*fakeVol // region -> volumes
+	mods         map[string]*fakeMod   // volume id -> latest modification
+	snaps        map[string][]*fakeSnap
+	errs         map[string]error // call -> error of that call
+	createNext   []string         // states of a new volume after creating
+	modNext      []string         // states of a new modification after modifying
+	modHidden    int              // polls that do not see a new modification
+	createHidden int              // reads that do not see a new volume
+	snapNext     []string         // states of a new snapshot after pending
+	creates      []*ec2.CreateVolumeInput
+	modifies     []*ec2.ModifyVolumeInput
+	attaches     []*ec2.AttachVolumeInput
+	detaches     []*ec2.DetachVolumeInput
+	snapCreates  []*ec2.CreateSnapshotInput
+	snapOwners   [][]string
+	snapPage     int
+	nextID       int
 }
 
 func (e *fakeEBS) init() {
@@ -192,6 +194,10 @@ func (f *fakeEC2) DescribeVolumes(_ context.Context, in *ec2.DescribeVolumesInpu
 		}
 	}
 	for _, v := range s.ebs.vols[f.region] {
+		if v.hidden > 0 {
+			v.hidden--
+			continue
+		}
 		all = append(all, cand{v: v.ec2(), vol: v})
 	}
 	var match []cand
@@ -294,7 +300,7 @@ func (f *fakeEC2) CreateVolume(_ context.Context, in *ec2.CreateVolumeInput, _ .
 	e.nextID++
 	v := &fakeVol{id: fmt.Sprintf("vol-0new%d", e.nextID), az: awssdk.ToString(in.AvailabilityZone), typ: string(in.VolumeType),
 		state: volCreating, size: awssdk.ToInt32(in.Size), iops: awssdk.ToInt32(in.Iops), throughput: awssdk.ToInt32(in.Throughput),
-		snapshot: awssdk.ToString(in.SnapshotId), next: append([]string{}, e.createNext...)}
+		snapshot: awssdk.ToString(in.SnapshotId), next: append([]string{}, e.createNext...), hidden: e.createHidden}
 	if len(v.next) == 0 {
 		v.next = []string{volAvailable}
 	}
