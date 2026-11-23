@@ -639,9 +639,11 @@ it, else the E2 custom type e2-custom-<cores>-<MiB> (an even number of 2
 to 32 vCPUs, 0.5 to 8 GiB per vCPU, at most 128 GiB, in multiples of 0.25
 GiB). The choice is printed on stderr ("2H4G -> e2-medium (us-central1-a,
 E2 predefined)") and shown in the change report. No fit is exit code 4
-with the nearest E2 size; a size of 0 vCPUs or 0 GiB is exit code 2. The image is --image (projects/<p>/global/images/<name>
-or .../family/<family>), or the latest x86_64 public image of --os (debian
-by default; ubuntu picks the newest LTS) and --os-version; nothing found is
+with the nearest E2 size; a size of 0 vCPUs or 0 GiB is exit code 2.
+
+The image is --image (projects/<p>/global/images/<name> or
+.../family/<family>), or the latest x86_64 public image of --os (debian by
+default; ubuntu picks the newest LTS) and --os-version; nothing found is
 exit code 4. The boot disk ({name}-boot, --disk-type, pd-balanced by
 default) has the image's minimum size unless --boot-disk-size; --disk adds
 an empty data disk ({name}-data). Both disks are deleted with the instance.
