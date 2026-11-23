@@ -39,6 +39,8 @@ type DeployOptions struct {
 	DryRun  bool
 	NoWait  bool
 	Timeout time.Duration
+	// NameTemplate is cert.name_template (see platform.DeployOptions).
+	NameTemplate string
 }
 
 // DeployEnv is what Deploy works with; the command line builds it from the
@@ -151,7 +153,7 @@ type pruneJob struct {
 func Deploy(ctx context.Context, env *DeployEnv, o DeployOptions) (*DeployReport, error) {
 	r := &deployRun{env: env, o: o, bundles: map[string]*bundleResult{}}
 	r.po = platform.DeployOptions{Days: o.Days, Force: o.Force, All: o.All, DryRun: o.DryRun, NoWait: o.NoWait, Timeout: o.Timeout,
-		Prune: o.Prune, Now: env.now, Infof: env.Infof}
+		Prune: o.Prune, NameTemplate: o.NameTemplate, Now: env.now, Infof: env.Infof}
 	scope := DeployScope{Scope: "all", Days: o.Days}
 	if !o.All {
 		scope = DeployScope{Scope: "domain", Domain: o.Domain, Days: o.Days}

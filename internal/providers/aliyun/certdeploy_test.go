@@ -293,3 +293,18 @@ func TestALBDeployerPermissionAndPrune(t *testing.T) {
 		t.Errorf("prune: %v %v", err, d.cas.deletes)
 	}
 }
+
+func TestDeployCASName(t *testing.T) {
+	for tmpl, want := range map[string]string{
+		"":                           "upload_example.com_2027-02-18",
+		"upload_{name}_{not_after}":  "upload_example.com_2027-02-18",
+		"polyctl-{name}-{not_after}": "polyctl-example.com-2027-02-18",
+	} {
+		if got, err := deployCASName(platform.DeployOptions{NameTemplate: tmpl}, "example.com", "2027-02-18"); err != nil || got != want {
+			t.Errorf("%q = %q, %v", tmpl, got, err)
+		}
+	}
+	if _, err := deployCASName(platform.DeployOptions{NameTemplate: "x-{region}"}, "example.com", "2027-02-18"); !errors.Is(err, platform.ErrInvalidInput) {
+		t.Errorf("unknown variable = %v", err)
+	}
+}

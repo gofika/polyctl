@@ -158,6 +158,11 @@ type DeployOptions struct {
 	Timeout time.Duration
 	// Prune is --prune-expired.
 	Prune bool
+	// NameTemplate is cert.name_template: the name of a certificate
+	// uploaded where names are free text (CAS), with {name} the root
+	// domain and {not_after} the expiry date (YYYY-MM-DD). Empty: the
+	// deployer's own name.
+	NameTemplate string
 	// Now is the clock (nil: time.Now); Infof prints warnings and
 	// progress on stderr (nil: silent).
 	Now   func() time.Time

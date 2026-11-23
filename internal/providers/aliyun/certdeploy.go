@@ -11,6 +11,7 @@ import (
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/requests"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/cas"
 
+	"github.com/gofika/polyctl/internal/config"
 	"github.com/gofika/polyctl/internal/platform"
 )
 
@@ -258,7 +259,9 @@ func (d albDeployer) Plan(ctx context.Context, acct *platform.DeployAccount, t p
 		"domain": cert.Root, "endpoint": st.scope.Endpoint}
 	certID, name := "", ""
 	if cert.Pending {
-		name = "upload_" + cert.Root + "_" + platform.Pending
+		if name, err = deployCASName(o, cert.Root, platform.Pending); err != nil {
+			return nil, err
+		}
 		key := cert.Root + "|" + platform.Pending
 		certID = platform.Pending
 		if _, ok := st.uploaded[key]; !ok {
@@ -271,7 +274,9 @@ func (d albDeployer) Plan(ctx context.Context, acct *platform.DeployAccount, t p
 		}
 	} else {
 		key := cert.Root + "|" + platform.SerialKey(cert.Serial)
-		name = casCertName(cert.Root, cert.NotAfter)
+		if name, err = deployCASName(o, cert.Root, cert.NotAfter.UTC().Format("2006-01-02")); err != nil {
+			return nil, err
+		}
 		existing, found := st.byName(name)
 		if found && platform.SerialKey(existing.SerialNo) != platform.SerialKey(cert.Serial) {
 			// Another certificate of the same day holds the name (a
@@ -347,6 +352,20 @@ func (d albDeployer) Plan(ctx context.Context, acct *platform.DeployAccount, t p
 			return platform.Change{Detail: fmt.Sprintf("cert_id=%s (was %s)%s", want, raw, note)}, nil
 		}})
 	return steps, nil
+}
+
+// deployCASName is the name of an uploaded certificate of root expiring on
+// date: cert.name_template ({name}, {not_after}), upload_<root>_<date> by
+// default. The name is how a later run finds the certificate again.
+func deployCASName(o platform.DeployOptions, root, date string) (string, error) {
+	if strings.TrimSpace(o.NameTemplate) == "" {
+		return "upload_" + root + "_" + date, nil
+	}
+	name, err := config.RenderTemplate(o.NameTemplate, map[string]string{"name": root, "not_after": date})
+	if err != nil {
+		return "", fmt.Errorf("%w: cert.name_template: %v (it may use {name} and {not_after})", platform.ErrInvalidInput, err)
+	}
+	return name, nil
 }
 
 // serialPrefix is the first 8 digits of a serial number (lowercase hex).
