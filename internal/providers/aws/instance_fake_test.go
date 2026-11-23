@@ -646,3 +646,20 @@ func TestEC2ErrMapping(t *testing.T) {
 		t.Error("archFor")
 	}
 }
+
+// protectedErr is OperationNotPermitted with an HTTP 403 status: an
+// unverified shape that must still be the general failure, not exit code 3.
+type protectedErr struct{ fakeAPIError }
+
+func (protectedErr) HTTPStatusCode() int { return 403 }
+
+func TestDeleteProtectedIsNotAuth(t *testing.T) {
+	h := newInstanceHarness(t, app.Flags{Yes: true})
+	h.addInstance("ap-east-1", running("i-0aaaaaaaaaaaaaaa1", "web"))
+	h.ec2.inst.init()
+	h.ec2.inst.errs["TerminateInstances"] = &protectedErr{fakeAPIError{"OperationNotPermitted", "disableApiTermination"}}
+	err := h.run("ec2", "instance", "delete", "web")
+	if err == nil || errors.Is(err, platform.ErrUnauthorized) || !strings.Contains(err.Error(), "termination protection") {
+		t.Errorf("protected = %v", err)
+	}
+}

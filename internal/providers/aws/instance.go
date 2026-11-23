@@ -520,7 +520,9 @@ func (c *client) DeleteInstance(ctx context.Context, region, id string) error {
 	_, err := c.ec2For(region).TerminateInstances(ctx, &ec2.TerminateInstancesInput{InstanceIds: []string{id}})
 	if err != nil {
 		if platform.HasErrorCode(err, "OperationNotPermitted") {
-			return fmt.Errorf("instance %s has termination protection; switch it off in AWS first (aws ec2 modify-instance-attribute --instance-id %s --no-disable-api-termination): %w", id, id, ec2Err("TerminateInstances", region, err))
+			// Not mapped by HTTP status: termination protection is the
+			// general failure code, never an authentication problem.
+			return fmt.Errorf("instance %s has termination protection; switch it off in AWS first (aws ec2 modify-instance-attribute --instance-id %s --no-disable-api-termination): ec2:TerminateInstances in %s: %w", id, id, region, err)
 		}
 		return ec2Err("TerminateInstances", region, err)
 	}
