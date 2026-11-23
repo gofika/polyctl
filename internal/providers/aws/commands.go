@@ -3,9 +3,11 @@ package aws
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/spf13/cobra"
 
 	"github.com/gofika/polyctl/internal/app"
@@ -724,17 +726,30 @@ same name is never picked. Several live instances of one name are ambiguous
 
 func ec2ListCmd(rt *app.Runtime) *cobra.Command {
 	var region string
+	var filters instanceFilters
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List EC2 instances (the profile's default region is cached locally)",
-		Args:  cobra.NoArgs,
+		Long: `List the EC2 instances of the profile's region, every state included; the
+list is cached in the local inventory. --region lists another region, and
+the filters ask AWS directly, bypassing the inventory: --state and --type
+take one or more comma-separated values (repeatable), --name matches the
+Name tags that contain the value (a value holding * or ? is used as the
+EC2 wildcard pattern it is). Several filters must all match.`,
+		Example: "  polyctl aws ec2 instance list --state running --type c6a.large,c6a.xlarge --name xz7 -o json",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			for _, s := range filters.States {
+				if !slices.Contains(instanceStates, s) {
+					return app.UsageErrf("--state %q: expected one of %s", s, strings.Join(instanceStates, ", "))
+				}
+			}
 			profName, err := rt.ProfileFor(platform.AWS)
 			if err != nil {
 				return err
 			}
 			res := instanceResult{Profile: profName, Region: region}
-			if region != "" {
+			if region != "" || !filters.empty() {
 				if rt.Flags.Offline {
 					return app.ErrOffline
 				}
@@ -742,8 +757,12 @@ func ec2ListCmd(rt *app.Runtime) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				if res.Instances, err = c.describeInstances(cmd.Context(), region); err != nil {
+				res.Region = c.regionOr(region)
+				if res.Instances, err = c.listInstancesFiltered(cmd.Context(), res.Region, filters); err != nil {
 					return err
+				}
+				if len(res.Instances) == 0 {
+					rt.Infof("no matching instances in %s via aws/%s", res.Region, profName)
 				}
 				return rt.Render(res, func() output.Grid { return instanceGrid(res.Instances) })
 			}
@@ -777,6 +796,9 @@ func ec2ListCmd(rt *app.Runtime) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&region, "region", "", "list another region (bypasses the local inventory)")
+	cmd.Flags().StringSliceVar(&filters.States, "state", nil, "only instances in these states ("+strings.Join(instanceStates, ", ")+"; comma-separated)")
+	cmd.Flags().StringSliceVar(&filters.Types, "type", nil, "only instances of these types (comma-separated)")
+	cmd.Flags().StringVar(&filters.Name, "name", "", "only instances whose Name tag contains this value (* and ? make it a pattern)")
 	return cmd
 }
 
@@ -789,11 +811,22 @@ type stateChangeResult struct {
 func ec2StateCmd(rt *app.Runtime, action string) *cobra.Command {
 	var region string
 	var force bool
+	var wf app.WaitFlags
+	want := stateRunning
+	if action == "stop" {
+		want = stateStopped
+	}
 	cmd := &cobra.Command{
 		Use:   action + " <instance-id>",
 		Short: strings.ToUpper(action[:1]) + action[1:] + " an EC2 instance",
-		Args:  cobra.ExactArgs(1),
+		Long: strings.ToUpper(action[:1]) + action[1:] + ` an EC2 instance by its id. --wait waits (5 second polls, at most
+--timeout) until the instance is ` + want + `; after a start the new addresses are printed.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			wait, timeout, err := wf.Resolve(cmd)
+			if err != nil {
+				return err
+			}
 			if rt.Flags.Offline {
 				return app.ErrOffline
 			}
@@ -820,6 +853,23 @@ func ec2StateCmd(rt *app.Runtime, action string) *cobra.Command {
 			for _, ch := range changes {
 				rt.Infof("%s %s: %s -> %s via aws/%s", action, ch.ID, ch.PreviousState, ch.CurrentState, prof.Name)
 			}
+			if wait {
+				in, err := c.waitInstanceState(cmd.Context(), region, args[0], args[0], want, timeout)
+				if err != nil {
+					return fmt.Errorf("%s of %s was requested: %w", action, args[0], err)
+				}
+				storeInstance(cmd.Context(), rt, prof.Name, c, region, in)
+				for i := range changes {
+					if changes[i].ID == args[0] {
+						changes[i].CurrentState = instanceState(in)
+					}
+				}
+				if want == stateRunning {
+					rt.Infof("instance %s is running: public ip %s, private ip %s", instanceLabel(in), orNone(awssdk.ToString(in.PublicIpAddress)), orNone(awssdk.ToString(in.PrivateIpAddress)))
+				} else {
+					rt.Infof("instance %s is stopped", instanceLabel(in))
+				}
+			}
 			res := stateChangeResult{Profile: prof.Name, Region: region, Changes: changes}
 			return rt.Render(res, func() output.Grid {
 				g := output.Grid{Headers: []string{"ID", "PREVIOUS", "CURRENT"}}
@@ -834,6 +884,7 @@ func ec2StateCmd(rt *app.Runtime, action string) *cobra.Command {
 	if action == "stop" {
 		cmd.Flags().BoolVar(&force, "force", false, "force the instance to stop without a clean shutdown")
 	}
+	app.AddWaitFlags(cmd, &wf, false, defaultInstanceTimeout)
 	return cmd
 }
 
