@@ -706,8 +706,18 @@ func instanceGrid(instances []instanceInfo) output.Grid {
 
 func ec2Cmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{Use: "ec2", Short: "Elastic Compute Cloud"}
-	instance := &cobra.Command{Use: "instance", Short: "EC2 instances"}
-	instance.AddCommand(ec2ListCmd(rt), ec2StateCmd(rt, "start"), ec2StateCmd(rt, "stop"))
+	instance := &cobra.Command{
+		Use:   "instance",
+		Short: "EC2 instances",
+		Long: `EC2 instances. get, delete, reboot and resize find the instance by its Name
+tag or its id in every selected AWS account, the way domains are routed:
+the inventory tells which account holds it (synced once when it does not
+know), and the account is asked live, so that a terminated instance of the
+same name is never picked. Several live instances of one name are ambiguous
+(exit code 5). --region looks in another region of the profile's account.`,
+	}
+	instance.AddCommand(ec2ListCmd(rt), ec2GetCmd(rt), ec2CreateCmd(rt), ec2DeleteCmd(rt), ec2RebootCmd(rt), ec2ResizeCmd(rt),
+		ec2StateCmd(rt, "start"), ec2StateCmd(rt, "stop"))
 	cmd.AddCommand(instance, keyPairCmd(rt))
 	return cmd
 }

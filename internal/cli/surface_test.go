@@ -358,6 +358,8 @@ func TestPlatformTreeShapes(t *testing.T) {
 		"cloudflare r2 domain update", "cloudflare r2 domain detach", "cloudflare r2 domain ensure",
 		// Compute trees name the resource.
 		"aws ec2 instance list", "aws ec2 instance start", "aws ec2 instance stop",
+		"aws ec2 instance get", "aws ec2 instance create", "aws ec2 instance delete", "aws ec2 instance terminate",
+		"aws ec2 instance reboot", "aws ec2 instance resize",
 		"aws ec2 key-pair list", "aws ec2 key-pair import", "aws ec2 key-pair ensure",
 		"gcp compute instance list", "gcp compute instance start", "gcp compute instance stop",
 		"aliyun ecs instance list", "aliyun ecs instance start", "aliyun ecs instance stop",
