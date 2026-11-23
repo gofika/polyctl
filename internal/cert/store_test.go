@@ -23,7 +23,7 @@ func TestRootDomain(t *testing.T) {
 		"WWW.Example.COM.":  "example.com",
 		"a.b.example.co.uk": "example.co.uk",
 		"foo.github.io":     "foo.github.io",
-		"例子.com":            "xn--fsqu00a.com",
+		"\u4f8b\u5b50.com":  "xn--fsqu00a.com",
 	} {
 		got, err := RootDomain(in)
 		if err != nil || got != want {
