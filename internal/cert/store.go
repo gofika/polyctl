@@ -351,8 +351,14 @@ type HistoryEntry struct {
 	Serial        string `json:"serial,omitempty"`
 	NotAfter      string `json:"not_after,omitempty"`
 	ACMEDirectory string `json:"acme_directory,omitempty"`
-	// Target names where a certificate was deployed (cert deploy).
-	Target string `json:"target,omitempty"`
+	// Target names where a certificate was deployed (cert deploy), with
+	// the deployer, the profile, the name the certificate got there and
+	// the days it had left.
+	Target   string `json:"target,omitempty"`
+	Deployer string `json:"deployer,omitempty"`
+	Profile  string `json:"profile,omitempty"`
+	CertName string `json:"cert_name,omitempty"`
+	DaysLeft *int   `json:"days_left,omitempty"`
 }
 
 // AppendHistory adds a line to history.log.
