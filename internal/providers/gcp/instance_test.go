@@ -74,6 +74,8 @@ func TestComputeErrors(t *testing.T) {
 	for e, want := range map[fakeErr]string{
 		{403, "accessNotConfigured", "Compute Engine API has not been used in project"}: "not enabled",
 		{403, "forbidden", "Required 'compute.instances.get' permission"}:               "permission",
+		// A missing quota project is a credentials problem, not a quota.
+		{403, "forbidden", "The compute.googleapis.com API requires a quota project, which is not set by default."}: "permission",
 	} {
 		f.fail["GET /projects/proj/zones/us-central1-a/instances/web-1"] = e
 		if _, err := c.getInstance(ctx, "us-central1-a", "web-1"); !errors.Is(err, platform.ErrUnauthorized) || !strings.Contains(err.Error(), want) {

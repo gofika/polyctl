@@ -29,9 +29,22 @@ import (
 // capacityMarkers name quota and capacity problems in reasons, codes and
 // messages.
 var capacityMarkers = []string{"QUOTA_EXCEEDED", "quotaExceeded", "ZONE_RESOURCE_POOL_EXHAUSTED", "RESOURCE_POOL_EXHAUSTED",
-	"rateLimitExceeded", "userRateLimitExceeded", "Quota", "quota"}
+	"rateLimitExceeded", "userRateLimitExceeded"}
 
 func isCapacity(s string) bool { return containsAny(s, capacityMarkers...) }
+
+// isCapacityMessage reports a quota or capacity problem told by an error
+// message only. A bare "quota" is not enough: a 403 about a missing quota
+// project (Application Default Credentials without one) is a credentials
+// problem and must stay exit code 3.
+func isCapacityMessage(msg string) bool {
+	if isCapacity(msg) {
+		return true
+	}
+	m := strings.ToLower(msg)
+	return strings.Contains(m, "quota") && containsAny(m, "exceeded", "exhausted") ||
+		strings.Contains(m, "does not have enough resources")
+}
 
 // capacityHint is appended to quota and capacity failures.
 const capacityHint = "quota or capacity, not a permission problem: try another zone or machine type, or ask for a higher quota"
@@ -50,7 +63,7 @@ func computeErr(err error) error {
 		return mapErr(err)
 	}
 	reason := googleReason(err)
-	if isCapacity(reason) || isCapacity(ge.Message) {
+	if isCapacity(reason) || isCapacityMessage(ge.Message) {
 		return fmt.Errorf("%w (%s)", err, capacityHint)
 	}
 	switch ge.Code {
@@ -105,7 +118,7 @@ func (e *OperationError) Error() string {
 		msg += " (" + e.Type + ")"
 	}
 	msg += " failed: " + strings.Join(parts, "; ")
-	if isCapacity(strings.Join(e.Codes, " ")) {
+	if isCapacity(strings.Join(e.Codes, " ")) || isCapacityMessage(strings.Join(e.Messages, " ")) {
 		msg += " (" + capacityHint + ")"
 	}
 	return msg
