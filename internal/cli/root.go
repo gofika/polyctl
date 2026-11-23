@@ -286,7 +286,7 @@ func NewRoot(rt *app.Runtime) *cobra.Command {
 		Long: `polyctl is a multi-platform CLI for AWS, GCP, Alibaba Cloud, Cloudflare,
 name.com and GoDaddy.
 
-Platform-neutral commands (dns, domain) route automatically to the account
+Platform-neutral commands (dns, domain, cert) route automatically to the account
 that owns a domain, using the local inventory (~/.config/polyctl/inventory.db).
 Platform-specific commands (aws, gcp, aliyun, cloudflare, namecom, godaddy)
 expose each platform's native features.
@@ -347,6 +347,7 @@ POLYCTL_NON_INTERACTIVE is set.`,
 		newAuthCmd(rt),
 		newDNSCmd(rt),
 		newDomainCmd(rt),
+		newCertCmd(rt),
 		newSyncCmd(rt),
 		newInventoryCmd(rt),
 	} {
