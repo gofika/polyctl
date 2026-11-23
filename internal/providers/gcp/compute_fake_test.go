@@ -92,8 +92,8 @@ func newFakeCompute(t *testing.T) *fakeCompute {
 	f.srv = httptest.NewServer(http.HandlerFunc(f.handle))
 	t.Cleanup(f.srv.Close)
 	for _, z := range []string{"us-central1-a", "us-central1-b", "europe-west1-b"} {
-		for _, mt := range []string{"e2-small", "e2-medium", "e2-standard-4", "e2-standard-8"} {
-			f.machineTypes[z+"/"+mt] = true
+		for _, p := range e2Presets {
+			f.machineTypes[z+"/"+p.Name] = true
 		}
 	}
 	f.networks["proj/default"] = &compute.Network{Name: "default", AutoCreateSubnetworks: true}
@@ -389,7 +389,8 @@ func (f *fakeCompute) handle(w http.ResponseWriter, r *http.Request) {
 		writeJSONStatus(w, 200, op)
 	case len(rest) == 4 && rest[0] == "zones" && rest[2] == "machineTypes":
 		if f.machineTypes[rest[1]+"/"+rest[3]] {
-			writeJSONStatus(w, 200, &compute.MachineType{Name: rest[3], GuestCpus: 2, MemoryMb: 2048})
+			cores, mem := fakeMachineShape(rest[3])
+			writeJSONStatus(w, 200, &compute.MachineType{Name: rest[3], GuestCpus: int64(cores), MemoryMb: int64(mem)})
 			return
 		}
 		notFound(w, "machineTypes/"+rest[3])
@@ -475,7 +476,7 @@ func (f *fakeCompute) handleInstances(w http.ResponseWriter, r *http.Request, pr
 			return
 		}
 		mt := lastSegment(in.MachineType)
-		if !f.machineTypes[zone+"/"+mt] {
+		if !f.hasMachineType(zone, mt) {
 			apiError(w, fakeErr{400, "invalid", "Invalid value for field 'resource.machineType': Machine type with name '" + mt + "' does not exist in zone '" + zone + "'."})
 			return
 		}
@@ -643,7 +644,7 @@ func (f *fakeCompute) handleInstances(w http.ResponseWriter, r *http.Request, pr
 		var body compute.InstancesSetMachineTypeRequest
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		mt := lastSegment(body.MachineType)
-		if !f.machineTypes[zone+"/"+mt] {
+		if !f.hasMachineType(zone, mt) {
 			apiError(w, fakeErr{400, "invalid", "Machine type with name '" + mt + "' does not exist in zone '" + zone + "'."})
 			return
 		}
@@ -915,4 +916,28 @@ func (p *scriptedPicker) Confirm(title string, _ bool) (bool, error) {
 }
 func (p *scriptedPicker) Input(title, _ string, _ func(string) error) (string, error) {
 	return p.next(title)
+}
+
+// hasMachineType reports whether a zone takes a machine type: one it
+// lists, or an E2 custom type where it lists E2 types.
+func (f *fakeCompute) hasMachineType(zone, mt string) bool {
+	if f.machineTypes[zone+"/"+mt] {
+		return true
+	}
+	var c, m int
+	if n, _ := fmt.Sscanf(mt, "e2-custom-%d-%d", &c, &m); n == 2 {
+		return f.machineTypes[zone+"/"+e2ProbeType] && e2CustomFits(c, m)
+	}
+	return false
+}
+
+// fakeMachineShape is the vCPUs and MiB of a machine type the fake
+// lists: an E2 preset's shape, else 2 vCPUs and 2 GiB.
+func fakeMachineShape(mt string) (int, int) {
+	for _, p := range e2Presets {
+		if p.Name == mt {
+			return p.Cores, p.MemMiB
+		}
+	}
+	return 2, 2048
 }
