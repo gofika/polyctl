@@ -62,7 +62,7 @@ func (*provider) LoginHelp() string {
 intl: International site, alibabacloud.com; no default), then opens ` + accessKeyURL + ` so
 you can create a RAM user with AliyunDNSFullAccess / AliyunDomainFullAccess /
 AliyunECSReadOnlyAccess (AliyunECSFullAccess and AliyunVPCReadOnlyAccess for the
-ECS write commands) as needed, and prompts for the AccessKey ID and Secret.
+ECS write commands, AliyunVPCFullAccess for the VPC write commands) as needed, and prompts for the AccessKey ID and Secret.
 Options: --set site=cn|intl (required in the non-interactive flow; a later login keeps the
 site of the first one), --set region=<id> (default ` + DefaultRegion + `),
 --set aliyun_profile=<profile> to import the AccessKey of that aliyun CLI profile
