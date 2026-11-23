@@ -13,6 +13,21 @@ import (
 // log in again, and a sync goes on with the other resource types after it.
 var ErrForbidden = errors.New("forbidden")
 
+// ErrInvalidInput marks input the caller has to correct: a malformed flag
+// value, a missing value the non-interactive flow cannot ask for. It maps
+// to the usage exit code (2), like app.ErrUsage, for code below the app
+// package.
+var ErrInvalidInput = errors.New("invalid input")
+
+// ErrAmbiguous marks a choice polyctl cannot make on its own (several
+// resources match). It maps to the ambiguity exit code (5).
+var ErrAmbiguous = errors.New("ambiguous")
+
+// ErrNothingToDo marks a command that found nothing to act on, or a
+// question the user left: not a failure. It maps to exit code 0, and the
+// message is printed as a note.
+var ErrNothingToDo = errors.New("nothing to do")
+
 // CodedError is an API error that carries the platform's own error code
 // (smithy.APIError for AWS, the Alibaba Cloud error of the aliyun provider,
 // ...). Codes are compared as whole strings: a code is never trimmed (no

@@ -1,0 +1,105 @@
+package app
+
+import (
+	"bytes"
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"golang.org/x/crypto/ssh"
+
+	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt"
+)
+
+// keyPicker answers Select with the first option or "other", and Input
+// with the scripted values.
+type keyPicker struct {
+	selects []string
+	inputs  []string
+	titles  []string
+}
+
+func (p *keyPicker) Select(title string, opts []prompt.Option, _ string) (string, error) {
+	p.titles = append(p.titles, title)
+	if len(p.selects) == 0 {
+		return "", prompt.ErrAborted
+	}
+	v := p.selects[0]
+	p.selects = p.selects[1:]
+	if v == "other" {
+		return otherKeyFile, nil
+	}
+	return v, nil
+}
+func (p *keyPicker) MultiSelect(string, []prompt.Option) ([]string, error) {
+	return nil, prompt.ErrAborted
+}
+func (p *keyPicker) Confirm(string, bool) (bool, error) { return false, prompt.ErrAborted }
+func (p *keyPicker) Input(title, _ string, _ func(string) error) (string, error) {
+	p.titles = append(p.titles, title)
+	if len(p.inputs) == 0 {
+		return "", prompt.ErrAborted
+	}
+	v := p.inputs[0]
+	p.inputs = p.inputs[1:]
+	return v, nil
+}
+
+type listKP []platform.KeyPair
+
+func (l listKP) ListKeyPairs(context.Context) ([]platform.KeyPair, error) { return l, nil }
+
+func keyFile(t *testing.T) string {
+	t.Helper()
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	k, _ := ssh.NewPublicKey(pub)
+	p := filepath.Join(t.TempDir(), "k.pub")
+	if err := os.WriteFile(p, ssh.MarshalAuthorizedKey(k), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestKeyInputFlags(t *testing.T) {
+	t.Setenv(EnvNonInteractive, "")
+	rt := New(Flags{}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	file := keyFile(t)
+	in, err := rt.KeyInput(&KeyFlags{SSHKeyFile: file, KeyPair: "laptop"}, platform.KeyInput{Match: platform.MatchByPublicKey})
+	if err != nil || in.Key == nil || in.Name != "laptop" || in.Interactive || in.Prompter != nil {
+		t.Fatalf("KeyInput = %+v, %v", in, err)
+	}
+	if _, err := rt.KeyInput(&KeyFlags{SSHKey: "x", SSHKeyFile: file}, platform.KeyInput{}); !errors.Is(err, ErrUsage) {
+		t.Errorf("both = %v", err)
+	}
+	if _, err := rt.KeyInput(&KeyFlags{SSHKey: file}, platform.KeyInput{}); !errors.Is(err, platform.ErrInvalidInput) {
+		t.Errorf("path in --ssh-key = %v", err)
+	}
+	if (&KeyFlags{}).Given() || !(&KeyFlags{KeyPair: "x"}).Given() {
+		t.Error("Given")
+	}
+
+	// The interactive flow asks for the file (another path), then the name.
+	picker := &keyPicker{selects: []string{"other"}, inputs: []string{file, "laptop"}}
+	rt.Picker = picker
+	t.Setenv("HOME", filepath.Dir(file)) // ~/.ssh does not exist: no candidates
+	in, err = rt.KeyInput(&KeyFlags{}, platform.KeyInput{Match: platform.MatchByPublicKey})
+	if err != nil || !in.Interactive || in.Prompter == nil {
+		t.Fatalf("interactive KeyInput = %+v, %v", in, err)
+	}
+	plan, err := platform.ResolveKeyPair(t.Context(), listKP{}, in)
+	if err != nil || !plan.Create || plan.Name != "laptop" {
+		t.Fatalf("interactive plan = %+v, %v (asked %v)", plan, err, picker.titles)
+	}
+	// Leaving a question is "nothing to do".
+	rt.Picker = &keyPicker{}
+	in, _ = rt.KeyInput(&KeyFlags{SSHKeyFile: file}, platform.KeyInput{Match: platform.MatchByPublicKey})
+	if _, err := platform.ResolveKeyPair(t.Context(), listKP{}, in); !errors.Is(err, platform.ErrNothingToDo) {
+		t.Errorf("left question = %v", err)
+	}
+}

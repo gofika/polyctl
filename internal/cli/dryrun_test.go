@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -120,5 +122,20 @@ func TestDryRunRefusedByAuthWrites(t *testing.T) {
 	// auth list and auth status read only: they ignore it.
 	if _, _, err := run(t, cfgPath, "auth", "list", "--dry-run"); err != nil {
 		t.Errorf("auth list --dry-run: %v", err)
+	}
+}
+
+func TestExitCodesOfSharedSentinels(t *testing.T) {
+	for err, want := range map[error]int{
+		fmt.Errorf("x: %w", platform.ErrInvalidInput):  ExitUsage,
+		fmt.Errorf("x: %w", platform.ErrAmbiguous):     ExitAmbiguous,
+		fmt.Errorf("x: %w", platform.ErrNothingToDo):   ExitOK,
+		fmt.Errorf("x: %w", platform.ErrForbidden):     ExitAuth,
+		&platform.WaitTimeoutError{Resource: "r"}:      ExitError,
+		&platform.PartialError{First: errors.New("x")}: ExitError,
+	} {
+		if got := ExitCodeFor(err); got != want {
+			t.Errorf("ExitCodeFor(%v) = %d, want %d", err, got, want)
+		}
 	}
 }

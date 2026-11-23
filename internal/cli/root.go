@@ -42,7 +42,7 @@ func ExitCodeFor(err error) int {
 	switch {
 	case err == nil, errors.Is(err, errNothingToDo):
 		return ExitOK
-	case errors.As(err, &amb):
+	case errors.As(err, &amb), errors.Is(err, platform.ErrAmbiguous):
 		return ExitAmbiguous
 	case errors.Is(err, platform.ErrUnauthorized), errors.Is(err, platform.ErrForbidden):
 		return ExitAuth
@@ -52,7 +52,7 @@ func ExitCodeFor(err error) int {
 		return ExitOffline
 	case errors.Is(err, platform.ErrNotSupported):
 		return ExitNotSupported
-	case errors.Is(err, app.ErrUsage), errors.Is(err, prompt.ErrNotInteractive):
+	case errors.Is(err, app.ErrUsage), errors.Is(err, prompt.ErrNotInteractive), errors.Is(err, platform.ErrInvalidInput):
 		// The second one is the safety net of the non-interactive flow: a
 		// question that could not be asked is a value the caller left out.
 		return ExitUsage
@@ -65,7 +65,7 @@ func ExitCodeFor(err error) int {
 // not a failure. The message is printed as a note and the exit code is 0,
 // because callers judge a run by "exit code is zero"; non-zero codes are
 // kept for requests that could not be carried out.
-var errNothingToDo = errors.New("nothing to do")
+var errNothingToDo = platform.ErrNothingToDo
 
 // nothingToDo returns a note error wrapping errNothingToDo.
 func nothingToDo(format string, args ...any) error {
