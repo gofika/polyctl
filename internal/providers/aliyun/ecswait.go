@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"time"
 
 	"github.com/gofika/polyctl/internal/app"
@@ -27,6 +28,29 @@ const (
 	initializingRetry      = 2 * time.Minute
 	defaultInstanceTimeout = app.DefaultWaitTimeout
 )
+
+// dialTCP opens and closes one TCP connection (resize --wait-port); tests
+// replace it.
+var dialTCP = func(ctx context.Context, addr string, timeout time.Duration) error {
+	d := net.Dialer{Timeout: timeout}
+	conn, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return err
+	}
+	return conn.Close()
+}
+
+// waitTCPPort waits until a TCP connection to addr succeeds, trying every
+// instanceWaitInterval with a 5 second connect timeout.
+func waitTCPPort(ctx context.Context, addr, label string, timeout time.Duration) error {
+	return platform.WaitUntil(ctx, platform.WaitOptions{Resource: "instance/" + label, Want: "reachable on " + addr, Timeout: timeout,
+		Interval: instanceWaitInterval, Clock: netClock()}, func(ctx context.Context) (platform.WaitState, string, error) {
+		if err := dialTCP(ctx, addr, 5*time.Second); err != nil {
+			return platform.KeepWaiting, "not reachable", nil
+		}
+		return platform.WaitDone, "reachable", nil
+	})
+}
 
 // storeInstance records an instance in the inventory.
 func storeInstance(ctx context.Context, rt *app.Runtime, profile string, in Instance) {

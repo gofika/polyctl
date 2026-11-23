@@ -1,10 +1,12 @@
 package aliyun
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/platform"
@@ -261,6 +263,46 @@ func TestInstanceResize(t *testing.T) {
 		}
 		if !slices.Equal(f.writes, []string{"ModifyInstanceSpec"}) {
 			t.Fatalf("writes = %v", f.writes)
+		}
+	})
+}
+
+func TestInstanceResizeStartAndWaitPort(t *testing.T) {
+	t.Run("--start starts a stopped instance", func(t *testing.T) {
+		h, f, _ := computeHarness(t, app.Flags{})
+		f.addVM("i-1", "site-a", instStopped, "ecs.u1-c1m1.large", "vpc-1", "vsw-b")
+		if err := h.run("ecs", "instance", "resize", "site-a", "--type", "ecs.u1-c1m2.large", "--start"); err != nil {
+			t.Fatalf("%v\n%s", err, h.stderr.String())
+		}
+		if !slices.Equal(f.writes, []string{"ModifyInstanceSpec", "StartInstance"}) {
+			t.Fatalf("writes = %v", f.writes)
+		}
+	})
+	t.Run("--start=false leaves a running one stopped", func(t *testing.T) {
+		h, f, _ := computeHarness(t, app.Flags{Yes: true})
+		f.addVM("i-1", "site-a", instRunning, "ecs.u1-c1m1.large", "vpc-1", "vsw-b")
+		if err := h.run("ecs", "instance", "resize", "site-a", "--type", "ecs.u1-c1m2.large", "--start=false"); err != nil {
+			t.Fatalf("%v\n%s", err, h.stderr.String())
+		}
+		if !slices.Equal(f.writes, []string{"StopInstance", "ModifyInstanceSpec"}) {
+			t.Fatalf("writes = %v", f.writes)
+		}
+	})
+	t.Run("--wait-port", func(t *testing.T) {
+		h, f, _ := computeHarness(t, app.Flags{Yes: true})
+		f.addVM("i-1", "site-a", instRunning, "ecs.u1-c1m1.large", "vpc-1", "vsw-b")
+		var dialed []string
+		old := dialTCP
+		t.Cleanup(func() { dialTCP = old })
+		dialTCP = func(_ context.Context, addr string, _ time.Duration) error {
+			dialed = append(dialed, addr)
+			return nil
+		}
+		if err := h.run("ecs", "instance", "resize", "site-a", "--type", "ecs.u1-c1m2.large", "--wait-port", "22"); err != nil {
+			t.Fatalf("%v\n%s", err, h.stderr.String())
+		}
+		if len(dialed) != 1 || !strings.HasSuffix(dialed[0], ":22") || !strings.Contains(h.stderr.String(), "accepts connections") {
+			t.Errorf("dialed %v, stderr %s", dialed, h.stderr.String())
 		}
 	})
 }

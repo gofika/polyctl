@@ -521,6 +521,14 @@ func TestInstanceCommandsAgree(t *testing.T) {
 				}
 			}
 		}
+		// resize has the same power and port controls.
+		if c := find(root, tree+" resize"); c != nil {
+			for _, name := range []string{"start", "wait-port", "timeout"} {
+				if c.Flags().Lookup(name) == nil {
+					t.Errorf("%s resize has no --%s", tree, name)
+				}
+			}
+		}
 		// delete is also terminate.
 		if c := find(root, tree+" delete"); c != nil && !c.HasAlias("terminate") {
 			t.Errorf("%s delete lacks the terminate alias", tree)

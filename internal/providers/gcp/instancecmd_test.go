@@ -564,6 +564,16 @@ func TestInstanceResizeStoppedAndEphemeral(t *testing.T) {
 	if !strings.Contains(h.stderr.String(), "stays stopped") || h.gce.instance("us-central1-a", "off-1").Status != statusTerminated {
 		t.Errorf("stderr = %s", h.stderr.String())
 	}
+	// --start starts it after the change.
+	h.gce.mu.Lock()
+	h.gce.calls = nil
+	h.gce.mu.Unlock()
+	if err := h.run("compute", "instance", "resize", "off-1", "--machine-type", "e2-standard-4", "--start"); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.gce.writes(); !slices.Equal(got, []string{"POST instances/off-1/setMachineType", "POST instances/off-1/start"}) || h.gce.instance("us-central1-a", "off-1").Status != statusRunning {
+		t.Errorf("--start writes = %v", got)
+	}
 	// Ephemeral external IP: promoted to {name}-external-ip, kept after
 	// the restart.
 	h.gce.addInstance("proj", "us-central1-a", "eph-1", "10.128.0.9", "34.1.0.9")
@@ -608,6 +618,14 @@ func TestInstanceResizeWaitSSH(t *testing.T) {
 	}
 	if len(dialed) != 3 || dialed[0] != "10.128.0.5:22" || !strings.Contains(h.stderr.String(), "accepts connections") {
 		t.Errorf("dialed %v, stderr %s", dialed, h.stderr.String())
+	}
+	// --wait-port names the port.
+	dialed = nil
+	if err := h.run("compute", "instance", "resize", "web-1", "--machine-type", "e2-standard-4", "--yes", "--wait-port", "2222"); err != nil {
+		t.Fatal(err)
+	}
+	if len(dialed) != 3 || dialed[0] != "10.128.0.5:2222" {
+		t.Errorf("--wait-port 2222 dialed %v", dialed)
 	}
 	// Never reachable: exit code 1 after 5 minutes.
 	dialTCP = func(context.Context, string, time.Duration) error { return errors.New("refused") }

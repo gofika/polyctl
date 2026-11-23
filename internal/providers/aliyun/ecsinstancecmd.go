@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -898,6 +900,8 @@ accepted for 30 seconds.`,
 func ecsResizeCmd(rt *app.Runtime) *cobra.Command {
 	var region, typ string
 	var w app.WaitFlags
+	var start bool
+	var port int
 	cmd := &cobra.Command{
 		Use:   "resize <name|id>",
 		Short: "Change the type of an ECS instance: stop, modify, start",
@@ -905,10 +909,14 @@ func ecsResizeCmd(rt *app.Runtime) *cobra.Command {
 changes the type of a Stopped instance only, so a Running instance is
 stopped (after a confirmation, default no; --yes skips it, the
 non-interactive flow needs --yes: exit code 2), its type is changed
-(ModifyInstanceSpec), and it is started again. A Stopped instance stays
-Stopped and needs no confirmation. An instance that is Pending, Starting or
-Stopping is waited for first. The stop is always waited for; --wait also
-waits until the instance is Running again (--timeout bounds every wait).
+(ModifyInstanceSpec), and it is started again. The instance ends in the
+power state it had: a Stopped instance stays Stopped (and needs no
+confirmation) unless --start is given, and --start=false leaves a Running
+one Stopped. An instance that is Pending, Starting or Stopping is waited
+for first. The stop is always waited for; --wait also waits until the
+instance is Running again (--timeout bounds every wait). --wait-port then
+waits until that TCP port (22 for SSH) accepts connections on the public
+IP, the EIP or the private IP; it implies --wait.
 The same type is unchanged. A type the zone has no stock of, or that the
 instance cannot change to, is exit code 1 with the Alibaba Cloud message;
 the instance is then Stopped with its old type: start it, or run the
@@ -924,6 +932,12 @@ command again with another type.`,
 			if err != nil {
 				return err
 			}
+			if port < 0 || port > 65535 {
+				return app.UsageErrf("--wait-port must be a TCP port (1-65535), got %d", port)
+			}
+			if port > 0 {
+				wait = true
+			}
 			s, in, err := resolveECSInstance(ctx, rt, args[0], region)
 			if err != nil {
 				return err
@@ -936,6 +950,11 @@ command again with another type.`,
 					{Resource: res, Action: platform.Unchanged, ID: in.ID, Detail: "type " + typ}}})
 			}
 			running := in.Status != instStopped
+			startSet := cmd.Flags().Changed("start")
+			wantStart := running
+			if startSet {
+				wantStart = start
+			}
 			var plan platform.Plan
 			cur := in.Type
 			if running {
@@ -946,6 +965,9 @@ command again with another type.`,
 					}
 					if st == instStopped {
 						running = false
+						if !startSet {
+							wantStart = false
+						}
 						return platform.Change{Detail: "already Stopped"}, nil
 					}
 					if err := stopAndWait(ctx, rt, s, in, timeout); err != nil {
@@ -961,9 +983,9 @@ command again with another type.`,
 				refreshInstance(rt, ctx, s.c, s.profile, s.region, in.ID)
 				return platform.Change{}, nil
 			}})
-			if running {
+			if wantStart {
 				plan.Add(platform.Step{Resource: res, Action: platform.Updated, ID: in.ID, Desc: "start", Apply: func(ctx context.Context) (platform.Change, error) {
-					if !running {
+					if !wantStart {
 						return platform.Change{Action: platform.Skipped, Detail: "was Stopped: stays Stopped"}, nil
 					}
 					if err := s.c.StartInstance(ctx, s.region, in.ID); err != nil {
@@ -981,7 +1003,7 @@ command again with another type.`,
 					return platform.Change{Detail: detail}, nil
 				}})
 			} else {
-				rt.Infof("note: instance %s is Stopped and stays Stopped", label)
+				rt.Infof("note: instance %s stays Stopped (pass --start to start it)", label)
 			}
 			if running && !rt.DryRun() {
 				ok, err := rt.Confirm(ctx, fmt.Sprintf("Stop instance %s to change its type from %s to %s? It is unavailable until it runs again.", label, cur, typ), false)
@@ -992,11 +1014,39 @@ command again with another type.`,
 					return fmt.Errorf("%w: cancelled; instance %s was not changed", platform.ErrNothingToDo, label)
 				}
 			}
-			return rt.Ensure(ctx, "aliyun.ecs.instance.resize", s.target(), &plan)
+			if err := rt.Ensure(ctx, "aliyun.ecs.instance.resize", s.target(), &plan); err != nil || rt.DryRun() || port == 0 {
+				return err
+			}
+			after, err := s.c.describeInstance(ctx, s.region, in.ID)
+			if err != nil {
+				return err
+			}
+			if after.Status != instRunning {
+				rt.Infof("note: --wait-port %d skipped: instance %s is %s", port, label, after.Status)
+				return nil
+			}
+			host := after.PublicIP
+			if host == "" {
+				host = after.EIP
+			}
+			if host == "" {
+				host = after.PrivateIP
+			}
+			if host == "" {
+				return fmt.Errorf("instance %s has no address to check port %d on", label, port)
+			}
+			addr := net.JoinHostPort(host, strconv.Itoa(port))
+			if err := waitTCPPort(ctx, addr, label, timeout); err != nil {
+				return err
+			}
+			rt.Infof("port %d of %s accepts connections", port, addr)
+			return nil
 		},
 	}
 	cmd.Flags().StringVar(&typ, "type", "", "new instance type (required)")
 	cmd.Flags().StringVar(&region, "region", "", "region of the instance (default: look it up in the inventory of every account)")
+	cmd.Flags().BoolVar(&start, "start", false, "start the instance after the change (default: only when it was running; --start=false leaves it stopped)")
+	cmd.Flags().IntVar(&port, "wait-port", 0, "after the start, wait until this TCP port accepts connections (22 for SSH; implies --wait)")
 	app.AddWaitFlags(cmd, &w, false, defaultInstanceTimeout)
 	return cmd
 }

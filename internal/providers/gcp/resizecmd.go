@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strconv"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -13,25 +14,25 @@ import (
 	"github.com/gofika/polyctl/internal/platform"
 )
 
-// sshWaitTimeout bounds resize --wait-ssh.
-const sshWaitTimeout = 5 * time.Minute
+// portWaitTimeout bounds resize --wait-port.
+const portWaitTimeout = 5 * time.Minute
 
-// waitSSH waits until port 22 accepts connections on the internal IP, or
-// on the external one where the internal network is out of reach, trying
-// every 5 seconds for at most 5 minutes.
-func waitSSH(ctx context.Context, name, internal, external string) (string, error) {
+// waitPort waits until the TCP port accepts connections on the internal
+// IP, or on the external one where the internal network is out of reach,
+// trying every 5 seconds for at most 5 minutes.
+func waitPort(ctx context.Context, name string, port int, internal, external string) (string, error) {
 	var hosts []string
 	for _, h := range []string{internal, external} {
 		if h != "" {
-			hosts = append(hosts, net.JoinHostPort(h, "22"))
+			hosts = append(hosts, net.JoinHostPort(h, strconv.Itoa(port)))
 		}
 	}
 	if len(hosts) == 0 {
-		return "", fmt.Errorf("instance %s has no address to check port 22 on", name)
+		return "", fmt.Errorf("instance %s has no address to check port %d on", name, port)
 	}
 	reached := ""
 	err := platform.WaitUntil(ctx, platform.WaitOptions{
-		Resource: "instance/" + name, Want: "reachable on port 22", Timeout: sshWaitTimeout, Interval: instancePollInterval, Clock: instanceClock,
+		Resource: "instance/" + name, Want: fmt.Sprintf("reachable on port %d", port), Timeout: portWaitTimeout, Interval: instancePollInterval, Clock: instanceClock,
 	}, func(ctx context.Context) (platform.WaitState, string, error) {
 		for _, addr := range hosts {
 			if err := dialTCP(ctx, addr, 5*time.Second); err == nil {
@@ -46,7 +47,8 @@ func waitSSH(ctx context.Context, name, internal, external string) (string, erro
 
 func computeResizeCmd(rt *app.Runtime) *cobra.Command {
 	var zone, typ string
-	var waitSSHFlag bool
+	var waitSSHFlag, start bool
+	var port int
 	var timeout time.Duration
 	cmd := &cobra.Command{
 		Use:   "resize <name|id>",
@@ -63,13 +65,14 @@ IP is reserved as {name}-external-ip / {name}-internal-ip (a failure for the
 external IP stops the command before the instance is stopped; for the
 internal IP it is a warning). Then the instance is stopped, the type
 changed, and the instance started again, each step waiting (5 second polls,
---timeout each). A TERMINATED instance is not started: the instance ends in
-the power state it had. A failed type change leaves the instance stopped
-with its old type.
+--timeout each). The instance ends in the power state it had: a TERMINATED
+instance stays stopped unless --start is given, and --start=false leaves a
+RUNNING one stopped. A failed type change leaves the instance stopped with
+its old type.
 
-An address that changed anyway is reported on stderr. --wait-ssh then waits
-up to 5 minutes until port 22 accepts connections (on the internal IP, or
-the external one).`,
+An address that changed anyway is reported on stderr. --wait-port then
+waits up to 5 minutes until that TCP port (22 for SSH) accepts connections
+(on the internal IP, or the external one).`,
 		Example: "  polyctl gcp compute instance resize web-1 --machine-type e2-standard-8 --yes",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -79,6 +82,12 @@ the external one).`,
 			}
 			if timeout <= 0 {
 				return app.UsageErrf("--timeout must be a positive duration, got %s", timeout)
+			}
+			if port < 0 || port > 65535 {
+				return app.UsageErrf("--wait-port must be a TCP port (1-65535), got %d", port)
+			}
+			if waitSSHFlag && port == 0 {
+				port = 22 // --wait-ssh is the old name of --wait-port 22
 			}
 			l, err := resolveInstance(ctx, rt, args[0], zone, false)
 			if err != nil {
@@ -167,7 +176,11 @@ the external one).`,
 				}
 				return platform.Change{}, nil
 			}})
-			if orig == statusRunning {
+			wantStart := orig == statusRunning
+			if cmd.Flags().Changed("start") {
+				wantStart = start
+			}
+			if wantStart {
 				plan.Add(platform.Step{Resource: l.resource() + "/start", Action: platform.Updated, Desc: "start", Apply: func(ctx context.Context) (platform.Change, error) {
 					wctx, cancel, conv := deadline(ctx, timeout, l.resource(), "started")
 					err := l.c.startInstance(wctx, l.zone, name)
@@ -186,7 +199,7 @@ the external one).`,
 					return platform.Change{Detail: "start; RUNNING"}, nil
 				}})
 			} else {
-				rt.Infof("note: instance %s is %s and stays stopped (start it with `polyctl gcp compute instance start %s`)", name, orig, name)
+				rt.Infof("note: instance %s stays stopped (pass --start to start it, or `polyctl gcp compute instance start %s`)", name, name)
 			}
 			if orig == statusRunning && !rt.DryRun() {
 				ok, err := rt.Confirm(ctx, fmt.Sprintf("Stop instance %s to change its machine type from %s to %s? It is unavailable until it runs again.", l.label(), cur, typ), false)
@@ -210,23 +223,26 @@ the external one).`,
 				rt.Infof("warning: IP changed: %s -> %s (internal)", origInt, orNone(newInt))
 			}
 			rt.Infof("instance %s resized %s -> %s (%s) in %s", name, cur, typ, l.inst.Status, time.Since(began).Round(time.Second))
-			if waitSSHFlag {
+			if port > 0 {
 				if l.inst.Status != statusRunning {
-					rt.Infof("note: --wait-ssh skipped: instance %s is %s", name, l.inst.Status)
+					rt.Infof("note: --wait-port %d skipped: instance %s is %s", port, name, l.inst.Status)
 					return nil
 				}
-				addr, err := waitSSH(ctx, name, newInt, newExt)
+				addr, err := waitPort(ctx, name, port, newInt, newExt)
 				if err != nil {
 					return err
 				}
-				rt.Infof("port 22 of %s accepts connections", addr)
+				rt.Infof("port %d of %s accepts connections", port, addr)
 			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&typ, "machine-type", "", "new machine type (required)")
 	cmd.Flags().StringVar(&zone, "zone", "", "zone of the instance (default: from the inventory)")
-	cmd.Flags().BoolVar(&waitSSHFlag, "wait-ssh", false, "after the start, wait up to 5 minutes until port 22 accepts connections")
+	cmd.Flags().BoolVar(&start, "start", false, "start the instance after the change (default: only when it was running; --start=false leaves it stopped)")
+	cmd.Flags().IntVar(&port, "wait-port", 0, "after the start, wait up to 5 minutes until this TCP port accepts connections (22 for SSH)")
+	cmd.Flags().BoolVar(&waitSSHFlag, "wait-ssh", false, "the same as --wait-port 22")
+	_ = cmd.Flags().MarkDeprecated("wait-ssh", "use --wait-port 22")
 	cmd.Flags().DurationVar(&timeout, "timeout", app.DefaultWaitTimeout, "upper bound of each wait (a Go duration such as 90s or 10m)")
 	return cmd
 }
