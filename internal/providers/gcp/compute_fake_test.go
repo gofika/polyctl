@@ -65,6 +65,8 @@ type fakeCompute struct {
 	opFail map[string]compute.OperationErrorErrors
 	// staleFingerprints makes the next n Update calls see a stale fingerprint.
 	staleFingerprints int
+	// staleTags makes the next n SetTags calls see tags changed meanwhile.
+	staleTags int
 	// updates records the query of every instance Update.
 	updates []string
 	// stuck leaves instances in the status they reach after an action
@@ -497,6 +499,12 @@ func (f *fakeCompute) handleInstances(w http.ResponseWriter, r *http.Request, pr
 		notFound(w, "projects/"+project+"/zones/"+zone+"/instances/"+rest[0])
 		return
 	}
+	if in.Tags == nil {
+		in.Tags = &compute.Tags{}
+	}
+	if in.Tags.Fingerprint == "" {
+		in.Tags.Fingerprint = "tags-1"
+	}
 	if len(rest) == 1 {
 		switch r.Method {
 		case http.MethodGet:
@@ -541,6 +549,23 @@ func (f *fakeCompute) handleInstances(w http.ResponseWriter, r *http.Request, pr
 	}
 	action := rest[1]
 	switch action {
+	case "setTags":
+		var body compute.Tags
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if f.staleTags > 0 {
+			f.staleTags--
+			in.Tags.Items = append(in.Tags.Items, "other")
+			sort.Strings(in.Tags.Items)
+			in.Tags.Fingerprint = fmt.Sprintf("tags-%d", f.next())
+		}
+		if body.Fingerprint != in.Tags.Fingerprint {
+			apiError(w, fakeErr{412, "conditionNotMet", "Tags fingerprint either invalid or resource tags have changed"})
+			return
+		}
+		items := append([]string(nil), body.Items...)
+		sort.Strings(items)
+		in.Tags = &compute.Tags{Items: items, Fingerprint: fmt.Sprintf("tags-%d", f.next())}
+		writeJSONStatus(w, 200, f.op("setTags", in.SelfLink))
 	case "stop":
 		op := f.op("stop", in.SelfLink)
 		if op.Error == nil {

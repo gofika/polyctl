@@ -16,7 +16,7 @@ import (
 
 func newFirewallCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{Use: "firewall", Short: "VPC firewall rules"}
-	cmd.AddCommand(firewallListCmd(rt), firewallGetCmd(rt), firewallCreateCmd(rt), firewallUpdateCmd(rt), firewallDeleteCmd(rt))
+	cmd.AddCommand(firewallListCmd(rt), firewallGetCmd(rt), firewallCreateCmd(rt), firewallUpdateCmd(rt), firewallDeleteCmd(rt), firewallEnsureCmd(rt))
 	return cmd
 }
 
