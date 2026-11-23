@@ -213,8 +213,24 @@ type priceSpec struct {
 
 // instancePrice returns the hourly pay-as-you-go price of an instance as
 // polyctl creates it (pay by traffic, no bandwidth of its own) and its
-// currency.
+// currency. An image the price query refuses (the image of an instance to
+// resize may have been deleted since) is priced without it: the image
+// costs the same whatever the type of a size.
 func (c *client) instancePrice(ctx context.Context, region string, p priceSpec) (float64, string, error) {
+	price, currency, err := c.describePrice(ctx, region, p)
+	if err != nil && p.Image != "" && imageRefused(err) {
+		p.Image = ""
+		price, currency, err = c.describePrice(ctx, region, p)
+	}
+	return price, currency, err
+}
+
+// imageRefused reports a price query refused for its image.
+func imageRefused(err error) bool {
+	return strings.Contains(platform.ErrorCode(err), "Image")
+}
+
+func (c *client) describePrice(ctx context.Context, region string, p priceSpec) (float64, string, error) {
 	region = c.regionOr(region)
 	cl, err := c.ecsClient(ctx, region)
 	if err != nil {
@@ -246,6 +262,9 @@ func (c *client) instancePrice(ctx context.Context, region string, p priceSpec) 
 // had there (no stock, not offered, a disk it does not take): that
 // candidate is left out, and any other error stops the resolution.
 func priceSkipped(err error) bool {
+	if imageRefused(err) {
+		return false
+	}
 	if errors.Is(err, platform.ErrNotFound) {
 		return true
 	}

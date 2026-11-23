@@ -41,6 +41,9 @@ type fakeCatalog struct {
 	priceErr map[string]string
 	// typeBatches are the InstanceTypes of every DescribeInstanceTypes.
 	typeBatches [][]string
+	// goneImage is an image DescribePrice answers InvalidImageId.NotFound
+	// for (a price without an image is then accepted).
+	goneImage string
 	// priceHook, when set, runs first for every DescribePrice and may
 	// answer it.
 	priceHook func(q url.Values) (int, any, bool)
@@ -195,7 +198,10 @@ func (c *fakeCatalog) describePrice(q url.Values) (int, any) {
 			return code, body
 		}
 	}
-	if q.Get("ResourceType") != "instance" || q.Get("PriceUnit") != "Hour" || q.Get("ImageId") == "" || q.Get("SystemDisk.Category") == "" ||
+	if c.goneImage != "" && q.Get("ImageId") == c.goneImage {
+		return 404, apiErr("InvalidImageId.NotFound", "The specified ImageId does not exist.")
+	}
+	if q.Get("ResourceType") != "instance" || q.Get("PriceUnit") != "Hour" || (q.Get("ImageId") == "" && c.goneImage == "") || q.Get("SystemDisk.Category") == "" ||
 		q.Get("InternetChargeType") != "PayByTraffic" || q.Get("InternetMaxBandwidthOut") != "0" {
 		return 400, apiErr("InvalidParameter", "unexpected price settings")
 	}
@@ -425,5 +431,27 @@ func TestResolveTypeSizeFirstErrorWins(t *testing.T) {
 	_, err := c.resolveTypeSize(context.Background(), "cn-shanghai", r)
 	if !errors.Is(err, platform.ErrForbidden) || errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want the Forbidden.RAM refusal", err)
+	}
+}
+
+func TestResolveTypeSizePricesWithoutAGoneImage(t *testing.T) {
+	api := newFakeAPI(t)
+	cat := sizeCatalog()
+	cat.goneImage = "m-gone"
+	cat.register(api)
+	c := api.client()
+	r := typeRequest{Size: size(t, "2H4G"), Zones: []string{"cn-shanghai-b", "cn-shanghai-c"}, Image: "m-gone", DiskGiB: 20, DiskCategory: defaultSystemDiskCat}
+	ch, err := c.resolveTypeSize(context.Background(), "cn-shanghai", r)
+	if err != nil || ch.Type != "ecs.e-c1m2.large" || ch.Zone != "cn-shanghai-c" {
+		t.Fatalf("choice = %+v, %v", ch, err)
+	}
+	var without int
+	for _, q := range api.callsFor("DescribePrice") {
+		if q.Get("ImageId") == "" {
+			without++
+		}
+	}
+	if without == 0 {
+		t.Error("no price query without the image")
 	}
 }
