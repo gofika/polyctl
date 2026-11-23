@@ -333,18 +333,49 @@ func renderValidationBlock(rt *app.Runtime, views []acmValidationView) error {
 }
 
 // noteDNSEnsure prints the `dns ensure` commands that write the validation
-// records, and why they must stay.
+// records, and why they must stay. `dns ensure <domain>` reads record names
+// relative to the zone serving <domain>, which may be a parent of it, so
+// the names are written in full (without the trailing dot): a name that
+// ends with the zone is taken as is. Records of a name outside domain (a
+// --san of another domain) get a command of their own.
 func noteDNSEnsure(rt *app.Runtime, domain string, c *platform.Certificate) {
-	specs := platform.ACMValidationRecords(domain, c.Validation)
-	if len(specs) == 0 {
-		return
+	domain = platform.NormalizeDomain(domain)
+	var order []string
+	groups := map[string][]platform.ValidationRecord{}
+	for _, v := range c.Validation {
+		if !v.Ready() {
+			continue
+		}
+		base := platform.NormalizeDomain(strings.TrimPrefix(strings.TrimSpace(v.Domain), "*."))
+		if base == "" || base == domain || strings.HasSuffix(base, "."+domain) {
+			base = domain
+		}
+		if _, ok := groups[base]; !ok {
+			order = append(order, base)
+		}
+		groups[base] = append(groups[base], v)
 	}
-	var args []string
-	for _, s := range specs {
-		args = append(args, "--record "+s.Inline())
+	seen := map[string]bool{}
+	printed := false
+	for _, base := range order {
+		var args []string
+		for _, s := range platform.ACMValidationRecords("", groups[base]) {
+			key := strings.ToLower(s.Inline())
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			args = append(args, "--record "+s.Inline())
+		}
+		if len(args) == 0 {
+			continue
+		}
+		rt.Infof("write the validation records with: polyctl dns ensure %s %s", base, strings.Join(args, " "))
+		printed = true
 	}
-	rt.Infof("write the validation records with: polyctl dns ensure %s %s", domain, strings.Join(args, " "))
-	rt.Infof("note: keep the validation records in DNS while the certificate is in use: ACM renews it through them")
+	if printed {
+		rt.Infof("note: keep the validation records in DNS while the certificate is in use: ACM renews it through them")
+	}
 }
 
 // ------------------------------------------------------------ inventory

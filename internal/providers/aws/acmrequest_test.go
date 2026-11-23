@@ -100,6 +100,22 @@ func TestACMRequest(t *testing.T) {
 	if out := h.requestOut(); len(out.ValidationRecords) != 2 {
 		t.Errorf("records = %+v", out.ValidationRecords)
 	}
+	// dns ensure reads names relative to the zone, which may be a parent of
+	// the domain: full names, and a command per domain outside it.
+	if s := h.stderr.String(); !strings.Contains(s, "polyctl dns ensure example.com --record _") ||
+		!strings.Contains(s, "polyctl dns ensure www.example.net --record _") || !strings.Contains(s, ".www.example.net:CNAME:") {
+		t.Errorf("stderr = %s", s)
+	}
+
+	// A subdomain: the record names stay full, so a zone of the parent
+	// domain gets them at the right place.
+	h.resetACM()
+	if err := h.run("acm", "certificate", "request", "app.example.com", "--wildcard=false"); err != nil {
+		t.Fatal(err)
+	}
+	if s := h.stderr.String(); !strings.Contains(s, "polyctl dns ensure app.example.com --record _") || !strings.Contains(s, ".app.example.com:CNAME:") {
+		t.Errorf("subdomain stderr = %s", s)
+	}
 
 	// --wildcard=false and another key algorithm.
 	h.resetACM()
