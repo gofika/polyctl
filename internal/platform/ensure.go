@@ -109,6 +109,9 @@ type Step struct {
 	// ID is the id reported when the step has no Apply, or in a dry run
 	// (where it defaults to Pending for a step that creates).
 	ID string
+	// Attrs are the attrs of the change when the step's own change has
+	// none (a dry run reports them too).
+	Attrs map[string]string
 	// Check, when set, is read-only and runs in a dry run too. It returns
 	// done=true when the resource already is as requested; the change it
 	// returns is then reported (Unchanged when its Action is empty) and
@@ -210,6 +213,9 @@ func (p *Plan) runStep(ctx context.Context, s Step, dryRun bool) (Change, error)
 		}
 		if ch.Detail == "" {
 			ch.Detail = s.Desc
+		}
+		if ch.Attrs == nil {
+			ch.Attrs = s.Attrs
 		}
 		return ch
 	}
