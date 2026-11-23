@@ -47,7 +47,7 @@ certificate with another key type is refused before anything is sent (exit
 code 1); --new imports it as a new certificate (a new ARN, to be set where the
 old one is used). An expired certificate cannot be imported (exit code 1).
 Amazon-issued certificates are renewed by ACM and never replaced.`,
-		Example: "  polyctl aws acm certificate import example.com --region ap-east-1\n  polyctl aws acm certificate import example.com --cert-file fullchain.pem --key-file privkey.pem --arn arn:aws:acm:<region>:<account-id>:certificate/<uuid>",
+		Example: "  polyctl aws acm certificate import example.com --region us-east-1\n  polyctl aws acm certificate import example.com --cert-file fullchain.pem --key-file privkey.pem --arn arn:aws:acm:<region>:<account-id>:certificate/<uuid>",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
