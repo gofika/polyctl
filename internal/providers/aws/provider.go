@@ -1,6 +1,7 @@
 // Package aws implements the Amazon Web Services provider: IAM Identity
 // Center (SSO), access-key and shared-profile authentication, Route 53
-// hosted zones and records, Route 53 Domains and EC2 instances.
+// hosted zones and records, Route 53 Domains, EC2 instances, Elastic Load
+// Balancing v2 and AWS Certificate Manager certificates.
 //
 // Profile metadata keys (stored in plaintext in config.yaml, never sensitive):
 //
@@ -91,7 +92,7 @@ var _ platform.RecordTyper = (*provider)(nil)
 
 func (*provider) ResourceTypes() []platform.ResourceType {
 	return []platform.ResourceType{platform.ResZone, platform.ResDNSRecord, platform.ResDomain, platform.ResInstance, platform.ResKeyPair, platform.ResSecurityGroup,
-		platform.ResLoadBalancer, platform.ResEIP, platform.ResDBInstance}
+		platform.ResLoadBalancer, platform.ResEIP, platform.ResDBInstance, platform.ResCertificate}
 }
 
 // Environment variables read by the keys method, the names the AWS SDKs and

@@ -1081,7 +1081,7 @@ aws elbv2 listener update <listener-arn|lb:port> [--target-group <name|arn>] [--
 aws elbv2 listener delete <listener-arn|lb:port> [--yes] [--region <r>]
 ```
 
-Inventory types: `zone`, `dns_record`, `domain`, `instance`, `key_pair`, `security_group`, `load_balancer`, `eip`, `db_instance`. `route53domains` is this tree's registrar group, the counterpart of `domain` in the other trees.
+Inventory types: `zone`, `dns_record`, `domain`, `instance`, `key_pair`, `security_group`, `load_balancer`, `eip`, `db_instance`, `certificate`. `route53domains` is this tree's registrar group, the counterpart of `domain` in the other trees.
 
 EC2 instances:
 

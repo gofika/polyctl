@@ -83,6 +83,7 @@ type client struct {
 	ssmFor func(region string) ssmAPI
 	elbFor func(region string) elbAPI
 	rdsFor func(region string) rdsAPI
+	acmFor func(region string) acmAPI
 }
 
 var (
@@ -106,6 +107,7 @@ func newClient(cfg awssdk.Config, region string) *client {
 		ssmFor: func(r string) ssmAPI { return newSSM(regional(r)) },
 		elbFor: func(r string) elbAPI { return newELB(regional(r)) },
 		rdsFor: func(r string) rdsAPI { return newRDS(regional(r)) },
+		acmFor: func(r string) acmAPI { return newACM(regional(r)) },
 	}
 }
 
@@ -168,6 +170,8 @@ func (c *client) Sync(ctx context.Context, rt platform.ResourceType) ([]platform
 		return c.inEveryRegion(ctx, c.addressResources)
 	case platform.ResDBInstance:
 		return c.inEveryRegion(ctx, c.dbInstanceResources)
+	case platform.ResCertificate:
+		return c.inEveryRegion(ctx, c.certificateResources)
 	case platform.ResKeyPair:
 		return c.keyPairResources(ctx, c.region)
 	case platform.ResSecurityGroup:

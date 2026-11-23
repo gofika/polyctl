@@ -133,6 +133,7 @@ type fakeEC2s struct {
 	sg      fakeSGs
 	find    fakeFind
 	elb     fakeELBs
+	acm     fakeACMs
 }
 
 func (s *fakeEC2s) calls() []string {
@@ -208,7 +209,9 @@ func newAWSHarness(t *testing.T, flags app.Flags, defaults map[string]any) *awsH
 	oldELB, oldRDS := newELB, newRDS
 	newELB = func(cfg awssdk.Config) elbAPI { return &fakeELB{shared: fakes, region: cfg.Region} }
 	newRDS = func(cfg awssdk.Config) rdsAPI { return &fakeRDS{shared: fakes, region: cfg.Region} }
-	t.Cleanup(func() { newEC2, newSSM, newELB, newRDS = old, oldSSM, oldELB, oldRDS })
+	oldACM := newACM
+	newACM = func(cfg awssdk.Config) acmAPI { return &fakeACM{shared: fakes, region: cfg.Region} }
+	t.Cleanup(func() { newEC2, newSSM, newELB, newRDS, newACM = old, oldSSM, oldELB, oldRDS, oldACM })
 
 	dir := t.TempDir()
 	t.Setenv(config.EnvConfigDir, dir)
