@@ -2,15 +2,9 @@ package gcp
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
-	"io"
-	"net"
-	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -23,6 +17,7 @@ import (
 
 	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/httpx"
+	"github.com/gofika/polyctl/internal/loopback"
 	"github.com/gofika/polyctl/internal/platform"
 	"github.com/gofika/polyctl/internal/prompt"
 )
@@ -262,67 +257,23 @@ func loginOAuth(ctx context.Context, in platform.LoginInput, pio *prompt.IO) (*p
 // runLoopbackFlow performs the authorization-code + PKCE dance on a random
 // 127.0.0.1 port and returns a token with a refresh token.
 func runLoopbackFlow(ctx context.Context, in platform.LoginInput, pio *prompt.IO, clientID, clientSecret string) (*oauth2.Token, *oauth2.Config, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	lb, err := loopback.Listen("/callback")
 	if err != nil {
-		return nil, nil, fmt.Errorf("start loopback listener: %w", err)
+		return nil, nil, err
 	}
-	defer ln.Close()
+	defer lb.Close()
 	cfg := &oauth2.Config{
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 		Endpoint:     google.Endpoint,
-		RedirectURL:  fmt.Sprintf("http://%s/callback", ln.Addr().String()),
+		RedirectURL:  lb.RedirectURL(),
 		Scopes:       []string{scopeCloudPlatform, scopeUserinfoEmail},
 	}
-	state, err := randomToken()
-	if err != nil {
-		return nil, nil, err
-	}
 	verifier := oauth2.GenerateVerifier()
-	authURL := cfg.AuthCodeURL(state,
+	authURL := cfg.AuthCodeURL(lb.State,
 		oauth2.AccessTypeOffline,
 		oauth2.SetAuthURLParam("prompt", "consent"),
 		oauth2.S256ChallengeOption(verifier))
-
-	type result struct {
-		code string
-		err  error
-	}
-	results := make(chan result, 1)
-	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/callback" {
-			http.NotFound(w, r)
-			return
-		}
-		q := r.URL.Query()
-		var res result
-		switch {
-		case q.Get("state") != state:
-			res.err = errors.New("oauth callback state mismatch")
-		case q.Get("error") != "":
-			res.err = fmt.Errorf("authorization denied: %s", q.Get("error"))
-		case q.Get("code") == "":
-			res.err = errors.New("oauth callback without code")
-		default:
-			res.code = q.Get("code")
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if res.err != nil {
-			fmt.Fprintf(w, "<html><body><h2>Login failed</h2><p>%s</p></body></html>", html.EscapeString(res.err.Error()))
-		} else {
-			fmt.Fprint(w, "<html><body><h2>polyctl login complete</h2><p>You can close this window.</p></body></html>")
-		}
-		select {
-		case results <- res:
-		default:
-		}
-	})}
-	go srv.Serve(ln) //nolint:errcheck
-	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutdownCtx)
-	}()
 
 	fmt.Fprintln(pio.Err, "Open this URL in your browser to authorize polyctl:")
 	fmt.Fprintln(pio.Err)
@@ -335,28 +286,21 @@ func runLoopbackFlow(ctx context.Context, in platform.LoginInput, pio *prompt.IO
 	}
 	// On a terminal the user ends the wait with Ctrl-C. Without one nobody
 	// may be there: the wait is bounded.
-	var timeout <-chan time.Time
+	var wait time.Duration
 	if in.Interactive {
 		fmt.Fprintln(pio.Err, "Waiting for the browser to return (Ctrl-C to cancel)...")
 	} else {
 		fmt.Fprintf(pio.Err, "Waiting up to %s for the browser to return...\n", oauthWait)
-		timer := time.NewTimer(oauthWait)
-		defer timer.Stop()
-		timeout = timer.C
+		wait = oauthWait
 	}
-
-	var res result
-	select {
-	case res = <-results:
-	case <-timeout:
+	code, err := lb.Wait(ctx, wait)
+	switch {
+	case errors.Is(err, loopback.ErrTimeout):
 		return nil, nil, fmt.Errorf("%w: no authorization received within %s", platform.ErrLoginCancelled, oauthWait)
-	case <-ctx.Done():
-		return nil, nil, fmt.Errorf("%w: %v", platform.ErrLoginCancelled, ctx.Err())
+	case err != nil:
+		return nil, nil, fmt.Errorf("%w: %v", platform.ErrLoginCancelled, err)
 	}
-	if res.err != nil {
-		return nil, nil, fmt.Errorf("%w: %v", platform.ErrLoginCancelled, res.err)
-	}
-	tok, err := cfg.Exchange(ctx, res.code, oauth2.VerifierOption(verifier))
+	tok, err := cfg.Exchange(ctx, code, oauth2.VerifierOption(verifier))
 	if err != nil {
 		return nil, nil, fmt.Errorf("%w: exchange authorization code: %v", platform.ErrUnauthorized, err)
 	}
@@ -364,14 +308,6 @@ func runLoopbackFlow(ctx context.Context, in platform.LoginInput, pio *prompt.IO
 		return nil, nil, errors.New("Google did not return a refresh token; revoke polyctl's access at https://myaccount.google.com/permissions and retry")
 	}
 	return tok, cfg, nil
-}
-
-func randomToken() (string, error) {
-	b := make([]byte, 16)
-	if _, err := io.ReadFull(rand.Reader, b); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(b), nil
 }
 
 // lookupEmail asks the userinfo endpoint for the account email; failures
