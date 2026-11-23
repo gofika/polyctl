@@ -114,6 +114,20 @@ func containsAny(s string, subs ...string) bool {
 	return false
 }
 
+// hasToken reports whether one of the hyphen-separated parts of an image
+// name is one of tokens: "ubuntu-pro-2204-..." has "pro", while a codename
+// that merely contains those letters does not.
+func hasToken(name string, tokens ...string) bool {
+	for _, part := range strings.Split(name, "-") {
+		for _, t := range tokens {
+			if part == t {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // ranked is a candidate with the version number it is ranked by (-1 when
 // the OS is ranked by creation time only).
 type ranked struct {
@@ -143,7 +157,7 @@ func selectImage(osName, version string, images []imageCandidate) (imageCandidat
 		keep := false
 		switch osName {
 		case "debian":
-			if strings.Contains(name, "backports") {
+			if hasToken(name, "backports") {
 				break
 			}
 			if version != "" {
@@ -153,7 +167,7 @@ func selectImage(osName, version string, images []imageCandidate) (imageCandidat
 				r.version, _ = strconv.Atoi(m[1])
 			}
 		case "ubuntu":
-			if containsAny(name, "minimal", "pro", "accelerator", "nvidia") {
+			if hasToken(name, "minimal", "pro", "accelerator", "nvidia") {
 				break
 			}
 			if version != "" {
@@ -174,7 +188,7 @@ func selectImage(osName, version string, images []imageCandidate) (imageCandidat
 			}
 		case "rocky", "almalinux", "alma", "rhel":
 			prefix := map[string]string{"rocky": "rocky-linux", "almalinux": "almalinux", "alma": "almalinux", "rhel": "rhel"}[osName]
-			if containsAny(name, "sap", "byos") {
+			if hasToken(name, "sap", "byos") {
 				break
 			}
 			if m := standardVariantRe(prefix, majorOf(version)).FindStringSubmatch(name); m != nil {
@@ -182,7 +196,7 @@ func selectImage(osName, version string, images []imageCandidate) (imageCandidat
 				r.version, _ = strconv.Atoi(m[1])
 			}
 		case "windows":
-			if containsAny(name, "core", "sql") {
+			if hasToken(name, "core", "sql") {
 				break
 			}
 			if version != "" {

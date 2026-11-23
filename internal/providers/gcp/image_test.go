@@ -80,6 +80,8 @@ func TestSelectImage(t *testing.T) {
 		{"centos", "", centos, "centos-stream-10-v20261101"},
 		{"centos", "9", centos, "centos-stream-9-v20261101"},
 		{"cos", "", cos, "cos-125-1-1-1"},
+		// Exclusions match whole name parts, not letters inside a codename.
+		{"ubuntu", "", append(ubuntu[:len(ubuntu):len(ubuntu)], img("ubuntu-2804-prowler-amd64-v20280501", "X86_64", "", t3)), "ubuntu-2804-prowler-amd64-v20280501"},
 	} {
 		got, ok := selectImage(tc.os, tc.version, tc.images)
 		if tc.want == "" {
