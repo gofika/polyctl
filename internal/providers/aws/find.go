@@ -12,7 +12,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	elb "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
-	"github.com/aws/aws-sdk-go-v2/service/rds"
 
 	"github.com/gofika/polyctl/internal/platform"
 )
@@ -24,15 +23,8 @@ var (
 	_ platform.DetailProvider = (*client)(nil)
 )
 
-type rdsAPI interface {
-	DescribeDBInstances(ctx context.Context, in *rds.DescribeDBInstancesInput, optFns ...func(*rds.Options)) (*rds.DescribeDBInstancesOutput, error)
-}
-
-// newELB and newRDS create the regional clients; tests replace them.
-var (
-	newELB = func(cfg awssdk.Config) elbAPI { return elb.NewFromConfig(cfg) }
-	newRDS = func(cfg awssdk.Config) rdsAPI { return rds.NewFromConfig(cfg) }
-)
+// newELB creates the regional ELBv2 client; tests replace it.
+var newELB = func(cfg awssdk.Config) elbAPI { return elb.NewFromConfig(cfg) }
 
 // regionConcurrency bounds the regions synced at the same time.
 const regionConcurrency = 8
@@ -385,51 +377,6 @@ func (c *client) addressResources(ctx context.Context, region string) ([]platfor
 	return res, nil
 }
 
-// dbInstance is the inventory form of an RDS instance.
-type dbInstance struct {
-	ID       string `json:"id" yaml:"id"`
-	Status   string `json:"status,omitempty" yaml:"status,omitempty"`
-	Engine   string `json:"engine,omitempty" yaml:"engine,omitempty"`
-	Class    string `json:"class,omitempty" yaml:"class,omitempty"`
-	Endpoint string `json:"endpoint,omitempty" yaml:"endpoint,omitempty"`
-	Port     int32  `json:"port,omitempty" yaml:"port,omitempty"`
-	Zone     string `json:"zone,omitempty" yaml:"zone,omitempty"`
-	VpcID    string `json:"vpc_id,omitempty" yaml:"vpc_id,omitempty"`
-	Region   string `json:"region" yaml:"region"`
-}
-
-func (d dbInstance) resource() platform.Resource {
-	var s platform.IPSet
-	s.AddDNS(d.Endpoint)
-	return platform.Resource{Type: platform.ResDBInstance, ID: d.ID, Name: d.ID, ParentID: d.Region, Data: d, IPs: s.Refs()}
-}
-
-// dbInstanceResources lists the RDS instances of a region. RDS gives no
-// addresses: an instance is found by its endpoint, and one without an
-// endpoint yet (being created) is stored without one.
-func (c *client) dbInstanceResources(ctx context.Context, region string) ([]platform.Resource, error) {
-	var res []platform.Resource
-	pg := rds.NewDescribeDBInstancesPaginator(c.rdsFor(region), &rds.DescribeDBInstancesInput{MaxRecords: awssdk.Int32(100)})
-	for pg.HasMorePages() {
-		page, err := pg.NextPage(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("rds:DescribeDBInstances in %s: %w", region, mapErr(err))
-		}
-		for _, db := range page.DBInstances {
-			d := dbInstance{ID: awssdk.ToString(db.DBInstanceIdentifier), Status: awssdk.ToString(db.DBInstanceStatus),
-				Engine: awssdk.ToString(db.Engine), Class: awssdk.ToString(db.DBInstanceClass), Zone: awssdk.ToString(db.AvailabilityZone), Region: region}
-			if db.Endpoint != nil {
-				d.Endpoint, d.Port = awssdk.ToString(db.Endpoint.Address), awssdk.ToInt32(db.Endpoint.Port)
-			}
-			if db.DBSubnetGroup != nil {
-				d.VpcID = awssdk.ToString(db.DBSubnetGroup.VpcId)
-			}
-			res = append(res, d.resource())
-		}
-	}
-	return res, nil
-}
-
 // FindTypes are the inventory types whose rows carry addresses.
 func (*provider) FindTypes() []platform.ResourceType {
 	return []platform.ResourceType{platform.ResInstance, platform.ResLoadBalancer, platform.ResEIP, platform.ResDBInstance}
@@ -541,7 +488,16 @@ func (*provider) ConsoleURL(_ map[string]string, m *platform.FindMatch) string {
 	case platform.ResInstance:
 		return fmt.Sprintf("https://%s.console.aws.amazon.com/ec2/home?region=%s#InstanceDetails:instanceId=%s", r, r, url.QueryEscape(m.ID))
 	case platform.ResDBInstance:
-		return fmt.Sprintf("https://%s.console.aws.amazon.com/rds/home?region=%s#database:id=%s", r, r, url.QueryEscape(m.ID))
+		// The inventory id is <region>/<identifier>; the name is the
+		// identifier.
+		id := m.Name
+		if id == "" {
+			_, id, _ = strings.Cut(m.ID, "/")
+			if id == "" {
+				id = m.ID
+			}
+		}
+		return fmt.Sprintf("https://%s.console.aws.amazon.com/rds/home?region=%s#database:id=%s", r, r, url.QueryEscape(id))
 	}
 	return ""
 }

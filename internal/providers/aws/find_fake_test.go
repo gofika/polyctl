@@ -9,7 +9,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	elbtypes "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
-	"github.com/aws/aws-sdk-go-v2/service/rds"
 	rdstypes "github.com/aws/aws-sdk-go-v2/service/rds/types"
 )
 
@@ -123,22 +122,8 @@ func (f *fakeEC2) DescribeSubnets(_ context.Context, in *ec2.DescribeSubnetsInpu
 	return out, nil
 }
 
-// fakeELB and fakeRDS serve the load balancers and databases of a region.
+// fakeELB serves the load balancers of a region.
 type fakeELB struct {
 	shared *fakeEC2s
 	region string
-}
-
-type fakeRDS struct {
-	shared *fakeEC2s
-	region string
-}
-
-func (f *fakeRDS) DescribeDBInstances(_ context.Context, in *rds.DescribeDBInstancesInput, _ ...func(*rds.Options)) (*rds.DescribeDBInstancesOutput, error) {
-	f.shared.mu.Lock()
-	defer f.shared.mu.Unlock()
-	if err := f.shared.find.regionErr[f.region]; err != nil {
-		return nil, err
-	}
-	return &rds.DescribeDBInstancesOutput{DBInstances: f.shared.find.dbs[f.region]}, nil
 }
