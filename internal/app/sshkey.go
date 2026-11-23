@@ -24,7 +24,9 @@ func AddKeyFlags(cmd *cobra.Command, f *KeyFlags) {
 	cmd.Flags().StringVar(&f.SSHKey, "ssh-key", "", "SSH public key itself, one line (\"ssh-ed25519 AAAA... comment\"); for a file use --ssh-key-file")
 	cmd.Flags().StringVar(&f.SSHKeyFile, "ssh-key-file", "", "file holding the SSH public key (~ is expanded; a private key is refused)")
 	cmd.Flags().StringVar(&f.KeyPair, "key-pair", "", "name of the key pair on the platform: an existing one is used, a missing one is imported from --ssh-key / --ssh-key-file")
-	cmd.MarkFlagsMutuallyExclusive("ssh-key", "ssh-key-file")
+	// --ssh-key and --ssh-key-file are mutually exclusive, but that is
+	// checked by PublicKey and not with a cobra flag group: cobra reports
+	// a group violation as a plain error (exit code 1), not a usage error.
 	_ = cmd.MarkFlagFilename("ssh-key-file", "pub")
 }
 

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"golang.org/x/crypto/ssh"
 
 	"github.com/gofika/polyctl/internal/platform"
@@ -101,5 +102,25 @@ func TestKeyInputFlags(t *testing.T) {
 	in, _ = rt.KeyInput(&KeyFlags{SSHKeyFile: file}, platform.KeyInput{Match: platform.MatchByPublicKey})
 	if _, err := platform.ResolveKeyPair(t.Context(), listKP{}, in); !errors.Is(err, platform.ErrNothingToDo) {
 		t.Errorf("left question = %v", err)
+	}
+}
+
+// Both key flags together are a usage error (exit code 2), raised by the
+// command's own check rather than by cobra.
+func TestKeyFlagsMutuallyExclusive(t *testing.T) {
+	var f KeyFlags
+	ran := false
+	cmd := &cobra.Command{Use: "x", RunE: func(*cobra.Command, []string) error {
+		ran = true
+		_, err := f.PublicKey()
+		return err
+	}}
+	AddKeyFlags(cmd, &f)
+	cmd.SetArgs([]string{"--ssh-key", "ssh-ed25519 AAAA", "--ssh-key-file", "k.pub"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if !ran || !errors.Is(err, ErrUsage) || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("both flags: ran=%v err=%v", ran, err)
 	}
 }
