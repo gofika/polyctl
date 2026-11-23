@@ -990,13 +990,18 @@ Errors are printed to stderr as `error: <message>`.
 cmd/polyctl/                 main(): calls internal/cli.Main and exits with its code
 internal/cli/                Cobra command tree (root, auth, dns, domain, sync/inventory, platform mounts), exit-code mapping
 internal/app/                Runtime shared by all commands: config, credential store, inventory, profile selection,
-                             domain routing (ResolveDomain), cache policy (EnsureSet / NeedsRefresh), SyncAccount
+                             domain routing (ResolveDomain), resource routing (ResolveResource), cache policy
+                             (EnsureSet / NeedsRefresh), SyncAccount, --dry-run and change reports, --wait flags,
+                             per-platform defaults and naming, hooks.on_failure
 internal/platform/           Provider-neutral contracts: Provider, Client, DNSService, RegistrarService, Zone/Record/Domain,
-                             resource types, sentinel errors, provider registry, DNS name helpers
+                             resource types, sentinel errors, provider registry, DNS name helpers; the change plan of
+                             ensure commands (Plan / Step / Change / Report), waits and retries, the shared parsers of
+                             ingress rules, listeners and DNS record specs, SSH public keys and key pair resolution
 internal/providers/
   cloudflare/  namecom/  godaddy/  aws/  gcp/  aliyun/
                              One package per platform: provider.go (login, client, sync) and commands.go (native commands)
-internal/config/             config.yaml loading/saving (profiles and their accounts), TTL defaults
+internal/config/             config.yaml loading/saving (profiles and their accounts), TTL defaults, defaults / naming /
+                             hooks / cert settings
 internal/creds/              Keyring store, 0600 file store, Multi (read from any, write to primary)
 internal/inventory/          SQLite schema, Replace/Upsert/Delete, Purge/RenameProfile, domain lookup, stats
 internal/output/             table / json / yaml rendering
