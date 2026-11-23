@@ -24,6 +24,9 @@ type Answer struct {
 	// Truncate answers over UDP with the TC bit and no records; the full
 	// answer is given over TCP only.
 	Truncate bool
+	// TXT are the values of the answer to a TXT query of the name (each one
+	// TXT record). A TXT query gets no NS records.
+	TXT []string
 }
 
 // Server is a fake resolver listening on UDP and TCP of one port.
@@ -123,6 +126,15 @@ func (s *Server) handler(tcp bool) dns.HandlerFunc {
 		default:
 			m.Rcode = a.Rcode
 			q := req.Question[0]
+			if q.Qtype == dns.TypeTXT {
+				for _, v := range a.TXT {
+					m.Answer = append(m.Answer, &dns.TXT{
+						Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeTXT, Class: dns.ClassINET, Ttl: 60},
+						Txt: []string{v},
+					})
+				}
+				break
+			}
 			for _, n := range a.NS {
 				m.Answer = append(m.Answer, &dns.NS{
 					Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeNS, Class: dns.ClassINET, Ttl: 300},
