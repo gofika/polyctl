@@ -22,14 +22,14 @@ func Command(rt *app.Runtime) *cobra.Command {
 		Use:   "aws",
 		Short: "Amazon Web Services native commands",
 		Long: `Native Amazon Web Services commands: the identity check, Route 53 hosted
-zones and records, Route 53 Domains registrations, EC2 instances and EC2 key
-pairs. The profile is chosen with --profile (or the current profile);
+zones and records, Route 53 Domains registrations, EC2 instances, key pairs
+and security groups, and Elastic Load Balancing v2 load balancers. The profile is chosen with --profile (or the current profile);
 listing commands read the local inventory unless --refresh is given or the
 cached data has expired.`,
 	}
 	cmd.AddCommand(
 		app.WhoamiCommand(rt, platform.AWS, "On AWS this calls sts GetCallerIdentity and reports the account, the ARN, the\nuser id and the profile's region."),
-		route53Cmd(rt), route53domainsCmd(rt), ec2Cmd(rt))
+		route53Cmd(rt), route53domainsCmd(rt), ec2Cmd(rt), elbv2Cmd(rt))
 	return cmd
 }
 
