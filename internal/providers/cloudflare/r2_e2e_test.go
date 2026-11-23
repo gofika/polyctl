@@ -941,3 +941,26 @@ func TestDNSDeleteUnbindsR2Domain(t *testing.T) {
 		t.Errorf("other account: exit %d, %s, %v", code, stderr, e.f.requests)
 	}
 }
+
+// When one of several matching records cannot be unbound, it is left in
+// place, the others are deleted, and the command fails.
+func TestDNSDeleteUnbindPartialFailure(t *testing.T) {
+	e := newR2Env(t)
+	e.f.accounts["acc1"].buckets = []string{"assets"}
+	// Two CNAME records of the name: the R2 one cannot be unbound (R2 is
+	// disabled), the plain one is deleted all the same.
+	e.f.bind("acc1", "assets", "cdn.example.com", "zone-ex", true, "")
+	e.f.records["zone-ex"] = append(e.f.records["zone-ex"], map[string]any{
+		"id": "plain1", "zone_id": "zone-ex", "zone_name": "example.com", "name": "cdn.example.com", "type": "CNAME",
+		"content": "origin.example.net", "ttl": 300, "proxied": false,
+	})
+	e.f.accounts["acc1"].r2Disabled = true
+	code, _, stderr := e.run("dns", "delete", "example.com", "--type", "CNAME", "--name", "cdn", "--profile", "acme", "--platform", "cloudflare", "--yes")
+	if w := e.f.writes(); code != cli.ExitError || !strings.Contains(stderr, "R2 unbind failed") ||
+		len(w) != 2 || w[1] != "DELETE /zones/zone-ex/dns_records/plain1" || !strings.HasPrefix(w[0], "DELETE /accounts/acc1/r2/") {
+		t.Errorf("partial: exit %d, %s, %v", code, stderr, w)
+	}
+	if n := len(e.f.records["zone-ex"]); n != 1 {
+		t.Errorf("records left = %d, want the R2 CNAME only", n)
+	}
+}
