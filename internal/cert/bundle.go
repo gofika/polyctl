@@ -63,6 +63,10 @@ type Bundle struct {
 	// IssuedAt and ACMEDirectory come from meta.json, when known.
 	IssuedAt      time.Time
 	ACMEDirectory string
+	// NeedsRepair is set by a read-only Store.Load that found something to
+	// repair (a private key readable by others, a live directory restored
+	// from the archive only in memory).
+	NeedsRepair bool
 }
 
 // NewBundle parses a full chain (leaf first) and a private key and checks

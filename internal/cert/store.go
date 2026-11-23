@@ -138,7 +138,11 @@ func (s *Store) Load(root string, repair bool) (*Bundle, error) {
 		}
 		if !repair {
 			s.warnf("warning: %s is missing; the newest archived certificate %s is used (the next `cert ensure` restores it)", live, latest)
-			return s.loadDir(root, latest, false)
+			b, err := s.loadDir(root, latest, false)
+			if b != nil {
+				b.NeedsRepair = true
+			}
+			return b, err
 		}
 		if err := os.MkdirAll(filepath.Dir(live), 0o700); err != nil {
 			return nil, err
@@ -163,8 +167,10 @@ func (s *Store) loadDir(root, dir string, repair bool) (*Bundle, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrCorrupt, err)
 	}
+	badMode := false
 	if runtime.GOOS != "windows" {
 		if fi, err := os.Stat(keyPath); err == nil && fi.Mode().Perm()&0o077 != 0 {
+			badMode = !repair
 			if repair {
 				if err := os.Chmod(keyPath, 0o600); err != nil {
 					return nil, err
@@ -179,7 +185,7 @@ func (s *Store) loadDir(root, dir string, repair bool) (*Bundle, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", dir, err)
 	}
-	b.Path = dir
+	b.Path, b.NeedsRepair = dir, badMode
 	if data, err := os.ReadFile(filepath.Join(dir, fileMeta)); err == nil {
 		var m meta
 		if json.Unmarshal(data, &m) == nil {
