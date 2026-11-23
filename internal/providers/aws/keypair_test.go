@@ -132,6 +132,7 @@ type fakeEC2s struct {
 	inst    fakeInstances
 	sg      fakeSGs
 	find    fakeFind
+	elb     fakeELBs
 }
 
 func (s *fakeEC2s) calls() []string {

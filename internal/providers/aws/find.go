@@ -24,10 +24,6 @@ var (
 	_ platform.DetailProvider = (*client)(nil)
 )
 
-type elbAPI interface {
-	DescribeLoadBalancers(ctx context.Context, in *elb.DescribeLoadBalancersInput, optFns ...func(*elb.Options)) (*elb.DescribeLoadBalancersOutput, error)
-}
-
 type rdsAPI interface {
 	DescribeDBInstances(ctx context.Context, in *rds.DescribeDBInstancesInput, optFns ...func(*rds.Options)) (*rds.DescribeDBInstancesOutput, error)
 }

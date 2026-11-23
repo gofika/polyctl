@@ -8,7 +8,6 @@ import (
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
-	elb "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
 	elbtypes "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
 	"github.com/aws/aws-sdk-go-v2/service/rds"
 	rdstypes "github.com/aws/aws-sdk-go-v2/service/rds/types"
@@ -128,15 +127,6 @@ func (f *fakeEC2) DescribeSubnets(_ context.Context, in *ec2.DescribeSubnetsInpu
 type fakeELB struct {
 	shared *fakeEC2s
 	region string
-}
-
-func (f *fakeELB) DescribeLoadBalancers(_ context.Context, in *elb.DescribeLoadBalancersInput, _ ...func(*elb.Options)) (*elb.DescribeLoadBalancersOutput, error) {
-	f.shared.mu.Lock()
-	defer f.shared.mu.Unlock()
-	if err := f.shared.find.regionErr[f.region]; err != nil {
-		return nil, err
-	}
-	return &elb.DescribeLoadBalancersOutput{LoadBalancers: f.shared.find.lbs[f.region]}, nil
 }
 
 type fakeRDS struct {
