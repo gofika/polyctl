@@ -384,6 +384,32 @@ func TestDNSDeleteRecord(t *testing.T) {
 	}
 }
 
+// A record that fails to delete does not stop the others: the command goes
+// on and fails at the end with a partial error (exit code 1), as unbind
+// failures and `dns delete --all` do.
+func TestDNSDeleteRecordsGoesOnAfterAFailure(t *testing.T) {
+	dir, cfgPath := setup(t, true)
+	recs := []platform.Record{
+		{ID: "r1", ZoneID: "z1", Name: "www.example.com", Type: "A", Value: "1.2.3.4"},
+		{ID: "r2", ZoneID: "z1", Name: "www.example.com", Type: "A", Value: "1.2.3.5"},
+		{ID: "r3", ZoneID: "z1", Name: "www.example.com", Type: "A", Value: "1.2.3.6"},
+	}
+	seed(t, dir, []platform.Zone{{ID: "z1", Name: "example.com"}}, map[string][]platform.Record{"z1": recs})
+	fc := client("a")
+	fc.zones = []platform.Zone{{ID: "z1", Name: "example.com"}}
+	fc.records["z1"] = append([]platform.Record(nil), recs...)
+	fc.failDelete = "r2"
+
+	_, _, err := run(t, cfgPath, "dns", "delete", "example.com", "--type", "A", "--name", "www", "--yes")
+	var pe *platform.PartialError
+	if !errors.As(err, &pe) || pe.Failed != 1 || pe.Total != 3 || ExitCodeFor(err) != ExitError {
+		t.Fatalf("err = %v", err)
+	}
+	if fc.count("DeleteRecord:r3") != 1 || len(fc.records["z1"]) != 1 || fc.records["z1"][0].ID != "r2" {
+		t.Errorf("calls = %v records = %+v", fc.calls, fc.records["z1"])
+	}
+}
+
 func TestExitCodeFor(t *testing.T) {
 	cases := []struct {
 		name string

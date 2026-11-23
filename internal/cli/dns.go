@@ -380,10 +380,17 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 				}
 			}
 			db, _ := rt.DB()
-			// A record that cannot be unbound is left in place (it cannot be
-			// deleted through the DNS API either); the other records are
-			// still deleted and the command fails at the end.
-			var unbound []error
+			// A record that cannot be deleted or unbound is left in place;
+			// the other records are still deleted and the command fails at
+			// the end, as `dns delete --all` does.
+			var failed []error
+			fail := func(r platform.Record, err error) {
+				err = fmt.Errorf("delete %s %s (%s): %w", r.Name, r.Type, r.ID, err)
+				if len(matches) > 1 {
+					rt.Infof("failed: %v", err)
+				}
+				failed = append(failed, err)
+			}
 			for i, r := range matches {
 				if owners[i] != "" {
 					rt.Infof("%s %s belongs to %s: unbinding it there removes the record", r.Name, r.Type, owners[i])
@@ -392,26 +399,23 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 						err = fmt.Errorf("%s could not be unbound", owners[i])
 					}
 					if err != nil {
-						err = fmt.Errorf("delete %s %s (%s): %w", r.Name, r.Type, r.ID, err)
-						if len(matches) > 1 {
-							rt.Infof("failed: %v", err)
-						}
-						unbound = append(unbound, err)
+						fail(r, err)
 						continue
 					}
 				} else if err := dns.DeleteRecord(cmd.Context(), t.ResourceID, r.ID); err != nil {
-					return fmt.Errorf("delete %s %s (%s): %w", r.Name, r.Type, r.ID, err)
+					fail(r, err)
+					continue
 				}
 				if db != nil {
 					_ = db.Delete(cmd.Context(), inventory.Set{Platform: t.Platform, Profile: t.Profile}, platform.ResDNSRecord, r.ID)
 				}
 				rt.Infof("deleted %s %s %s via %s/%s", r.Name, r.Type, r.Value, t.Platform, t.Profile)
 			}
-			if len(unbound) > 0 {
+			if len(failed) > 0 {
 				if len(matches) == 1 {
-					return unbound[0]
+					return failed[0]
 				}
-				return &platform.PartialError{Failed: len(unbound), Total: len(matches), First: unbound[0]}
+				return &platform.PartialError{Failed: len(failed), Total: len(matches), First: failed[0]}
 			}
 			return rt.Render(dnsResult{Target: t, Records: matches}, func() output.Grid { return output.Grid{} })
 		},
