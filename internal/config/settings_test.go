@@ -144,6 +144,12 @@ func TestNamingTemplates(t *testing.T) {
 	if n, _ := cfg.Name("aliyun_ecs_security_group", nil); n != "sg-common" {
 		t.Errorf("neutral default = %q", n)
 	}
+	if n, _ := cfg.Name("gcp_instance_external_ip", map[string]string{"name": "web-1"}); n != "web-1-external-ip" {
+		t.Errorf("gcp external ip default = %q", n)
+	}
+	if n, _ := cfg.Name("gcp_instance_internal_ip", map[string]string{"name": "web-1"}); n != "web-1-internal-ip" {
+		t.Errorf("gcp internal ip default = %q", n)
+	}
 	if _, err := cfg.Name("aws_elbv2_target_group", map[string]string{"name": "site"}); err == nil || !strings.Contains(err.Error(), "{port}") {
 		t.Errorf("missing variable = %v", err)
 	}

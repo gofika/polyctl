@@ -303,6 +303,8 @@ naming:                           # names of the resources ensure commands creat
   gcp_backend_service_prefix: "bs-"
   gcp_proxy_prefix: "proxy-"
   gcp_forwarding_rule_prefix: "fr-"
+  gcp_instance_external_ip: "{name}-external-ip"   # static addresses of gcp compute instance create / resize
+  gcp_instance_internal_ip: "{name}-internal-ip"
 
 hooks:
   on_failure: https://hooks.example.com/polyctl   # or a shell command

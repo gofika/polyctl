@@ -152,6 +152,8 @@ var DefaultNaming = map[string]string{
 	"gcp_backend_service_prefix": "bs-",
 	"gcp_proxy_prefix":           "proxy-",
 	"gcp_forwarding_rule_prefix": "fr-",
+	"gcp_instance_external_ip":   "{name}-external-ip",
+	"gcp_instance_internal_ip":   "{name}-internal-ip",
 }
 
 // NamingVars are the variables naming templates (and cert.name_template,
