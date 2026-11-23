@@ -91,7 +91,7 @@ const (
 var DefaultResolvers = []string{"1.1.1.1:53", "8.8.8.8:53", "223.5.5.5:53", "114.114.114.114:53"}
 
 // CertKeyTypes are the accepted values of cert.key_type.
-var CertKeyTypes = []string{"ec256", "rsa2048"}
+var CertKeyTypes = []string{"ec256", "ec384", "rsa2048", "rsa4096"}
 
 // CertDir returns cert.dir (a leading ~ is the home directory), or
 // <config dir>/certs.

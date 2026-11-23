@@ -162,7 +162,7 @@ func TestSettingsValidation(t *testing.T) {
 		"naming:\n  aws_elb_lb: x\n":                        "unknown naming key",
 		"naming:\n  aliyun_vpc: \"{regoin}-vpc\"\n":         "unknown variable {regoin}",
 		"naming:\n  aliyun_vpc: \"{region-vpc\"\n":          "unbalanced",
-		"cert:\n  key_type: ec384\n":                        "cert.key_type",
+		"cert:\n  key_type: ec521\n":                        "cert.key_type",
 		"defaults:\n  amazon:\n    vpc_id: v\n":             "defaults.amazon: unknown platform",
 		"profiles:\n  a:\n    defaults:\n      azure: {}\n": "profiles.a.defaults.azure",
 		"defaults:\n  cloudflare:\n    ssl: full_strict\n":  "defaults.cloudflare.ssl",
