@@ -102,3 +102,14 @@ func TestSyncRegions(t *testing.T) {
 		t.Fatalf("all failed = %v, %v", res, err)
 	}
 }
+
+func TestFindMatchHolds(t *testing.T) {
+	m := &FindMatch{Matched: "10.1.2.7"}
+	if !m.Holds("10.1.2.7") || !m.Holds("10.1.2.0/24") || m.Holds("10.1.3.0/24") || m.Holds("") {
+		t.Error("holds by address")
+	}
+	m.Matched = "2600:1900:4000:1::/96"
+	if !m.Holds("2600:1900:4000:1::/96") || m.Holds("10.0.0.1") {
+		t.Error("holds by prefix")
+	}
+}

@@ -307,7 +307,7 @@ func (rt *Runtime) findLookup(ctx context.Context, cfg *config.Config, db *inven
 			return err
 		}
 		m := platform.FindMatch{Platform: h.Platform, Profile: h.Profile, Type: h.Type, ID: r.ID, Name: r.Name,
-			MatchedField: platform.MatchedField(h.Kind, h.Type), Data: r.Data}
+			MatchedField: platform.MatchedField(h.Kind, h.Type), Data: r.Data, Matched: h.IP}
 		rt.describeMatch(cfg, &m)
 		if h.Kind == platform.IPReserved {
 			reserved = append(reserved, &m)

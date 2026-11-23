@@ -241,6 +241,34 @@ type FindMatch struct {
 
 	// Data is the stored inventory data of the resource.
 	Data json.RawMessage `json:"-" yaml:"-"`
+	// Matched is the index value that matched the query: the address, the
+	// prefix holding it, or the DNS name. A describer uses it to tell which
+	// network interface of a resource holds the address.
+	Matched string `json:"-" yaml:"-"`
+}
+
+// Holds reports whether an address or prefix value (an IPRef value) holds
+// the Matched value of m: equal, or a prefix containing it.
+func (m *FindMatch) Holds(value string) bool {
+	if value == "" || m.Matched == "" {
+		return false
+	}
+	if value == m.Matched {
+		return true
+	}
+	r, ok := IPAddr(IPInternal, value)
+	if !ok {
+		return NormalizeDomain(value) == m.Matched
+	}
+	if r.Value == m.Matched {
+		return true
+	}
+	if p, err := netip.ParsePrefix(r.Value); err == nil {
+		if a, ok := CanonicalAddr(m.Matched); ok {
+			return p.Contains(a)
+		}
+	}
+	return false
 }
 
 // NetworkDetail is what --detail adds to a match: the subnet of the
