@@ -457,8 +457,11 @@ func TestInstanceResizeStopped(t *testing.T) {
 	h := newInstanceHarness(t, app.Flags{})
 	h.addInstance("ap-east-1", &fakeInstance{id: "i-0aaaaaaaaaaaaaaa1", name: "off", typ: "c6a.large", state: stateStopped})
 	// A stopped instance needs no confirmation and stays stopped.
-	if err := h.run("ec2", "instance", "resize", "off", "--type", "c6a.xlarge"); err != nil {
+	if err := h.run("ec2", "instance", "resize", "off", "--type", "c6a.xlarge", "--wait-port", "22"); err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(h.stderr.String(), "--wait-port 22 skipped") {
+		t.Errorf("stderr lacks the skipped port wait: %s", h.stderr.String())
 	}
 	if w := strings.Join(h.writes(), ","); w != "ModifyInstanceAttribute" || !strings.Contains(h.stderr.String(), "stays stopped") {
 		t.Errorf("writes = %s / %s", w, h.stderr.String())

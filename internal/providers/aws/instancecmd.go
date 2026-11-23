@@ -726,6 +726,10 @@ instance is running and prints its addresses.`,
 				if img.Arch != "" && !slices.Contains(archs, img.Arch) {
 					return fmt.Errorf("image %s is %s, which instance type %s does not run (it runs %s)", ami, img.Arch, typ, strings.Join(archs, ", "))
 				}
+				if img.Arch != "" {
+					// The image decides; --arch only picks a default image.
+					arch = img.Arch
+				}
 			} else if img, err = c.latestAL2023AMI(ctx, region, arch, func(s string) { rt.Infof("%s", s) }); err != nil {
 				return err
 			}
@@ -1142,6 +1146,9 @@ c6a.2xlarge, c6a.4xlarge; burstable t3 types can stall under steady load.`,
 			l.reread(ctx, rt)
 			if !same {
 				rt.Infof("instance %s resized %s -> %s (%s) in %s", label, cur, typ, instanceState(l.inst), time.Since(began).Round(time.Second))
+			}
+			if waitPort > 0 && instanceState(l.inst) != stateRunning {
+				rt.Infof("note: --wait-port %d skipped: instance %s is %s", waitPort, label, instanceState(l.inst))
 			}
 			if waitPort > 0 && instanceState(l.inst) == stateRunning {
 				host := awssdk.ToString(l.inst.PublicIpAddress)
