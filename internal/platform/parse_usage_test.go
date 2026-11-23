@@ -22,6 +22,8 @@ func TestParseErrorsAreUsageErrors(t *testing.T) {
 	check("source", err)
 	_, err = ParseListener("ftp:21")
 	check("listener", err)
+	_, err = ParseTarget("i-1:99999")
+	check("target", err)
 	_, err = ParseRecordSpec("www:A:not-an-ip")
 	check("record spec", err)
 	check("record validate", RecordSpec{Name: "www", Type: "A", Value: "x"}.Validate())
