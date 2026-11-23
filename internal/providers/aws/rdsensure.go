@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
+	rdstypes "github.com/aws/aws-sdk-go-v2/service/rds/types"
 	"github.com/spf13/cobra"
 
 	"github.com/gofika/polyctl/internal/app"
@@ -56,14 +58,19 @@ func (env ensureEnv) want() string {
 	return dbStopped
 }
 
-// waitStatus waits until the instance is in status want.
-func (env ensureEnv) waitStatus(ctx context.Context, l *locatedDB, want string, interval time.Duration) error {
+// waitStatus waits until the instance is in status want, or in one of
+// also.
+func (env ensureEnv) waitStatus(ctx context.Context, l *locatedDB, want string, interval time.Duration, also ...string) error {
 	fatal := dbFatal
 	if want == dbAvailable {
 		fatal = func(s string) bool { return dbFatal(s) || s == dbStopped && !env.running }
 	}
+	done := func(db rdstypes.DBInstance) bool {
+		st := awssdk.ToString(db.DBInstanceStatus)
+		return st == want || slices.Contains(also, st)
+	}
 	db, err := l.c.waitDB(ctx, dbWait{region: l.region, id: l.id(), want: want, interval: interval, timeout: env.timeout,
-		done: statusIs(want), goneFails: true, fatal: fatal})
+		done: done, goneFails: true, fatal: fatal})
 	if awssdk.ToString(db.DBInstanceIdentifier) != "" {
 		l.db = db
 		l.store(ctx, env.rt)
@@ -161,8 +168,13 @@ func (env ensureEnv) step(e *dbEnsure) platform.Step {
 		s.Action, s.Desc = platform.Updated, fmt.Sprintf("wait for %s, then %s (now %s)", settle, verb, st)
 		s.Apply = func(ctx context.Context) (platform.Change, error) {
 			env.rt.Infof("RDS instance %s is %s; waiting until it is %s...", l.id(), st, settle)
-			if err := env.waitStatus(ctx, l, settle, dbSettlePoll); err != nil {
+			// Someone else may bring the instance to the target state
+			// meanwhile (a stop sent by hand): that is success too.
+			if err := env.waitStatus(ctx, l, settle, dbSettlePoll, want); err != nil {
 				return platform.Change{}, err
+			}
+			if l.status() == want {
+				return platform.Change{Action: platform.Unchanged, Detail: want + " (was " + st + ")"}, nil
 			}
 			return env.power(ctx, l, st)
 		}

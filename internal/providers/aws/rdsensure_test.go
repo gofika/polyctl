@@ -79,6 +79,23 @@ func TestRDSEnsureStoppedWaitsForStarting(t *testing.T) {
 	}
 }
 
+// An instance that someone else stops while ensure waits for it to
+// become available is already as asked: nothing is sent.
+func TestRDSEnsureStoppedMeanwhile(t *testing.T) {
+	h, _ := newRDSHarness(t, app.Flags{}, nil)
+	d := h.addDB("ap-east-1", "db-a", dbModifying)
+	d.steps = []func(*rdstypes.DBInstance){status(dbModifying), status(dbModifying), status(dbStopping), status(dbStopped)}
+	if err := h.run("rds", "instance", "ensure", "db-a", "--state", "stopped"); err != nil {
+		t.Fatalf("ensure: %v\n%s", err, h.stderr.String())
+	}
+	if c := h.report().Changes[0]; c.Action != platform.Unchanged || c.Detail != "stopped (was modifying)" {
+		t.Errorf("change = %+v", c)
+	}
+	if n := h.rds().count("StopDBInstance"); n != 0 {
+		t.Errorf("stops = %d", n)
+	}
+}
+
 func TestRDSEnsureDryRun(t *testing.T) {
 	h, _ := newRDSHarness(t, app.Flags{DryRun: true}, nil)
 	h.addDB("ap-east-1", "db-a", dbAvailable)
