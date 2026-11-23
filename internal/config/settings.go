@@ -58,7 +58,8 @@ func (c *Config) NSTimeout() time.Duration {
 // FindSettings configures `polyctl find`.
 type FindSettings struct {
 	// Concurrency is how many accounts --refresh syncs at the same time
-	// (and how many regions of one account). Zero: DefaultFindConcurrency.
+	// (and how many matches --detail looks up at the same time). Zero:
+	// DefaultFindConcurrency.
 	Concurrency int `yaml:"concurrency,omitempty"`
 	// DetailTimeout bounds the live lookup of one match of --detail.
 	// Zero: DefaultFindDetailTimeout.
