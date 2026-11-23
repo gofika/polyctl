@@ -86,7 +86,10 @@ func (e *WaitTimeoutError) Error() string {
 }
 
 // WaitUntil polls until poll reports WaitDone, WaitFailed or an error, the
-// timeout passes, or ctx ends. The first poll happens at once.
+// timeout passes, or ctx ends. The first poll happens at once. With a
+// timeout, the context handed to poll carries it as a deadline too, so a
+// poll that hangs (an API call that does not answer) cannot stretch the
+// wait beyond it.
 func WaitUntil(ctx context.Context, o WaitOptions, poll Poll) error {
 	clock := o.Clock
 	if clock == nil {
@@ -98,10 +101,22 @@ func WaitUntil(ctx context.Context, o WaitOptions, poll Poll) error {
 	}
 	start := clock.Now()
 	last := ""
+	wctx := ctx
+	if o.Timeout > 0 {
+		var cancel context.CancelFunc
+		wctx, cancel = context.WithTimeout(ctx, o.Timeout)
+		defer cancel()
+	}
+	timedOut := func(err error) error {
+		if wctx.Err() != nil && ctx.Err() == nil {
+			return &WaitTimeoutError{Resource: o.Resource, Want: o.Want, LastStatus: last, Timeout: o.Timeout}
+		}
+		return err
+	}
 	for {
-		state, status, err := poll(ctx)
+		state, status, err := poll(wctx)
 		if err != nil {
-			return err
+			return timedOut(err)
 		}
 		if status != "" {
 			last = status
@@ -126,8 +141,8 @@ func WaitUntil(ctx context.Context, o WaitOptions, poll Poll) error {
 				next = left
 			}
 		}
-		if err := clock.Sleep(ctx, next); err != nil {
-			return err
+		if err := clock.Sleep(wctx, next); err != nil {
+			return timedOut(err)
 		}
 	}
 }

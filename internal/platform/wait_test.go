@@ -69,6 +69,31 @@ func TestWaitUntil(t *testing.T) {
 	}
 }
 
+// A poll that never answers cannot stretch a wait past its timeout: the
+// poll's context carries the deadline, and running into it is a timeout,
+// not the poll's own error.
+func TestWaitUntilBoundsAHangingPoll(t *testing.T) {
+	err := WaitUntil(t.Context(), WaitOptions{Resource: "instance/a", Want: "Running", Timeout: 20 * time.Millisecond, Clock: newFakeClock()},
+		func(ctx context.Context) (WaitState, string, error) {
+			<-ctx.Done()
+			return 0, "", ctx.Err()
+		})
+	var te *WaitTimeoutError
+	if !errors.As(err, &te) {
+		t.Fatalf("hanging poll = %v, want a timeout", err)
+	}
+	// The caller's own cancellation stays a cancellation.
+	ctx, cancel := context.WithCancel(t.Context())
+	err = WaitUntil(ctx, WaitOptions{Timeout: time.Hour, Clock: newFakeClock()},
+		func(context.Context) (WaitState, string, error) {
+			cancel()
+			return 0, "", context.Canceled
+		})
+	if !errors.Is(err, context.Canceled) || errors.As(err, &te) {
+		t.Errorf("cancelled = %v", err)
+	}
+}
+
 func TestStatusWaitToleratesTransientStopped(t *testing.T) {
 	t0 := time.Unix(0, 0)
 	w := &StatusWait{Target: "Running", Transient: map[string]time.Duration{"Stopped": 30 * time.Second}}
