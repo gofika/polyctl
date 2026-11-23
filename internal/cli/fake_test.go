@@ -173,9 +173,14 @@ type fakeClient struct {
 	syncErrs map[platform.ResourceType]error
 	// failCreate fails CreateRecord for this record name with errFakeCreate.
 	failCreate string
+	// failDelete fails DeleteRecord for this record id with errFakeDelete.
+	failDelete string
 }
 
-var errFakeCreate = errors.New("fake create failure")
+var (
+	errFakeCreate = errors.New("fake create failure")
+	errFakeDelete = errors.New("fake delete failure")
+)
 
 func (c *fakeClient) record(call string) {
 	c.mu.Lock()
@@ -274,6 +279,9 @@ func (c *fakeClient) DeleteRecord(ctx context.Context, zoneID, recordID string) 
 	c.record("DeleteRecord:" + recordID)
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.failDelete != "" && recordID == c.failDelete {
+		return errFakeDelete
+	}
 	recs := c.records[zoneID]
 	for i, x := range recs {
 		if x.ID == recordID {

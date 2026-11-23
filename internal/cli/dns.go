@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -261,22 +262,52 @@ func newDNSWriteCmd(rt *app.Runtime, add bool, cmd *cobra.Command) *cobra.Comman
 }
 
 func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
-	var typ, name, value, id string
+	var types []string
+	var name, value, id string
+	var all, keepBound bool
 	cmd := &cobra.Command{
 		Use:   "delete <domain>",
-		Short: "Delete DNS records matching --name/--type (and optionally --value)",
+		Short: "Delete DNS records matching --name/--type (and optionally --value), or all of them with --all",
 		Long: "Delete DNS records matching --name/--type (and optionally --value), or the\n" +
 			"one record with --id. A single match is deleted at once. Several matches are\n" +
 			"listed on stderr and, in the interactive flow, confirmed first (default no);\n" +
 			"--yes skips the question. In the non-interactive flow (no terminal,\n" +
 			"--non-interactive or POLYCTL_NON_INTERACTIVE=1) nothing is asked and stdin is\n" +
 			"not read: --yes is required to delete several records, and without it the\n" +
-			"command is a usage error (exit code 2) and nothing is deleted.",
+			"command is a usage error (exit code 2) and nothing is deleted.\n" +
+			"\n" +
+			"With --all, every record of the zone is deleted (it cannot be combined with\n" +
+			"--name, --value or --id); --type then limits the deletion to the given types\n" +
+			"across the whole zone (repeatable or comma-separated). The SOA and the NS\n" +
+			"records of the zone apex are never deleted; delegations (NS records of names\n" +
+			"below the apex) are. A record owned by another service of the platform (the\n" +
+			"CNAME of an R2 custom domain on Cloudflare) is unbound there, which removes\n" +
+			"it; --keep-bound leaves such records alone. The interactive flow shows a\n" +
+			"summary and asks first (default no); the non-interactive flow needs --yes.\n" +
+			"A record that cannot be deleted does not stop the others: it is reported as\n" +
+			"failed and the command exits with code 1 at the end. The zone is read live:\n" +
+			"--offline is refused (exit code 6).",
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: completeDomains(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if all {
+				if name != "" || value != "" || id != "" {
+					return usageErr("--all deletes every record of the zone; it cannot be combined with --name, --value or --id")
+				}
+				return runDNSDeleteAll(cmd.Context(), rt, args[0], types, keepBound)
+			}
+			if keepBound {
+				return usageErr("--keep-bound only applies with --all")
+			}
+			if len(types) > 1 || (len(types) == 1 && strings.Contains(types[0], ",")) {
+				return usageErr("--type takes one record type without --all")
+			}
+			typ := ""
+			if len(types) == 1 {
+				typ = types[0]
+			}
 			if id == "" && typ == "" {
-				return usageErr("--type (with --name) or --id is required")
+				return usageErr("--type (with --name), --id or --all is required")
 			}
 			t, err := rt.ResolveDomain(cmd.Context(), args[0], platform.ResZone)
 			if err != nil {
@@ -385,11 +416,128 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 			return rt.Render(dnsResult{Target: t, Records: matches}, func() output.Grid { return output.Grid{} })
 		},
 	}
-	cmd.Flags().StringVar(&typ, "type", "", "record type")
+	cmd.Flags().StringArrayVar(&types, "type", nil, "record type; with --all, the types to delete across the zone (repeatable or comma-separated; default: every type)")
 	cmd.Flags().StringVar(&name, "name", "", "record name relative to the zone (www, @); default: <domain> itself")
 	cmd.Flags().StringVar(&value, "value", "", "only delete records with this value")
 	cmd.Flags().StringVar(&id, "id", "", "delete the record with this platform id")
+	cmd.Flags().BoolVar(&all, "all", false, "delete every record of the zone (except its SOA and apex NS records)")
+	cmd.Flags().BoolVar(&keepBound, "keep-bound", false, "with --all, leave records owned by another service (R2 custom domains) alone instead of unbinding them")
 	return cmd
+}
+
+// runDNSDeleteAll is `dns delete <domain> --all`: empty the zone, or
+// remove every record of the given types from it.
+func runDNSDeleteAll(ctx context.Context, rt *app.Runtime, domain string, rawTypes []string, keepBound bool) error {
+	types, err := platform.ParseRecordTypes(rawTypes)
+	if err != nil {
+		return usageErr("%v", strings.TrimPrefix(err.Error(), platform.ErrInvalidInput.Error()+": "))
+	}
+	dryRun := rt.DryRun()
+	// Refused before anything is read: the non-interactive flow cannot
+	// confirm, and this is no command to run unconfirmed.
+	if !dryRun && !rt.Flags.Yes && !rt.Interactive() {
+		return usageErr("dns delete --all needs --yes in the non-interactive flow (nothing was deleted)")
+	}
+	if rt.Flags.Offline {
+		return fmt.Errorf("%w: dns delete --all reads the zone live", app.ErrOffline)
+	}
+	t, err := rt.ResolveDomain(ctx, domain, platform.ResZone)
+	if err != nil {
+		return err
+	}
+	dns, err := rt.OpenDNS(ctx, t)
+	if err != nil {
+		return err
+	}
+	recs, err := dns.ListRecords(ctx, t.ResourceID)
+	if err != nil {
+		return err
+	}
+	plan := platform.PlanDNSDeleteAll(platform.DNSDeleteAll{
+		Platform:  t.Platform,
+		Zone:      platform.Zone{ID: t.ResourceID, Name: t.Domain},
+		Records:   recs,
+		Types:     types,
+		KeepBound: keepBound,
+		DNS:       dns,
+		Removed: func(ctx context.Context, id string) {
+			forgetRecord(ctx, rt, t, id)
+		},
+	})
+	rt.Infof("zone %s via %s/%s", t.Domain, t.Platform, t.Profile)
+	n := plan.Deletes()
+	if n == 0 {
+		rt.Infof("no records to clean up")
+	} else if !dryRun && !rt.Flags.Yes {
+		printDeleteAllSummary(rt, t, plan.Items, n)
+		ok, err := rt.Confirm(ctx, fmt.Sprintf("delete %d records in zone %s", n, t.Domain), false)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nothingToDo("cancelled, no record was deleted")
+		}
+	}
+	changes, runErr := plan.Run(ctx, dryRun)
+	sum := platform.Summarize(changes)
+	rep := platform.Report{Target: t.ReportTarget(), DryRun: dryRun, Changes: changes, Summary: &sum}
+	if err := rt.RenderReport(rep); err != nil && runErr == nil {
+		runErr = err
+	}
+	prefix := ""
+	if dryRun {
+		prefix = "dry run: would have "
+	}
+	if n > 0 || sum.Failed > 0 {
+		rt.Infof("%sdeleted %d, kept %d, failed %d", prefix, sum.Deleted, sum.Skipped, sum.Failed)
+	}
+	var partial *platform.PartialError
+	if runErr != nil && !errors.As(runErr, &partial) {
+		return runErr
+	}
+	if dryRun {
+		return nil
+	}
+	return platform.FailedChanges(changes)
+}
+
+// printDeleteAllSummary shows on stderr what dns delete --all is about to
+// do, before its confirmation.
+func printDeleteAllSummary(rt *app.Runtime, t *app.Target, items []platform.DeleteAllItem, n int) {
+	pick := func(d ...platform.Disposition) []platform.DeleteAllItem {
+		var out []platform.DeleteAllItem
+		for _, it := range items {
+			for _, x := range d {
+				if it.Disposition == x {
+					out = append(out, it)
+				}
+			}
+		}
+		return out
+	}
+	deleting := pick(platform.DispNormal, platform.DispBound)
+	rt.Infof("about to delete %d DNS records of %s (%s/%s); this cannot be undone:", n, t.Domain, t.Platform, t.Profile)
+	rt.Infof("  %s", platform.TypeCounts(deleting, func(typ string) string {
+		bound := 0
+		for _, it := range deleting {
+			if it.Disposition == platform.DispBound && strings.EqualFold(it.Record.Type, typ) {
+				bound++
+			}
+		}
+		if bound == 0 {
+			return ""
+		}
+		return fmt.Sprintf("%d of them unbound from their owner first, which removes them", bound)
+	}))
+	if sys := pick(platform.DispSystem); len(sys) > 0 {
+		rt.Infof("kept (system records): %s", platform.TypeCounts(sys, nil))
+	}
+	if kept := pick(platform.DispKept); len(kept) > 0 {
+		rt.Infof("kept (--keep-bound): %s", platform.TypeCounts(kept, nil))
+	}
+	if noID := pick(platform.DispNoID); len(noID) > 0 {
+		rt.Infof("cannot be deleted (no id): %s", platform.TypeCounts(noID, nil))
+	}
 }
 
 // newDNSEnsureCmd is `dns ensure`: converge a set of records of one zone.

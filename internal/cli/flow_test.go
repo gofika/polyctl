@@ -297,6 +297,19 @@ func flowCases() []flowCase {
 			complete: append(append([]string{}, dnsDelete...), "-y"), completed: bothDeleted,
 		},
 		{
+			name: "dns delete --all", setup: setupTwoRecords, args: []string{"dns", "delete", flowZone, "--all"},
+			typed: "y\n",
+			interactive: func(t *testing.T, dir string, r flowResult, p *scriptedPicker) {
+				if fc := client("a"); r.err != nil || fc.count("DeleteRecord") != 2 || !strings.Contains(r.stderr, "about to delete 2 DNS records of "+flowZone) ||
+					!strings.Contains(r.stderr, "A 2") || !strings.Contains(r.stderr, "delete 2 records in zone "+flowZone+" (y/N)") {
+					t.Errorf("dns delete --all confirmed: %v, calls %v, stderr %q", r.err, fc.calls, r.stderr)
+				}
+			},
+			piped: "y\n", wantCode: ExitUsage, wantMsg: []string{"dns delete --all needs --yes"},
+			mutated:  recordsDeleted,
+			complete: []string{"dns", "delete", flowZone, "--all", "--yes"}, completed: bothDeleted,
+		},
+		{
 			// Refused before the account is opened: needs neither one nor
 			// the network. The interactive rows are in the aliyun package.
 			name: "aliyun ecs stop: confirmation", setup: setupOne, args: []string{"aliyun", "ecs", "instance", "stop", "i-1"},
