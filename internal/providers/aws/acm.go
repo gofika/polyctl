@@ -26,10 +26,18 @@ type acmAPI interface {
 	DescribeCertificate(ctx context.Context, in *acm.DescribeCertificateInput, optFns ...func(*acm.Options)) (*acm.DescribeCertificateOutput, error)
 	RequestCertificate(ctx context.Context, in *acm.RequestCertificateInput, optFns ...func(*acm.Options)) (*acm.RequestCertificateOutput, error)
 	ImportCertificate(ctx context.Context, in *acm.ImportCertificateInput, optFns ...func(*acm.Options)) (*acm.ImportCertificateOutput, error)
+	DeleteCertificate(ctx context.Context, in *acm.DeleteCertificateInput, optFns ...func(*acm.Options)) (*acm.DeleteCertificateOutput, error)
 }
 
+// acmMaxAttempts is the number of attempts of an ACM call: the SDK's
+// default of 3 is raised so that a throttled import or describe of a
+// scheduled run is retried (with the SDK's backoff) a little longer.
+const acmMaxAttempts = 5
+
 // newACM creates the ACM client of a region; tests replace it with a fake.
-var newACM = func(cfg awssdk.Config) acmAPI { return acm.NewFromConfig(cfg) }
+var newACM = func(cfg awssdk.Config) acmAPI {
+	return acm.NewFromConfig(cfg, func(o *acm.Options) { o.RetryMaxAttempts = acmMaxAttempts })
+}
 
 var _ platform.CertificateService = (*client)(nil)
 

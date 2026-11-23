@@ -303,6 +303,25 @@ func (f *fakeACM) ImportCertificate(_ context.Context, in *acm.ImportCertificate
 	return &acm.ImportCertificateOutput{CertificateArn: awssdk.String(c.arn)}, nil
 }
 
+func (f *fakeACM) DeleteCertificate(_ context.Context, in *acm.DeleteCertificateInput, _ ...func(*acm.Options)) (*acm.DeleteCertificateOutput, error) {
+	f.shared.mu.Lock()
+	defer f.shared.mu.Unlock()
+	if err := f.call("DeleteCertificate"); err != nil {
+		return nil, err
+	}
+	s := f.state()
+	for i, c := range s.certs {
+		if c.arn == awssdk.ToString(in.CertificateArn) && c.region == f.region {
+			if len(c.inUseBy) > 0 {
+				return nil, &acmtypes.ResourceInUseException{Message: awssdk.String("Certificate " + c.arn + " in account " + fakeAccountID + " is in use.")}
+			}
+			s.certs = append(s.certs[:i], s.certs[i+1:]...)
+			return &acm.DeleteCertificateOutput{}, nil
+		}
+	}
+	return nil, notFoundErr(awssdk.ToString(in.CertificateArn))
+}
+
 // addCert puts a certificate into the fake ACM and returns it.
 func (h *awsHarness) addCert(c *fakeCert) *fakeCert {
 	h.ec2.mu.Lock()
@@ -344,7 +363,7 @@ func (h *awsHarness) acmCalls() []string {
 func (h *awsHarness) acmWrites() []string {
 	var out []string
 	for _, c := range h.acmCalls() {
-		if c == "RequestCertificate" || c == "ImportCertificate" {
+		if c == "RequestCertificate" || c == "ImportCertificate" || c == "DeleteCertificate" {
 			out = append(out, c)
 		}
 	}
