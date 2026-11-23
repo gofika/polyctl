@@ -58,6 +58,13 @@ type fakeECS struct {
 	authorizeNotFound int
 	nextID            int
 	writes            []string
+
+	// The instance lifecycle (see newFakeCompute).
+	seq            map[string][]string
+	tokens         map[string]string
+	initializing   map[string]int
+	disks          map[string]int
+	associateFails int
 }
 
 type fakeGroup struct {

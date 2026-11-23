@@ -27,6 +27,12 @@ type Instance struct {
 	MemoryMB     int    `json:"memory_mb,omitempty" yaml:"memory_mb,omitempty"`
 	ChargeType   string `json:"charge_type,omitempty" yaml:"charge_type,omitempty"`
 	VpcID        string `json:"vpc_id,omitempty" yaml:"vpc_id,omitempty"`
+	VSwitchID    string `json:"vswitch_id,omitempty" yaml:"vswitch_id,omitempty"`
+	ImageID      string `json:"image_id,omitempty" yaml:"image_id,omitempty"`
+	HostName     string `json:"host_name,omitempty" yaml:"host_name,omitempty"`
+	KeyPair      string `json:"key_pair,omitempty" yaml:"key_pair,omitempty"`
+	// DeletionProtection refuses every DeleteInstance, forced or not.
+	DeletionProtection bool `json:"deletion_protection,omitempty" yaml:"deletion_protection,omitempty"`
 	// EIP and EIPAllocationID are the elastic IP address bound to the
 	// instance, if any.
 	EIP             string `json:"eip,omitempty" yaml:"eip,omitempty"`
@@ -51,7 +57,13 @@ func instanceFromECS(i ecs.Instance) Instance {
 		MemoryMB:     i.Memory,
 		ChargeType:   i.InstanceChargeType,
 		VpcID:        i.VpcAttributes.VpcId,
-		EIP:          i.EipAddress.IpAddress,
+		VSwitchID:    i.VpcAttributes.VSwitchId,
+		ImageID:      i.ImageId,
+		HostName:     i.HostName,
+		KeyPair:      i.KeyPairName,
+
+		DeletionProtection: i.DeletionProtection,
+		EIP:                i.EipAddress.IpAddress,
 		// An address without an allocation id is no EIP of the account.
 		EIPAllocationID: i.EipAddress.AllocationId,
 	}
@@ -64,18 +76,8 @@ func instanceFromECS(i ecs.Instance) Instance {
 	if out.CPU == 0 {
 		out.CPU = i.CPU
 	}
-	switch {
-	case len(i.VpcAttributes.PrivateIpAddress.IpAddress) > 0:
-		out.PrivateIP = i.VpcAttributes.PrivateIpAddress.IpAddress[0]
-	case len(i.InnerIpAddress.IpAddress) > 0:
-		out.PrivateIP = i.InnerIpAddress.IpAddress[0]
-	}
-	switch {
-	case i.EipAddress.IpAddress != "":
-		out.PublicIP = i.EipAddress.IpAddress
-	case len(i.PublicIpAddress.IpAddress) > 0:
-		out.PublicIP = i.PublicIpAddress.IpAddress[0]
-	}
+	out.PrivateIP = privateIP(i)
+	out.PublicIP = publicIP(i)
 	if len(i.Tags.Tag) > 0 {
 		out.Tags = map[string]string{}
 		for _, t := range i.Tags.Tag {
@@ -89,6 +91,46 @@ func instanceFromECS(i ecs.Instance) Instance {
 		}
 	}
 	return out
+}
+
+// publicIP is the public address of an instance: its own public address
+// (an instance created with outbound bandwidth), else its EIP. A VPC
+// instance created with InternetMaxBandwidthOut=0 has an empty
+// PublicIpAddress list, and its EipAddress is an object of empty strings
+// until an EIP is bound.
+func publicIP(i ecs.Instance) string {
+	for _, ip := range i.PublicIpAddress.IpAddress {
+		if ip != "" {
+			return ip
+		}
+	}
+	return i.EipAddress.IpAddress
+}
+
+// privateIP is the private address of an instance: the classic network
+// address, else the primary address of its primary network interface (VPC
+// instances), else the first VPC private address (the same value).
+func privateIP(i ecs.Instance) string {
+	for _, ip := range i.InnerIpAddress.IpAddress {
+		if ip != "" {
+			return ip
+		}
+	}
+	nics := i.NetworkInterfaces.NetworkInterface
+	for _, n := range nics {
+		if n.Type == "Primary" && n.PrimaryIpAddress != "" {
+			return n.PrimaryIpAddress
+		}
+	}
+	if len(nics) > 0 && nics[0].PrimaryIpAddress != "" {
+		return nics[0].PrimaryIpAddress
+	}
+	for _, ip := range i.VpcAttributes.PrivateIpAddress.IpAddress {
+		if ip != "" {
+			return ip
+		}
+	}
+	return ""
 }
 
 func instanceResource(in Instance) platform.Resource {
