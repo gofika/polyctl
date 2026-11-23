@@ -711,6 +711,9 @@ func (rt *Runtime) Open(ctx context.Context, name string, id platform.ID) (platf
 	if pa, ok := c.(platform.PeerAware); ok {
 		pa.SetPeers(func(ctx context.Context) ([]platform.Peer, error) { return rt.peers(ctx, name, id) })
 	}
+	if sa, ok := c.(platform.SettingsAware); ok {
+		sa.SetSettings(func(key string) (string, error) { return rt.Setting(name, id, key, "") })
+	}
 	return c, p, nil
 }
 

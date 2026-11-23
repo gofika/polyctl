@@ -278,6 +278,15 @@ type Client interface {
 	Sync(ctx context.Context, rt ResourceType) ([]Resource, error)
 }
 
+// SettingsAware is implemented by clients whose requests depend on
+// settings of config.yaml (an endpoint override, a region mapping). The
+// runtime hands them a function that resolves a setting of their profile
+// the way every setting is resolved: profiles.<profile>.defaults.<platform>.<key>,
+// else defaults.<platform>.<key>, else "".
+type SettingsAware interface {
+	SetSettings(setting func(key string) (string, error))
+}
+
 // Resource is a platform object as stored in the inventory.
 type Resource struct {
 	Type ResourceType
