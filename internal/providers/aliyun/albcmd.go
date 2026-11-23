@@ -826,8 +826,8 @@ func albLBDeleteCmd(rt *app.Runtime) *cobra.Command {
 a confirmation is asked (default no; --yes skips it, the non-interactive flow
 needs --yes, exit code 2). ALB deletes the listeners with the load balancer,
 so a load balancer that still has listeners needs --force (exit code 2
-without it). Deletion protection is exit code 1: switch it off in the
-console, polyctl never does. Server groups are kept, and the EIPs are
+without it). Deletion protection is exit code 1: switch it off first with
+update --deletion-protection=false (delete never does). Server groups are kept, and the EIPs are
 unbound but not released (they stay billed; a note names them). --wait
 waits until the load balancer is gone, bounded by --timeout.`,
 		Example: "  polyctl aliyun alb load-balancer delete lb-example-com --force --yes",
@@ -857,7 +857,7 @@ waits until the load balancer is gone, bounded by --timeout.`,
 				rt.Infof("  listener   %s %s:%d", l.ID, l.Protocol, l.Port)
 			}
 			if lb.DeletionProtection {
-				return fmt.Errorf("load balancer %s has deletion protection on: switch it off in the console first (polyctl never does)", lb.ID)
+				return fmt.Errorf("load balancer %s has deletion protection on: switch it off first with `polyctl aliyun alb load-balancer update %s --deletion-protection=false` (delete never does)", lb.ID, lb.ID)
 			}
 			if len(ls) > 0 && !force {
 				return app.UsageErrf("load balancer %s has %d listener(s), which are deleted with it: pass --force to delete them too", lb.ID, len(ls))

@@ -256,7 +256,7 @@ func (a *albClient) deleteLoadBalancer(ctx context.Context, id string) error {
 	if _, err := a.cl.DeleteLoadBalancer(req); err != nil {
 		err = wrapErr("alb DeleteLoadBalancer "+id, err)
 		if platform.HasErrorCode(err, errALBDeletionProtection) {
-			return fmt.Errorf("%w (deletion protection is on: switch it off in the console first; polyctl never does)", err)
+			return fmt.Errorf("%w (deletion protection is on: switch it off first with load-balancer update --deletion-protection=false; delete never does)", err)
 		}
 		return err
 	}
