@@ -51,7 +51,7 @@ func TestComputeErrors(t *testing.T) {
 	}
 	// A machine type the zone lacks: not found, at Get (404) and at
 	// SetMachineType (400 invalid) alike.
-	if _, err := c.machineType(ctx, "us-central1-a", "n9-huge"); !errors.Is(err, platform.ErrNotFound) || !strings.Contains(err.Error(), "machine-types list") {
+	if _, err := c.machineType(ctx, "us-central1-a", "n9-huge"); !errors.Is(err, platform.ErrInvalidInput) || !strings.Contains(err.Error(), "machine-types list") {
 		t.Errorf("machine type = %v", err)
 	}
 	f.addInstance("proj", "us-central1-a", "web-1", "10.128.0.5", "")

@@ -294,7 +294,7 @@ func TestInstanceCreateValidation(t *testing.T) {
 		{[]string{"web-1", "--machine-type", "e2-small", "--zone", "us-central1-a", "--ssh-key", testPublicKey(t, "laptop")}, "usage", "user:"},
 		{[]string{"web-1", "--machine-type", "e2-small", "--zone", "us-central1-a", "--image", "debian-12"}, "usage", "--image"},
 		{[]string{"web-1", "--machine-type", "e2-small", "--zone", "us-central1-a", "--wait", "--no-wait"}, "usage", "contradict"},
-		{[]string{"web-1", "--machine-type", "n9-huge", "--zone", "us-central1-a"}, "notfound", "does not exist in zone"},
+		{[]string{"web-1", "--machine-type", "n9-huge", "--zone", "us-central1-a"}, "usage", "does not exist in zone"},
 		{[]string{"web-1", "--machine-type", "e2-small", "--zone", "us-central1-a", "--os", "debian", "--os-version", "99"}, "notfound", "no current x86_64 image"},
 		{[]string{"web-1", "--machine-type", "e2-small", "--zone", "us-central1-a", "--image", "projects/debian-cloud/global/images/nope"}, "notfound", "nope"},
 		{[]string{"web-1", "--machine-type", "e2-small", "--zone", "us-central1-a", "--subnet", "missing"}, "notfound", "subnetwork missing"},
@@ -541,8 +541,8 @@ func TestInstanceResize(t *testing.T) {
 	if r := rows(h.report()); !slices.Equal(r, []string{"instance/web-1/machine-type unchanged e2-standard-4"}) {
 		t.Errorf("same type rows = %v", r)
 	}
-	// A type the zone lacks: exit code 4, nothing written.
-	if err := h.run("compute", "instance", "resize", "web-1", "--machine-type", "n9-huge", "--yes"); exitClass(err) != "notfound" || len(h.gce.writes()) != 0 {
+	// A type the zone lacks: exit code 2, nothing written.
+	if err := h.run("compute", "instance", "resize", "web-1", "--machine-type", "n9-huge", "--yes"); exitClass(err) != "usage" || len(h.gce.writes()) != 0 {
 		t.Errorf("missing type = %v, writes %v", err, h.gce.writes())
 	}
 	if err := h.run("compute", "instance", "resize", "web-1"); exitClass(err) != "usage" {

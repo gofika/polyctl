@@ -55,7 +55,7 @@ func computeResizeCmd(rt *app.Runtime) *cobra.Command {
 		Short: "Change the machine type of a Compute Engine instance: stop, change, start",
 		Long: `Change the machine type of a Compute Engine instance, found like get finds it.
 The new type is checked first: one that does not exist in the instance's
-zone is exit code 4, and nothing is written. The same type is unchanged.
+zone is exit code 2, and nothing is written. The same type is unchanged.
 
 A RUNNING instance is stopped after a confirmation (default no; --yes skips
 it, and the non-interactive flow needs --yes). Before it is stopped, its

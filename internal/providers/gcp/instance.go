@@ -252,13 +252,15 @@ func (c *client) setIPForward(ctx context.Context, zone string, in *compute.Inst
 	}
 }
 
-// machineType reads a machine type of a zone; a missing one is ErrNotFound.
+// machineType reads a machine type of a zone. A missing one is
+// ErrInvalidInput (exit code 2), as an unknown instance type is on the other
+// platforms: the caller named a type that cannot be used there.
 func (c *client) machineType(ctx context.Context, zone, typ string) (*compute.MachineType, error) {
 	mt, err := c.compute.MachineTypes.Get(c.project, zone, typ).Context(ctx).Do()
 	if err != nil {
 		err = computeErr(err)
 		if errors.Is(err, platform.ErrNotFound) {
-			return nil, fmt.Errorf("%w: machine type %s does not exist in zone %s of project %s (the equivalent of `gcloud compute machine-types list --zones %s`)", platform.ErrNotFound, typ, zone, c.project, zone)
+			return nil, fmt.Errorf("%w: machine type %s does not exist in zone %s of project %s (the equivalent of `gcloud compute machine-types list --zones %s`)", platform.ErrInvalidInput, typ, zone, c.project, zone)
 		}
 		return nil, err
 	}

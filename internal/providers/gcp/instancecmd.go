@@ -619,7 +619,7 @@ with a lower-case letter (exit code 2 otherwise).
 
 --machine-type and --zone default to defaults.gcp.machine_type and zone in
 config.yaml; neither is a usage error. The machine type must exist in the
-zone (exit code 4). The image is --image (projects/<p>/global/images/<name>
+zone (exit code 2). The image is --image (projects/<p>/global/images/<name>
 or .../family/<family>), or the latest x86_64 public image of --os (debian
 by default; ubuntu picks the newest LTS) and --os-version; nothing found is
 exit code 4. The boot disk ({name}-boot, --disk-type, pd-balanced by
