@@ -38,6 +38,9 @@ type fakeInstance struct {
 	protected                                bool
 	next                                     []string
 	tags                                     []ec2types.Tag
+	vpc                                      string   // "" is vpc-0abc
+	sgs                                      []string // nil is [sg-0aaa]
+	nics                                     int      // network interfaces; 0 is 1
 }
 
 // fakeInstances is the instance part of the shared fake state.
@@ -120,9 +123,14 @@ func (in *fakeInstance) ec2() ec2types.Instance {
 		State:        &ec2types.InstanceState{Name: ec2types.InstanceStateName(in.state)},
 		Placement:    &ec2types.Placement{AvailabilityZone: awssdk.String(in.az)},
 		Architecture: ec2types.ArchitectureValues(in.arch), RootDeviceName: awssdk.String(in.rootDevice),
-		VpcId: awssdk.String("vpc-0abc"), SubnetId: awssdk.String("subnet-0def"),
-		SecurityGroups: []ec2types.GroupIdentifier{{GroupId: awssdk.String("sg-0aaa")}},
-		LaunchTime:     awssdk.Time(time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)),
+		VpcId: awssdk.String(in.vpcID()), SubnetId: awssdk.String("subnet-0def"),
+		LaunchTime: awssdk.Time(time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)),
+	}
+	for _, g := range in.groupIDs() {
+		out.SecurityGroups = append(out.SecurityGroups, ec2types.GroupIdentifier{GroupId: awssdk.String(g)})
+	}
+	for i := 0; i < max(in.nics, 1); i++ {
+		out.NetworkInterfaces = append(out.NetworkInterfaces, ec2types.InstanceNetworkInterface{NetworkInterfaceId: awssdk.String(fmt.Sprintf("eni-0%d", i))})
 	}
 	if in.platform == "windows" {
 		out.Platform = ec2types.PlatformValuesWindows
@@ -144,6 +152,22 @@ func (in *fakeInstance) ec2() ec2types.Instance {
 			DeviceName: awssdk.String(v.device), Ebs: &ec2types.EbsInstanceBlockDevice{VolumeId: awssdk.String(v.id), DeleteOnTermination: awssdk.Bool(v.deleteOnTerm)}})
 	}
 	return out
+}
+
+// vpcID is the VPC of a fake instance.
+func (in *fakeInstance) vpcID() string {
+	if in.vpc == "" {
+		return "vpc-0abc"
+	}
+	return in.vpc
+}
+
+// groupIDs are the security groups of a fake instance.
+func (in *fakeInstance) groupIDs() []string {
+	if in.sgs == nil {
+		return []string{"sg-0aaa"}
+	}
+	return in.sgs
 }
 
 func matchPattern(pattern, s string) bool {
@@ -193,6 +217,8 @@ func (f *fakeEC2) DescribeInstances(_ context.Context, in *ec2.DescribeInstances
 					hit = hit || v == inst.state
 				case "instance-type":
 					hit = hit || v == inst.typ
+				case "instance.group-id":
+					hit = hit || containsStr(inst.groupIDs(), v)
 				}
 			}
 			ok = ok && hit
@@ -336,6 +362,9 @@ func (f *fakeEC2) RebootInstances(_ context.Context, in *ec2.RebootInstancesInpu
 
 func (f *fakeEC2) ModifyInstanceAttribute(_ context.Context, in *ec2.ModifyInstanceAttributeInput, _ ...func(*ec2.Options)) (*ec2.ModifyInstanceAttributeOutput, error) {
 	err := f.write("ModifyInstanceAttribute", awssdk.ToString(in.InstanceId), func(fi *fakeInstances, inst *fakeInstance) error {
+		if in.Groups != nil {
+			return fi.setGroups(&f.shared.sg, f.region, inst, in.Groups)
+		}
 		if inst.state != stateStopped {
 			return &fakeAPIError{"IncorrectInstanceState", "is not in the 'stopped' state"}
 		}
@@ -537,7 +566,8 @@ func (h *awsHarness) writes() []string {
 	for _, c := range h.ec2.calls() {
 		_, call, _ := strings.Cut(c, ":")
 		switch call {
-		case "RunInstances", "TerminateInstances", "RebootInstances", "StartInstances", "StopInstances", "ModifyInstanceAttribute", "ImportKeyPair":
+		case "RunInstances", "TerminateInstances", "RebootInstances", "StartInstances", "StopInstances", "ModifyInstanceAttribute", "ImportKeyPair",
+			"CreateSecurityGroup", "DeleteSecurityGroup", "AuthorizeSecurityGroupIngress", "RevokeSecurityGroupIngress":
 			out = append(out, call)
 		}
 	}

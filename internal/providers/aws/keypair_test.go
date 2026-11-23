@@ -130,6 +130,7 @@ type fakeEC2s struct {
 	views   []*fakeEC2
 	descErr error // DescribeKeyPairs fails with it when set
 	inst    fakeInstances
+	sg      fakeSGs
 }
 
 func (s *fakeEC2s) calls() []string {
