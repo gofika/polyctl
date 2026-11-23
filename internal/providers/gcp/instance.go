@@ -10,6 +10,7 @@ import (
 
 	"google.golang.org/api/compute/v1"
 
+	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/platform"
 )
 
@@ -55,16 +56,41 @@ func regionOf(zone string) string {
 // instance stops in TERMINATED; STOPPED is listed by the API too.
 func stopped(status string) bool { return status == statusTerminated || status == statusStopped }
 
+// opWaitLimit bounds the wait for an operation when the caller's context
+// has no deadline of its own (address reservations, in-place updates):
+// every Operations.Wait call returns after about two minutes, so an
+// operation that never finishes would otherwise be polled forever.
+var opWaitLimit = app.DefaultWaitTimeout
+
 // waitOp polls an operation with wait until it is DONE and returns its
-// error. ctx bounds the wait.
-func waitOp(ctx context.Context, op *compute.Operation, wait func(name string) (*compute.Operation, error)) error {
-	for op.Status != "DONE" {
-		if err := ctx.Err(); err != nil {
-			return err
+// error. ctx bounds the wait, and opWaitLimit when ctx has no deadline.
+func waitOp(ctx context.Context, op *compute.Operation, wait func(ctx context.Context, name string) (*compute.Operation, error)) error {
+	if op.Status == "DONE" {
+		return opError(op)
+	}
+	wctx := ctx
+	if _, ok := ctx.Deadline(); !ok && opWaitLimit > 0 {
+		var cancel context.CancelFunc
+		wctx, cancel = context.WithTimeout(ctx, opWaitLimit)
+		defer cancel()
+	}
+	timedOut := func(err error) error {
+		if wctx != ctx && wctx.Err() != nil && ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
+			want := "DONE"
+			if op.OperationType != "" {
+				want += " (" + op.OperationType + ")"
+			}
+			return &platform.WaitTimeoutError{Resource: "operation/" + op.Name, Want: want, LastStatus: op.Status, Timeout: opWaitLimit}
 		}
-		next, err := wait(op.Name)
+		return err
+	}
+	for op.Status != "DONE" {
+		if err := wctx.Err(); err != nil {
+			return timedOut(err)
+		}
+		next, err := wait(wctx, op.Name)
 		if err != nil {
-			return computeErr(err)
+			return timedOut(computeErr(err))
 		}
 		op = next
 	}
@@ -72,13 +98,13 @@ func waitOp(ctx context.Context, op *compute.Operation, wait func(name string) (
 }
 
 func (c *client) waitZoneOp(ctx context.Context, zone string, op *compute.Operation) error {
-	return waitOp(ctx, op, func(name string) (*compute.Operation, error) {
+	return waitOp(ctx, op, func(ctx context.Context, name string) (*compute.Operation, error) {
 		return c.compute.ZoneOperations.Wait(c.project, zone, name).Context(ctx).Do()
 	})
 }
 
 func (c *client) waitRegionOp(ctx context.Context, region string, op *compute.Operation) error {
-	return waitOp(ctx, op, func(name string) (*compute.Operation, error) {
+	return waitOp(ctx, op, func(ctx context.Context, name string) (*compute.Operation, error) {
 		return c.compute.RegionOperations.Wait(c.project, region, name).Context(ctx).Do()
 	})
 }

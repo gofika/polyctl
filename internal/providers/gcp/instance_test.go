@@ -196,3 +196,35 @@ func TestPromoteStep(t *testing.T) {
 		t.Errorf("failed internal = %+v, %v, %q", ch, err, warned)
 	}
 }
+
+func TestWaitOpIsBounded(t *testing.T) {
+	old := opWaitLimit
+	opWaitLimit = 30 * time.Millisecond
+	t.Cleanup(func() { opWaitLimit = old })
+	pending := func(ctx context.Context, name string) (*compute.Operation, error) {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(5 * time.Millisecond):
+		}
+		return &compute.Operation{Name: name, Status: "RUNNING"}, nil
+	}
+	// No deadline on the context: the limit applies.
+	var to *platform.WaitTimeoutError
+	err := waitOp(context.Background(), &compute.Operation{Name: "op-1", Status: "RUNNING", OperationType: "insert"}, pending)
+	if !errors.As(err, &to) || to.Resource != "operation/op-1" || to.Timeout != opWaitLimit {
+		t.Errorf("unbounded op = %v", err)
+	}
+	// A deadline of the caller is left to the caller.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if err := waitOp(ctx, &compute.Operation{Name: "op-2", Status: "RUNNING"}, pending); !errors.Is(err, context.DeadlineExceeded) || errors.As(err, &to) {
+		t.Errorf("caller deadline = %v", err)
+	}
+	// A finished operation returns its error at once.
+	done := &compute.Operation{Name: "op-3", Status: "DONE", Error: &compute.OperationError{Errors: []*compute.OperationErrorErrors{{Code: "IP_IN_USE_BY_ANOTHER_RESOURCE", Message: "in use"}}}}
+	var oe *OperationError
+	if err := waitOp(context.Background(), done, pending); !errors.As(err, &oe) || oe.ErrorCode() != "IP_IN_USE_BY_ANOTHER_RESOURCE" {
+		t.Errorf("finished op = %v", err)
+	}
+}
