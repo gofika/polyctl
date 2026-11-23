@@ -639,7 +639,10 @@ comment ends with an e-mail address, whose name is the user),
 --ssh-key-file (every key of the file; --ssh-user names the user) and
 defaults.gcp.ssh_keys go into the instance's ssh-keys metadata, except the
 keys the project metadata already holds (--ssh-key-instance-only writes
-them anyway). --tag and defaults.gcp.tags are network tags. The instance
+them anyway). Unlike on AWS and Alibaba Cloud, where an instance binds one
+key pair and the two flags take one key and exclude each other, both flags
+repeat and combine here: Compute Engine metadata holds any number of keys.
+--tag and defaults.gcp.tags are network tags. The instance
 gets the service account --service-account (default: the default compute
 service account), Shielded VM with vTPM and integrity monitoring, and
 ip forwarding only with --ip-forward.

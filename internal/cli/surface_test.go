@@ -529,6 +529,20 @@ func TestInstanceCommandsAgree(t *testing.T) {
 				}
 			}
 		}
+		// --ssh-key and --ssh-key-file take one key where an instance binds
+		// one key pair (AWS, Alibaba Cloud), and repeat on Compute Engine,
+		// whose metadata holds any number of keys: a known difference.
+		if c := find(root, tree+" create"); c != nil {
+			want := "string"
+			if tree == "gcp compute instance" {
+				want = "stringArray"
+			}
+			for _, name := range []string{"ssh-key", "ssh-key-file"} {
+				if f := c.Flags().Lookup(name); f == nil || f.Value.Type() != want {
+					t.Errorf("%s create --%s = %+v, want a %s", tree, name, f, want)
+				}
+			}
+		}
 		// delete is also terminate.
 		if c := find(root, tree+" delete"); c != nil && !c.HasAlias("terminate") {
 			t.Errorf("%s delete lacks the terminate alias", tree)
