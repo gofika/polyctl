@@ -356,6 +356,9 @@ func TestPlatformTreeShapes(t *testing.T) {
 		// Zones: lifecycle and settings.
 		"cloudflare zone create", "cloudflare zone ensure", "cloudflare zone delete",
 		"cloudflare zone setting list", "cloudflare zone setting get", "cloudflare zone setting set",
+		// Cache and redirect rules.
+		"cloudflare cache purge", "cloudflare cache rule list", "cloudflare cache rule set",
+		"cloudflare redirect rule list", "cloudflare redirect rule set",
 		// R2: buckets and their custom domains.
 		"cloudflare r2 bucket list", "cloudflare r2 domain list", "cloudflare r2 domain get", "cloudflare r2 domain attach",
 		"cloudflare r2 domain update", "cloudflare r2 domain detach", "cloudflare r2 domain ensure",

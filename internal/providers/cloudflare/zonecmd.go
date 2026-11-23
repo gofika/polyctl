@@ -104,28 +104,10 @@ func zoneRef(arg string) string {
 // again by name, and is not found (exit code 4) when that finds nothing. A
 // name held by several accounts is ambiguous (exit code 5).
 func resolveLiveZone(ctx context.Context, rt *app.Runtime, arg string) (*zoneScope, error) {
-	if rt.Flags.Offline {
-		return nil, app.ErrOffline
-	}
 	ref := zoneRef(arg)
-	res, err := rt.ResolveResource(ctx, platform.Cloudflare, platform.ResZone, ref)
-	if errors.Is(err, platform.ErrNotFound) && !rt.Flags.Refresh {
-		// The inventory is fresh but does not know the zone (it may have
-		// been added since): sync once before giving up.
-		rt.Flags.Refresh = true
-		res, err = rt.ResolveResource(ctx, platform.Cloudflare, platform.ResZone, ref)
-		rt.Flags.Refresh = false
-	}
+	c, res, err := routeZone(ctx, rt, ref)
 	if err != nil {
 		return nil, err
-	}
-	cl, _, err := rt.Open(ctx, res.Profile, platform.Cloudflare)
-	if err != nil {
-		return nil, err
-	}
-	c, ok := cl.(*Client)
-	if !ok {
-		return nil, fmt.Errorf("unexpected client type %T", cl)
 	}
 	z, err := c.api.getZone(ctx, res.ID)
 	if zoneGone(err) {
@@ -154,6 +136,37 @@ func resolveLiveZone(ctx context.Context, rt *app.Runtime, arg string) (*zoneSco
 	}
 	storeZone(ctx, rt, res.Profile, *z)
 	return &zoneScope{c: c, profile: res.Profile, z: z}, nil
+}
+
+// routeZone finds the zone ref (a normalized name or an id) among the
+// Cloudflare accounts (restricted by --profile) through the inventory,
+// synced once when it does not know the zone, and opens the client of the
+// account that holds it. The zone is not read: the inventory row is all the
+// caller gets. A name held by several accounts is ambiguous (exit code 5).
+func routeZone(ctx context.Context, rt *app.Runtime, ref string) (*Client, inventory.Resource, error) {
+	if rt.Flags.Offline {
+		return nil, inventory.Resource{}, app.ErrOffline
+	}
+	res, err := rt.ResolveResource(ctx, platform.Cloudflare, platform.ResZone, ref)
+	if errors.Is(err, platform.ErrNotFound) && !rt.Flags.Refresh {
+		// The inventory is fresh but does not know the zone (it may have
+		// been added since): sync once before giving up.
+		rt.Flags.Refresh = true
+		res, err = rt.ResolveResource(ctx, platform.Cloudflare, platform.ResZone, ref)
+		rt.Flags.Refresh = false
+	}
+	if err != nil {
+		return nil, inventory.Resource{}, err
+	}
+	cl, _, err := rt.Open(ctx, res.Profile, platform.Cloudflare)
+	if err != nil {
+		return nil, inventory.Resource{}, err
+	}
+	c, ok := cl.(*Client)
+	if !ok {
+		return nil, inventory.Resource{}, fmt.Errorf("unexpected client type %T", cl)
+	}
+	return c, res, nil
 }
 
 // gone turns the answer "this zone does not exist" to a request about the

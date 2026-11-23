@@ -62,6 +62,8 @@ type zoneFake struct {
 	throttle          map[string]int  // "METHOD path" -> number of 429 answers to give first
 	html              map[string]bool // "METHOD path" -> answer an HTML page (403)
 	envelopeErr       map[string]int  // "METHOD path" -> HTTP 200 with success:false and this code
+
+	rules rulesFake // the entrypoint rulesets of the zones (rules_e2e_test.go)
 }
 
 func newZoneFake(t *testing.T) *zoneFake {
@@ -263,6 +265,8 @@ func (f *zoneFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			f.setFoundation(z, true)
 		}
 		f.ok(w, f.zoneJSON(z), nil)
+	case parts[0] == "zones" && len(parts) >= 3 && parts[2] == "rulesets":
+		f.serveRules(w, r, parts[1], parts[3:], acc, b)
 	case parts[0] == "zones" && len(parts) >= 2:
 		z := f.zoneByID(parts[1])
 		if z == nil {

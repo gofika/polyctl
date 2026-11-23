@@ -24,8 +24,8 @@ func Command(rt *app.Runtime) *cobra.Command {
 		Aliases: []string{"cf"},
 		Short:   "Cloudflare native commands (alias: cf)",
 		Long: `Cloudflare-specific operations: zones (create, ensure, delete, settings),
-DNS records, cache purge, development mode, SSL mode, R2 custom domains,
-accounts and the identity check.
+DNS records, cache purge, cache rules, redirect rules, development mode,
+SSL mode, R2 custom domains, accounts and the identity check.
 
 <zone> arguments accept a zone name (example.com) or a zone id. Names are
 resolved through the local inventory first, then remotely.
@@ -34,7 +34,7 @@ The tree is also available under its short name: polyctl cf ...`,
 	}
 	cmd.AddCommand(
 		app.WhoamiCommand(rt, platform.Cloudflare, "On Cloudflare this verifies the API token and reports its id, status and\nexpiry, with the account the profile is pinned to. For an account authorized\nin the browser it checks the authorization with a request to the API and\nreports the granted scopes."),
-		newZoneCmd(rt), newDNSCmd(rt), newCacheCmd(rt), newDevModeCmd(rt), newSSLModeCmd(rt), newR2Cmd(rt), newAccountCmd(rt))
+		newZoneCmd(rt), newDNSCmd(rt), newCacheCmd(rt), newRedirectCmd(rt), newDevModeCmd(rt), newSSLModeCmd(rt), newR2Cmd(rt), newAccountCmd(rt))
 	return cmd
 }
 
@@ -588,7 +588,7 @@ type purgeOutput struct {
 }
 
 func newCacheCmd(rt *app.Runtime) *cobra.Command {
-	cmd := &cobra.Command{Use: "cache", Short: "Edge cache"}
+	cmd := &cobra.Command{Use: "cache", Short: "Edge cache: purge and cache rules"}
 	var everything bool
 	var urls, hosts, tags, prefixes []string
 	purge := &cobra.Command{
@@ -640,7 +640,7 @@ func newCacheCmd(rt *app.Runtime) *cobra.Command {
 	purge.Flags().StringArrayVar(&hosts, "host", nil, "purge this hostname (repeatable, Enterprise)")
 	purge.Flags().StringArrayVar(&tags, "tag", nil, "purge this cache tag (repeatable, Enterprise)")
 	purge.Flags().StringArrayVar(&prefixes, "prefix", nil, "purge this URL prefix (repeatable, Enterprise)")
-	cmd.AddCommand(purge)
+	cmd.AddCommand(purge, newRuleCmd(rt, cacheRules))
 	return cmd
 }
 
