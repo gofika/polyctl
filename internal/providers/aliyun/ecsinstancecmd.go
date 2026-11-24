@@ -76,9 +76,12 @@ func resolveECSInstance(ctx context.Context, rt *app.Runtime, ref, region string
 				dropInstance(ctx, rt, res.Profile, res.ID)
 			case derr == nil:
 				storeInstance(ctx, rt, s.profile, *cur)
-				if cur.Name != ref {
-					return nil, nil, fmt.Errorf("%w (the local inventory had %s under that name; it is named %q now)", err, res.ID, cur.Name)
+				if cur.Name == ref {
+					// It still holds the name; the live lookup missed it
+					// (a name that looks like an id is read as one).
+					return s, cur, nil
 				}
+				return nil, nil, fmt.Errorf("%w (the local inventory had %s under that name; it is named %q now)", err, res.ID, cur.Name)
 			}
 		}
 		if err != nil {

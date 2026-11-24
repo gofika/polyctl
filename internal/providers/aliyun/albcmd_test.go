@@ -631,3 +631,22 @@ func TestALBLoadBalancerRenamedSinceSync(t *testing.T) {
 		t.Errorf("left = %v", alb.lbs)
 	}
 }
+
+// TestALBLoadBalancerIDLikeName: a name that looks like a load balancer id
+// is read as an id by the live lookup; the cached load balancer that still
+// holds the name is used instead of reporting it not found.
+func TestALBLoadBalancerIDLikeName(t *testing.T) {
+	h, _, alb, _, _ := albHarness(t, app.Flags{Yes: true})
+	alb.addLB("alb-1", "alb-web", "vpc-site", "Active")
+	set := inventory.Set{Platform: platform.Aliyun, Profile: "ali", Type: platform.ResLoadBalancer}
+	row := albLoadBalancer{ID: "alb-1", Name: "alb-web", Region: "cn-shanghai"}
+	if err := h.db().Upsert(context.Background(), set, row.resource(), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.run("alb", "load-balancer", "delete", "alb-web"); err != nil {
+		t.Fatalf("%v\n%s", err, h.stderr.String())
+	}
+	if len(alb.lbs) != 0 {
+		t.Errorf("left = %v", alb.lbs)
+	}
+}

@@ -450,3 +450,17 @@ func TestInstanceResolveRenamedSinceSync(t *testing.T) {
 		t.Error("the renamed instance i-1 was deleted")
 	}
 }
+
+// TestInstanceResolveIDLikeName: a name that looks like an instance id is
+// read as an id by the live lookup; the cached instance that still holds
+// the name is used instead of reporting it not found.
+func TestInstanceResolveIDLikeName(t *testing.T) {
+	h, f, _ := computeHarness(t, app.Flags{})
+	f.addVM("i-1", "i-web", instStopped, "t", "vpc-1", "vsw-b")
+	if err := h.run("ecs", "instance", "get", "i-web"); err != nil {
+		t.Fatalf("%v\n%s", err, h.stderr.String())
+	}
+	if !strings.Contains(h.stdout.String(), "i-1") {
+		t.Errorf("stdout = %q", h.stdout.String())
+	}
+}
