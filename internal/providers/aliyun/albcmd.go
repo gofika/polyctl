@@ -674,21 +674,30 @@ func albLBCreateCmd(rt *app.Runtime) *cobra.Command {
 you go) in --vpc (an id; required) with one --zone-mapping per zone, exactly
 two: <zone-id>:<vswitch-id>:<eip-allocation-id>. Nothing it depends on is
 created (use ensure for that). The EIPs have to share one ISP. A load
-balancer of the name in the region is exit code 1. --resource-group (a name
+balancer of the name in the region is exit code 1. On a terminal a missing
+<name> is asked for (checked as typed against the load balancers of the
+region), a missing --vpc is picked from the Available VPCs, and each
+missing --zone-mapping is picked: an Available vSwitch of the VPC in a zone
+offering ALB (another zone than the first mapping's), then an idle EIP
+(of the first EIP's ISP for the second). Nothing to pick from is exit code
+2, naming the flag: ensure creates what is missing. --resource-group (a name
 or rg- id; default defaults.aliyun.resource_group, else "default"). --wait
 waits until it is Active (about 45 seconds), bounded by --timeout.`,
 		Example: "  polyctl aliyun alb load-balancer create lb-web --vpc vpc-aaa --zone-mapping cn-hongkong-b:vsw-b:eip-1 --zone-mapping cn-hongkong-c:vsw-c:eip-2 --wait",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			name := args[0]
-			if err := checkLBName(name); err != nil {
-				return err
+			name := app.Arg(args, 0)
+			if len(args) > 0 {
+				if err := checkLBName(name); err != nil {
+					return err
+				}
 			}
-			if !looksLikeVPCID(vpcID) {
+			ask := rt.Interactive()
+			if (vpcID != "" || !ask) && !looksLikeVPCID(vpcID) {
 				return app.UsageErrf("--vpc is required and takes a VPC id (vpc-...); create does not create what it depends on, ensure does")
 			}
-			if len(mappings) != 2 {
+			if len(mappings) > 2 || (len(mappings) != 2 && !ask) {
 				return app.UsageErrf("--zone-mapping is required twice (one per zone), got %d", len(mappings))
 			}
 			var zones []albZoneMapping
@@ -699,7 +708,7 @@ waits until it is Active (about 45 seconds), bounded by --timeout.`,
 				}
 				zones = append(zones, z)
 			}
-			if zones[0].Zone == zones[1].Zone {
+			if len(zones) == 2 && zones[0].Zone == zones[1].Zone {
 				return app.UsageErrf("the two --zone-mapping name the same zone %s", zones[0].Zone)
 			}
 			wait, timeout, err := w.Resolve(cmd)
@@ -709,6 +718,25 @@ waits until it is Active (about 45 seconds), bounded by --timeout.`,
 			sc, err := openALBScope(ctx, rt, region)
 			if err != nil {
 				return err
+			}
+			if name == "" {
+				if name, err = askLBName(ctx, rt, sc); err != nil {
+					return err
+				}
+			}
+			if vpcID == "" {
+				prefer, _ := rt.ResourceName("aliyun_vpc", "", map[string]string{"region": sc.region})
+				v, err := pickVPC(ctx, rt, sc.ecsScope, "--vpc", prefer,
+					app.UsageErrf("--vpc is required, and %s has no Available VPC; create does not create what it depends on, ensure does", sc.where()))
+				if err != nil {
+					return err
+				}
+				vpcID = v.ID
+			}
+			if len(zones) < 2 {
+				if zones, err = askZoneMappings(ctx, rt, sc, vpcID, zones); err != nil {
+					return err
+				}
 			}
 			found, err := sc.a.findLoadBalancersByName(ctx, name)
 			if err != nil {

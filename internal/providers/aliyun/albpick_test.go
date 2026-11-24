@@ -232,3 +232,64 @@ func TestALBServerGroupUpdatePicks(t *testing.T) {
 		t.Error("a dry run or a cancelled update wrote")
 	}
 }
+
+// load-balancer create without <name>, --vpc and --zone-mapping asks for
+// the name (a taken one asked again), the VPC, then per zone a vSwitch in
+// a zone offering ALB (the first zone left out the second time) and an
+// idle EIP (the first one's ISP only the second time).
+func TestALBLoadBalancerCreateAsks(t *testing.T) {
+	t.Setenv(app.EnvNonInteractive, "")
+	h, net, alb, _, _ := albHarness(t, app.Flags{DryRun: true})
+	alb.addLB("alb-1", "lb-taken", "vpc-site", "Active")
+	net.addVSwitch("vsw-b", "sw-b", "vpc-site", "cn-shanghai-b", "172.16.0.0/22")
+	net.addVSwitch("vsw-c", "sw-c", "vpc-site", "cn-shanghai-c", "172.16.4.0/22")
+	net.addVSwitch("vsw-z", "sw-z", "vpc-site", "cn-shanghai-z", "172.16.8.0/22")
+	net.addEIP("eip-1", "203.0.113.1", "Available", "", "", 0, "BGP")
+	net.addEIP("eip-2", "203.0.113.2", "Available", "", "", 0, "BGP")
+	net.addEIP("eip-3", "203.0.113.3", "Available", "", "", 0, "BGP_PRO")
+	net.addEIP("eip-4", "203.0.113.4", "InUse", "i-x", "EcsInstance", 0, "BGP")
+	p := prompttest.New(t, "lb-taken", "lb-web", "vpc-site", "vsw-b", "eip-1", "vsw-c", "eip-2")
+	h.rt.Picker = p
+	if err := h.run("alb", "load-balancer", "create"); err != nil {
+		t.Fatalf("create: %v\n%s", err, h.stderr.String())
+	}
+	p.Done()
+	if v := prompttest.Values(p.Asked[3].Options); !strings.Contains(v, "vsw-b") || !strings.Contains(v, "vsw-c") || strings.Contains(v, "vsw-z") {
+		t.Errorf("first vSwitches offered %q (zone z offers no ALB)", v)
+	}
+	if v := prompttest.Values(p.Asked[4].Options); !strings.Contains(v, "eip-3") || strings.Contains(v, "eip-4") {
+		t.Errorf("first EIPs offered %q", v)
+	}
+	if v := prompttest.Values(p.Asked[5].Options); strings.Contains(v, "vsw-b") {
+		t.Errorf("second vSwitches offered %q: zone b is taken", v)
+	}
+	if v := prompttest.Values(p.Asked[6].Options); v != "eip-2" {
+		t.Errorf("second EIPs offered %q: want eip-2 only (same ISP, unused)", v)
+	}
+	if !strings.Contains(h.stdout.String(), "load-balancer/lb-web") {
+		t.Errorf("stdout = %s", h.stdout.String())
+	}
+
+	// No second zone to pick: a usage error naming --zone-mapping.
+	err := h.run("alb", "load-balancer", "create", "lb-x", "--vpc", "vpc-site", "--zone-mapping", "cn-shanghai-b:vsw-b:eip-1", "--zone-mapping", "cn-shanghai-c:vsw-c:eip-2", "--zone-mapping", "x:vsw-y:eip-9")
+	if !errors.Is(err, app.ErrUsage) {
+		t.Errorf("three mappings = %v", err)
+	}
+	h.rt.Picker = prompttest.New(t, "vsw-b")
+	err = h.run("alb", "load-balancer", "create", "lb-x", "--vpc", "vpc-site", "--zone-mapping", "cn-shanghai-c:vsw-c:eip-3")
+	if !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "--zone-mapping") {
+		t.Errorf("no other idle EIP of BGP_PRO = %v", err)
+	}
+	h.rt.Picker = prompttest.New(t, prompttest.Abort{})
+	if err := h.run("alb", "load-balancer", "create"); !errors.Is(err, prompt.ErrAborted) {
+		t.Errorf("abort = %v", err)
+	}
+	if len(h.api.callsFor("CreateLoadBalancer")) != 0 {
+		t.Error("a dry run or a cancelled create wrote")
+	}
+	h.rt.Picker = nil
+	h.rt.Flags.NonInteractive = true
+	if err := h.run("alb", "load-balancer", "create", "lb-x", "--vpc", "vpc-site"); !errors.Is(err, app.ErrUsage) {
+		t.Errorf("non-interactive without --zone-mapping = %v", err)
+	}
+}

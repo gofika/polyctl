@@ -316,3 +316,115 @@ func askListenerSpec(ctx context.Context, rt *app.Runtime, sc *albScope, lbID st
 	}
 	return parseListenerSpec("listener", v)
 }
+
+// askLBName asks for the <name> of a new load balancer, checked as it is
+// typed: the rules of checkLBName, and not a name a load balancer of the
+// region holds.
+func askLBName(ctx context.Context, rt *app.Runtime, sc *albScope) (string, error) {
+	if !rt.Interactive() {
+		return "", app.UsageErrf("<name> is required")
+	}
+	lbs, err := sc.a.listLBs(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	taken := map[string]string{}
+	for _, l := range lbs {
+		taken[l.Name] = l.ID
+	}
+	return rt.AskInput("<name>", "Name of the new load balancer", "", func(v string) error {
+		v = strings.TrimSpace(v)
+		if err := checkLBName(v); err != nil {
+			return inline(err)
+		}
+		if id := taken[v]; id != "" {
+			return fmt.Errorf("load balancer %q already exists in %s (%s)", v, sc.where(), id)
+		}
+		return nil
+	})
+}
+
+// askZoneMappings completes the two zone mappings of load-balancer create
+// in the interactive flow: for each one missing, an Available vSwitch of
+// vpc in a zone offering ALB that no mapping uses yet, then an idle EIP
+// not used yet (of the ISP of the first EIP once there is one). Nothing
+// to pick from is a usage error naming --zone-mapping.
+func askZoneMappings(ctx context.Context, rt *app.Runtime, sc *albScope, vpc string, have []albZoneMapping) ([]albZoneMapping, error) {
+	if !rt.Interactive() {
+		return nil, app.UsageErrf("--zone-mapping is required twice (one per zone), got %d", len(have))
+	}
+	albZones, err := sc.a.describeZones(ctx)
+	if err != nil {
+		return nil, err
+	}
+	vsws, err := sc.c.listVSwitches(ctx, sc.region, vpc, "", "")
+	if err != nil {
+		return nil, err
+	}
+	eips, err := sc.c.listEIPs(ctx, sc.region, eipFilter{})
+	if err != nil {
+		return nil, err
+	}
+	names := map[string]string{}
+	if vpcs, err := sc.c.listVPCs(ctx, sc.region, true); err == nil {
+		for _, v := range vpcs {
+			names[v.ID] = v.Name
+		}
+	}
+	out := append([]albZoneMapping(nil), have...)
+	for len(out) < 2 {
+		usedZone := map[string]bool{}
+		usedEIP := map[string]bool{}
+		isp := ""
+		for _, z := range out {
+			usedZone[z.Zone] = true
+			usedEIP[z.AllocationID] = true
+			for _, e := range eips {
+				if e.AllocationID == z.AllocationID && isp == "" {
+					isp = e.ISP
+				}
+			}
+		}
+		n := len(out) + 1
+		var vopts []prompt.Option
+		for _, v := range vsws {
+			if v.Status != statusAvailable || v.VPC != vpc || usedZone[v.Zone] || !slices.Contains(albZones, v.Zone) {
+				continue
+			}
+			vopts = append(vopts, prompt.Option{Label: vswLabel(v, names), Value: v.ID})
+		}
+		vswID, err := rt.Choose(app.Choice{Title: fmt.Sprintf("vSwitch of zone %d (VPC %s)", n, vpc), Options: vopts, Arg: "--zone-mapping", Required: true,
+			Empty: app.UsageErrf("--zone-mapping is required twice, and VPC %s has no Available vSwitch in another zone offering ALB (%s); create does not create what it depends on, ensure does", vpc, strings.Join(albZones, ", "))})
+		if err != nil {
+			return nil, err
+		}
+		zone := ""
+		for _, v := range vsws {
+			if v.ID == vswID {
+				zone = v.Zone
+			}
+		}
+		var eopts []prompt.Option
+		for _, e := range eips {
+			if usedEIP[e.AllocationID] || !e.idle(isp) {
+				continue
+			}
+			bw := ""
+			if e.Bandwidth != "" {
+				bw = e.Bandwidth + " Mbps"
+			}
+			eopts = append(eopts, prompt.Option{Label: joinLabel(e.IP, e.AllocationID, bw, e.ISP, e.Name), Value: e.AllocationID})
+		}
+		of := ""
+		if isp != "" {
+			of = " of ISP " + isp
+		}
+		eipID, err := rt.Choose(app.Choice{Title: fmt.Sprintf("EIP of zone %s", zone), Options: eopts, Arg: "--zone-mapping", Required: true,
+			Empty: app.UsageErrf("--zone-mapping is required twice, and %s has no other idle EIP%s; allocate one with `polyctl aliyun eip address allocate`, or use ensure", sc.where(), of)})
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, albZoneMapping{Zone: zone, VSwitchID: vswID, AllocationID: eipID})
+	}
+	return out, nil
+}
