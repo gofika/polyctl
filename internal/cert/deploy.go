@@ -357,9 +357,11 @@ func (r *deployRun) deployer(ctx context.Context, d platform.CertDeployer, acct 
 				Detail: fmt.Sprintf("holds the current certificate (days_left=%d)", left)})
 			continue
 		}
-		if t.Hostname != "" && !c.Pending && !c.Covers(t.Hostname) {
+		if missing := uncovered(t, c); len(missing) > 0 {
+			// Even with --force: the target would serve names the new
+			// certificate is not valid for.
 			r.add(platform.Change{Resource: res, Action: platform.Skipped, ID: t.CurrentCertID, Attrs: attrs,
-				Detail: fmt.Sprintf("the certificate of %s does not cover %s; it needs a certificate of its own", root, t.Hostname)})
+				Detail: fmt.Sprintf("the certificate of %s does not cover %s; it needs a certificate of its own", root, strings.Join(missing, ", "))})
 			continue
 		}
 		if batch && t.Group != "" {
@@ -409,6 +411,30 @@ func (r *deployRun) deployer(ctx context.Context, d platform.CertDeployer, acct 
 		}
 	}
 	return wrote
+}
+
+// uncovered returns the names the target serves that the certificate c
+// does not cover: its hostname and every name of the certificate it holds
+// now (a wildcard is covered by the same wildcard only). A pending
+// certificate (a dry run) will hold the root and its wildcard.
+func uncovered(t platform.DeployTarget, c *platform.DeployCert) []string {
+	names := c.Names
+	if c.Pending || len(names) == 0 {
+		names = Names(c.Root)
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, n := range append([]string{t.Hostname}, t.CurrentDomains...) {
+		n = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(n)), ".")
+		if n == "" || seen[n] {
+			continue
+		}
+		seen[n] = true
+		if !platform.CertCovers(names, n) {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // rootOf is the root domain of the certificate a target holds, or "".

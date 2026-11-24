@@ -535,3 +535,36 @@ func TestDeployUnknownExpiryNotFoundAndDomainSkips(t *testing.T) {
 		t.Errorf("rows = %v", rows)
 	}
 }
+
+// A target whose certificate holds names the store's certificate does not
+// cover (a deeper subdomain, another root domain) is skipped, --force or
+// not, in both modes.
+func TestDeploySkipsTargetsTheCertificateDoesNotCover(t *testing.T) {
+	h := newDeployHarness(t, "acme")
+	h.bundles["example.com"] = deployBundle(t, "example.com", 90)
+	d := &fakeDeployer{id: "fake-lb", platform: platform.AWS, targets: map[string][]*fakeTarget{"acme": {
+		{id: "l1", name: "lb-1", domains: []string{"api.staging.example.com"}, notAfter: days(3), serial: "01"},
+		{id: "l2", name: "lb-2", domains: []string{"example.com", "example.net", "*.example.com"}, notAfter: days(3), serial: "02"},
+		{id: "l3", name: "lb-3", domains: []string{"*.example.com", "www.example.com"}, notAfter: days(3), serial: "03"},
+	}}}
+	for _, o := range []DeployOptions{{All: true}, {Domain: "example.com"}, {Domain: "example.com", Force: true}} {
+		d.writes = nil
+		d.targets["acme"][2].serial = "03"
+		rep, err := h.run(o, d)
+		if err != nil {
+			t.Fatalf("%+v: %v", o, err)
+		}
+		if !slices.Equal(d.writes, []string{"upload acme example.com", "bind acme l3"}) {
+			t.Errorf("%+v: writes = %v", o, d.writes)
+		}
+		rows := deployRows(rep)
+		for _, want := range []string{
+			"fake-lb/acme/lb-1 skipped the certificate of example.com does not cover api.staging.example.com; it needs a certificate of its own",
+			"fake-lb/acme/lb-2 skipped the certificate of example.com does not cover example.net; it needs a certificate of its own",
+		} {
+			if !slices.Contains(rows, want) {
+				t.Errorf("%+v: rows = %v, want %q", o, rows, want)
+			}
+		}
+	}
+}

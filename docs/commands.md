@@ -252,6 +252,7 @@ polyctl cert deploy example.com --deployer gcp-lb --region asia-east2
 **Options**
 
 - `--all`: update targets with `--days` whole days left or fewer (default `cert.renew_days`, 30). `<domain>`: update every target of that root domain that does not hold the store's current certificate, whatever its expiry. `--force`: every matching target.
+- A target whose current certificate holds a name the store's certificate does not cover (a deeper subdomain such as `api.staging.example.com`, or another root domain in its SAN) is `skipped`, even with `--force`: it needs a certificate of its own.
 - The local certificate is ensured with `--days` + 5 before deploying. A root domain no DNS account hosts is `skipped` (managed elsewhere).
 - Accounts: every account with a deployer, narrowed by `--profile`, `--platform` and `--deployer`. `cert.skip_accounts` leaves out a profile (`name`) or one deployer of it (`name:aliyun-alb`).
 - Regions: `--region` (repeatable) replaces `cert.aws.regions` / `cert.aliyun.regions` (default: the profile's region; CloudFront certificates are in `us-east-1`, list it). GCP scans every region unless `--region` is given (`global` for global proxies).
