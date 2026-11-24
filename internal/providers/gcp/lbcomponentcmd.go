@@ -14,6 +14,7 @@ import (
 	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/output"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt"
 )
 
 // The components of load balancers on their own: backend services,
@@ -136,21 +137,21 @@ type located struct {
 	c       *client
 }
 
-// locateComponent finds a component by name in every selected GCP account.
-// Without --region or --global a regional match wins over a global one.
-// Several matches are ambiguous (exit code 5), none is exit code 4.
-func locateComponent(ctx context.Context, rt *app.Runtime, kind lbKind, name string, q componentQuery) (*located, error) {
+// componentsOf lists the components of kind in every selected GCP
+// account that fit q (those named name, when it is given), and the
+// accounts searched.
+func componentsOf(ctx context.Context, rt *app.Runtime, kind lbKind, name string, q componentQuery) ([]located, []string, error) {
 	if rt.Flags.Offline {
-		return nil, fmt.Errorf("%w: %ss are read live", app.ErrOffline, kind)
+		return nil, nil, fmt.Errorf("%w: %ss are read live", app.ErrOffline, kind)
 	}
 	if rt.Flags.Profile != "" {
 		if _, err := gcpProfile(rt); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	accounts, err := gcpAccounts(rt)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var hits []located
 	var searched []string
@@ -158,20 +159,32 @@ func locateComponent(ctx context.Context, rt *app.Runtime, kind lbKind, name str
 		searched = append(searched, "gcp/"+a.Profile)
 		c, err := openProfile(ctx, rt, a.Profile)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		list, unreachable, err := c.listComponents(ctx, kind)
 		if err != nil {
-			return nil, fmt.Errorf("%w (gcp/%s)", err, a.Profile)
+			return nil, nil, fmt.Errorf("%w (gcp/%s)", err, a.Profile)
 		}
 		if len(unreachable) > 0 {
 			rt.Infof("warning: gcp/%s: unreachable scopes: %s", a.Profile, strings.Join(unreachable, ", "))
 		}
 		for _, x := range list {
-			if x.name == name && q.fits(x) {
+			if (name == "" || x.name == name) && q.fits(x) {
 				hits = append(hits, located{component: x, profile: a.Profile, c: c})
 			}
 		}
+	}
+	return hits, searched, nil
+}
+
+// locateComponent finds a component by name in every selected GCP account.
+// Without --region or --global a regional match wins over a global one.
+// Several matches are a pick in the interactive flow and ambiguous (exit
+// code 5) otherwise; none is exit code 4.
+func locateComponent(ctx context.Context, rt *app.Runtime, kind lbKind, name string, q componentQuery) (*located, error) {
+	hits, searched, err := componentsOf(ctx, rt, kind, name, q)
+	if err != nil {
+		return nil, err
 	}
 	if kind != kindInstanceGroup && q.all {
 		var regional []located
@@ -198,7 +211,40 @@ func locateComponent(ctx context.Context, rt *app.Runtime, kind lbKind, name str
 	if kind == kindInstanceGroup {
 		hint = "pass --profile <name> or --zone <z> to choose"
 	}
-	return nil, &app.AmbiguousError{What: fmt.Sprintf("%s %q", kind, name), Candidates: names, Hint: hint}
+	amb := &app.AmbiguousError{What: fmt.Sprintf("%s %q", kind, name), Candidates: names, Hint: hint}
+	h, err := disambiguate(rt, amb, hits, func(h located) string { return joinLabel(h.name, h.where(), "gcp/"+h.profile) })
+	if err != nil {
+		return nil, err
+	}
+	return &h, nil
+}
+
+// componentArg finds the component of get and delete: <name> through
+// locateComponent, or, without it in the interactive flow, a pick of the
+// components of kind of the selected accounts that fit the scope flags
+// (labelled like the rows of list; none is nothing to do).
+func componentArg(ctx context.Context, rt *app.Runtime, spec componentSpec, args []string, q componentQuery) (*located, error) {
+	if len(args) > 0 {
+		return locateComponent(ctx, rt, spec.kind, args[0], q)
+	}
+	if !rt.Interactive() {
+		return nil, app.UsageErrf("<name> is required")
+	}
+	hits, _, err := componentsOf(ctx, rt, spec.kind, "", q)
+	if err != nil {
+		return nil, err
+	}
+	var opts []prompt.Option
+	for i, h := range hits {
+		_, row := spec.row(h.component)
+		opts = append(opts, prompt.Option{Label: joinLabel(append(row, "gcp/"+h.profile)...), Value: strconv.Itoa(i)})
+	}
+	v, err := rt.Choose(app.Choice{Title: strings.ToUpper(string(spec.kind)[:1]) + string(spec.kind)[1:], Options: opts, Arg: "<name>", What: string(spec.kind)})
+	if err != nil {
+		return nil, err
+	}
+	i, _ := strconv.Atoi(v)
+	return &hits[i], nil
 }
 
 // ---------------------------------------------------------------- commands
@@ -303,7 +349,8 @@ removes a whole load balancer in order). `
 	return h + `The component is shown first, then a
 confirmation is asked (default no; --yes skips it, and the non-interactive
 flow needs --yes). The operation is waited for (--timeout, 10m). --dry-run
-reports what would be deleted.`
+reports what would be deleted. On a terminal, without <name> the ` + spec.plural + `
+of the selected accounts are offered, and several of one name are a pick.`
 }
 
 func scopeHelp(spec componentSpec) string {
@@ -320,16 +367,18 @@ func componentGetCmd(rt *app.Runtime, spec componentSpec) *cobra.Command {
 		Short: "Show a " + string(spec.kind),
 		Long: "Show a " + string(spec.kind) + `, read live. Every selected GCP account is searched for
 the name (` + scopeHelp(spec) + ` narrows the search; without them a regional match wins
-over a global one). Several matches are exit code 5, none is exit code 4.`,
+over a global one). Several matches are exit code 5 (a terminal lets you
+choose), none is exit code 4. On a terminal, without <name> the ` + spec.plural + ` of
+the selected accounts are offered.`,
 		Example: spec.example,
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			q, err := query()
 			if err != nil {
 				return err
 			}
-			l, err := locateComponent(ctx, rt, spec.kind, args[0], q)
+			l, err := componentArg(ctx, rt, spec, args, q)
 			if err != nil {
 				return err
 			}
@@ -348,7 +397,7 @@ func componentDeleteCmd(rt *app.Runtime, spec componentSpec) *cobra.Command {
 		Use:   "delete <name>",
 		Short: "Delete a " + string(spec.kind) + " nothing uses (asks first)",
 		Long:  deleteHelp(spec),
-		Args:  cobra.ExactArgs(1),
+		Args:  app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			q, err := query()
@@ -358,7 +407,7 @@ func componentDeleteCmd(rt *app.Runtime, spec componentSpec) *cobra.Command {
 			if timeout <= 0 {
 				return app.UsageErrf("--timeout must be a positive duration, got %s", timeout)
 			}
-			l, err := locateComponent(ctx, rt, spec.kind, args[0], q)
+			l, err := componentArg(ctx, rt, spec, args, q)
 			if err != nil {
 				return err
 			}

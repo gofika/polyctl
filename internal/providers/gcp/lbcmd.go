@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/output"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt"
 )
 
 func newLoadBalancerCmd(rt *app.Runtime) *cobra.Command {
@@ -87,11 +89,19 @@ Every operation is waited for (--timeout bounds each one, 10m), since each
 component needs the previous one. Then http and https wait up to
 --health-timeout (3m) for a HEALTHY backend; running out of time is a
 warning with a checklist, not an error. --no-wait skips that wait.
---dry-run runs every read and reports what would be created.`,
+--dry-run runs every read and reports what would be created.
+
+On a terminal, what is missing is asked: the instance, from the running
+instances of the selected accounts; the protocol (http preselected); the
+port of a tcp load balancer, checked as it is typed; for https the
+certificate, from the unexpired certificates of the instance's region, or
+"Create a new certificate..." (from polyctl's certificate store or files,
+its name proposed from naming.gcp_ssl_certificate), created as the first
+step of the plan.`,
 		Example: `  polyctl gcp compute load-balancer ensure web-1 --protocol http --dry-run
   polyctl gcp compute load-balancer ensure web-1 --protocol https --ssl-certificate web-example-com-cert-20261117
   polyctl gcp compute load-balancer ensure db-1 --protocol tcp --port 3306 --address lb-tcp-db-1-ip -o json`,
-		Args: cobra.ExactArgs(1),
+		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			fl := cmd.Flags()
@@ -100,6 +110,13 @@ warning with a checklist, not an error. --no-wait skips that wait.
 				return err
 			}
 			protocol = strings.ToLower(strings.TrimSpace(protocol))
+			if protocol == "" && rt.Interactive() {
+				if protocol, err = rt.Choose(app.Choice{Title: "Front end protocol", Default: lbProtoHTTP, Arg: "--protocol", Options: []prompt.Option{
+					{Label: "http  (port 80)", Value: lbProtoHTTP}, {Label: "https  (port 443, needs a certificate)", Value: lbProtoHTTPS},
+					{Label: "tcp  (a port of your choice)", Value: lbProtoTCP}}}); err != nil {
+					return err
+				}
+			}
 			switch protocol {
 			case lbProtoHTTP, lbProtoHTTPS, lbProtoTCP:
 			case "":
@@ -114,7 +131,20 @@ warning with a checklist, not an error. --no-wait skips that wait.
 				case lbProtoHTTPS:
 					port = 443
 				default:
-					return app.UsageErrf("--port is required with --protocol tcp (the port of the forwarding rule)")
+					v, err := rt.AskInput("--port", "Port of the forwarding rule (1-65535)", "", func(s string) error {
+						n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+						if err != nil {
+							return fmt.Errorf("%q is not a port number", s)
+						}
+						return checkPortFlag("port", n)
+					})
+					if err != nil {
+						if !rt.Interactive() {
+							return app.UsageErrf("--port is required with --protocol tcp (the port of the forwarding rule)")
+						}
+						return err
+					}
+					port, _ = strconv.ParseInt(v, 10, 64)
 				}
 			}
 			if err := checkPortFlag("port", port); err != nil {
@@ -136,7 +166,7 @@ warning with a checklist, not an error. --no-wait skips that wait.
 				return err
 			}
 			switch {
-			case protocol == lbProtoHTTPS && sslCert == "":
+			case protocol == lbProtoHTTPS && sslCert == "" && !rt.Interactive():
 				return app.UsageErrf("--ssl-certificate is required with --protocol https: an existing regional certificate (gcp compute ssl-certificate create ...)")
 			case protocol != lbProtoHTTPS && sslCert != "":
 				return app.UsageErrf("--ssl-certificate applies to --protocol https only")
@@ -167,6 +197,9 @@ warning with a checklist, not an error. --no-wait skips that wait.
 			if rt.Flags.Offline {
 				return fmt.Errorf("%w: load-balancer ensure reads and writes the load balancer live", app.ErrOffline)
 			}
+			if args, err = instanceArg(ctx, rt, args, zone, "running GCP instance", statusIn(statusRunning)); err != nil {
+				return err
+			}
 			l, err := resolveInstance(ctx, rt, args[0], zone, false)
 			if err != nil {
 				return err
@@ -190,6 +223,11 @@ warning with a checklist, not an error. --no-wait skips that wait.
 			e := &lbEnsure{rt: rt, c: l.c, scope: certScope{c: l.c, region: l.region(), timeout: timeout}, profile: l.profile, zone: l.zone,
 				network: network, inst: l.inst, protocol: protocol, backendProtocol: bp, port: port, backendPort: backendPort,
 				checkPort: checkPort, sslCert: sslCert, address: address, wait: wait, timeout: timeout, healthTimeout: healthTimeout}
+			if protocol == lbProtoHTTPS && e.sslCert == "" {
+				if err := pickLBCert(ctx, rt, e); err != nil {
+					return err
+				}
+			}
 			if err := e.deriveNames(name, checkName); err != nil {
 				return err
 			}
@@ -489,7 +527,8 @@ func resolveLBTarget(ctx context.Context, rt *app.Runtime, ref, region string, a
 	for _, h := range hits {
 		names = append(names, fmt.Sprintf("gcp/%s (%s)", h.profile, (certScope{region: h.region}).label()))
 	}
-	return nil, &app.AmbiguousError{What: fmt.Sprintf("load balancer %q", ref), Candidates: names, Hint: "pass --profile <name>, --region <r> or --global to choose"}
+	amb := &app.AmbiguousError{What: fmt.Sprintf("load balancer %q", ref), Candidates: names, Hint: "pass --profile <name>, --region <r> or --global to choose"}
+	return disambiguate(rt, amb, hits, lbTargetLabel)
 }
 
 // ---------------------------------------------------------------- get
@@ -684,16 +723,18 @@ the forwarding rule name) or the name of one of its forwarding rules; the
 inventory tells which account holds it (synced once when unknown), then
 everything is read live. Without --region or --global a regional load
 balancer wins over a global one of the same name. Several matches are exit
-code 5 (pass --profile, --region or --global); none is exit code 4.`,
+code 5 (pass --profile, --region or --global; a terminal lets you choose);
+none is exit code 4. On a terminal, without <name> the load balancers of
+the selected accounts are offered.`,
 		Example: "  polyctl gcp compute load-balancer get lb-web-1 -o json",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			region, all, err := sf.resolve(false)
 			if err != nil {
 				return err
 			}
-			t, err := resolveLBTarget(ctx, rt, args[0], region, all)
+			t, err := lbTargetArg(ctx, rt, args, region, all)
 			if err != nil {
 				return err
 			}
@@ -834,9 +875,10 @@ An ephemeral IP goes with its forwarding rule.
 
 The components are shown first, then a confirmation is asked (default no;
 --yes skips it, and the non-interactive flow needs --yes). --dry-run reports
-what would be deleted.`,
+what would be deleted. On a terminal, without <name> the load balancers of
+the selected accounts are offered.`,
 		Example: "  polyctl gcp compute load-balancer delete lb-web-1 --yes",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			if timeout <= 0 {
@@ -846,7 +888,7 @@ what would be deleted.`,
 			if err != nil {
 				return err
 			}
-			t, err := resolveLBTarget(ctx, rt, args[0], region, all)
+			t, err := lbTargetArg(ctx, rt, args, region, all)
 			if err != nil {
 				return err
 			}

@@ -70,11 +70,15 @@ type lbEnsure struct {
 	backendPort     int64
 	checkPort       int64
 	sslCert         string
-	address         string
-	wait            bool
-	timeout         time.Duration
-	healthTimeout   time.Duration
-	names           lbNames
+	// newCert, when set, is a certificate to create as sslCert first (the
+	// "Create a new certificate..." choice of the interactive flow).
+	newCert       *platform.CertMaterial
+	newCertDesc   string
+	address       string
+	wait          bool
+	timeout       time.Duration
+	healthTimeout time.Duration
+	names         lbNames
 
 	// ip is the IP of the forwarding rule, once known.
 	ip string
@@ -189,6 +193,20 @@ func (e *lbEnsure) plan(ctx context.Context) (*platform.Plan, error) {
 		return nil, err
 	}
 	var plan platform.Plan
+	if e.newCert != nil {
+		mat, s := e.newCert, e.scope
+		plan.Add(platform.Step{Resource: "ssl-certificate/" + e.sslCert, Action: platform.Created, ID: s.certURL(e.sslCert),
+			Desc: fmt.Sprintf("%s, %s, expires %s", s.label(), strings.Join(mat.Names(), ","), mat.Leaf.NotAfter.UTC().Format("2006-01-02")),
+			Apply: func(ctx context.Context) (platform.Change, error) {
+				if err := s.insertCert(ctx, e.sslCert, e.newCertDesc, mat); err != nil {
+					return platform.Change{}, err
+				}
+				if sc, err := s.getCert(ctx, e.sslCert); err == nil {
+					storeSSLCert(ctx, e.rt, e.profile, sc)
+				}
+				return platform.Change{Resource: "ssl-certificate/" + e.sslCert, Action: platform.Created, ID: s.certURL(e.sslCert)}, nil
+			}})
+	}
 	steps := []func(context.Context) ([]platform.Step, error){
 		e.firewallSteps, e.checkSteps, e.groupSteps, e.backendSteps, e.frontendSteps, e.ruleSteps, e.healthSteps,
 	}
@@ -206,7 +224,7 @@ func (e *lbEnsure) plan(ctx context.Context) (*platform.Plan, error) {
 // certificate of an https load balancer and a proxy-only subnetwork of
 // the network in the region. A failed check is reported in a dry run too.
 func (e *lbEnsure) precheck(ctx context.Context) error {
-	if e.protocol == lbProtoHTTPS {
+	if e.protocol == lbProtoHTTPS && e.newCert == nil {
 		sc, err := e.scope.findCert(ctx, e.sslCert)
 		if err != nil {
 			return err

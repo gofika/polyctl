@@ -234,7 +234,12 @@ func resolveLB(ctx context.Context, rt *app.Runtime, ref, region string, all boo
 	for _, h := range hits {
 		names = append(names, fmt.Sprintf("gcp/%s (%s)", h.profile, (certScope{region: h.region}).label()))
 	}
-	return nil, &app.AmbiguousError{What: fmt.Sprintf("load balancer %q", ref), Candidates: names, Hint: "pass --profile <name>, --region <r> or --global to choose"}
+	amb := &app.AmbiguousError{What: fmt.Sprintf("load balancer %q", ref), Candidates: names, Hint: "pass --profile <name>, --region <r> or --global to choose"}
+	h, err := disambiguate(rt, amb, hits, func(h hit) string { return joinLabel(ref, (certScope{region: h.region}).label(), "gcp/"+h.profile) })
+	if err != nil {
+		return nil, err
+	}
+	return &lbRef{profile: h.profile, scope: certScope{c: h.c, region: h.region, timeout: timeout}, urlMap: ref}, nil
 }
 
 // prefixedName derives the name of a sibling resource: prefix<insert>rest
@@ -298,20 +303,25 @@ HTTPS proxy is exit code 1. A regional load balancer whose HTTPS proxy has no
 The certificate and proxy operations are always waited for; --no-wait
 returns once a new :443 forwarding rule was requested (--timeout bounds each
 wait, 10m). --dry-run checks the store without issuing anything and reads
-everything, reporting what would be done.`,
+everything, reporting what would be done.
+
+On a terminal, without <lb> the HTTP(S) load balancers of the selected
+accounts are offered (a global one only with an HTTPS proxy), and without
+--domain the domains of the certificates on its HTTPS proxies and of the
+local store, or another domain, typed.`,
 		Example: `  polyctl gcp compute load-balancer cert set lb-web-1 --domain example.com --dry-run
   polyctl gcp compute load-balancer cert set lb-web-1 --domain www.example.com --cert-file fullchain.pem --key-file privkey.pem`,
-		Args: cobra.ExactArgs(1),
+		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			o.lbName = args[0]
+			o.lbName = app.Arg(args, 0)
 			wait, timeout, err := wf.Resolve(cmd)
 			if err != nil {
 				return err
 			}
 			o.wait = wait
 			o.domain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(o.domain)), ".")
-			if o.domain == "" {
+			if o.domain == "" && !rt.Interactive() {
 				return app.UsageErrf("--domain is required (example.com or *.example.com)")
 			}
 			if (certFile == "") != (keyFile == "") {
@@ -329,6 +339,10 @@ everything, reporting what would be done.`,
 				if mat, err = loadCertMaterial(rt, certFile, keyFile); err != nil {
 					return err
 				}
+				if o.domain == "" {
+					// The interactive flow: the domain of the files.
+					o.domain = platform.CertDomain(mat.Names(), mat.Leaf.Subject.CommonName)
+				}
 				if !mat.Covers(o.domain) {
 					return app.UsageErrf("the certificate of --cert-file does not cover %s (it names %s)", o.domain, strings.Join(mat.Names(), ", "))
 				}
@@ -343,9 +357,21 @@ everything, reporting what would be done.`,
 			if !cmd.Flags().Changed("days") {
 				days = cfg.CertSettings().RenewDays
 			}
-			lb, err := resolveLB(ctx, rt, o.lbName, region, all, timeout)
-			if err != nil {
+			var lb *lbRef
+			if o.lbName == "" {
+				t, err := pickLBTarget(ctx, rt, region, all, "HTTP(S) load balancer in the selected GCP accounts", httpLB)
+				if err != nil {
+					return err
+				}
+				o.lbName, lb = t.name, lbRefOf(t, timeout)
+			} else if lb, err = resolveLB(ctx, rt, o.lbName, region, all, timeout); err != nil {
 				return err
+			}
+			if o.domain == "" {
+				if o.domain, err = pickCertDomain(ctx, rt, lb); err != nil {
+					return err
+				}
+				o.domain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(o.domain)), ".")
 			}
 			var pre []platform.Change
 			if mat == nil {
