@@ -7,6 +7,7 @@
 #   plus a check that tests moving the home directory also set USERPROFILE;
 # - go test in a temporary worktree checked out with CRLF line endings,
 #   as actions/checkout does on windows-latest (core.autocrlf=true);
+# - a build of the polyctl binary for every .goreleaser.yaml target;
 # - shellcheck of the install scripts, and a parse of install.ps1 when
 #   pwsh is installed.
 #
@@ -61,6 +62,20 @@ check_crlf() {
 	(cd "$crlf" && go test ./...)
 }
 
+# check_release builds the binary for every target of .goreleaser.yaml
+# (CGO off, as the release builds it), so a release tag cannot fail to build.
+check_release() {
+	local goos goarch out
+	for goos in darwin linux windows; do
+		for goarch in amd64 arm64; do
+			out="$logs/polyctl-$goos-$goarch"
+			CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build -trimpath -o "$out" ./cmd/polyctl || return 1
+			echo "built $goos/$goarch"
+			rm -f "$out"
+		done
+	done
+}
+
 check_scripts() {
 	shellcheck install.sh scripts/*.sh || return 1
 	if command -v pwsh >/dev/null 2>&1; then
@@ -77,7 +92,7 @@ if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
 fi
 crlf="$logs/crlf"
 
-names=(host linux darwin windows crlf scripts)
+names=(host linux darwin windows crlf release scripts)
 check_host >"$logs/host.log" 2>&1 &
 pids=($!)
 for goos in linux darwin windows; do
@@ -85,6 +100,8 @@ for goos in linux darwin windows; do
 	pids+=($!)
 done
 check_crlf >"$logs/crlf.log" 2>&1 &
+pids+=($!)
+check_release >"$logs/release.log" 2>&1 &
 pids+=($!)
 check_scripts >"$logs/scripts.log" 2>&1 &
 pids+=($!)
