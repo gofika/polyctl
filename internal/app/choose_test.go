@@ -150,3 +150,28 @@ func TestProfileForAsksInTheInteractiveFlow(t *testing.T) {
 		t.Errorf("NoPrompt ProfileFor = %v, want *AmbiguousError", err)
 	}
 }
+
+// In the interactive flow an ambiguous owner or resource is a pick, not
+// exit code 5.
+func TestAmbiguityIsAPickInTheInteractiveFlow(t *testing.T) {
+	h := newHarness(t, app.Flags{}, nil)
+	h.seedStandard()
+	p := prompttest.New(t, prompttest.Label("namecom/b"), prompttest.Label("namecom/a"))
+	h.rt.Picker = p
+	tgt, err := h.rt.ResolveDomain(ctx, "www.shared.com", platform.ResZone)
+	if err != nil || tgt.Profile != "b" || tgt.ResourceID != "z-shared-b" {
+		t.Fatalf("ResolveDomain = %+v, %v", tgt, err)
+	}
+	r, err := h.rt.ResolveResource(ctx, platform.NameCom, platform.ResZone, "shared.com")
+	if err != nil || r.ID != "z-shared-a" {
+		t.Fatalf("ResolveResource = %+v, %v", r, err)
+	}
+	if a := p.Find(`Ambiguous owner of zone "shared.com"; use which one?`); len(a.Options) != 2 || !strings.Contains(a.Options[0].Label, "namecom/a  zone shared.com  id z-shared-a") {
+		t.Errorf("owner options %+v", a.Options)
+	}
+	p.Done()
+	h.rt.Picker = prompttest.New(t, prompttest.Abort{})
+	if _, err := h.rt.ResolveDomain(ctx, "www.shared.com", platform.ResZone); !errors.Is(err, prompt.ErrAborted) {
+		t.Errorf("abort = %v", err)
+	}
+}

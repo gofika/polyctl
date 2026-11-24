@@ -3,11 +3,13 @@ package app
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/gofika/polyctl/internal/config"
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt"
 )
 
 // ResolveResource finds the account that holds a resource named by the
@@ -131,7 +133,22 @@ func (rt *Runtime) ResolveResource(ctx context.Context, id platform.ID, kind pla
 	case len(platformsHit) > 1:
 		hint = "pass --profile <name> and/or --platform <name> to choose"
 	}
-	return inventory.Resource{}, &AmbiguousError{What: fmt.Sprintf("%s %q", what, ref), Candidates: names, Hint: hint}
+	amb := &AmbiguousError{What: fmt.Sprintf("%s %q", what, ref), Candidates: names, Hint: hint}
+	for i, r := range found {
+		label := fmt.Sprintf("%s/%s  %s  %s", r.Platform, r.Profile, r.Name, r.ID)
+		if r.ParentID != "" {
+			label += "  in " + r.ParentID
+		}
+		amb.Options = append(amb.Options, prompt.Option{Label: label, Value: strconv.Itoa(i)})
+	}
+	// The interactive flow asks which one; the non-interactive flow keeps
+	// the error (exit code 5).
+	v, err := rt.Disambiguate(amb)
+	if err != nil {
+		return inventory.Resource{}, err
+	}
+	i, _ := strconv.Atoi(v)
+	return found[i], nil
 }
 
 // resourceAccounts returns the accounts able to hold kind on platform id

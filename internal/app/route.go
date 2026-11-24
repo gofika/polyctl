@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/gofika/polyctl/internal/config"
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt"
 )
 
 // Target is the resolved owner of a domain for a given kind of operation.
@@ -104,7 +106,18 @@ func (rt *Runtime) ResolveDomain(ctx context.Context, domain string, kind platfo
 			default:
 				hint = "the account holds several resources with this name; use the platform's own command with the resource id"
 			}
-			return nil, &AmbiguousError{What: fmt.Sprintf("owner of %s %q", kind, best), Candidates: names, Hint: hint}
+			amb := &AmbiguousError{What: fmt.Sprintf("owner of %s %q", kind, best), Candidates: names, Hint: hint}
+			for i, o := range owners {
+				amb.Options = append(amb.Options, prompt.Option{Label: fmt.Sprintf("%s/%s  %s %s  id %s", o.Platform, o.Profile, o.Type, o.Domain, o.ResourceID), Value: strconv.Itoa(i)})
+			}
+			// The interactive flow asks which owner; the non-interactive
+			// flow keeps the error (exit code 5).
+			v, err := rt.Disambiguate(amb)
+			if err != nil {
+				return nil, err
+			}
+			i, _ := strconv.Atoi(v)
+			owners = owners[i : i+1]
 		}
 		o := owners[0]
 		return &Target{Platform: o.Platform, Profile: o.Profile, Type: o.Type, ResourceID: o.ResourceID, Domain: o.Domain}, nil
