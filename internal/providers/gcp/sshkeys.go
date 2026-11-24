@@ -52,8 +52,10 @@ func (k sshKey) same(user string, key ssh.PublicKey) bool {
 var (
 	// commentUserRe takes the user from the e-mail address at the end of a
 	// key's comment: the whole local part ("... john.smith@my-mac.local"
-	// -> "john.smith").
-	commentUserRe = regexp.MustCompile(`([A-Za-z0-9._-]+)@[A-Za-z0-9.-]+\s*$`)
+	// -> "john.smith"). The address starts the comment or follows a space,
+	// so a local part with other characters ("john+ci@host") gives no user
+	// rather than its tail.
+	commentUserRe = regexp.MustCompile(`(?:^|\s)([A-Za-z0-9._-]+)@[A-Za-z0-9.-]+\s*$`)
 	sshUserRe     = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]*$`)
 	userPrefixRe  = regexp.MustCompile(`^([^\s:]+):(\S.*)$`)
 )

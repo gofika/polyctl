@@ -137,6 +137,8 @@ func TestCommentUser(t *testing.T) {
 		"key of alice@x.com ": "alice",
 		"laptop":              "",
 		"-bad@host":           "",
+		"john+ci@host":        "",
+		"key:alice@host":      "",
 	} {
 		if got := commentUser(comment); got != want {
 			t.Errorf("commentUser(%q) = %q, want %q", comment, got, want)

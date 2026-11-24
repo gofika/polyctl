@@ -195,7 +195,7 @@ polyctl gcp compute instance ssh-key remove web-1 --fingerprint SHA256:abc... --
 Shared behaviour is in [Instances](../instances.md#managing-ssh-keys). On Compute Engine:
 
 - `add` and `remove` edit only the instance's own `ssh-keys` metadata through the API; every other line and metadata item is kept. No SSH login; the instance may be stopped. Keys in the legacy `sshKeys` item count as present and are removed too.
-- **User**: `--user`, else the whole `user` of the `user@host` that ends the key's comment (dots and hyphens included); a terminal asks, the non-interactive flow is exit code 2. `remove` without `--user` removes the key for every user that has it.
+- **User**: `--user`, else the whole `user` of the `user@host` that ends the key's comment (dots and hyphens included; a local part with other characters, such as `john+ci`, gives no user); a terminal asks, the non-interactive flow is exit code 2. `remove` without `--user` removes the key for every user that has it.
 - **Project-wide keys** are listed `read-only` and never changed (`add` of a key already there is `unchanged`). With `block-project-ssh-keys=TRUE` they are listed `ignored`, and `add` puts the key into the instance metadata.
 - **Expired keys** (`google-ssh` with a past `expireOn`) are listed `ignored`; `add` adds the key again without an expiry.
 - **OS Login** (`enable-oslogin=TRUE` on the instance, else on the project): `list` marks every key `ignored`; `add` and `remove` are exit code 7 and point at `gcloud compute os-login ssh-keys add`. An organization policy that forces OS Login (`compute.requireOsLogin`) is not detected.
