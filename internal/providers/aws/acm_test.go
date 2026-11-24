@@ -92,17 +92,6 @@ func TestPickCertificate(t *testing.T) {
 	}
 }
 
-func TestACMToken(t *testing.T) {
-	a := acmToken("lab", "ap-east-1", "*.example.com", "EC_prime256v1", []string{"example.com", "WWW.example.com"})
-	b := acmToken("lab", "ap-east-1", "*.example.com", "EC_prime256v1", []string{"www.example.com", "example.com"})
-	if a != b || len(a) != 32 || strings.Trim(a, "0123456789abcdef") != "" {
-		t.Errorf("tokens %q %q", a, b)
-	}
-	if a == acmToken("lab", "ap-east-1", "*.example.com", "RSA_2048", []string{"example.com", "www.example.com"}) {
-		t.Error("the key algorithm does not change the token")
-	}
-}
-
 func TestACMErr(t *testing.T) {
 	denied := acmErr("RequestCertificate", "ap-east-1", &fakeAPIError{"AccessDeniedException", "nope"})
 	if !errors.Is(denied, platform.ErrUnauthorized) || !strings.Contains(denied.Error(), "acm:RequestCertificate") {

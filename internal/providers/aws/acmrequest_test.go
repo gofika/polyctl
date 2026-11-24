@@ -1,6 +1,7 @@
 package aws
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -232,5 +233,51 @@ func TestValidationProblem(t *testing.T) {
 	cert.Validation[0] = platform.ValidationRecord{Domain: "x.example.com", Method: "EMAIL"}
 	if err := validationProblem(cert); err == nil || !strings.Contains(err.Error(), "EMAIL") {
 		t.Errorf("email validation = %v", err)
+	}
+}
+
+// A run after the certificate of an earlier run failed or was deleted
+// requests a new certificate: the token of each run is fresh, so ACM does
+// not hand back the old ARN.
+func TestACMRequestRerunAfterFailedOrDeleted(t *testing.T) {
+	h, _ := newACMHarness(t, app.Flags{}, nil)
+	h.acm().dvoAfter, h.acm().recordsAfter = 0, 0
+	if err := h.run("acm", "certificate", "request", "example.com"); err != nil {
+		t.Fatal(err)
+	}
+	first := h.requestOut().ARN
+	// CAA blocked it after its records were published.
+	h.ec2.mu.Lock()
+	h.acm().certs[0].status = "FAILED"
+	h.ec2.mu.Unlock()
+	h.resetACM()
+	if err := h.run("acm", "certificate", "request", "example.com"); err != nil {
+		t.Fatalf("rerun after FAILED: %v", err)
+	}
+	second := h.requestOut().ARN
+	if second == first || len(h.acm().certs) != 2 {
+		t.Errorf("rerun after FAILED = %s (first %s), %d certificates", second, first, len(h.acm().certs))
+	}
+	// Deleted.
+	h.ec2.mu.Lock()
+	h.acm().certs = h.acm().certs[:1]
+	h.ec2.mu.Unlock()
+	h.resetACM()
+	if err := h.run("acm", "certificate", "request", "example.com"); err != nil {
+		t.Fatalf("rerun after delete: %v", err)
+	}
+	if third := h.requestOut().ARN; third == second || third == first {
+		t.Errorf("rerun after delete = %s", third)
+	}
+}
+
+// A FAILED certificate whose records were published does not count as a
+// finished wait.
+func TestWaitValidationRecordsFailedWithRecords(t *testing.T) {
+	h, _ := newACMHarness(t, app.Flags{}, nil)
+	c := h.addCert(&fakeCert{region: "ap-east-1", domain: "example.com", status: "FAILED", failure: "CAA_ERROR"})
+	cl := &client{region: "ap-east-1", acmFor: func(r string) acmAPI { return newACM(awssdk.Config{Region: r}) }}
+	if _, err := cl.waitValidationRecords(context.Background(), "ap-east-1", c.arn, true, time.Minute); err == nil || !strings.Contains(err.Error(), "FAILED") {
+		t.Errorf("failed certificate with records = %v", err)
 	}
 }

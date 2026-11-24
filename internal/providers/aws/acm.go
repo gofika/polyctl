@@ -5,8 +5,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rsa"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"slices"
@@ -484,15 +482,6 @@ func nameSet(names ...string) []string {
 	return slices.Compact(out)
 }
 
-// acmToken derives the IdempotencyToken of a request from what it asks
-// for: the same request in the same account and region gets the same
-// token (ACM then returns the first certificate), and any difference
-// another one. ACM takes at most 32 word characters.
-func acmToken(profile, region, domain, keyAlgorithm string, sans []string) string {
-	sum := sha256.Sum256([]byte(strings.Join([]string{profile, region, strings.ToLower(domain), keyAlgorithm, strings.Join(nameSet(sans...), ",")}, "|")))
-	return hex.EncodeToString(sum[:])[:32]
-}
-
 // validationComplete reports whether every name of the certificate has its
 // DNS validation record published.
 func validationComplete(c *platform.Certificate) bool {
@@ -535,10 +524,10 @@ func statusWithReason(c *platform.Certificate) string {
 
 // waitValidationRecords reads a certificate until its DNS validation
 // records are all published (every acmValidationPoll, at most timeout).
-// Without wait it reads it once. A certificate that leaves
-// PENDING_VALIDATION without its records (FAILED, for a name ACM will not
-// issue for), or a validation that failed, ends the wait with an error at
-// once.
+// Without wait it reads it once. A certificate that is neither
+// PENDING_VALIDATION nor ISSUED (FAILED, for a name ACM will not issue for,
+// even when its records were published), or a validation that failed, ends
+// the wait with an error at once.
 func (c *client) waitValidationRecords(ctx context.Context, region, arn string, wait bool, timeout time.Duration) (*platform.Certificate, error) {
 	if !wait {
 		return c.DescribeCertificate(ctx, region, arn)
@@ -551,11 +540,16 @@ func (c *client) waitValidationRecords(ctx context.Context, region, arn string, 
 			return 0, "", err
 		}
 		last = cert
+		// The status first: a certificate that failed after its records
+		// were published still lists them.
+		if cert.Status != acmPendingValidation && cert.Status != acmIssued {
+			return 0, cert.Status, fmt.Errorf("certificate %s is %s: ACM will not publish its validation records", arn, statusWithReason(cert))
+		}
 		if validationComplete(cert) {
 			return platform.WaitDone, cert.Status, nil
 		}
 		if cert.Status != acmPendingValidation {
-			return 0, cert.Status, fmt.Errorf("certificate %s is %s: ACM will not publish its validation records", arn, statusWithReason(cert))
+			return 0, cert.Status, fmt.Errorf("certificate %s is %s without its validation records", arn, statusWithReason(cert))
 		}
 		if err := validationProblem(cert); err != nil {
 			return 0, cert.Status, err

@@ -260,9 +260,9 @@ ACM certificates belong to one region of one account. CloudFront uses `us-east-1
 
   - Default `*.<domain>` plus `<domain>` (`--wildcard`, `defaults.aws.acm.wildcard`); `--wildcard=false` requests `<domain>` alone. `--san` adds names (10 per certificate by default).
   - `--key-algorithm` (default `defaults.aws.acm.default_key_algorithm`, built-in `EC_prime256v1`).
-  - An existing certificate with the same names and key algorithm (pending or issued) is reused (`unchanged`); it never creates duplicates.
+  - An existing certificate with the same names and key algorithm (pending or issued) is reused (`unchanged`); it never creates duplicates. A failed, revoked or deleted certificate is not reused: a new run requests a new one.
   - Waits for the validation records (`--timeout 5m`) and prints the `polyctl dns ensure <domain> --record <name>:CNAME:<value>:300:false` command that writes them. **`request` does not write DNS** and does not wait for issuance. Keep the records while the certificate is in use: ACM renews through them.
-  - Names ACM refuses (such as under `example.com`) fail with the reason (exit code 1). EMAIL validation is not supported.
+  - Names ACM refuses (such as under `example.com`) fail with the reason (exit code 1), also when the certificate failed after its records were published. EMAIL validation is not supported.
 - `certificate import <domain>` imports the certificate from the local store (see [Certificates](../commands.md#certificates)), `--staging` from the staging store, or from `--cert-file`, `--key-file` (unencrypted) and `--chain-file`. An imported certificate of the same domain in the region is **re-imported in place, keeping its ARN**, so load balancers and CloudFront need no change. `--arn` names the target; `--new` imports a new certificate (tagged `polyctl:domain=<domain>`). A different key algorithm, an expired certificate or an Amazon-issued target is exit code 1. The same serial number is `unchanged`; several candidates are exit code 5.
 
 ## RDS database instances

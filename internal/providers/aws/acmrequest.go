@@ -47,9 +47,9 @@ pick RSA_2048 otherwise).
 A certificate of the same primary name, names and key algorithm that is
 PENDING_VALIDATION or ISSUED is reused: it is reported unchanged with its
 records, and nothing is requested. A certificate of the domain with other names
-does not count (a note names it). The request carries an idempotency token
-derived from what it asks for, so a retried request returns the same
-certificate.
+does not count (a note names it). Each run sends a fresh idempotency token:
+a retry inside the run returns the same certificate, and a run after a
+certificate failed or was deleted requests a new one.
 
 The account is --profile (or the current profile) and the region --region (or
 the profile's). --wait (default) waits for the records (2 second polls, at most
@@ -226,7 +226,7 @@ it through them. On Cloudflare they must not be proxied.`,
 				allTags[k] = v
 			}
 			arn, err := c.RequestCertificate(ctx, platform.CertificateRequest{Region: region, Domain: primary, SANs: names, KeyAlgorithm: alg,
-				Token: acmToken(profile, region, primary, alg, names), Tags: allTags})
+				Token: newClientToken(), Tags: allTags})
 			if err != nil {
 				return err
 			}
