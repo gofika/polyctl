@@ -1,13 +1,16 @@
 package aws
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -380,11 +383,52 @@ func al2023Parameter(arch string) string {
 	return "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-" + arch
 }
 
+// al2023ImageName matches the name of a standard Amazon Linux 2023 image:
+// al2023-ami-<release>-kernel-<kernel>-<arch>, for every kernel line
+// (6.1, 6.12, 6.18, ...). Minimal, ECS, EKS and other derived images have
+// other names and do not match.
+var al2023ImageName = regexp.MustCompile(`^al2023-ami-(2023(?:\.\d+)*)-kernel-(\d+(?:\.\d+)*)-(x86_64|arm64)$`)
+
+// versionCmp compares two dotted numeric versions ("2023.9.20251117.0").
+func versionCmp(a, b string) int {
+	as, bs := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(as) || i < len(bs); i++ {
+		var x, y int
+		if i < len(as) {
+			x, _ = strconv.Atoi(as[i])
+		}
+		if i < len(bs) {
+			y, _ = strconv.Atoi(bs[i])
+		}
+		if x != y {
+			return cmp.Compare(x, y)
+		}
+	}
+	return 0
+}
+
+// newerAL2023 reports whether image a, of release ra and kernel ka, is to
+// be preferred over image b: the higher release, then the later creation
+// time, then the higher kernel.
+func newerAL2023(a imageInfo, ra, ka string, b imageInfo, rb, kb string) bool {
+	if c := versionCmp(ra, rb); c != 0 {
+		return c > 0
+	}
+	if a.Created != b.Created {
+		return a.Created > b.Created
+	}
+	if c := versionCmp(ka, kb); c != 0 {
+		return c > 0
+	}
+	return a.Name > b.Name
+}
+
 // latestAL2023AMI returns the latest Amazon Linux 2023 image of arch: the
 // SSM public parameter first (deterministic), else, when it cannot be read
-// (no ssm:GetParameter permission, ...), the newest image named
-// al2023-ami-2023.*-kernel-6.1-<arch> owned by Amazon. note receives a
-// line about the fallback.
+// (no ssm:GetParameter permission, ...), the newest standard image named
+// al2023-ami-2023.*-kernel-*-<arch> owned by Amazon, of any kernel line
+// (highest release, then latest creation time). note receives a line
+// about the fallback.
 func (c *client) latestAL2023AMI(ctx context.Context, region, arch string, note func(string)) (imageInfo, error) {
 	region = c.regionOr(region)
 	out, err := c.ssmFor(region).GetParameter(ctx, &ssm.GetParameterInput{Name: awssdk.String(al2023Parameter(arch))})
@@ -395,12 +439,12 @@ func (c *client) latestAL2023AMI(ctx context.Context, region, arch string, note 
 		err = errors.New("the parameter holds no image id")
 	}
 	if note != nil {
-		note(fmt.Sprintf("note: cannot read %s (%v); picking the newest al2023 kernel-6.1 image instead", al2023Parameter(arch), mapErr(err)))
+		note(fmt.Sprintf("note: cannot read %s (%v); picking the newest Amazon Linux 2023 image instead", al2023Parameter(arch), mapErr(err)))
 	}
 	pg := ec2.NewDescribeImagesPaginator(c.ec2For(region), &ec2.DescribeImagesInput{
 		Owners: []string{"amazon"},
 		Filters: []ec2types.Filter{
-			{Name: awssdk.String("name"), Values: []string{"al2023-ami-2023.*-kernel-6.1-" + arch}},
+			{Name: awssdk.String("name"), Values: []string{"al2023-ami-2023.*-kernel-*-" + arch}},
 			{Name: awssdk.String("state"), Values: []string{"available"}},
 			{Name: awssdk.String("architecture"), Values: []string{arch}},
 			{Name: awssdk.String("virtualization-type"), Values: []string{"hvm"}},
@@ -408,6 +452,7 @@ func (c *client) latestAL2023AMI(ctx context.Context, region, arch string, note 
 		},
 	})
 	var best *imageInfo
+	var bestRel, bestKernel string
 	for pg.HasMorePages() {
 		page, err := pg.NextPage(ctx)
 		if err != nil {
@@ -415,13 +460,17 @@ func (c *client) latestAL2023AMI(ctx context.Context, region, arch string, note 
 		}
 		for _, im := range page.Images {
 			info := imageFrom(im)
-			if best == nil || info.Created > best.Created || info.Created == best.Created && info.Name > best.Name {
-				best = &info
+			m := al2023ImageName.FindStringSubmatch(info.Name)
+			if m == nil || m[3] != arch || info.Arch != "" && info.Arch != arch {
+				continue
+			}
+			if best == nil || newerAL2023(info, m[1], m[2], *best, bestRel, bestKernel) {
+				best, bestRel, bestKernel = &info, m[1], m[2]
 			}
 		}
 	}
 	if best == nil {
-		return imageInfo{}, fmt.Errorf("no Amazon Linux 2023 image for %s found in %s; pass --ami <ami-id>", arch, region)
+		return imageInfo{}, fmt.Errorf("%w: no Amazon Linux 2023 (al2023) image for %s in %s; pass --ami <ami-id>", platform.ErrNotFound, arch, region)
 	}
 	return *best, nil
 }

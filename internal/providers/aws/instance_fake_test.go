@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -56,15 +57,19 @@ type fakeInstances struct {
 	// offeringCalls are the filters of every DescribeInstanceTypeOfferings.
 	offeringCalls []ec2.DescribeInstanceTypeOfferingsInput
 	images        map[string][]ec2types.Image
-	ssmValue      map[string]string // parameter -> value
-	ssmErr        error
-	volErr        error
-	errs          map[string]error // call -> error of that call
-	runs          []*ec2.RunInstancesInput
-	filters       [][]ec2types.Filter
-	pageSize      int
-	nextIP        int
-	nextID        int
+	// imagePage is the page length of a filtered DescribeImages (0: all).
+	imagePage int
+	// imageCalls counts the DescribeImages calls.
+	imageCalls int
+	ssmValue   map[string]string // parameter -> value
+	ssmErr     error
+	volErr     error
+	errs       map[string]error // call -> error of that call
+	runs       []*ec2.RunInstancesInput
+	filters    [][]ec2types.Filter
+	pageSize   int
+	nextIP     int
+	nextID     int
 }
 
 func (fi *fakeInstances) init() {
@@ -524,6 +529,7 @@ func (f *fakeEC2) DescribeImages(_ context.Context, in *ec2.DescribeImagesInput,
 	f.shared.mu.Lock()
 	defer f.shared.mu.Unlock()
 	f.shared.inst.init()
+	f.shared.inst.imageCalls++
 	out := &ec2.DescribeImagesOutput{}
 	for _, im := range f.shared.inst.images[f.region] {
 		if len(in.ImageIds) > 0 {
@@ -537,8 +543,8 @@ func (f *fakeEC2) DescribeImages(_ context.Context, in *ec2.DescribeImagesInput,
 			v := flt.Values[0]
 			switch awssdk.ToString(flt.Name) {
 			case "name":
-				prefix, suffix, _ := strings.Cut(v, "*")
-				ok = ok && strings.HasPrefix(awssdk.ToString(im.Name), prefix) && strings.HasSuffix(awssdk.ToString(im.Name), suffix)
+				m, _ := path.Match(v, awssdk.ToString(im.Name))
+				ok = ok && m
 			case "architecture":
 				ok = ok && string(im.Architecture) == v
 			}
@@ -546,6 +552,17 @@ func (f *fakeEC2) DescribeImages(_ context.Context, in *ec2.DescribeImagesInput,
 		if ok {
 			out.Images = append(out.Images, im)
 		}
+	}
+	if n := f.shared.inst.imagePage; n > 0 && len(in.ImageIds) == 0 {
+		start := 0
+		if in.NextToken != nil {
+			start, _ = strconv.Atoi(*in.NextToken)
+		}
+		end := min(start+n, len(out.Images))
+		if end < len(out.Images) {
+			out.NextToken = awssdk.String(strconv.Itoa(end))
+		}
+		out.Images = out.Images[start:end]
 	}
 	return out, nil
 }

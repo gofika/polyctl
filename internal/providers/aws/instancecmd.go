@@ -634,9 +634,12 @@ cannot be told apart later.
 
 The image is --ami, or the latest Amazon Linux 2023 image of the instance
 type's architecture (--arch, by default arm64 for Graviton types and x86_64
-otherwise): the SSM parameter al2023-ami-kernel-default-<arch> first, the
-newest Amazon "al2023-ami-2023.*-kernel-6.1-<arch>" image when the
-parameter cannot be read (the two may use different kernels).
+otherwise; a size resolves to an x86_64 type): the SSM parameter
+al2023-ami-kernel-default-<arch> first; when the parameter cannot be read,
+the newest standard Amazon image named "al2023-ami-2023.*-kernel-*-<arch>"
+of any kernel line (highest release, then latest creation time; minimal
+images excluded), so the two may use different kernels. No such image is
+exit code 4; pass --ami <ami-id> for any other image.
 
 --type, --subnet, --sg and --key-pair default to defaults.aws.instance_type,
 subnet_id, security_group_ids and key_name in config.yaml; a missing type

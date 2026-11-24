@@ -212,20 +212,105 @@ func TestInstanceCreateAMIFallback(t *testing.T) {
 	h := newInstanceHarness(t, app.Flags{DryRun: true})
 	h.ec2.inst.init()
 	h.ec2.inst.ssmErr = &fakeAPIError{"AccessDeniedException", "not allowed"}
-	h.ec2.inst.images["ap-east-1"] = []ec2types.Image{
-		{ImageId: awssdk.String("ami-old"), Name: awssdk.String("al2023-ami-2023.8-kernel-6.1-x86_64"), Architecture: "x86_64", CreationDate: awssdk.String("2026-09-01T00:00:00.000Z")},
-		{ImageId: awssdk.String("ami-new"), Name: awssdk.String("al2023-ami-2023.9-kernel-6.1-x86_64"), Architecture: "x86_64", CreationDate: awssdk.String("2026-10-01T00:00:00.000Z")},
-		{ImageId: awssdk.String("ami-arm"), Name: awssdk.String("al2023-ami-2023.9-kernel-6.1-arm64"), Architecture: "arm64", CreationDate: awssdk.String("2026-11-01T00:00:00.000Z")},
+	img := func(id, name, arch, created string) ec2types.Image {
+		return ec2types.Image{ImageId: awssdk.String(id), Name: awssdk.String(name), Architecture: ec2types.ArchitectureValues(arch), CreationDate: awssdk.String(created)}
 	}
+	h.ec2.inst.images["ap-east-1"] = []ec2types.Image{
+		img("ami-old", "al2023-ami-2023.8.20250901.0-kernel-6.1-x86_64", "x86_64", "2026-09-01T00:00:00.000Z"),
+		img("ami-new61", "al2023-ami-2023.9.20251101.0-kernel-6.1-x86_64", "x86_64", "2026-11-01T00:00:00.000Z"),
+		// A newer kernel line of the same release, published a minute later.
+		img("ami-new618", "al2023-ami-2023.9.20251101.0-kernel-6.18-x86_64", "x86_64", "2026-11-01T00:01:00.000Z"),
+		// A re-published older release must not win on time alone.
+		img("ami-repub", "al2023-ami-2023.8.20250901.1-kernel-6.1-x86_64", "x86_64", "2026-11-20T00:00:00.000Z"),
+		// Passes the server-side name filter, not the client-side pattern.
+		img("ami-odd", "al2023-ami-2023.99.20251122.0-kernel-6.18-rt-x86_64", "x86_64", "2026-11-22T00:00:00.000Z"),
+		img("ami-min", "al2023-ami-minimal-2023.9.20251120.0-kernel-6.18-x86_64", "x86_64", "2026-11-21T00:00:00.000Z"),
+		img("ami-arm", "al2023-ami-2023.9.20251120.0-kernel-6.18-arm64", "arm64", "2026-11-21T00:00:00.000Z"),
+	}
+	h.ec2.inst.imagePage = 1
 	if err := h.run("ec2", "instance", "create", "x", "--type", "t3.nano"); err != nil {
 		t.Fatal(err)
 	}
-	if rep := h.report(); !strings.Contains(rep.Changes[0].Detail, "ami=ami-new") || !strings.Contains(h.stderr.String(), "kernel-6.1") {
+	if rep := h.report(); !strings.Contains(rep.Changes[0].Detail, "ami=ami-new618") || !strings.Contains(h.stderr.String(), "newest Amazon Linux 2023 image") {
 		t.Errorf("fallback = %+v / %s", rep, h.stderr.String())
 	}
-	h.ec2.inst.images["ap-east-1"] = nil
-	if err := h.run("ec2", "instance", "create", "x", "--type", "t3.nano"); err == nil || !strings.Contains(err.Error(), "--ami") {
+	if h.ec2.inst.imageCalls < 5 {
+		t.Errorf("DescribeImages calls = %d, want every page read", h.ec2.inst.imageCalls)
+	}
+	h.stdout.Reset()
+	if err := h.run("ec2", "instance", "create", "x", "--type", "t4g.small"); err != nil {
+		t.Fatal(err)
+	}
+	if rep := h.report(); !strings.Contains(rep.Changes[0].Detail, "ami=ami-arm") {
+		t.Errorf("arm64 fallback = %+v", rep)
+	}
+	h.ec2.inst.images["ap-east-1"] = h.ec2.inst.images["ap-east-1"][4:6] // no standard image
+	err := h.run("ec2", "instance", "create", "x", "--type", "t3.nano")
+	if !errors.Is(err, platform.ErrNotFound) || !strings.Contains(err.Error(), "--ami") || !strings.Contains(err.Error(), "x86_64") || !strings.Contains(err.Error(), "ap-east-1") || !strings.Contains(err.Error(), "Amazon Linux 2023") {
 		t.Errorf("no image = %v", err)
+	}
+	if w := h.writes(); len(w) != 0 {
+		t.Errorf("dry run wrote: %v", w)
+	}
+}
+
+func TestInstanceCreateImageOverrides(t *testing.T) {
+	h := newInstanceHarness(t, app.Flags{DryRun: true})
+	// --ami replaces the default image, and the image's architecture decides.
+	if err := h.run("ec2", "instance", "create", "x", "--type", "t4g.small", "--ami", "ami-0arm"); err != nil {
+		t.Fatalf("%v\n%s", err, h.stderr.String())
+	}
+	if d := h.report().Changes[0].Detail; !strings.Contains(d, "ami=ami-0arm") {
+		t.Errorf("--ami detail = %q", d)
+	}
+	// An image the type cannot run.
+	h.stdout.Reset()
+	if err := h.run("ec2", "instance", "create", "x", "--type", "t4g.small", "--ami", "ami-0x86"); err == nil || !strings.Contains(err.Error(), "x86_64") {
+		t.Errorf("x86_64 image on t4g = %v", err)
+	}
+	// An explicit --os al2023 is the default rule.
+	h.stdout.Reset()
+	if err := h.run("ec2", "instance", "create", "x", "--type", "t3.nano", "--os", "al2023", "--arch", "x86_64"); err != nil {
+		t.Fatal(err)
+	}
+	if d := h.report().Changes[0].Detail; !strings.Contains(d, "ami=ami-0x86") {
+		t.Errorf("--os al2023 detail = %q", d)
+	}
+	// --arch the type does not run.
+	if err := h.run("ec2", "instance", "create", "x", "--type", "t4g.small", "--arch", "x86_64"); !errors.Is(err, app.ErrUsage) {
+		t.Errorf("--arch x86_64 on t4g = %v", err)
+	}
+	if w := h.writes(); len(w) != 0 {
+		t.Errorf("dry run wrote: %v", w)
+	}
+}
+
+func TestAL2023ImageName(t *testing.T) {
+	for name, want := range map[string]bool{
+		"al2023-ami-2023.9.20251117.0-kernel-6.1-x86_64":         true,
+		"al2023-ami-2023.9.20251117.0-kernel-6.12-arm64":         true,
+		"al2023-ami-2023.10.20260301.0-kernel-7.0-x86_64":        true,
+		"al2023-ami-2023.9-kernel-6.18-x86_64":                   true,
+		"al2023-ami-minimal-2023.9.20251117.0-kernel-6.1-x86_64": false,
+		"al2023-ami-ecs-hvm-2023.0.20251117-kernel-6.1-x86_64":   false,
+		"al2023-ami-2023.9.20251117.0-kernel-6.1-x86_64.gpu":     false,
+		"al2023-ami-2023.9.20251117.0-x86_64":                    false,
+		"amzn2-ami-kernel-5.10-hvm-2.0.20251117.0-x86_64-gp2":    false,
+	} {
+		if got := al2023ImageName.MatchString(name); got != want {
+			t.Errorf("%s = %v, want %v", name, got, want)
+		}
+	}
+	a := imageInfo{Name: "a", Created: "2026-11-01"}
+	b := imageInfo{Name: "b", Created: "2026-12-01"}
+	if !newerAL2023(a, "2023.10.1", "6.1", b, "2023.9.9", "6.1") {
+		t.Error("release 2023.10 must beat 2023.9 whatever the time")
+	}
+	if newerAL2023(a, "2023.9.1", "6.18", b, "2023.9.1", "6.1") {
+		t.Error("the later creation time must win within one release")
+	}
+	if !newerAL2023(a, "2023.9.1", "6.18", imageInfo{Name: "c", Created: a.Created}, "2023.9.1", "6.12") {
+		t.Error("kernel 6.18 must beat 6.12 at the same release and time")
 	}
 }
 
