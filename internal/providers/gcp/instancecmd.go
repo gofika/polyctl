@@ -671,10 +671,11 @@ them anyway). Unlike on AWS and Alibaba Cloud, where an instance binds one
 key pair and the two flags take one key and exclude each other, both flags
 repeat and combine here: Compute Engine metadata holds any number of keys.
 Linux instances log in with an SSH key only: polyctl never sets or
-enables a password. Without any key of its own, a Linux instance is
-created only when the project metadata holds SSH keys (not blocked) or
-enables OS Login; otherwise create is exit code 2 before anything is
-written.
+enables a password. Without any key of its own, a Linux instance (any
+image but --os windows, an image of the windows-cloud project or one
+with the WINDOWS guest OS feature) is created only when the project
+metadata holds SSH keys (not blocked) or enables OS Login; otherwise
+create is exit code 2 before anything is written.
 --tag and defaults.gcp.tags are network tags. The instance
 gets the service account --service-account (default: the default compute
 service account), Shielded VM with vTPM and integrity monitoring, and
@@ -731,15 +732,18 @@ func (o *createOptions) windows() bool {
 // checkProjectLogin makes sure a Linux instance created without an SSH key
 // of its own can be logged in to: the project metadata holds SSH keys
 // (and does not block them), or enables OS Login. Anything else, a project
-// metadata that cannot be read included, is a usage error: pass a key.
+// metadata the account may not read included, is a usage error: pass a
+// key. Other read failures keep their own class.
 func checkProjectLogin(rt *app.Runtime, read func() (*compute.Metadata, error)) error {
 	const pass = "pass --ssh-key <public key> or --ssh-key-file <path>, or set defaults.gcp.ssh_keys (Linux instances log in with an SSH key only, never a password)"
 	md, err := read()
 	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return err
+		if errors.Is(err, platform.ErrForbidden) {
+			return app.UsageErrf("no SSH key given, and the project metadata cannot be read to find one (%v): %s", err, pass)
 		}
-		return app.UsageErrf("no SSH key given, and the project metadata cannot be read to find one (%v): %s", err, pass)
+		// Anything else (an expired login, a network failure) keeps its
+		// own exit code.
+		return fmt.Errorf("no SSH key given, and the project metadata cannot be read to find one: %w", err)
 	}
 	switch {
 	case osLoginEnabled(md):
@@ -871,24 +875,6 @@ func runCreate(cmd *cobra.Command, rt *app.Runtime, o *createOptions, name strin
 	if existing != nil {
 		return fmt.Errorf("instance %s already exists in zone %s of project %s (%s): use `polyctl gcp compute instance get %s`, or choose another name", name, zone, c.project, existing.Status, name)
 	}
-	// Linux instances log in with an SSH key only (polyctl never sets a
-	// password): without a key of its own, the project must hold one, or
-	// enable OS Login, before anything is created.
-	var projectMD *compute.Metadata
-	var projectMDErr error
-	projectMDRead := false
-	readProjectMD := func() (*compute.Metadata, error) {
-		if !projectMDRead {
-			projectMD, projectMDErr = c.projectMetadata(ctx)
-			projectMDRead = true
-		}
-		return projectMD, projectMDErr
-	}
-	if len(keys) == 0 && !o.windows() {
-		if err := checkProjectLogin(rt, readProjectMD); err != nil {
-			return err
-		}
-	}
 	o.size = nil
 	// A size resolves to an E2 type, which is x86_64; a machine type has
 	// the architecture the API reports (machineArch).
@@ -919,6 +905,26 @@ func runCreate(cmd *cobra.Command, rt *app.Runtime, o *createOptions, name strin
 	}
 	if err != nil {
 		return err
+	}
+	// Linux instances log in with an SSH key only (polyctl never sets a
+	// password): without a key of its own, the project must hold one, or
+	// enable OS Login, before anything is created. The image is known by
+	// now, so that an image of one's own built from Windows Server counts
+	// as Windows.
+	var projectMD *compute.Metadata
+	var projectMDErr error
+	projectMDRead := false
+	readProjectMD := func() (*compute.Metadata, error) {
+		if !projectMDRead {
+			projectMD, projectMDErr = c.projectMetadata(ctx)
+			projectMDRead = true
+		}
+		return projectMD, projectMDErr
+	}
+	if len(keys) == 0 && !o.windows() && !img.Windows {
+		if err := checkProjectLogin(rt, readProjectMD); err != nil {
+			return err
+		}
 	}
 	bootGB := img.MinDiskGB
 	if o.bootDiskSize > 0 {

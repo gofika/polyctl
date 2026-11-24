@@ -892,6 +892,14 @@ func TestInstanceCreateLinuxNeedsAKey(t *testing.T) {
 	if !strings.Contains(h.stderr.String(), "SSH keys of the project metadata") {
 		t.Errorf("stderr = %s", h.stderr.String())
 	}
+	// An image of one's own built from Windows Server (the WINDOWS guest
+	// OS feature) is a Windows instance: it needs no SSH key.
+	h.gce.projectMeta["proj"] = nil
+	h.gce.images["proj"] = []*compute.Image{{Name: "my-win", Architecture: "X86_64", DiskSizeGb: 50,
+		GuestOsFeatures: []*compute.GuestOsFeature{{Type: "WINDOWS"}}}}
+	if err := h.run("compute", "instance", "create", "win-1", "--machine-type", "e2-small", "--static-ip=false", "--image", "projects/proj/global/images/my-win"); err != nil {
+		t.Fatalf("custom Windows image: %v\n%s", err, h.stderr.String())
+	}
 	// With its own key, the only metadata item is ssh-keys: no password,
 	// no windows-keys, no startup script.
 	if err := h.run("compute", "instance", "create", "web-2", "--machine-type", "e2-small", "--static-ip=false", "--ssh-key", "alice:"+key); err != nil {
@@ -914,18 +922,26 @@ func TestCheckProjectLogin(t *testing.T) {
 		read func() (*compute.Metadata, error)
 		ok   bool
 	}{
-		"project keys":   {md(keys), true},
-		"os login":       {md(&compute.MetadataItems{Key: "enable-oslogin", Value: strPtr("TRUE")}), true},
-		"blocked keys":   {md(keys, &compute.MetadataItems{Key: "block-project-ssh-keys", Value: strPtr("TRUE")}), false},
-		"nothing":        {md(), false},
-		"unparseable":    {md(&compute.MetadataItems{Key: "ssh-keys", Value: strPtr("garbage")}), false},
-		"no metadata":    {func() (*compute.Metadata, error) { return nil, nil }, false},
-		"cannot be read": {func() (*compute.Metadata, error) { return nil, errors.New("forbidden") }, false},
+		"project keys": {md(keys), true},
+		"os login":     {md(&compute.MetadataItems{Key: "enable-oslogin", Value: strPtr("TRUE")}), true},
+		"blocked keys": {md(keys, &compute.MetadataItems{Key: "block-project-ssh-keys", Value: strPtr("TRUE")}), false},
+		"nothing":      {md(), false},
+		"unparseable":  {md(&compute.MetadataItems{Key: "ssh-keys", Value: strPtr("garbage")}), false},
+		"no metadata":  {func() (*compute.Metadata, error) { return nil, nil }, false},
+		"forbidden":    {func() (*compute.Metadata, error) { return nil, fmt.Errorf("%w: read", platform.ErrForbidden) }, false},
 	} {
 		err := checkProjectLogin(h.rt, tc.read)
 		if tc.ok != (err == nil) || err != nil && exitClass(err) != "usage" {
 			t.Errorf("%s = %v", name, err)
 		}
+	}
+	// A failure that is not about the key keeps its class: an expired
+	// login is still an auth error, a network failure a general one.
+	if err := checkProjectLogin(h.rt, func() (*compute.Metadata, error) { return nil, fmt.Errorf("%w: token", platform.ErrUnauthorized) }); exitClass(err) != "auth" {
+		t.Errorf("unauthorized = %v (%s)", err, exitClass(err))
+	}
+	if err := checkProjectLogin(h.rt, func() (*compute.Metadata, error) { return nil, errors.New("connection reset") }); err == nil || exitClass(err) == "usage" {
+		t.Errorf("network failure = %v", err)
 	}
 	for _, tc := range []struct {
 		os, image string

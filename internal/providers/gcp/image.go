@@ -97,6 +97,9 @@ type imageChoice struct {
 	Known bool
 	// Arch is the architecture of the image ("" when unknown).
 	Arch string
+	// Windows says the image declares the WINDOWS guest OS feature (an
+	// image of one's own built from a Windows Server image).
+	Windows bool
 }
 
 func (c imageCandidate) created() time.Time {
@@ -403,6 +406,11 @@ func (c *client) explicitImage(ctx context.Context, path string, warn func(strin
 	choice := imageChoice{Path: "projects/" + project + "/global/images/" + img.Name, Name: img.Name, Label: "custom", MinDiskGB: min, Known: known}
 	if a := strings.ToUpper(img.Architecture); a == archX86 || a == archARM {
 		choice.Arch = a
+	}
+	for _, f := range img.GuestOsFeatures {
+		if f != nil && strings.EqualFold(f.Type, "WINDOWS") {
+			choice.Windows = true
+		}
 	}
 	return choice, nil
 }
