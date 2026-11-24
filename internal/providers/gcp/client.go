@@ -435,6 +435,19 @@ func (c *client) DeleteRRSet(ctx context.Context, zoneID, fqdn, typ string) erro
 	return c.applyOps(ctx, zoneID, []rrOp{{fqdn: fqdn, typ: typ, replace: true}})
 }
 
+// RRSetRecords returns the values of the record set of fqdn and typ, one
+// record each. A missing set is platform.ErrNotFound.
+func (c *client) RRSetRecords(ctx context.Context, zoneID, fqdn, typ string) ([]platform.Record, error) {
+	rs, err := c.getRRSet(ctx, zoneID, dnsName(fqdn), strings.ToUpper(typ))
+	if err != nil {
+		return nil, err
+	}
+	if rs == nil {
+		return nil, fmt.Errorf("%w: %s %s", platform.ErrNotFound, fqdn, strings.ToUpper(typ))
+	}
+	return recordsFromRRSet(zoneID, rs), nil
+}
+
 // findRecord re-reads a record after a change so callers get the live state.
 // The managed zone is taken from the id.
 func (c *client) findRecord(ctx context.Context, id string) (*platform.Record, error) {

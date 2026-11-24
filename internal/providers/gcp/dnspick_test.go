@@ -99,6 +99,7 @@ func TestDNSRecordDeletePicks(t *testing.T) {
 
 	// The MX set has one value: it goes whole.
 	p = h.answer("example-zone", prompttest.Label("MX"))
+	h.rt.Stdin = strings.NewReader("y\n") // the confirmation of the whole set
 	if err := h.run("dns", "record", "delete"); err != nil {
 		t.Fatalf("delete mx: %v", err)
 	}
@@ -110,5 +111,44 @@ func TestDNSRecordDeletePicks(t *testing.T) {
 	h.nonInteractive()
 	if err := h.run("dns", "record", "delete", "example-zone"); exitClass(err) != "usage" || !strings.Contains(err.Error(), "--name and --type") {
 		t.Errorf("non-interactive = %v", err)
+	}
+}
+
+// Deleting a whole record set lists its values and asks first (default
+// no); the non-interactive flow needs --yes before anything is read; a
+// missing set is not found before the question; one value (--value) is
+// removed without a question.
+func TestDNSRecordDeleteSetConfirms(t *testing.T) {
+	h, g := dnsHarness(t)
+	h.answer()
+	h.rt.Stdin = strings.NewReader("n\n")
+	if err := h.run("dns", "record", "delete", "example-zone", "--name", "www", "--type", "A"); exitClass(err) != "nothing" {
+		t.Fatalf("declined = %v", err)
+	}
+	if rs := g.rrset("example-zone", "www.example.com.", "A"); rs == nil || len(rs.Rrdatas) != 2 || !strings.Contains(h.stderr.String(), "2.2.2.2") {
+		t.Errorf("declined: rrset %+v, stderr %q", rs, h.stderr.String())
+	}
+	h.rt.Stdin = strings.NewReader("y\n")
+	if err := h.run("dns", "record", "delete", "example-zone", "--name", "nope", "--type", "A"); exitClass(err) != "notfound" {
+		t.Errorf("missing set = %v", err)
+	}
+
+	h.nonInteractive()
+	if err := h.run("dns", "record", "delete", "example-zone", "--name", "www", "--type", "A"); exitClass(err) != "usage" || !strings.Contains(err.Error(), "--yes") {
+		t.Fatalf("no --yes = %v", err)
+	}
+	if rs := g.rrset("example-zone", "www.example.com.", "A"); rs == nil {
+		t.Fatal("deleted without --yes")
+	}
+	h.rt.Flags.DryRun = true
+	if err := h.run("dns", "record", "delete", "example-zone", "--name", "www", "--type", "A"); err != nil || g.rrset("example-zone", "www.example.com.", "A") == nil {
+		t.Errorf("dry run = %v", err)
+	}
+	h.rt.Flags.DryRun = false
+	if err := h.run("dns", "record", "delete", "example-zone", "--name", "www", "--type", "A", "--value", "2.2.2.2"); err != nil {
+		t.Errorf("one value without --yes = %v", err)
+	}
+	if err := h.run("dns", "record", "delete", "example-zone", "--name", "www", "--type", "A", "--yes"); err != nil || g.rrset("example-zone", "www.example.com.", "A") != nil {
+		t.Errorf("--yes = %v", err)
 	}
 }

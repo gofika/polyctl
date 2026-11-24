@@ -551,12 +551,24 @@ required argument.
 On a terminal, a missing <zone> is picked from the managed zones of the
 profile, and without --name and --type (or --id) the record sets of the
 zone are offered (of --name when it is given; the apex SOA and NS sets
-left out), then, for a set of several values, the whole set or one value.`,
+left out), then, for a set of several values, the whole set or one value.
+
+Deleting a whole record set lists its values, then asks one yes/no question
+(default no; --yes skips it). The non-interactive flow asks nothing: --yes
+is required (exit code 2 without it, before anything is read). Declining
+changes nothing; a missing set is not found (exit code 4) before the
+question. Removing one value (--value, --id) asks nothing, like dns delete
+of one record. --dry-run asks nothing.`,
 		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			pick := id == "" && (typ == "" || name == "")
 			if pick && !rt.Interactive() {
 				return app.UsageErrf("--name and --type (or --id) are required")
+			}
+			if !rt.Flags.DryRun && !pick && id == "" && value == "" {
+				if err := rt.CanConfirm(fmt.Sprintf("delete the %s record set of %s", strings.ToUpper(typ), platform.FQDN(name, "<zone>"))); err != nil {
+					return err
+				}
 			}
 			if rt.Flags.Offline {
 				return app.ErrOffline
@@ -640,6 +652,20 @@ left out), then, for a set of several values, the whole set or one value.`,
 				what = fmt.Sprintf("%s %s value %q", rec.Name, strings.ToUpper(typ), raw)
 			default:
 				fqdn := platform.FQDN(name, z.Name)
+				if !rt.Flags.Yes {
+					recs, err := c.RRSetRecords(cmd.Context(), z.ID, fqdn, typ)
+					if err != nil {
+						return err
+					}
+					_ = output.RenderGrid(rt.Stderr, recordGrid(recs))
+					ok, err := rt.Confirm(cmd.Context(), fmt.Sprintf("Delete the %s record set of %s (%d value(s))?", strings.ToUpper(typ), fqdn, len(recs)), false)
+					if err != nil {
+						return err
+					}
+					if !ok {
+						return app.NothingToDof("cancelled, no record was deleted")
+					}
+				}
 				if err := c.DeleteRRSet(cmd.Context(), z.ID, fqdn, typ); err != nil {
 					return err
 				}
