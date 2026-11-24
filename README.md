@@ -1648,7 +1648,7 @@ aliyun ecs instance ensure <name> [--type <type|size>] [--disk 20] [--disk-categ
 aliyun ecs instance start <name|id> [--wait] [--timeout 10m] [--region <r>]
 aliyun ecs instance stop <name|id> [--force] [--yes] [--wait] [--timeout 10m] [--region <r>]
 aliyun ecs instance password <name|id> [--region <r>]
-aliyun ecs instance ssh-key list <name|id> [--user <name>] [--region <r>]                # over SSH: authorized_keys
+aliyun ecs instance ssh-key list <name|id> [--user <name>] [--region <r>]                # authorized_keys, over SSH or Cloud Assistant
 aliyun ecs instance ssh-key add <name|id> (--ssh-key <public key> | --ssh-key-file <path>) [--user <name>] [--region <r>]
 aliyun ecs instance ssh-key remove <name|id> (--fingerprint SHA256:... | --ssh-key <key> | --ssh-key-file <path>) [--user <name>] [--yes] [--region <r>]
 aliyun ecs security-group list [--vpc <vpc-id>] [--region <r>]
