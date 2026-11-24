@@ -89,6 +89,7 @@ func TestKeyInputFlags(t *testing.T) {
 	picker := &keyPicker{selects: []string{"other"}, inputs: []string{file, "laptop"}}
 	rt.Picker = picker
 	t.Setenv("HOME", filepath.Dir(file)) // ~/.ssh does not exist: no candidates
+	t.Setenv("USERPROFILE", filepath.Dir(file))
 	in, err = rt.KeyInput(&KeyFlags{}, platform.KeyInput{Match: platform.MatchByPublicKey})
 	if err != nil || !in.Interactive || in.Prompter == nil {
 		t.Fatalf("interactive KeyInput = %+v, %v", in, err)

@@ -17,6 +17,7 @@ import (
 func TestKeyPairImportAsks(t *testing.T) {
 	h := newAWSHarness(t, app.Flags{NonInteractiveSet: true}, nil)
 	t.Setenv("HOME", h.dir)
+	t.Setenv("USERPROFILE", h.dir) // os.UserHomeDir on Windows
 	ssh := filepath.Join(h.dir, ".ssh")
 	if err := os.MkdirAll(ssh, 0o700); err != nil {
 		t.Fatal(err)

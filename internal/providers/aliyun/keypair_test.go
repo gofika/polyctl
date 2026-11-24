@@ -285,7 +285,9 @@ func (p *keyPicker) Input(title, _ string, _ func(string) error) (string, error)
 
 // On a terminal, ensure without a key asks for the key file and the name.
 func TestKeyPairEnsureInteractive(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	h, _ := sgHarness(t, app.Flags{})
 	line := testKey(t, "ed25519")
 	p := &keyPicker{t: t, path: writeKeyFile(t, line), name: "laptop"}

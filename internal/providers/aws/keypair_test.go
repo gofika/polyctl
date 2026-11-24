@@ -809,6 +809,7 @@ func TestKeyPairEnsureInteractive(t *testing.T) {
 	h.add("ap-east-1", newFakeKeyPair("dup1", ed), newFakeKeyPair("dup2", ed))
 	file := writeKeyFile(t, h.dir, "new.pub", genED25519(t))
 	t.Setenv("HOME", h.dir) // no ~/.ssh: the file is typed
+	t.Setenv("USERPROFILE", h.dir)
 
 	// A new key without a name: the name is asked for.
 	p := &scriptedPicker{t: t, answers: []string{"laptop"}}
