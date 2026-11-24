@@ -280,6 +280,19 @@ func TestInstanceCreateImageOverrides(t *testing.T) {
 	if err := h.run("ec2", "instance", "create", "x", "--type", "t4g.small", "--arch", "x86_64"); !errors.Is(err, app.ErrUsage) {
 		t.Errorf("--arch x86_64 on t4g = %v", err)
 	}
+	// A Mac type runs no Amazon Linux image: no default, but --ami works.
+	h.ec2.inst.init()
+	h.ec2.inst.archs["mac2.metal"] = []string{"arm64_mac"}
+	if err := h.run("ec2", "instance", "create", "x", "--type", "mac2.metal"); !errors.Is(err, platform.ErrNotSupported) || !strings.Contains(err.Error(), "--ami") {
+		t.Errorf("default image on mac2.metal = %v", err)
+	}
+	h.ec2.inst.images["ap-east-1"] = append(h.ec2.inst.images["ap-east-1"], ec2types.Image{ImageId: awssdk.String("ami-0mac"), Architecture: "arm64_mac"})
+	h.stdout.Reset()
+	if err := h.run("ec2", "instance", "create", "x", "--type", "mac2.metal", "--ami", "ami-0mac"); err != nil {
+		t.Errorf("--ami on mac2.metal = %v", err)
+	} else if d := h.report().Changes[0].Detail; !strings.Contains(d, "ami=ami-0mac") {
+		t.Errorf("--ami on mac2.metal detail = %q", d)
+	}
 	if w := h.writes(); len(w) != 0 {
 		t.Errorf("dry run wrote: %v", w)
 	}

@@ -639,7 +639,9 @@ al2023-ami-kernel-default-<arch> first; when the parameter cannot be read,
 the newest standard Amazon image named "al2023-ami-2023.*-kernel-*-<arch>"
 of any kernel line (highest release, then latest creation time; minimal
 images excluded), so the two may use different kernels. No such image is
-exit code 4; pass --ami <ami-id> for any other image.
+exit code 4; pass --ami <ami-id> for any other image. Mac types
+(x86_64_mac, arm64_mac) have no default image: they need --ami (exit code 7
+without it).
 
 --type, --subnet, --sg and --key-pair default to defaults.aws.instance_type,
 subnet_id, security_group_ids and key_name in config.yaml; a missing type
@@ -780,6 +782,11 @@ running and prints its addresses.`,
 			}
 			if arch == "" {
 				arch = archFor(archs)
+				if ami == "" && !slices.Contains(archs, arch) {
+					// Mac types (x86_64_mac, arm64_mac) run no Amazon Linux image.
+					return fmt.Errorf("%w: instance type %s runs %s, which has no Amazon Linux 2023 image; pass --ami <ami-id>",
+						platform.ErrNotSupported, typ, strings.Join(archs, ", "))
+				}
 			} else if !slices.Contains(archs, arch) {
 				return app.UsageErrf("instance type %s does not run %s (it runs %s)", typ, arch, strings.Join(archs, ", "))
 			}
