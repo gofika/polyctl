@@ -1,6 +1,7 @@
 package gcp
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strconv"
@@ -31,6 +32,17 @@ func defaultNetwork(rt *app.Runtime, profile, flag string) (string, error) {
 		n = "default"
 	}
 	return lastSegment(n), nil
+}
+
+// ruleNetwork is defaultNetwork for a command that has a client: with
+// neither the flag nor defaults.gcp.network, a project without a network
+// named default gets a pick in the interactive flow (builtinNetwork).
+func ruleNetwork(ctx context.Context, rt *app.Runtime, c *client, profile, flag string) (string, error) {
+	n, err := rt.Setting(profile, platform.GCP, "network", flag)
+	if err != nil || n != "" {
+		return lastSegment(n), err
+	}
+	return builtinNetwork(ctx, rt, c)
 }
 
 func firewallTarget(profile string) platform.Target {
@@ -139,13 +151,18 @@ func firewallGetCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "get <name>",
 		Short: "Show one firewall rule",
-		Args:  cobra.ExactArgs(1),
+		Long:  "Show one VPC firewall rule. On a terminal, without <name> the rules of the\nproject are offered.",
+		Args:  app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, profile, err := openGCP(cmd.Context(), rt)
 			if err != nil {
 				return err
 			}
-			fw, err := c.getFirewall(cmd.Context(), args[0])
+			name, err := firewallArg(cmd.Context(), rt, c, profile, args)
+			if err != nil {
+				return err
+			}
+			fw, err := c.getFirewall(cmd.Context(), name)
 			if err != nil {
 				return fmt.Errorf("%w (gcp/%s)", err, profile)
 			}
@@ -282,29 +299,51 @@ commas (tcp:80,443,8000-8100). An ingress rule (the default) needs
 0.0.0.0/0. --direction egress takes --destination-range instead. Without
 --target-tag the rule applies to every instance of the network.
 
+On a terminal, what is missing is asked: the network when the project has
+none named default, the name (checked as it is typed against the rules of
+the project), the allowed protocols (common ones, or typed) and the ranges
+(the ranges of the network's subnetworks, the IAP range for SSH and RDP,
+0.0.0.0/0 never preselected, or typed).
+
 The command waits for the operation (--timeout, 10m); --no-wait returns once
 the creation was accepted.`,
 		Example: "  polyctl gcp compute firewall create allow-ssh-internal --network default --allow tcp:22 --source-range 10.0.0.0/8 --target-tag ssh-internal",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			name := args[0]
+			name := app.Arg(args, 0)
 			wait, timeout, err := wf.Resolve(cmd)
 			if err != nil {
 				return err
 			}
-			if err := checkFirewallName(name); err != nil {
-				return err
+			if name != "" {
+				if err := checkFirewallName(name); err != nil {
+					return err
+				}
 			}
-			spec, err := rf.parseRule()
-			if err != nil {
-				return err
+			if !rt.Interactive() {
+				// Refused before anything is read.
+				if _, err := rf.parseRule(); err != nil {
+					return err
+				}
 			}
 			c, profile, err := openGCP(ctx, rt)
 			if err != nil {
 				return err
 			}
-			network, err := defaultNetwork(rt, profile, rf.network)
+			network, err := ruleNetwork(ctx, rt, c, profile, rf.network)
+			if err != nil {
+				return err
+			}
+			if name == "" {
+				if name, err = askFirewallName(ctx, rt, c); err != nil {
+					return err
+				}
+			}
+			if err := askRule(ctx, rt, c, &rf, network, nil); err != nil {
+				return err
+			}
+			spec, err := rf.parseRule()
 			if err != nil {
 				return err
 			}
@@ -356,16 +395,16 @@ it is exit code 2.
 The network and the direction of a rule are never changed (exit code 2):
 delete the rule and create it again. --target-tag "" makes the rule apply to
 every instance of the network; as only a full replacement of the rule can
-clear a list, the rule is then read and sent back whole.
+clear a list, the rule is then read and sent back whole. On a terminal,
+without <name> the rules of the project are offered.
 
 The command waits for the operation (--timeout, 10m); --no-wait returns once
 the change was accepted.`,
 		Example: `  polyctl gcp compute firewall update allow-lb-health-check-default --add-source-range 10.20.0.0/24
   polyctl gcp compute firewall update allow-ssh-internal --allow tcp:22,2222`,
-		Args: cobra.ExactArgs(1),
+		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			name := args[0]
 			fl := cmd.Flags()
 			wait, timeout, err := wf.Resolve(cmd)
 			if err != nil {
@@ -427,6 +466,10 @@ the change was accepted.`,
 				}
 			}
 			c, profile, err := openGCP(ctx, rt)
+			if err != nil {
+				return err
+			}
+			name, err := firewallArg(ctx, rt, c, profile, args)
 			if err != nil {
 				return err
 			}
@@ -565,17 +608,21 @@ func firewallDeleteCmd(rt *app.Runtime) *cobra.Command {
 target tags) is shown first, then a confirmation is asked (default no; --yes
 skips it, and the non-interactive flow needs --yes). A missing rule is exit
 code 4. The command waits for the operation (--timeout, 10m); --no-wait
-returns once the deletion was accepted.`,
+returns once the deletion was accepted. On a terminal, without <name> the
+rules of the project are offered.`,
 		Example: "  polyctl gcp compute firewall delete allow-ssh-internal --yes",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			name := args[0]
 			wait, timeout, err := wf.Resolve(cmd)
 			if err != nil {
 				return err
 			}
 			c, profile, err := openGCP(ctx, rt)
+			if err != nil {
+				return err
+			}
+			name, err := firewallArg(ctx, rt, c, profile, args)
 			if err != nil {
 				return err
 			}

@@ -511,6 +511,15 @@ account holding it is used, and its network and region are the defaults of
 region of defaults.gcp.zone. Run it again for each region the network's load
 balancers use.
 
+On a terminal, without <name> and --preset a pick offers the health check
+rule of the preset, the rules of the project and "Create a new rule..." (its
+name checked as it is typed); then what the rule lacks is asked: the
+allowed protocols and the ranges of a new rule (common protocols, the
+ranges of the network's subnetworks, the IAP range for SSH and RDP,
+0.0.0.0/0 never preselected, or typed), the protocols to add to an
+existing one. The preset without a region asks for one of the regions
+where the network has subnetworks.
+
 The command waits for each operation (--timeout, 10m); --no-wait only
 submits them.`,
 		Example: `  polyctl gcp compute firewall ensure --preset lb-health-check --network default --region us-central1 --instance web-1 --dry-run
@@ -527,6 +536,11 @@ submits them.`,
 			if len(args) == 1 {
 				name = args[0]
 				if err := checkFirewallName(name); err != nil {
+					return err
+				}
+			}
+			if name == "" && preset == "" && rt.Interactive() {
+				if preset, name, err = pickEnsureRule(ctx, rt); err != nil {
 					return err
 				}
 			}
@@ -596,6 +610,11 @@ submits them.`,
 					region = regionOf(z)
 				}
 			}
+			if region == "" && rt.Interactive() {
+				if region, err = pickHealthCheckRegion(ctx, rt, c, network); err != nil {
+					return err
+				}
+			}
 			if region == "" {
 				return app.UsageErrf("--region is required with --preset %s (the region whose subnetworks the rule allows; or set defaults.gcp.zone)", lbHealthCheckPreset)
 			}
@@ -658,15 +677,33 @@ func runFirewallEnsure(cmd *cobra.Command, rt *app.Runtime, rf *ruleFlags, name 
 	if region != "" || instance != "" || zone != "" {
 		return app.UsageErrf("--region, --instance and --zone apply to --preset %s", lbHealthCheckPreset)
 	}
-	spec, err := rf.parseRule()
-	if err != nil {
-		return err
+	if !rt.Interactive() {
+		// Refused before anything is read.
+		if _, err := rf.parseRule(); err != nil {
+			return err
+		}
 	}
 	c, profile, err := openGCP(ctx, rt)
 	if err != nil {
 		return err
 	}
-	network, err := defaultNetwork(rt, profile, rf.network)
+	var have *compute.Firewall
+	if rt.Interactive() {
+		if have, err = c.findFirewall(ctx, name); err != nil {
+			return err
+		}
+	}
+	network := rf.network
+	if network == "" && have != nil {
+		network = lastSegment(have.Network)
+	}
+	if network, err = ruleNetwork(ctx, rt, c, profile, network); err != nil {
+		return err
+	}
+	if err := askRule(ctx, rt, c, rf, network, have); err != nil {
+		return err
+	}
+	spec, err := rf.parseRule()
 	if err != nil {
 		return err
 	}
