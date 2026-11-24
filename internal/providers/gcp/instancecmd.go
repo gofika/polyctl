@@ -642,9 +642,14 @@ E2 predefined)") and shown in the change report. No fit is exit code 4
 with the nearest E2 size; a size of 0 vCPUs or 0 GiB is exit code 2.
 
 The image is --image (projects/<p>/global/images/<name> or
-.../family/<family>), or the latest x86_64 public image of --os (debian by
-default; ubuntu picks the newest LTS) and --os-version; nothing found is
-exit code 4. The boot disk ({name}-boot, --disk-type, pd-balanced by
+.../family/<family>; an image of the other architecture than the machine
+type is exit code 2), or the latest public image of --os (debian by
+default: it boots from the smallest disk, 10 GB; ubuntu picks the newest
+LTS) and --os-version for the architecture of the machine type: arm64 for
+the Arm types (t2a, c4a, n4a, a4x; the API reports it), x86_64 otherwise
+and for every size. The highest release is found in the image list on
+every run, never written into polyctl. Nothing found (windows has no arm64
+image) is exit code 4. The boot disk ({name}-boot, --disk-type, pd-balanced by
 default) has the image's minimum size unless --boot-disk-size; --disk adds
 an empty data disk ({name}-data). Both disks are deleted with the instance.
 
@@ -688,7 +693,7 @@ by the next attempt.`,
 	f.Int64Var(&o.bootDiskSize, "boot-disk-size", 0, "boot disk size in GB (default: the image's minimum)")
 	f.StringVar(&o.diskType, "disk-type", "pd-balanced", "boot disk type ("+strings.Join(diskTypes, ", ")+")")
 	f.StringVar(&o.dataDiskType, "data-disk-type", "", "data disk type (default: --disk-type)")
-	f.StringVar(&o.osName, "os", "debian", "system whose latest public image is used ("+strings.Join(supportedOS, ", ")+")")
+	f.StringVar(&o.osName, "os", "debian", "system whose latest public image for the machine type's architecture is used ("+strings.Join(supportedOS, ", ")+")")
 	f.StringVar(&o.osVersion, "os-version", "", "release of --os, such as 12 or 22.04 (default: the latest)")
 	f.StringVar(&o.image, "image", "", "image path projects/<p>/global/images/<name> or .../family/<family> (overrides --os)")
 	f.StringArrayVar(&o.sshKeys, "ssh-key", nil, "SSH public key itself, optionally as user:<key> (repeatable)")
@@ -825,6 +830,9 @@ func runCreate(cmd *cobra.Command, rt *app.Runtime, o *createOptions, name strin
 		return fmt.Errorf("instance %s already exists in zone %s of project %s (%s): use `polyctl gcp compute instance get %s`, or choose another name", name, zone, c.project, existing.Status, name)
 	}
 	o.size = nil
+	// A size resolves to an E2 type, which is x86_64; a machine type has
+	// the architecture the API reports (machineArch).
+	arch := archX86
 	if isSize {
 		ch, err := c.resolveMachineSize(ctx, zone, size)
 		if err != nil {
@@ -832,14 +840,22 @@ func runCreate(cmd *cobra.Command, rt *app.Runtime, o *createOptions, name strin
 		}
 		rt.Infof("%s", ch.note())
 		o.machineType, o.size = ch.Type, &ch
-	} else if _, err := c.machineType(ctx, zone, o.machineType); err != nil {
-		return err
+	} else {
+		mt, err := c.machineType(ctx, zone, o.machineType)
+		if err != nil {
+			return err
+		}
+		arch = machineArch(mt)
 	}
 	var img imageChoice
 	if o.image != "" {
 		img, err = c.explicitImage(ctx, o.image, warn)
+		if err == nil && img.Arch != "" && img.Arch != arch {
+			return app.UsageErrf("--image %s is an %s image, but machine type %s is %s: pass an %s image, or a machine type of that architecture",
+				o.image, archText(img.Arch), o.machineType, archText(arch), archText(arch))
+		}
 	} else {
-		img, err = c.resolveImage(ctx, o.osName, o.osVersion)
+		img, err = c.resolveImage(ctx, o.osName, o.osVersion, arch, o.machineType, zone)
 	}
 	if err != nil {
 		return err

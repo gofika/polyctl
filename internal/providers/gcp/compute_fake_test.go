@@ -50,10 +50,13 @@ type fakeCompute struct {
 	disks        map[string]*compute.Disk     // project/zone/name
 	images       map[string][]*compute.Image  // image project
 	machineTypes map[string]bool              // zone/type
-	networks     map[string]*compute.Network  // project/name
-	subnets      map[string][]*compute.Subnetwork
-	projectMeta  map[string]*compute.Metadata
-	firewalls    map[string]*compute.Firewall // project/name
+	// machineArch is the Architecture the fake reports for a machine type
+	// name (none by default, as the API leaves it out for some types).
+	machineArch map[string]string
+	networks    map[string]*compute.Network // project/name
+	subnets     map[string][]*compute.Subnetwork
+	projectMeta map[string]*compute.Metadata
+	firewalls   map[string]*compute.Firewall // project/name
 	// forwardingRules are listed by the aggregated list, per project, as
 	// given (global rules have no region).
 	forwardingRules map[string][]*compute.ForwardingRule
@@ -85,7 +88,7 @@ type fakeCompute struct {
 func newFakeCompute(t *testing.T) *fakeCompute {
 	f := &fakeCompute{t: t,
 		instances: map[string]*compute.Instance{}, addresses: map[string]*compute.Address{}, disks: map[string]*compute.Disk{},
-		images: map[string][]*compute.Image{}, machineTypes: map[string]bool{}, networks: map[string]*compute.Network{},
+		images: map[string][]*compute.Image{}, machineTypes: map[string]bool{}, machineArch: map[string]string{}, networks: map[string]*compute.Network{},
 		subnets: map[string][]*compute.Subnetwork{}, projectMeta: map[string]*compute.Metadata{}, ops: map[string]*compute.Operation{},
 		firewalls: map[string]*compute.Firewall{}, busy: map[string]string{},
 		fail: map[string]fakeErr{}, opFail: map[string]compute.OperationErrorErrors{}, stuck: map[string]string{}}
@@ -390,7 +393,7 @@ func (f *fakeCompute) handle(w http.ResponseWriter, r *http.Request) {
 	case len(rest) == 4 && rest[0] == "zones" && rest[2] == "machineTypes":
 		if f.machineTypes[rest[1]+"/"+rest[3]] {
 			cores, mem := fakeMachineShape(rest[3])
-			writeJSONStatus(w, 200, &compute.MachineType{Name: rest[3], GuestCpus: int64(cores), MemoryMb: int64(mem)})
+			writeJSONStatus(w, 200, &compute.MachineType{Name: rest[3], GuestCpus: int64(cores), MemoryMb: int64(mem), Architecture: f.machineArch[rest[3]]})
 			return
 		}
 		notFound(w, "machineTypes/"+rest[3])

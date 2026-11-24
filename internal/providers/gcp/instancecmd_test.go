@@ -320,6 +320,59 @@ func TestInstanceCreateValidation(t *testing.T) {
 	}
 }
 
+// TestInstanceCreateImageArch checks that the image follows the
+// architecture of the machine type, and that --os, --os-version and
+// --image still override the default.
+func TestInstanceCreateImageArch(t *testing.T) {
+	h := newGCPHarness(t, app.Flags{DryRun: true}, defaultsUS())
+	h.gce.mu.Lock()
+	h.gce.machineTypes["us-central1-a/t2a-standard-1"] = true
+	h.gce.machineArch["t2a-standard-1"] = "ARM64"
+	// The API reports no architecture: the family tells.
+	h.gce.machineTypes["us-central1-a/c4a-standard-1"] = true
+	// The API wins over the family.
+	h.gce.machineTypes["us-central1-a/c4a-weird-1"] = true
+	h.gce.machineArch["c4a-weird-1"] = "X86_64"
+	h.gce.mu.Unlock()
+	for _, tc := range []struct {
+		args []string
+		want string // image row, or exit class:message
+	}{
+		{nil, "image/debian unchanged debian-13-trixie-v20261116 (min disk 10GB)"},
+		{[]string{"--machine-type", "2H4G"}, "image/debian unchanged debian-13-trixie-v20261116 (min disk 10GB)"},
+		{[]string{"--machine-type", "t2a-standard-1"}, "image/debian unchanged debian-13-trixie-arm64-v20261116 (min disk 10GB)"},
+		{[]string{"--machine-type", "c4a-standard-1"}, "image/debian unchanged debian-13-trixie-arm64-v20261116 (min disk 10GB)"},
+		{[]string{"--machine-type", "c4a-weird-1"}, "image/debian unchanged debian-13-trixie-v20261116 (min disk 10GB)"},
+		{[]string{"--os-version", "12"}, "image/debian unchanged debian-12-bookworm-v20261117 (min disk 10GB)"},
+		{[]string{"--os", "ubuntu"}, "image/ubuntu unchanged ubuntu-2604-resolute-amd64-v20261107 (min disk 10GB)"},
+		{[]string{"--image", "projects/debian-cloud/global/images/debian-12-bookworm-v20261117"}, "image/custom unchanged debian-12-bookworm-v20261117 (min disk 10GB)"},
+		{[]string{"--machine-type", "t2a-standard-1", "--image", "projects/debian-cloud/global/images/debian-13-trixie-arm64-v20261116"},
+			"image/custom unchanged debian-13-trixie-arm64-v20261116 (min disk 10GB)"},
+		{[]string{"--machine-type", "t2a-standard-1", "--os-version", "12"}, "notfound:no current arm64 image of debian 12 in project debian-cloud for machine type t2a-standard-1 (zone us-central1-a, region us-central1); check --os / --os-version, or pass --image"},
+		{[]string{"--machine-type", "t2a-standard-1", "--os", "windows"}, "notfound:no current arm64 image of windows"},
+		{[]string{"--machine-type", "t2a-standard-1", "--image", "projects/debian-cloud/global/images/debian-12-bookworm-v20261117"}, "usage:is an x86_64 image, but machine type t2a-standard-1 is arm64"},
+		{[]string{"--image", "projects/debian-cloud/global/images/debian-13-trixie-arm64-v20261116"}, "usage:is an arm64 image, but machine type e2-small is x86_64"},
+	} {
+		err := h.run(append([]string{"compute", "instance", "create", "web-1"}, tc.args...)...)
+		if class, msg, isErr := strings.Cut(tc.want, ":"); isErr && !strings.HasPrefix(tc.want, "image/") {
+			if exitClass(err) != class || err == nil || !strings.Contains(err.Error(), msg) {
+				t.Errorf("create %v = %v (%s), want %s with %q", tc.args, err, exitClass(err), class, msg)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("create %v: %v", tc.args, err)
+			continue
+		}
+		if got := rows(h.report()); at(got, 0) != tc.want {
+			t.Errorf("create %v image = %q, want %q", tc.args, at(got, 0), tc.want)
+		}
+		if w := h.gce.writes(); len(w) != 0 {
+			t.Errorf("create %v dry run wrote %v", tc.args, w)
+		}
+	}
+}
+
 func TestInstanceCreateSubnetDiscovery(t *testing.T) {
 	h := newGCPHarness(t, app.Flags{DryRun: true}, defaultsUS())
 	h.gce.mu.Lock()

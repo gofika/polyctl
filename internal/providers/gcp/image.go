@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -39,6 +40,39 @@ var supportedOS = []string{"debian", "ubuntu", "centos", "rocky", "almalinux", "
 // whose size cannot be read.
 const defaultImageMinDiskGB = 10
 
+// Image and machine type architectures, as the Compute Engine API writes
+// them.
+const (
+	archX86 = "X86_64"
+	archARM = "ARM64"
+)
+
+// armMachineFamilies are the Arm machine families (Ampere Altra T2A, Axion
+// C4A and N4A, Grace A4X), used only when the API does not report the
+// architecture of a machine type.
+var armMachineFamilies = []string{"t2a", "c4a", "n4a", "a4x"}
+
+// machineArch is the architecture of a machine type: the Architecture the
+// API reports, else ARM64 for the families of armMachineFamilies and
+// X86_64 for every other one.
+func machineArch(mt *compute.MachineType) string {
+	if mt == nil {
+		return archX86
+	}
+	switch a := strings.ToUpper(mt.Architecture); a {
+	case archX86, archARM:
+		return a
+	}
+	family, _, _ := strings.Cut(strings.ToLower(mt.Name), "-")
+	if slices.Contains(armMachineFamilies, family) {
+		return archARM
+	}
+	return archX86
+}
+
+// archText is an architecture in messages: "x86_64" or "arm64".
+func archText(arch string) string { return strings.ToLower(arch) }
+
 // imageCandidate is the part of a public image that the selection looks at.
 type imageCandidate struct {
 	Name         string
@@ -61,6 +95,8 @@ type imageChoice struct {
 	MinDiskGB int64
 	// Known says MinDiskGB was read from the image rather than assumed.
 	Known bool
+	// Arch is the architecture of the image ("" when unknown).
+	Arch string
 }
 
 func (c imageCandidate) created() time.Time {
@@ -69,6 +105,19 @@ func (c imageCandidate) created() time.Time {
 		return time.Time{}
 	}
 	return t
+}
+
+// arch is the architecture of the image: the one it carries, else (old
+// images carry none) ARM64 for a name with an "arm64" part and X86_64
+// otherwise.
+func (c imageCandidate) arch() string {
+	if a := strings.ToUpper(c.Architecture); a == archX86 || a == archARM {
+		return a
+	}
+	if hasToken(strings.ToLower(c.Name), "arm64", "aarch64") {
+		return archARM
+	}
+	return archX86
 }
 
 // unusable reports deprecated, obsolete and deleted images.
@@ -80,22 +129,33 @@ func (c imageCandidate) unusable() bool {
 	return false
 }
 
-var (
-	debianMajorRe = regexp.MustCompile(`debian-(\d+)`)
-	ubuntuVerRe   = regexp.MustCompile(`ubuntu-(\d{2})(\d{2})`)
-)
+var ubuntuVerRe = regexp.MustCompile(`ubuntu-(\d{2})(\d{2})`)
+
+// debianImageRe matches the standard Debian images of debian-cloud,
+// "debian-<major>-<codename>[-amd64|-arm64]-vYYYYMMDD"
+// (debian-13-trixie-v20261116, debian-12-bookworm-arm64-v20261116), with
+// the major version (major "" for any) as the first group: other variants
+// do not match (selectImage also drops names with a "backports" part).
+func debianImageRe(major string) *regexp.Regexp {
+	if major == "" {
+		major = `\d+`
+	} else {
+		major = regexp.QuoteMeta(major)
+	}
+	return regexp.MustCompile(`^debian-(` + major + `)-[a-z]+(?:-(?:amd64|arm64))?-v\d{8}`)
+}
 
 // standardVariantRe matches the standard image of a family whose
 // projects also hold variants with the same creation time
 // (rocky-linux-10-optimized-gcp-v..., rhel-9-8-eus-lvm-v...): only
-// "<prefix>-<major>-vYYYYMMDD" names are candidates.
+// "<prefix>-<major>[-arm64]-vYYYYMMDD" names are candidates.
 func standardVariantRe(prefix, major string) *regexp.Regexp {
 	if major == "" {
 		major = `\d+`
 	} else {
 		major = regexp.QuoteMeta(major)
 	}
-	return regexp.MustCompile(`^` + regexp.QuoteMeta(prefix) + `-(` + major + `)-v\d{8}`)
+	return regexp.MustCompile(`^` + regexp.QuoteMeta(prefix) + `-(` + major + `)(?:-arm64)?-v\d{8}`)
 }
 
 // majorOf returns the major version of --os-version ("9.4" -> "9").
@@ -136,20 +196,23 @@ type ranked struct {
 }
 
 // selectImage picks the image of osName (and version, "" for the latest)
-// among the images of its project: deprecated, obsolete, deleted and
-// non-x86_64 images are left out, the OS's name rules are applied, and the
-// newest is chosen: by version number for debian and ubuntu without a
-// version and for the standard images of rocky, almalinux and rhel (a
-// patch image of an old major version can be newer than the newest major
-// version), by creation time otherwise. ok is false when nothing matches.
-func selectImage(osName, version string, images []imageCandidate) (imageCandidate, bool) {
+// for arch (X86_64 or ARM64) among the images of its project: deprecated,
+// obsolete and deleted images and those of another architecture are left
+// out, the OS's name rules are applied, and the newest is chosen: by
+// version number for debian, for ubuntu without a version and for the
+// standard images of rocky, almalinux and rhel (a patch image of an old
+// major version can be newer than the newest major version), by creation
+// time otherwise. No version is written into polyctl: a new major
+// version is chosen as soon as its images are published. ok is false
+// when nothing matches.
+func selectImage(osName, version, arch string, images []imageCandidate) (imageCandidate, bool) {
 	version = strings.TrimSpace(version)
 	var cands []ranked
 	for _, img := range images {
 		if img.unusable() {
 			continue
 		}
-		if a := strings.ToUpper(img.Architecture); a != "" && a != "X86_64" {
+		if img.arch() != arch {
 			continue
 		}
 		name := strings.ToLower(img.Name)
@@ -160,9 +223,7 @@ func selectImage(osName, version string, images []imageCandidate) (imageCandidat
 			if hasToken(name, "backports") {
 				break
 			}
-			if version != "" {
-				keep = strings.Contains(name, "debian-"+version+"-") || strings.HasSuffix(name, "debian-"+version)
-			} else if m := debianMajorRe.FindStringSubmatch(name); m != nil {
+			if m := debianImageRe(version).FindStringSubmatch(name); m != nil {
 				keep = true
 				r.version, _ = strconv.Atoi(m[1])
 			}
@@ -247,12 +308,13 @@ func candidateFrom(img *compute.Image) imageCandidate {
 	return c
 }
 
-// resolveImage finds the latest x86_64 public image of osName (version ""
-// for the latest release): every page of the OS's image project is listed
-// (most images there are deprecated) and selectImage picks one. Nothing
-// found is "not found" (exit code 4): polyctl never falls back to another
-// system.
-func (c *client) resolveImage(ctx context.Context, osName, version string) (imageChoice, error) {
+// resolveImage finds the latest public image of osName (version "" for
+// the latest release) for arch, the architecture of the machine type
+// (machineType and zone name it in messages): every page of the OS's
+// image project is listed (most images there are deprecated) and
+// selectImage picks one. Nothing found is "not found" (exit code 4):
+// polyctl never falls back to another system or architecture.
+func (c *client) resolveImage(ctx context.Context, osName, version, arch, machineType, zone string) (imageChoice, error) {
 	project, ok := osImageProjects[osName]
 	if !ok {
 		return imageChoice{}, app.UsageErrf("--os %q is not supported (supported: %s)", osName, strings.Join(supportedOS, ", "))
@@ -267,20 +329,21 @@ func (c *client) resolveImage(ctx context.Context, osName, version string) (imag
 	if err != nil {
 		return imageChoice{}, computeErr(err)
 	}
-	img, ok := selectImage(osName, version, all)
+	img, ok := selectImage(osName, version, arch, all)
 	if !ok {
 		what := osName
 		if version != "" {
 			what += " " + version
 		}
-		return imageChoice{}, fmt.Errorf("%w: no current x86_64 image of %s in project %s; check --os / --os-version, or pass --image projects/<project>/global/images/<name>", platform.ErrNotFound, what, project)
+		return imageChoice{}, fmt.Errorf("%w: no current %s image of %s in project %s for machine type %s (zone %s, region %s); check --os / --os-version, or pass --image projects/<project>/global/images/<name>",
+			platform.ErrNotFound, archText(arch), what, project, machineType, zone, regionOf(zone))
 	}
 	min := img.DiskSizeGB
 	known := min > 0
 	if !known {
 		min = defaultImageMinDiskGB
 	}
-	return imageChoice{Path: "projects/" + project + "/global/images/" + img.Name, Name: img.Name, Label: osName, MinDiskGB: min, Known: known}, nil
+	return imageChoice{Path: "projects/" + project + "/global/images/" + img.Name, Name: img.Name, Label: osName, MinDiskGB: min, Known: known, Arch: img.arch()}, nil
 }
 
 // imagePathRe matches --image: projects/<p>/global/images/<name> or
@@ -337,5 +400,9 @@ func (c *client) explicitImage(ctx context.Context, path string, warn func(strin
 	if !known {
 		min = defaultImageMinDiskGB
 	}
-	return imageChoice{Path: "projects/" + project + "/global/images/" + img.Name, Name: img.Name, Label: "custom", MinDiskGB: min, Known: known}, nil
+	choice := imageChoice{Path: "projects/" + project + "/global/images/" + img.Name, Name: img.Name, Label: "custom", MinDiskGB: min, Known: known}
+	if a := strings.ToUpper(img.Architecture); a == archX86 || a == archARM {
+		choice.Arch = a
+	}
+	return choice, nil
 }

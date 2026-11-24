@@ -4,6 +4,8 @@ import (
 	"errors"
 	"testing"
 
+	"google.golang.org/api/compute/v1"
+
 	"github.com/gofika/polyctl/internal/app"
 )
 
@@ -83,7 +85,7 @@ func TestSelectImage(t *testing.T) {
 		// Exclusions match whole name parts, not letters inside a codename.
 		{"ubuntu", "", append(ubuntu[:len(ubuntu):len(ubuntu)], img("ubuntu-2804-prowler-amd64-v20280501", "X86_64", "", t3)), "ubuntu-2804-prowler-amd64-v20280501"},
 	} {
-		got, ok := selectImage(tc.os, tc.version, tc.images)
+		got, ok := selectImage(tc.os, tc.version, archX86, tc.images)
 		if tc.want == "" {
 			if ok {
 				t.Errorf("%s %q picked %s, want none", tc.os, tc.version, got.Name)
@@ -92,6 +94,101 @@ func TestSelectImage(t *testing.T) {
 		}
 		if !ok || got.Name != tc.want {
 			t.Errorf("%s %q = %q (%v), want %q", tc.os, tc.version, got.Name, ok, tc.want)
+		}
+	}
+}
+
+// TestSelectDebianImage checks the Debian name rule, the architecture
+// filter and the version-then-time order.
+func TestSelectDebianImage(t *testing.T) {
+	const (
+		t1 = "2026-11-01T00:00:00.000-07:00"
+		t2 = "2026-11-10T00:00:00.000-07:00"
+		t3 = "2026-11-17T00:00:00.000-07:00"
+	)
+	// Which names the rule takes at all (one image each, x86_64).
+	for name, want := range map[string]bool{
+		"debian-13-trixie-v20261116":             true,
+		"debian-13-trixie-amd64-v20261116":       true,
+		"debian-12-bookworm-v20261117":           true,
+		"debian-11-bullseye-backports-v2024":     false,
+		"debian-12-bookworm-backports-v20261117": false,
+		"debian-13-trixie-sid-test-v20261116":    false,
+		"debian-13-backports-v20261117":          false,
+		"debian-sid-v20261116":                   false,
+		"my-debian-13-trixie-v20261116":          false,
+		"debian-13-trixie-v2026":                 false,
+	} {
+		_, ok := selectImage("debian", "", archX86, []imageCandidate{img(name, "X86_64", "", t1)})
+		if ok != want {
+			t.Errorf("debian rule takes %s = %v, want %v", name, ok, want)
+		}
+	}
+	images := []imageCandidate{
+		img("debian-12-bookworm-v20261117", "X86_64", "", t3),
+		img("debian-12-bookworm-arm64-v20261117", "ARM64", "", t3),
+		img("debian-13-trixie-v20261101", "X86_64", "", t1),
+		img("debian-13-trixie-v20261110", "X86_64", "", t2),
+		img("debian-13-trixie-arm64-v20261110", "ARM64", "", t2),
+		img("debian-13-trixie-arm64-v20261117", "ARM64", "DEPRECATED", t3),
+		// An old image without an architecture: its name tells.
+		img("debian-13-trixie-arm64-v20261101", "", "", t1),
+	}
+	for _, tc := range []struct{ version, arch, want string }{
+		{"", archX86, "debian-13-trixie-v20261110"},
+		{"", archARM, "debian-13-trixie-arm64-v20261110"},
+		{"12", archX86, "debian-12-bookworm-v20261117"},
+		{"12", archARM, "debian-12-bookworm-arm64-v20261117"},
+		{"13", archARM, "debian-13-trixie-arm64-v20261110"},
+		{"14", archX86, ""},
+	} {
+		got, ok := selectImage("debian", tc.version, tc.arch, images)
+		if tc.want == "" {
+			if ok {
+				t.Errorf("debian %q %s picked %s, want none", tc.version, tc.arch, got.Name)
+			}
+			continue
+		}
+		if !ok || got.Name != tc.want {
+			t.Errorf("debian %q %s = %q (%v), want %q", tc.version, tc.arch, got.Name, ok, tc.want)
+		}
+	}
+	// A new major version is chosen as soon as it is published, even when
+	// an older one has a later image.
+	newer := append(images[:len(images):len(images)], img("debian-14-forky-v20261101", "X86_64", "", t1), img("debian-14-forky-arm64-v20261101", "ARM64", "", t1))
+	for arch, want := range map[string]string{archX86: "debian-14-forky-v20261101", archARM: "debian-14-forky-arm64-v20261101"} {
+		if got, ok := selectImage("debian", "", arch, newer); !ok || got.Name != want {
+			t.Errorf("debian %s with 14 = %q, want %q", arch, got.Name, want)
+		}
+	}
+	// The other systems follow the architecture too.
+	rocky := []imageCandidate{img("rocky-linux-10-v20261101", "X86_64", "", t2), img("rocky-linux-10-arm64-v20261101", "ARM64", "", t2), img("rocky-linux-10-optimized-gcp-arm64-v20261101", "ARM64", "", t3)}
+	if got, ok := selectImage("rocky", "", archARM, rocky); !ok || got.Name != "rocky-linux-10-arm64-v20261101" {
+		t.Errorf("rocky arm64 = %q", got.Name)
+	}
+	if _, ok := selectImage("windows", "", archARM, []imageCandidate{img("windows-server-2025-dc-v20261101", "X86_64", "", t2)}); ok {
+		t.Error("windows arm64 picked an x86_64 image")
+	}
+}
+
+func TestMachineArch(t *testing.T) {
+	for _, tc := range []struct {
+		mt   *compute.MachineType
+		want string
+	}{
+		{nil, archX86},
+		{&compute.MachineType{Name: "e2-medium"}, archX86},
+		{&compute.MachineType{Name: "e2-medium", Architecture: "ARCHITECTURE_UNSPECIFIED"}, archX86},
+		{&compute.MachineType{Name: "t2a-standard-4"}, archARM},
+		{&compute.MachineType{Name: "c4a-highcpu-8"}, archARM},
+		{&compute.MachineType{Name: "n4a-standard-2"}, archARM},
+		{&compute.MachineType{Name: "a4x-highgpu-4g"}, archARM},
+		{&compute.MachineType{Name: "c4-standard-8"}, archX86},
+		{&compute.MachineType{Name: "x9-new-1", Architecture: "arm64"}, archARM},
+		{&compute.MachineType{Name: "c4a-standard-1", Architecture: "X86_64"}, archX86},
+	} {
+		if got := machineArch(tc.mt); got != tc.want {
+			t.Errorf("machineArch(%+v) = %s, want %s", tc.mt, got, tc.want)
 		}
 	}
 }
