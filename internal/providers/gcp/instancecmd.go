@@ -642,15 +642,16 @@ E2 predefined)") and shown in the change report. No fit is exit code 4
 with the nearest E2 size; a size of 0 vCPUs or 0 GiB is exit code 2.
 
 The image is --image (projects/<p>/global/images/<name> or
-.../family/<family>; an image of the other architecture than the machine
-type is exit code 2), or the latest public image of --os (debian by
-default: it boots from the smallest disk, 10 GB; ubuntu picks the newest
-LTS) and --os-version for the architecture of the machine type: arm64 for
-the Arm types (t2a, c4a, n4a, a4x; the API reports it), x86_64 otherwise
-and for every size. The highest release is found in the image list on
-every run, never written into polyctl. Nothing found (windows has no arm64
-image) is exit code 4. The boot disk ({name}-boot, --disk-type, pd-balanced by
-default) has the image's minimum size unless --boot-disk-size; --disk adds
+.../family/<family>; an image whose architecture differs from the
+machine type's is exit code 2), or the latest public image of --os
+(debian by default: it boots from the smallest disk, 10 GB; ubuntu picks
+the newest LTS) and --os-version for the architecture of the machine type:
+the one the API reports, else arm64 for the Arm families (t2a, c4a, n4a,
+a4x) and x86_64 for the others; a size is always x86_64. The highest
+release is found in the image list on every run, never written into
+polyctl. Nothing found (windows has no arm64 image) is exit code 4. The
+boot disk ({name}-boot, --disk-type, pd-balanced by default) has the
+image's minimum size unless --boot-disk-size; --disk adds
 an empty data disk ({name}-data). Both disks are deleted with the instance.
 
 The network is --network (default defaults.gcp.network, else "default");
