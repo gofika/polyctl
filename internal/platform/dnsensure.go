@@ -431,6 +431,39 @@ func existingCompareValue(r Record) string {
 	return compareValue(r.Type, r.Value, r.Priority)
 }
 
+// RecordValueMatches reports whether value names the value of r, compared
+// as dns ensure compares values: host names without case or trailing dot,
+// addresses canonical, TXT text with or without its quotes. An MX value may
+// be given as "<priority> <host>" (as dns list prints it), and then the
+// priority must match too, or as the host alone.
+func RecordValueMatches(r Record, value string) bool {
+	value = strings.TrimSpace(value)
+	if r.Value == value {
+		return true
+	}
+	if strings.EqualFold(r.Type, "MX") {
+		rp, rh := splitMX(r.Value, r.Priority)
+		vp, vh := splitMX(value, nil)
+		if compareValue("MX", rh, nil) != compareValue("MX", vh, nil) {
+			return false
+		}
+		return vp == nil || (rp != nil && *rp == *vp)
+	}
+	return existingCompareValue(r) == compareValue(r.Type, value, r.Priority)
+}
+
+// splitMX splits an MX value written "<priority> <host>"; a value that is a
+// host alone keeps the priority given.
+func splitMX(v string, priority *int) (*int, string) {
+	f := strings.Fields(v)
+	if len(f) == 2 {
+		if n, err := strconv.Atoi(f[0]); err == nil && n >= 0 {
+			return &n, f[1]
+		}
+	}
+	return priority, strings.TrimSpace(v)
+}
+
 // FieldChange is one field a record differs in from the desired one.
 type FieldChange struct {
 	Field    string // value, ttl, proxied or priority

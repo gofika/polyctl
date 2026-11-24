@@ -365,7 +365,7 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 				} else if value != "" {
 					var kept []platform.Record
 					for _, r := range cands {
-						if r.Value == value {
+						if platform.RecordValueMatches(r, value) {
 							kept = append(kept, r)
 						}
 					}

@@ -306,7 +306,8 @@ func DomainResources(domains []platform.Domain) []platform.Resource {
 	return out
 }
 
-// MatchRecords filters records by FQDN name, type and (optionally) value.
+// MatchRecords filters records by FQDN name, type and (optionally) value;
+// the value is compared as platform.RecordValueMatches does.
 func MatchRecords(recs []platform.Record, fqdn, typ, value string) []platform.Record {
 	fqdn = platform.NormalizeDomain(fqdn)
 	typ = strings.ToUpper(typ)
@@ -318,7 +319,7 @@ func MatchRecords(recs []platform.Record, fqdn, typ, value string) []platform.Re
 		if typ != "" && strings.ToUpper(r.Type) != typ {
 			continue
 		}
-		if value != "" && r.Value != value {
+		if value != "" && !platform.RecordValueMatches(r, value) {
 			continue
 		}
 		out = append(out, r)

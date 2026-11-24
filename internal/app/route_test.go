@@ -730,6 +730,40 @@ func TestMatchRecords(t *testing.T) {
 	}
 }
 
+// --value takes the spellings other commands print or accept, not only the
+// raw platform string.
+func TestMatchRecordsNormalizesValue(t *testing.T) {
+	ten := 10
+	recs := []platform.Record{
+		{ID: "mx", Name: "example.com", Type: "MX", Value: "mx.example.com", Priority: &ten},
+		{ID: "v6", Name: "example.com", Type: "AAAA", Value: "2001:db8::1"},
+		{ID: "cn", Name: "www.example.com", Type: "CNAME", Value: "t.example.com"},
+		{ID: "txt", Name: "example.com", Type: "TXT", Value: `"v=spf1 -all"`},
+	}
+	cases := []struct {
+		name, typ, value, want string
+	}{
+		{"example.com", "MX", "10 mx.example.com", "mx"},
+		{"example.com", "MX", "10 MX.example.com.", "mx"},
+		{"example.com", "MX", "mx.example.com.", "mx"},
+		{"example.com", "MX", "20 mx.example.com", ""},
+		{"example.com", "AAAA", "2001:DB8:0::1", "v6"},
+		{"www.example.com", "CNAME", "T.example.com.", "cn"},
+		{"example.com", "TXT", "v=spf1 -all", "txt"},
+		{"example.com", "TXT", `"v=spf1 -all"`, "txt"},
+		{"example.com", "TXT", "v=spf1 ~all", ""},
+	}
+	for _, c := range cases {
+		var got []string
+		for _, r := range app.MatchRecords(recs, c.name, c.typ, c.value) {
+			got = append(got, r.ID)
+		}
+		if strings.Join(got, ",") != c.want {
+			t.Errorf("MatchRecords(%s %s %q) = %v, want %q", c.name, c.typ, c.value, got, c.want)
+		}
+	}
+}
+
 func TestResourceConverters(t *testing.T) {
 	zr := app.ZoneResources([]platform.Zone{{ID: "z", Name: "Example.COM."}})
 	if len(zr) != 1 || zr[0].Type != platform.ResZone || zr[0].ID != "z" || zr[0].Name != "example.com" || zr[0].Domain != "example.com" {
