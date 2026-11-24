@@ -165,6 +165,20 @@ func TestHostKeyRules(t *testing.T) {
 	if after, _ := os.ReadFile(known); string(after) != wrong {
 		t.Errorf("known_hosts changed on a mismatch:\n%s", after)
 	}
+
+	// A host key marked @revoked is refused, not taken for an unknown
+	// host that --accept-new-host-key trusts.
+	revoked := "@revoked * " + string(ssh.MarshalAuthorizedKey(srv.HostKey.PublicKey()))
+	if err := os.WriteFile(known, []byte(revoked), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = Dial(t.Context(), opts(srv, keys(k.signer), &HostKeys{AcceptNew: true}, "alice"))
+	if !errors.Is(err, ErrHostKeyMismatch) || !strings.Contains(err.Error(), "@revoked") {
+		t.Fatalf("revoked: %v", err)
+	}
+	if after, _ := os.ReadFile(known); string(after) != revoked {
+		t.Errorf("known_hosts changed on a revoked key:\n%s", after)
+	}
 }
 
 // A host whose known_hosts entry is of another key type than the server's

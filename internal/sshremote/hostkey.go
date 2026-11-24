@@ -168,17 +168,31 @@ func (h *HostKeys) check(addr string, key ssh.PublicKey) error {
 		return nil
 	}
 	h.mu.Unlock()
-	known, err := h.known(addr)
-	if err != nil {
-		return err
-	}
-	for _, k := range known {
-		if bytes.Equal(k.Marshal(), key.Marshal()) {
-			return nil
-		}
-	}
 	host := knownhosts.Normalize(addr)
 	fp := ssh.FingerprintSHA256(key)
+	// The key itself goes through the known_hosts callback, so that a key
+	// marked @revoked is refused rather than taken for an unknown host.
+	var known []knownhosts.KnownKey
+	if files := h.files(); len(files) > 0 {
+		cb, err := knownhosts.New(files...)
+		if err != nil {
+			return fmt.Errorf("reading known_hosts: %w", err)
+		}
+		err = cb(addr, tcpAddr(addr), key)
+		var re *knownhosts.RevokedError
+		var ke *knownhosts.KeyError
+		switch {
+		case err == nil:
+			return nil
+		case errors.As(err, &re):
+			return fmt.Errorf("%w: WARNING: the %s host key of %s (%s) is marked @revoked in %s; polyctl does not connect",
+				ErrHostKeyMismatch, algorithmName(key.Type()), host, fp, re.Revoked.Filename)
+		case errors.As(err, &ke):
+			known = ke.Want
+		default:
+			return err
+		}
+	}
 	if len(known) > 0 {
 		return fmt.Errorf("%w: WARNING: the %s host key of %s is %s, which is not the key %s holds for it. Someone could be eavesdropping on the connection (a man-in-the-middle attack), or the host key changed (the instance was rebuilt, or the address now belongs to another instance). polyctl does not connect and does not change known_hosts; if the change is expected, remove the old entry with `ssh-keygen -R %s` and run the command again",
 			ErrHostKeyMismatch, algorithmName(key.Type()), host, fp, homeRel(h.path()), host)
