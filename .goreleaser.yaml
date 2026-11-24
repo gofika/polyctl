@@ -40,6 +40,8 @@ archives:
           - zip
     files:
       - README.md
+      - docs/*.md
+      - docs/platforms/*.md
       - LICENSE
       - completions/*
 
