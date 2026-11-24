@@ -581,7 +581,7 @@ func sshKeyRemoveCommand(rt *Runtime, sc SSHKeyCommand) *cobra.Command {
 					return err
 				}
 				if !ok {
-					return NothingToDof("no key was removed")
+					return NothingToDof("cancelled; no key was removed from instance %s", s.inst.label())
 				}
 			}
 			plan := &platform.Plan{}

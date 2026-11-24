@@ -377,7 +377,7 @@ func TestSSHKeyInteractive(t *testing.T) {
 	r.h.rt.Picker = p
 	r.h.rt.Stdin = strings.NewReader("n\n")
 	err := r.run("remove", "web-1")
-	if !errors.Is(err, platform.ErrNothingToDo) {
+	if !errors.Is(err, platform.ErrNothingToDo) || !strings.Contains(err.Error(), "cancelled") {
 		t.Fatalf("declined: %v", err)
 	}
 	opts := p.Find("Keys to remove from web-1 (i-1)").Options
