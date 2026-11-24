@@ -352,7 +352,7 @@ func TestECSSSHKeyCloudAssistant(t *testing.T) {
 	if err := r.run("list", "web-1"); err != nil {
 		t.Fatal(err)
 	}
-	if s := r.h.stderr.String(); !strings.Contains(s, "the key pair gone of instance web-1 (i-1) cannot be read (no key pair of that name in cn-shanghai)") ||
+	if s := r.h.stderr.String(); !strings.Contains(s, "the key pair gone of instance web-1 (i-1) cannot be read (no key pair of that name in cn-shanghai (deleted?))") ||
 		!strings.Contains(s, "through Cloud Assistant") {
 		t.Errorf("missing key pair:\n%s", s)
 	}

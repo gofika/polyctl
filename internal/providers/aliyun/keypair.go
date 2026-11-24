@@ -137,7 +137,7 @@ func (c *client) boundKeyPair(ctx context.Context, region, name string) (*platfo
 		}
 		return out, ""
 	}
-	return nil, "no key pair of that name in " + region
+	return nil, "no key pair of that name in " + region + " (deleted?)"
 }
 
 // importKeyPair imports a public key as the key pair name. Only the key
