@@ -866,3 +866,80 @@ func TestInstanceStartStop(t *testing.T) {
 		t.Errorf("missing instance = %v (%s)", err, exitClass(err))
 	}
 }
+
+// A Linux instance logs in with an SSH key only: without a key of its own
+// the project has to hold one or enable OS Login, otherwise create is a
+// usage error before anything is written. Nothing ever sets a password.
+func TestInstanceCreateLinuxNeedsAKey(t *testing.T) {
+	h := newGCPHarness(t, app.Flags{}, map[string]any{"zone": "us-central1-a"})
+	h.gce.projectMeta["proj"] = nil
+	err := h.run("compute", "instance", "create", "web-1", "--machine-type", "e2-small")
+	if exitClass(err) != "usage" || !strings.Contains(err.Error(), "--ssh-key") || !strings.Contains(err.Error(), "never a password") {
+		t.Fatalf("no key anywhere = %v", err)
+	}
+	if w := h.gce.writes(); len(w) != 0 {
+		t.Errorf("writes = %v", w)
+	}
+	// The project's keys are enough; the instance then gets no metadata.
+	key := testPublicKey(t, "")
+	h.gce.projectMeta["proj"] = &compute.Metadata{Items: []*compute.MetadataItems{{Key: "ssh-keys", Value: strPtr("ops:" + key)}}}
+	if err := h.run("compute", "instance", "create", "web-1", "--machine-type", "e2-small", "--static-ip=false"); err != nil {
+		t.Fatalf("project keys: %v\n%s", err, h.stderr.String())
+	}
+	if in := h.gce.instance("us-central1-a", "web-1"); in == nil || in.Metadata != nil {
+		t.Errorf("instance metadata = %+v", in)
+	}
+	if !strings.Contains(h.stderr.String(), "SSH keys of the project metadata") {
+		t.Errorf("stderr = %s", h.stderr.String())
+	}
+	// With its own key, the only metadata item is ssh-keys: no password,
+	// no windows-keys, no startup script.
+	if err := h.run("compute", "instance", "create", "web-2", "--machine-type", "e2-small", "--static-ip=false", "--ssh-key", "alice:"+key); err != nil {
+		t.Fatal(err)
+	}
+	in := h.gce.instance("us-central1-a", "web-2")
+	if in == nil || in.Metadata == nil || len(in.Metadata.Items) != 1 || in.Metadata.Items[0].Key != "ssh-keys" {
+		t.Fatalf("metadata = %+v", in)
+	}
+}
+
+func TestCheckProjectLogin(t *testing.T) {
+	h := newGCPHarness(t, app.Flags{}, nil)
+	key := testPublicKey(t, "")
+	md := func(items ...*compute.MetadataItems) func() (*compute.Metadata, error) {
+		return func() (*compute.Metadata, error) { return &compute.Metadata{Items: items}, nil }
+	}
+	keys := &compute.MetadataItems{Key: "ssh-keys", Value: strPtr("ops:" + key)}
+	for name, tc := range map[string]struct {
+		read func() (*compute.Metadata, error)
+		ok   bool
+	}{
+		"project keys":   {md(keys), true},
+		"os login":       {md(&compute.MetadataItems{Key: "enable-oslogin", Value: strPtr("TRUE")}), true},
+		"blocked keys":   {md(keys, &compute.MetadataItems{Key: "block-project-ssh-keys", Value: strPtr("TRUE")}), false},
+		"nothing":        {md(), false},
+		"unparseable":    {md(&compute.MetadataItems{Key: "ssh-keys", Value: strPtr("garbage")}), false},
+		"no metadata":    {func() (*compute.Metadata, error) { return nil, nil }, false},
+		"cannot be read": {func() (*compute.Metadata, error) { return nil, errors.New("forbidden") }, false},
+	} {
+		err := checkProjectLogin(h.rt, tc.read)
+		if tc.ok != (err == nil) || err != nil && exitClass(err) != "usage" {
+			t.Errorf("%s = %v", name, err)
+		}
+	}
+	for _, tc := range []struct {
+		os, image string
+		want      bool
+	}{
+		{"windows", "", true},
+		{"debian", "", false},
+		{"windows", "projects/debian-cloud/global/images/family/debian-12", false},
+		{"", "projects/windows-cloud/global/images/family/windows-2022", true},
+		{"", "https://compute.googleapis.com/compute/v1/projects/windows-cloud/global/images/x", true},
+	} {
+		o := &createOptions{osName: tc.os, image: tc.image}
+		if got := o.windows(); got != tc.want {
+			t.Errorf("windows(%q, %q) = %v", tc.os, tc.image, got)
+		}
+	}
+}

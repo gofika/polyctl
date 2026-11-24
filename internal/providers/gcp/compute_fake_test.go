@@ -94,6 +94,10 @@ func newFakeCompute(t *testing.T) *fakeCompute {
 		fail: map[string]fakeErr{}, opFail: map[string]compute.OperationErrorErrors{}, stuck: map[string]string{}}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.handle))
 	t.Cleanup(f.srv.Close)
+	// Like most projects, the fake one holds an SSH key in its metadata,
+	// which a Linux instance created without a key of its own accepts.
+	projectKey := "ops:" + testPublicKey(t, "ops")
+	f.projectMeta["proj"] = &compute.Metadata{Items: []*compute.MetadataItems{{Key: "ssh-keys", Value: &projectKey}}}
 	for _, z := range []string{"us-central1-a", "us-central1-b", "europe-west1-b"} {
 		for _, p := range e2Presets {
 			f.machineTypes[z+"/"+p.Name] = true

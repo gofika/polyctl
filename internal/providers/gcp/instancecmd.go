@@ -670,6 +670,11 @@ keys the project metadata already holds (--ssh-key-instance-only writes
 them anyway). Unlike on AWS and Alibaba Cloud, where an instance binds one
 key pair and the two flags take one key and exclude each other, both flags
 repeat and combine here: Compute Engine metadata holds any number of keys.
+Linux instances log in with an SSH key only: polyctl never sets or
+enables a password. Without any key of its own, a Linux instance is
+created only when the project metadata holds SSH keys (not blocked) or
+enables OS Login; otherwise create is exit code 2 before anything is
+written.
 --tag and defaults.gcp.tags are network tags. The instance
 gets the service account --service-account (default: the default compute
 service account), Shielded VM with vTPM and integrity monitoring, and
@@ -711,6 +716,42 @@ by the next attempt.`,
 	_ = cmd.MarkFlagFilename("ssh-key-file", "pub")
 	app.AddWaitFlags(cmd, &o.wf, true, app.DefaultWaitTimeout)
 	return cmd
+}
+
+// windows reports a Windows image: --os windows, or an --image of the
+// windows-cloud project.
+func (o *createOptions) windows() bool {
+	if o.image == "" {
+		return o.osName == "windows"
+	}
+	project, _, _, err := parseImagePath(o.image)
+	return err == nil && project == osImageProjects["windows"]
+}
+
+// checkProjectLogin makes sure a Linux instance created without an SSH key
+// of its own can be logged in to: the project metadata holds SSH keys
+// (and does not block them), or enables OS Login. Anything else, a project
+// metadata that cannot be read included, is a usage error: pass a key.
+func checkProjectLogin(rt *app.Runtime, read func() (*compute.Metadata, error)) error {
+	const pass = "pass --ssh-key <public key> or --ssh-key-file <path>, or set defaults.gcp.ssh_keys (Linux instances log in with an SSH key only, never a password)"
+	md, err := read()
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return err
+		}
+		return app.UsageErrf("no SSH key given, and the project metadata cannot be read to find one (%v): %s", err, pass)
+	}
+	switch {
+	case osLoginEnabled(md):
+		rt.Infof("note: no SSH key given: the project enables OS Login (enable-oslogin=TRUE), so SSH access needs roles/compute.osLogin in IAM")
+		return nil
+	case !projectKeysBlocked(md) && len(metadataKeys(md)) > 0:
+		rt.Infof("note: no SSH key given: the instance accepts the SSH keys of the project metadata")
+		return nil
+	case projectKeysBlocked(md):
+		return app.UsageErrf("no SSH key given, and the project metadata blocks its SSH keys (block-project-ssh-keys=TRUE): %s", pass)
+	}
+	return app.UsageErrf("no SSH key given, and the project metadata holds none and does not enable OS Login: %s", pass)
 }
 
 func runCreate(cmd *cobra.Command, rt *app.Runtime, o *createOptions, name string) error {
@@ -830,6 +871,24 @@ func runCreate(cmd *cobra.Command, rt *app.Runtime, o *createOptions, name strin
 	if existing != nil {
 		return fmt.Errorf("instance %s already exists in zone %s of project %s (%s): use `polyctl gcp compute instance get %s`, or choose another name", name, zone, c.project, existing.Status, name)
 	}
+	// Linux instances log in with an SSH key only (polyctl never sets a
+	// password): without a key of its own, the project must hold one, or
+	// enable OS Login, before anything is created.
+	var projectMD *compute.Metadata
+	var projectMDErr error
+	projectMDRead := false
+	readProjectMD := func() (*compute.Metadata, error) {
+		if !projectMDRead {
+			projectMD, projectMDErr = c.projectMetadata(ctx)
+			projectMDRead = true
+		}
+		return projectMD, projectMDErr
+	}
+	if len(keys) == 0 && !o.windows() {
+		if err := checkProjectLogin(rt, readProjectMD); err != nil {
+			return err
+		}
+	}
 	o.size = nil
 	// A size resolves to an E2 type, which is x86_64; a machine type has
 	// the architecture the API reports (machineArch).
@@ -888,7 +947,7 @@ func runCreate(cmd *cobra.Command, rt *app.Runtime, o *createOptions, name strin
 	var toWrite []sshKey
 	if len(keys) > 0 {
 		var projectKeys []metadataKey
-		if md, err := c.projectMetadata(ctx); err != nil {
+		if md, err := readProjectMD(); err != nil {
 			if errors.Is(err, context.Canceled) {
 				return err
 			}
@@ -910,8 +969,6 @@ func runCreate(cmd *cobra.Command, rt *app.Runtime, o *createOptions, name strin
 			}
 			toWrite = append(toWrite, k)
 		}
-	} else {
-		rt.Infof("note: no SSH key given (--ssh-key, --ssh-key-file or defaults.gcp.ssh_keys): access relies on the project metadata or OS Login")
 	}
 
 	var extIP, intIP string
