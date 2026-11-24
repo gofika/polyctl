@@ -654,6 +654,45 @@ func TestListInstancesAndOperations(t *testing.T) {
 	}
 }
 
+// Start and stop map their errors like every other Compute Engine write: a
+// rate limit is a general failure with the capacity hint, not exit code 3,
+// and an operation that fails is an *OperationError carrying its code.
+func TestStartStopErrorMapping(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/instances/web-1/stop"):
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprint(w, `{"error":{"code":403,"message":"Rate Limit Exceeded","errors":[{"reason":"rateLimitExceeded","message":"Rate Limit Exceeded"}]}}`)
+		case strings.HasSuffix(r.URL.Path, "/instances/web-1/start"):
+			writeJSON(w, map[string]any{"name": "op-9", "status": "RUNNING", "operationType": "start"})
+		case strings.HasSuffix(r.URL.Path, "/operations/op-9/wait"):
+			writeJSON(w, map[string]any{"name": "op-9", "status": "DONE", "operationType": "start",
+				"error": map[string]any{"errors": []map[string]any{{"code": "ZONE_RESOURCE_POOL_EXHAUSTED", "message": "no capacity"}}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	c, err := newClient(context.Background(), "proj", "me@example.com", methodADC,
+		option.WithEndpoint(srv.URL+"/"), option.WithTokenSource(oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	_, err = c.StopInstance(ctx, "us-central1-a", "web-1", true)
+	if err == nil || errors.Is(err, platform.ErrUnauthorized) || !strings.Contains(err.Error(), capacityHint) {
+		t.Errorf("rate-limited stop: %v", err)
+	}
+	res, err := c.StartInstance(ctx, "us-central1-a", "web-1", true)
+	var oe *OperationError
+	if !errors.As(err, &oe) || oe.ErrorCode() != "ZONE_RESOURCE_POOL_EXHAUSTED" || !strings.Contains(err.Error(), capacityHint) {
+		t.Errorf("failed start: %v", err)
+	}
+	if res == nil || res.Error == "" {
+		t.Errorf("failed start result: %+v", res)
+	}
+}
+
 func TestListProjects(t *testing.T) {
 	f := newFake(t)
 	c := f.client(t)

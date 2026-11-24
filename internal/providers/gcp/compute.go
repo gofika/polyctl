@@ -2,7 +2,6 @@ package gcp
 
 import (
 	"context"
-	"fmt"
 	"strconv"
 	"strings"
 
@@ -139,7 +138,7 @@ func opResult(instance, zone string, op *compute.Operation) *OperationResult {
 func (c *client) StartInstance(ctx context.Context, zone, instance string, wait bool) (*OperationResult, error) {
 	op, err := c.compute.Instances.Start(c.project, zone, instance).Context(ctx).Do()
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, computeErr(err)
 	}
 	return c.finishOp(ctx, zone, instance, op, wait)
 }
@@ -148,7 +147,7 @@ func (c *client) StartInstance(ctx context.Context, zone, instance string, wait 
 func (c *client) StopInstance(ctx context.Context, zone, instance string, wait bool) (*OperationResult, error) {
 	op, err := c.compute.Instances.Stop(c.project, zone, instance).Context(ctx).Do()
 	if err != nil {
-		return nil, mapErr(err)
+		return nil, computeErr(err)
 	}
 	return c.finishOp(ctx, zone, instance, op, wait)
 }
@@ -160,13 +159,13 @@ func (c *client) finishOp(ctx context.Context, zone, instance string, op *comput
 		}
 		next, err := c.compute.ZoneOperations.Wait(c.project, zone, op.Name).Context(ctx).Do()
 		if err != nil {
-			return nil, mapErr(err)
+			return nil, computeErr(err)
 		}
 		op = next
 	}
 	res := opResult(instance, zone, op)
-	if res.Error != "" {
-		return res, fmt.Errorf("operation %s failed: %s", op.Name, res.Error)
+	if err := opError(op); err != nil {
+		return res, err
 	}
 	return res, nil
 }
