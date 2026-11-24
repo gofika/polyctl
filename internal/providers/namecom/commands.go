@@ -612,7 +612,8 @@ func newDNSCreateCmd(rt *app.Runtime) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			args, err := rt.DomainArg(cmd.Context(), args, platform.NameCom, platform.ResZone, nil)
 			if err != nil {
-				return err
+				// The record cannot be created without a zone.
+				return app.RequiredPick(err, "<domain>")
 			}
 			if (typ == "" || value == "") && !rt.Interactive() {
 				return app.UsageErrf("--type and --value are required")

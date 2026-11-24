@@ -262,3 +262,15 @@ func MinArgsOrInteractive(rt *Runtime, min int) cobra.PositionalArgs {
 		return cobra.MinimumNArgs(min)(cmd, args)
 	}
 }
+
+// RequiredPick turns the "nothing to do" of an empty pick into the usage
+// error of a required input: a command that creates something (a record in
+// a zone) cannot do without the zone, so an empty list names the argument
+// to pass instead of ending quietly. Other errors are returned unchanged.
+func RequiredPick(err error, arg string) error {
+	if !errors.Is(err, platform.ErrNothingToDo) {
+		return err
+	}
+	why := strings.TrimPrefix(err.Error(), platform.ErrNothingToDo.Error()+": ")
+	return UsageErrf("%s is required, and there is %s", arg, why)
+}

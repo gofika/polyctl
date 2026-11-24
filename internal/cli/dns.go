@@ -314,7 +314,7 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 		Args:              app.ArgsOrInteractive(rt, 1, nil),
 		ValidArgsFunction: completeDomains(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			args, err := domainArgs(cmd, rt, args, app.DomainPick{Title: "Zone", Kinds: zoneKinds, Required: true})
+			args, err := domainArgs(cmd, rt, args, app.DomainPick{Title: "Zone", Kinds: zoneKinds})
 			if err != nil {
 				return err
 			}

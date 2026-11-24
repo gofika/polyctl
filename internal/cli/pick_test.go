@@ -33,7 +33,8 @@ func TestDNSListPicksTheZone(t *testing.T) {
 	}
 }
 
-// An empty index: nothing to do for a read, a usage error for a write.
+// An empty index: nothing to do for a command acting on an existing zone
+// or domain, a usage error for one creating a record in it.
 func TestDNSPickWithEmptyIndex(t *testing.T) {
 	_, cfgPath := setup(t, true)
 	r := runFlow(t, context.Background(), cfgPath, prompttest.New(t), strings.NewReader(""), "dns", "list", "--offline")
@@ -43,6 +44,16 @@ func TestDNSPickWithEmptyIndex(t *testing.T) {
 	r = runFlow(t, context.Background(), cfgPath, prompttest.New(t), strings.NewReader(""), "dns", "set", "--offline")
 	if r.code != ExitUsage || !strings.Contains(r.err.Error(), "<domain> is required") {
 		t.Errorf("set: exit %d, %v", r.code, r.err)
+	}
+	// dns delete and domain ns set act on an existing zone or domain:
+	// nothing to do.
+	r = runFlow(t, context.Background(), cfgPath, prompttest.New(t), strings.NewReader(""), "dns", "delete")
+	if r.code != ExitOK || !strings.Contains(r.err.Error(), "nothing to do: no indexed zone") {
+		t.Errorf("delete: exit %d, %v", r.code, r.err)
+	}
+	r = runFlow(t, context.Background(), cfgPath, prompttest.New(t), strings.NewReader(""), "domain", "ns", "set")
+	if r.code != ExitOK || !strings.Contains(r.err.Error(), "nothing to do: no indexed domain") {
+		t.Errorf("ns set: exit %d, %v", r.code, r.err)
 	}
 }
 

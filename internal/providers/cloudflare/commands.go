@@ -388,7 +388,8 @@ func newDNSCreateCmd(rt *app.Runtime) *cobra.Command {
 			}
 			z, profile, err := resolveZone(cmd.Context(), rt, app.Arg(args, 0))
 			if err != nil {
-				return err
+				// The record cannot be created without a zone.
+				return app.RequiredPick(err, "<zone>")
 			}
 			if typ == "" {
 				if typ, err = rt.PickRecordType(platform.Cloudflare); err != nil {

@@ -20,8 +20,10 @@ type DomainPick struct {
 	// Kinds are the index entries offered (ResZone, ResDomain); none means
 	// both.
 	Kinds []platform.ResourceType
-	// Required says the command writes (an empty index is a usage error
-	// naming Arg) rather than reads (an empty index is "nothing to do").
+	// Required says the command creates something in the domain (a record,
+	// a certificate): an empty index is a usage error naming Arg. A command
+	// acting on the domain itself (reading it, deleting records, setting
+	// nameservers) leaves it false: an empty index is "nothing to do".
 	Required bool
 	// Filter, when set, keeps only the domains it accepts (one call per
 	// domain with its index entries).

@@ -131,3 +131,17 @@ func TestZoneEnsureAsksTheDomain(t *testing.T) {
 		t.Errorf("non-interactive: exit %d", code)
 	}
 }
+
+// Without a zone to choose from, dns create (which cannot do without one)
+// is a usage error naming <zone>, while dns list has nothing to do.
+func TestDNSCreateWithoutZonesIsAUsageError(t *testing.T) {
+	e := newZoneEnv(t)
+	code, _, stderr := e.runPick(prompttest.New(t), "cloudflare", "dns", "create", "--type", "A", "--value", "192.0.2.1")
+	if code != cli.ExitUsage || !strings.Contains(stderr, "<zone> is required, and there is no zone in cloudflare/") {
+		t.Errorf("create: exit %d, %s", code, stderr)
+	}
+	code, _, stderr = e.runPick(prompttest.New(t), "cloudflare", "dns", "list")
+	if code != cli.ExitOK || !strings.Contains(stderr, "nothing to do: no zone in cloudflare/") {
+		t.Errorf("list: exit %d, %s", code, stderr)
+	}
+}

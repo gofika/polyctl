@@ -211,7 +211,7 @@ func newDomainNSSetCmd(rt *app.Runtime) *cobra.Command {
 		Args:              app.NameserverArgsOrInteractive(rt),
 		ValidArgsFunction: completeDomains(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			args, err := domainArgs(cmd, rt, args, app.DomainPick{Title: "Registered domain", Kinds: domainKinds, Required: true})
+			args, err := domainArgs(cmd, rt, args, app.DomainPick{Title: "Registered domain", Kinds: domainKinds})
 			if err != nil {
 				return err
 			}
