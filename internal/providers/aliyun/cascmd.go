@@ -354,7 +354,8 @@ func casDeleteCmd(rt *app.Runtime) *cobra.Command {
 		Short: "Delete an uploaded certificate no ALB listener uses, or every expired one (asks first)",
 		Long: `Delete the uploaded certificate <cert-id> (an integer), or with --expired
 (and no id) every uploaded certificate that has expired (from 00:00 UTC of
-its end date on).
+its end date on). On a terminal, without either, "All expired certificates
+(N)" and the uploaded certificates are offered.
 
 CAS deletes a certificate that a listener still uses without a word, and
 the listener keeps a dangling id. So polyctl first reads the HTTPS and QUIC
@@ -385,7 +386,7 @@ reports what would be deleted, skipped or refused, without asking.`,
 			switch {
 			case expired && len(args) == 1:
 				return app.UsageErrf("--expired deletes every expired certificate: pass either <cert-id> or --expired")
-			case !expired && len(args) == 0:
+			case !expired && len(args) == 0 && !rt.Interactive():
 				return app.UsageErrf("pass the id of the certificate to delete, or --expired")
 			case len(args) == 1:
 				id = strings.TrimSpace(args[0])
@@ -409,6 +410,19 @@ reports what would be deleted, skipped or refused, without asking.`,
 			certs, s, err := c.listCASCertificates(ctx)
 			if err != nil {
 				return err
+			}
+			if !expired && id == "" {
+				// The interactive flow: every expired certificate, or one
+				// uploaded certificate.
+				v, err := pickCASDelete(rt, certs)
+				if err != nil {
+					return err
+				}
+				if v == allExpiredValue {
+					expired = true
+				} else {
+					id = v
+				}
 			}
 			d := casDeleter{rt: rt, c: c, profile: p.Name, store: s, force: force, regions: regions}
 			if expired {

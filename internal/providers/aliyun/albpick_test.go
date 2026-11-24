@@ -1,0 +1,80 @@
+package aliyun
+
+import (
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/gofika/polyctl/internal/app"
+	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt/prompttest"
+)
+
+// listener cert set without <listener-id> and --cert asks for the load
+// balancer, then one of its HTTPS listeners (HTTP ones left out), then an
+// unexpired certificate of the CAS store (the current one marked).
+func TestALBListenerCertSetPicks(t *testing.T) {
+	t.Setenv(app.EnvNonInteractive, "")
+	h, _, alb, cas, _ := albHarness(t, app.Flags{DryRun: true})
+	cas.add(1111, "old", "2026-01-01")
+	cas.add(2222, "new", "2027-06-01")
+	alb.addLB("alb-1", "lb-1", "vpc-site", "Active")
+	alb.addGroup("sgp-1", "g", "HTTP", "vpc-site")
+	alb.addListener("lsn-1", "alb-1", "HTTP", 80, "sgp-1")
+	alb.addListener("lsn-2", "alb-1", "HTTPS", 443, "sgp-1", "1234567")
+	p := prompttest.New(t, "alb-1", "lsn-2", "2222")
+	h.rt.Picker = p
+	if err := h.run("alb", "listener", "cert", "set"); err != nil {
+		t.Fatalf("cert set: %v\n%s", err, h.stderr.String())
+	}
+	p.Done()
+	if v := prompttest.Values(p.Asked[1].Options); v != "lsn-2" {
+		t.Errorf("listeners offered %q", v)
+	}
+	certs := p.Asked[2]
+	if l := prompttest.Labels(certs.Options); strings.Contains(l, "1111") || !strings.Contains(l, "1234567  (current)") || certs.Default != "2222" {
+		t.Errorf("certificates (default %q):\n%s", certs.Default, l)
+	}
+}
+
+// acl entry remove without entries offers the entries of the ACL; an ACL
+// without entries is nothing to do.
+func TestALBACLEntryRemovePick(t *testing.T) {
+	t.Setenv(app.EnvNonInteractive, "")
+	h, _, alb, _, _ := albHarness(t, app.Flags{DryRun: true})
+	alb.addACL("acl-1", "office")
+	h.rt.Picker = prompttest.New(t, "acl-1")
+	if err := h.run("alb", "acl", "entry", "remove"); !errors.Is(err, platform.ErrNothingToDo) {
+		t.Errorf("no entries = %v", err)
+	}
+	h.rt.Picker = prompttest.New(t, "acl-1", "bad", "203.0.113.0/24", "")
+	if err := h.run("alb", "acl", "entry", "add"); err != nil {
+		t.Fatalf("entry add: %v\n%s", err, h.stderr.String())
+	}
+	if !strings.Contains(h.stdout.String(), "203.0.113.0/24") {
+		t.Errorf("stdout = %s", h.stdout.String())
+	}
+	h.rt.Picker = nil
+	h.rt.Flags.NonInteractive = true
+	if err := h.run("alb", "acl", "entry", "add", "acl-1"); err == nil {
+		t.Error("non-interactive entry add without <cidr> succeeded")
+	}
+}
+
+// cas certificate delete without <cert-id> or --expired offers "All
+// expired certificates (N)" and each certificate.
+func TestCASDeletePick(t *testing.T) {
+	t.Setenv(app.EnvNonInteractive, "")
+	h, f, _ := casHarness(t, app.Flags{DryRun: true})
+	f.add(1, "one", "2027-01-01")
+	f.add(2, "gone", "2020-01-01")
+	p := prompttest.New(t, prompttest.Label("All expired certificates (1)"))
+	h.rt.Picker = p
+	if err := h.run("cas", "certificate", "delete", "--force"); err != nil {
+		t.Fatalf("delete: %v\n%s", err, h.stderr.String())
+	}
+	p.Done()
+	if !strings.Contains(h.stdout.String(), "cas/certificate/2") || strings.Contains(h.stdout.String(), "cas/certificate/1\"") {
+		t.Errorf("stdout = %s", h.stdout.String())
+	}
+}

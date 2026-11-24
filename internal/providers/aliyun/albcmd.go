@@ -16,6 +16,7 @@ import (
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/output"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt"
 )
 
 // The waits of the ALB commands.
@@ -39,7 +40,10 @@ func newALBCmd(rt *app.Runtime) *cobra.Command {
 access control lists (ACLs) belong to one region (--region, the profile's
 region by default). Alibaba Cloud keeps none of their names unique: a name
 held by several is a pick on a terminal and ambiguous (exit code 5) in the
-non-interactive flow; pass the id.`,
+non-interactive flow; pass the id. On a terminal, a load balancer,
+listener, server group, ACL, certificate, instance, port or ACL entry a
+command needs and was not given is offered from the region's resources (or
+asked, checked as it is typed) instead of failing.`,
 	}
 	lb := &cobra.Command{Use: "load-balancer", Short: "ALB load balancers"}
 	lb.AddCommand(albLBListCmd(rt), albLBGetCmd(rt), albLBCreateCmd(rt), albLBUpdateCmd(rt), albLBDeleteCmd(rt), albLBEnsureCmd(rt))
@@ -548,9 +552,13 @@ each zone and its listeners with the certificate of the HTTPS ones. Without
 once when it does not know the name); several of the name are a pick on a
 terminal, exit code 5 otherwise.`,
 		Example: "  polyctl aliyun alb load-balancer get lb-example-com -o json",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+			args, err := lbArg(ctx, rt, args, region)
+			if err != nil {
+				return err
+			}
 			sc, lb, err := lbScope(ctx, rt, args[0], region)
 			if err != nil {
 				return err
@@ -746,14 +754,15 @@ switches its deletion protection. The load balancer is found like get.
 After a rename the command waits until the load balancer is Active again,
 bounded by --timeout; --no-wait returns at once.`,
 		Example: "  polyctl aliyun alb load-balancer update lb-web --deletion-protection\n  polyctl aliyun alb load-balancer update alb-0123456789 --name lb-web-2 --deletion-protection=false",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			fl := cmd.Flags()
-			if !fl.Changed("name") && !fl.Changed("deletion-protection") {
+			setName, setProtection := fl.Changed("name"), fl.Changed("deletion-protection")
+			if !setName && !setProtection && !rt.Interactive() {
 				return app.UsageErrf("nothing to update: pass --name or --deletion-protection")
 			}
-			if fl.Changed("name") {
+			if setName {
 				if err := checkLBName(name); err != nil {
 					return err
 				}
@@ -762,13 +771,38 @@ bounded by --timeout; --no-wait returns at once.`,
 			if err != nil {
 				return err
 			}
+			if args, err = lbArg(ctx, rt, args, region); err != nil {
+				return err
+			}
 			sc, lb, err := lbScope(ctx, rt, args[0], region)
 			if err != nil {
 				return err
 			}
+			if !setName && !setProtection {
+				// The interactive flow asks what to change.
+				what, err := rt.Choose(app.Choice{Title: "Change what of " + orID(lb.Name, lb.ID) + "?", Arg: "--name or --deletion-protection",
+					Options: []prompt.Option{{Label: "Name (now " + orDash(lb.Name) + ")", Value: "name"}, {Label: "Deletion protection (now " + strconv.FormatBool(lb.DeletionProtection) + ")", Value: "protection"}}})
+				if err != nil {
+					return err
+				}
+				if what == "name" {
+					setName = true
+					if name, err = rt.AskInput("--name", "New name of the load balancer", lb.Name, func(v string) error { return inline(checkLBName(strings.TrimSpace(v))) }); err != nil {
+						return err
+					}
+				} else {
+					setProtection = true
+					cur := lb.DeletionProtection
+					v, err := rt.PickOnOff("Deletion protection of "+orID(lb.Name, lb.ID), &cur)
+					if err != nil {
+						return err
+					}
+					deletionProtection = v == "on"
+				}
+			}
 			res := "load-balancer/" + orID(lb.Name, lb.ID)
 			var plan platform.Plan
-			if fl.Changed("deletion-protection") {
+			if setProtection {
 				want := deletionProtection
 				if lb.DeletionProtection == want {
 					plan.Add(platform.Step{Resource: res + "/deletion-protection", ID: lb.ID, Desc: strconv.FormatBool(want)})
@@ -780,7 +814,7 @@ bounded by --timeout; --no-wait returns at once.`,
 						}})
 				}
 			}
-			if fl.Changed("name") {
+			if setName {
 				if name == lb.Name {
 					plan.Add(platform.Step{Resource: res + "/name", ID: lb.ID, Desc: name})
 				} else {
@@ -846,6 +880,9 @@ waits until the load balancer is gone, bounded by --timeout.`,
 			ctx := cmd.Context()
 			wait, timeout, err := w.Resolve(cmd)
 			if err != nil {
+				return err
+			}
+			if args, err = lbArg(ctx, rt, args, region); err != nil {
 				return err
 			}
 			if err := albCanConfirm(rt, "delete load balancer "+args[0]); err != nil {
@@ -956,7 +993,7 @@ func albListenerListCmd(rt *app.Runtime) *cobra.Command {
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			if lbRef == "" {
+			if lbRef == "" && !rt.Interactive() {
 				return app.UsageErrf("--lb is required: name the load balancer (name or id)")
 			}
 			p := strings.ToUpper(strings.TrimSpace(protocol))
@@ -966,6 +1003,11 @@ func albListenerListCmd(rt *app.Runtime) *cobra.Command {
 			sc, err := openALBScope(ctx, rt, region)
 			if err != nil {
 				return err
+			}
+			if lbRef == "" {
+				if lbRef, err = pickLB(ctx, rt, sc, "--lb"); err != nil {
+					return err
+				}
 			}
 			lb, err := resolveLB(ctx, sc, lbRef)
 			if err != nil {
@@ -1011,14 +1053,17 @@ func albListenerGetCmd(rt *app.Runtime) *cobra.Command {
 		Use:     "get <listener-id>",
 		Short:   "Show a listener: status, certificates, server groups",
 		Example: "  polyctl aliyun alb listener get lsn-0123456789 --region cn-hongkong",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			if !strings.HasPrefix(args[0], "lsn-") {
+			if len(args) > 0 && !strings.HasPrefix(args[0], "lsn-") {
 				return app.UsageErrf("%q is not a listener id (lsn-...)", args[0])
 			}
 			sc, err := openALBScope(ctx, rt, region)
 			if err != nil {
+				return err
+			}
+			if args, err = listenerArg(ctx, rt, sc, args); err != nil {
 				return err
 			}
 			l, err := getListenerOrNotFound(ctx, sc, args[0])
@@ -1144,7 +1189,7 @@ Nothing else is changed. Values the listener holds already are unchanged;
 after a change the command waits up to a minute for the listener to be
 Running again.`,
 		Example: "  polyctl aliyun alb listener update lsn-0123456789 --server-group site-a-https",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			if groupRef == "" && cert == "" {
@@ -1155,11 +1200,14 @@ Running again.`,
 					return err
 				}
 			}
-			if !strings.HasPrefix(args[0], "lsn-") {
+			if len(args) > 0 && !strings.HasPrefix(args[0], "lsn-") {
 				return app.UsageErrf("%q is not a listener id (lsn-...)", args[0])
 			}
 			sc, err := openALBScope(ctx, rt, region)
 			if err != nil {
+				return err
+			}
+			if args, err = listenerArg(ctx, rt, sc, args); err != nil {
 				return err
 			}
 			l, err := getListenerOrNotFound(ctx, sc, args[0])
@@ -1235,20 +1283,25 @@ written for the listener as the region needs it: <id>-ap-southeast-1 in
 cn-hongkong (its certificates live in the Singapore CAS store), the bare id
 elsewhere. A listener holding it already is unchanged.`,
 		Example: "  polyctl aliyun alb listener cert set lsn-0123456789 --cert 1234567 --region cn-hongkong",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			if cert == "" {
+			if cert == "" && !rt.Interactive() {
 				return app.UsageErrf("--cert is required: the CAS certificate id")
 			}
-			if err := checkCertFlag(cert); err != nil {
-				return err
+			if cert != "" {
+				if err := checkCertFlag(cert); err != nil {
+					return err
+				}
 			}
-			if !strings.HasPrefix(args[0], "lsn-") {
+			if len(args) > 0 && !strings.HasPrefix(args[0], "lsn-") {
 				return app.UsageErrf("%q is not a listener id (lsn-...)", args[0])
 			}
 			sc, err := openALBScope(ctx, rt, region)
 			if err != nil {
+				return err
+			}
+			if args, err = listenerArg(ctx, rt, sc, args, "HTTPS", "QUIC"); err != nil {
 				return err
 			}
 			l, err := getListenerOrNotFound(ctx, sc, args[0])
@@ -1257,6 +1310,11 @@ elsewhere. A listener holding it already is unchanged.`,
 			}
 			if !carriesCertificates(l.Protocol) {
 				return app.UsageErrf("listener %s is %s: only HTTPS listeners hold certificates", l.ID, l.Protocol)
+			}
+			if cert == "" {
+				if cert, err = askCASCert(ctx, rt, sc.c, sc.region, firstOr(l.Certificates, ""), "--cert"); err != nil {
+					return err
+				}
 			}
 			want, err := listenerCert(sc.c, sc.region, cert)
 			if err != nil {
@@ -1295,17 +1353,20 @@ func albListenerDeleteCmd(rt *app.Runtime) *cobra.Command {
 		Short:   "Delete a listener (asks first)",
 		Long:    `Delete a listener. It is shown first, then a confirmation is asked (default no; --yes skips it, the non-interactive flow needs --yes, exit code 2).`,
 		Example: "  polyctl aliyun alb listener delete lsn-0123456789 --yes",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			if !strings.HasPrefix(args[0], "lsn-") {
+			if len(args) > 0 && !strings.HasPrefix(args[0], "lsn-") {
 				return app.UsageErrf("%q is not a listener id (lsn-...)", args[0])
 			}
-			if err := albCanConfirm(rt, "delete listener "+args[0]); err != nil {
+			if err := albCanConfirm(rt, "delete listener "+app.Arg(args, 0)); err != nil {
 				return err
 			}
 			sc, err := openALBScope(ctx, rt, region)
 			if err != nil {
+				return err
+			}
+			if args, err = listenerArg(ctx, rt, sc, args); err != nil {
 				return err
 			}
 			l, err := getListenerOrNotFound(ctx, sc, args[0])
@@ -1395,11 +1456,14 @@ func albSGGetCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "get <name|id>",
 		Short: "Show a server group and its servers",
-		Args:  cobra.ExactArgs(1),
+		Args:  app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			sc, err := openALBScope(ctx, rt, region)
 			if err != nil {
+				return err
+			}
+			if args, err = serverGroupArg(ctx, rt, sc, args, "<name|id>"); err != nil {
 				return err
 			}
 			g, err := resolveServerGroup(ctx, sc, args[0])
@@ -1673,14 +1737,17 @@ func albSGDeleteCmd(rt *app.Runtime) *cobra.Command {
 no; --yes skips it, the non-interactive flow needs --yes, exit code 2). A
 group a listener still forwards to is refused by Alibaba Cloud (exit code 1).`,
 		Example: "  polyctl aliyun alb server-group delete site-a-http --yes",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			if err := albCanConfirm(rt, "delete server group "+args[0]); err != nil {
+			if err := albCanConfirm(rt, "delete server group "+app.Arg(args, 0)); err != nil {
 				return err
 			}
 			sc, err := openALBScope(ctx, rt, region)
 			if err != nil {
+				return err
+			}
+			if args, err = serverGroupArg(ctx, rt, sc, args, "<name|id>"); err != nil {
 				return err
 			}
 			g, err := resolveServerGroup(ctx, sc, args[0])
@@ -1735,22 +1802,48 @@ group; required) on --port (required) to the server group (name or id). An
 instance already in the group on that port is unchanged. The instance has to
 be in the group's VPC (exit code 1 otherwise).`,
 		Example: "  polyctl aliyun alb server-group server add site-a-http --instance site-a --port 80",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			if instance == "" {
+			if instance == "" && !rt.Interactive() {
 				return app.UsageErrf("--instance is required: name the ECS instance")
 			}
-			if port < 1 || port > 65535 {
+			if (port < 1 || port > 65535) && !(port == 0 && rt.Interactive()) {
 				return app.UsageErrf("--port is required and must be 1-65535, got %d", port)
 			}
 			sc, err := openALBScope(ctx, rt, region)
 			if err != nil {
 				return err
 			}
+			if args, err = serverGroupArg(ctx, rt, sc, args, "<server-group>"); err != nil {
+				return err
+			}
 			g, err := resolveServerGroup(ctx, sc, args[0])
 			if err != nil {
 				return err
+			}
+			if instance == "" {
+				// The instances of the group's VPC in the region, not in
+				// the group yet.
+				if instance, err = pickGroupInstance(ctx, rt, sc, g); err != nil {
+					return err
+				}
+			}
+			if port == 0 {
+				def := "80"
+				if strings.EqualFold(g.Protocol, "HTTPS") {
+					def = "443"
+				}
+				v, err := rt.AskInput("--port", "Port of the instance the group forwards to", def, func(s string) error {
+					if n, err := strconv.Atoi(strings.TrimSpace(s)); err != nil || n < 1 || n > 65535 {
+						return fmt.Errorf("a TCP port is 1-65535")
+					}
+					return nil
+				})
+				if err != nil {
+					return err
+				}
+				port, _ = strconv.Atoi(v)
 			}
 			inst, err := resolveInstanceIn(ctx, sc.ecsScope, instance)
 			if err != nil {
@@ -1845,11 +1938,14 @@ func albACLGetCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "get <name|id>",
 		Short: "Show an ACL and its entries",
-		Args:  cobra.ExactArgs(1),
+		Args:  app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			sc, err := openALBScope(ctx, rt, region)
 			if err != nil {
+				return err
+			}
+			if args, err = aclArg(ctx, rt, sc, args, "<name|id>"); err != nil {
 				return err
 			}
 			x, err := resolveACL(ctx, sc, args[0])
@@ -1936,14 +2032,17 @@ func albACLDeleteCmd(rt *app.Runtime) *cobra.Command {
 		Short:   "Delete an ACL and its entries (asks first)",
 		Long:    `Delete an ACL with its entries. It is shown first, then a confirmation is asked (default no; --yes skips it, the non-interactive flow needs --yes, exit code 2).`,
 		Example: "  polyctl aliyun alb acl delete office-allow --yes",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			if err := albCanConfirm(rt, "delete ACL "+args[0]); err != nil {
+			if err := albCanConfirm(rt, "delete ACL "+app.Arg(args, 0)); err != nil {
 				return err
 			}
 			sc, err := openALBScope(ctx, rt, region)
 			if err != nil {
+				return err
+			}
+			if args, err = aclArg(ctx, rt, sc, args, "<name|id>"); err != nil {
 				return err
 			}
 			x, err := resolveACL(ctx, sc, args[0])
@@ -2042,14 +2141,24 @@ ACL to be Available after each. A full ACL refuses the batch as a whole;
 the message quotes the account's limit (500 entries by default).
 --description is set on every entry added.`,
 		Example: "  polyctl aliyun alb acl entry add office-allow 203.0.113.0/24 198.51.100.7 --description office",
-		Args:    cobra.MinimumNArgs(2),
+		Args:    app.MinArgsOrInteractive(rt, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			entries, err := normalizeACLEntries(args[1:])
+			sc, err := openALBScope(ctx, rt, region)
 			if err != nil {
 				return err
 			}
-			sc, err := openALBScope(ctx, rt, region)
+			if args, err = aclArg(ctx, rt, sc, args, "<acl>"); err != nil {
+				return err
+			}
+			if len(args) < 2 {
+				typed, err := askCIDRs(rt)
+				if err != nil {
+					return err
+				}
+				args = append(args, typed...)
+			}
+			entries, err := normalizeACLEntries(args[1:])
 			if err != nil {
 				return err
 			}
@@ -2120,15 +2229,14 @@ address is its /32) from the ACL (name or id). Entries the ACL does not hold
 are unchanged. The others are removed 20 per call, waiting for the ACL to
 be Available after each.`,
 		Example: "  polyctl aliyun alb acl entry remove office-allow 198.51.100.7",
-		Args:    cobra.MinimumNArgs(2),
+		Args:    app.MinArgsOrInteractive(rt, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			entries, err := normalizeACLEntries(args[1:])
+			sc, err := openALBScope(ctx, rt, region)
 			if err != nil {
 				return err
 			}
-			sc, err := openALBScope(ctx, rt, region)
-			if err != nil {
+			if args, err = aclArg(ctx, rt, sc, args, "<acl>"); err != nil {
 				return err
 			}
 			x, err := resolveACL(ctx, sc, args[0])
@@ -2136,6 +2244,23 @@ be Available after each.`,
 				return err
 			}
 			have, err := sc.a.listACLEntries(ctx, x.ID)
+			if err != nil {
+				return err
+			}
+			if len(args) < 2 {
+				// The interactive flow offers the entries of the ACL.
+				var opts []prompt.Option
+				for _, e := range have {
+					opts = append(opts, prompt.Option{Label: joinLabel(e.Entry, e.Description, e.Status), Value: e.Entry})
+				}
+				picked, err := rt.ChooseMany(app.Choice{Title: "Entries to remove from " + orID(x.Name, x.ID), Options: opts, Arg: "<cidr>...",
+					Empty: app.NothingToDof("ACL %s has no entries", x.ID)})
+				if err != nil {
+					return err
+				}
+				args = append(args, picked...)
+			}
+			entries, err := normalizeACLEntries(args[1:])
 			if err != nil {
 				return err
 			}
