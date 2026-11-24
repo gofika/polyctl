@@ -142,28 +142,44 @@ file) as the key pair <name>. The key is checked locally (Alibaba Cloud
 accepts almost any text): a malformed key or a private key is a usage error
 (exit code 2). A name that is taken is a usage error too (exit code 2, as on
 AWS), whatever key it holds: the existing key pair is never replaced;
-key-pair ensure reuses the key pair that already holds the key.`,
+key-pair ensure reuses the key pair that already holds the key. On a
+terminal a missing key is picked from ~/.ssh/*.pub (type, fingerprint and
+comment shown, keys already registered marked) or typed as a path, and a
+missing <name> is asked, checked as it is typed (no default).`,
 		Example: "  polyctl aliyun ecs key-pair import ops --ssh-key-file ~/.ssh/id_ed25519.pub",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			name := args[0]
-			if err := checkKeyPairName(name); err != nil {
-				return err
+			name := app.Arg(args, 0)
+			if name != "" {
+				if err := checkKeyPairName(name); err != nil {
+					return err
+				}
 			}
 			key, err := keys.PublicKey()
 			if err != nil {
 				return err
 			}
-			if key == nil {
+			if key == nil && !rt.Interactive() {
 				return app.UsageErrf("a public key is required: pass --ssh-key-file <path> or --ssh-key <public key>")
 			}
-			if err := key.CheckType(platform.AliyunKeyTypes); err != nil {
-				return err
+			if key != nil {
+				if err := key.CheckType(platform.AliyunKeyTypes); err != nil {
+					return err
+				}
 			}
 			s, err := openECSScope(ctx, rt, region)
 			if err != nil {
 				return err
+			}
+			if key == nil || name == "" {
+				// The interactive flow: the public key from ~/.ssh/*.pub
+				// (those already registered marked) or a path, then the
+				// name, checked as it is typed against the key pairs of
+				// the region; no name is ever chosen for you.
+				if key, name, err = askImport(ctx, rt, s, &keys, key, name); err != nil {
+					return err
+				}
 			}
 			existing, err := s.c.listKeyPairs(ctx, s.region, name, "")
 			if err != nil {
@@ -304,4 +320,49 @@ func resolveKeyPairStep(ctx context.Context, rt *app.Runtime, s *ecsScope, in pl
 		return info.Name, nil
 	})
 	return kp, step, nil
+}
+
+// askImport asks for what key-pair import misses in the interactive flow:
+// the public key (key nil) and the name (name "").
+func askImport(ctx context.Context, rt *app.Runtime, s *ecsScope, keys *app.KeyFlags, key *platform.PublicKey, name string) (*platform.PublicKey, string, error) {
+	in, err := rt.KeyInput(keys, platform.KeyInput{NameFlag: "<name>", Match: platform.MatchByFingerprintMD5,
+		AllowedTypes: platform.AliyunKeyTypes, MinNameLength: keyPairNameMin, CheckName: checkKeyPairName})
+	if err != nil {
+		return nil, "", err
+	}
+	pairs, err := (&keyPairLister{c: s.c, region: s.region}).ListKeyPairs(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	if key == nil {
+		path, err := in.Prompter.KeyFile(platform.KeyFileCandidates(in, pairs))
+		if err != nil {
+			return nil, "", err
+		}
+		if key, err = platform.LoadPublicKeyFile(strings.TrimSpace(path)); err != nil {
+			return nil, "", err
+		}
+		if err := key.CheckType(platform.AliyunKeyTypes); err != nil {
+			return nil, "", err
+		}
+	}
+	if name == "" {
+		taken := map[string]bool{}
+		for _, kp := range pairs {
+			taken[kp.Name] = true
+		}
+		if name, err = rt.AskInput("<name>", "Name of the new key pair", "", func(v string) error {
+			v = strings.TrimSpace(v)
+			if err := checkKeyPairName(v); err != nil {
+				return inline(err)
+			}
+			if taken[v] {
+				return fmt.Errorf("key pair %q already exists in %s", v, s.region)
+			}
+			return nil
+		}); err != nil {
+			return nil, "", err
+		}
+	}
+	return key, name, nil
 }

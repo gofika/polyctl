@@ -184,3 +184,29 @@ func TestInstanceEnsureInteractiveName(t *testing.T) {
 		t.Errorf("stdout = %s", h.stdout.String())
 	}
 }
+
+// key-pair import without the key and the name asks for the public key
+// file (~/.ssh/*.pub, those registered marked) and a free name.
+func TestKeyPairImportInteractive(t *testing.T) {
+	t.Setenv(app.EnvNonInteractive, "")
+	line := testKey(t, "ed25519")
+	withLocalKey(t, line)
+	h, f := sgHarness(t, app.Flags{})
+	f.addKeyPair("taken", fmt.Sprintf("%032x", 7), "2026-11-17T13:54Z")
+	home, _ := os.UserHomeDir()
+	p := prompttest.New(t, filepath.Join(home, ".ssh", "id_ed25519.pub"), "taken", "laptop")
+	h.rt.Picker = p
+	if err := h.run("ecs", "key-pair", "import"); err != nil {
+		t.Fatalf("import: %v\n%s", err, h.stderr.String())
+	}
+	p.Done()
+	c := h.api.callsFor("ImportKeyPair")
+	if len(c) != 1 || c[0].Get("KeyPairName") != "laptop" {
+		t.Errorf("import = %v", c)
+	}
+	h.rt.Picker = nil
+	h.rt.Flags.NonInteractive = true
+	if err := h.run("ecs", "key-pair", "import", "x1"); !errors.Is(err, app.ErrUsage) {
+		t.Errorf("non-interactive = %v", err)
+	}
+}
