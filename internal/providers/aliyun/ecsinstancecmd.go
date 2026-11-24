@@ -257,7 +257,7 @@ func (f *instanceFlags) check(cmd *cobra.Command) error {
 	}
 	if f.windows() {
 		if f.keys.Given() {
-			return app.UsageErrf("--os windows takes no --key-pair, --ssh-key or --ssh-key-file: Windows instances log in with a password, not a key pair (set it in the ECS console after the instance is created)")
+			return app.UsageErrf("--os windows takes no --key-pair, --ssh-key or --ssh-key-file: ECS key pairs are for Linux instances only; a Windows instance logs in as %s with a password polyctl generates and stores encrypted (`polyctl %s password <name|id>` shows it)", windowsUser, ecsInstanceTree)
 		}
 		if !cmd.Flags().Changed("disk") {
 			f.disk = windowsMinDiskGiB
@@ -272,8 +272,8 @@ func (f *instanceFlags) check(cmd *cobra.Command) error {
 }
 
 // windows reports an instance of the newest Windows Server image: it
-// takes no key pair, a system disk of windowsMinDiskGiB or more and a
-// Windows host name.
+// takes no key pair but a generated Administrator password, a system disk
+// of windowsMinDiskGiB or more and a Windows host name.
 func (f *instanceFlags) windows() bool { return f.image == "" && f.osName == osWindows }
 
 // hostName fits the host name of an instance to its OS: a Windows host
@@ -419,15 +419,29 @@ func createDesc(typ string, disk int, category, image string) string {
 // step may create them). It stores the new id in *id.
 // fresh reports that the group or the vSwitch was created by this run: a
 // RunInstances that does not find them yet is then retried a few times.
-func runStep(rt *app.Runtime, s *ecsScope, name, host string, f *instanceFlags, image string, sg, vsw, kp func() string, fresh func() bool, id *string) platform.Step {
+//
+// win is the login of a Windows instance (nil for Linux): the password is
+// generated when the step runs, never in a dry run, and the credentials
+// are stored as soon as RunInstances answers the instance id.
+func runStep(rt *app.Runtime, s *ecsScope, name, host string, f *instanceFlags, image string, sg, vsw, kp func() string, fresh func() bool, win *windowsLogin, id *string) platform.Step {
 	desc := createDesc(f.typeLabel(), f.disk, f.diskCategory, image)
 	if host != name {
 		desc += ", host name " + host
+	}
+	if win != nil {
+		desc += ", login " + windowsUser + " with a generated password"
 	}
 	return platform.Step{Resource: "instance/" + name, Action: platform.Created, Desc: desc,
 		Apply: func(ctx context.Context) (platform.Change, error) {
 			spec := runSpec{Name: name, HostName: host, Type: f.typ, Image: image, SecurityGroup: sg(), VSwitch: vsw(), KeyPair: kp(),
 				DiskGiB: f.disk, DiskCategory: f.diskCategory}
+			if win != nil {
+				p, err := win.generate()
+				if err != nil {
+					return platform.Change{}, fmt.Errorf("generate the Windows password: %w", err)
+				}
+				spec.Password = p
+			}
 			spec.ClientToken = spec.token(s.profile, s.region)
 			call := func(ctx context.Context) (string, error) {
 				var iid string
@@ -462,6 +476,9 @@ func runStep(rt *app.Runtime, s *ecsScope, name, host string, f *instanceFlags, 
 				in, lerr = lookupNewInstance(ctx, s, iid)
 			}
 			*id = iid
+			if win != nil {
+				win.created(ctx, iid)
+			}
 			if lerr == nil && in != nil {
 				storeInstance(ctx, rt, s.profile, *in)
 			} else {
@@ -604,11 +621,17 @@ vSwitches and the security group as well.
   the newest public image of --os (alibaba-cloud-linux, or windows; see
   image latest) for the architecture of the type (a size resolves to an
   x86 type). The system disk is --disk GiB of --disk-category.
-- --os windows takes no key pair flags and imports no key pair: the
-  instance has no password either (set it in the ECS console before
-  logging in); --disk defaults to 40 (smaller is exit code 2), the host
-  name holds no dots and at most 15 characters, and an arm64 type is
-  exit code 2.
+- --os windows takes no key pair flags and imports no key pair (ECS key
+  pairs are for Linux only): polyctl generates the Administrator password
+  (20 characters from crypto/rand; no flag takes one) and sets it in
+  RunInstances, then stores the user name and password encrypted in its
+  database. An interactive create prints them, clearly labelled, at the
+  end (on stdout, on stderr with -o json / -o yaml); a non-interactive one
+  never prints the password: a note on stderr names the command that
+  shows it, ` + "`polyctl aliyun ecs instance password <name|id>`" + `. A dry
+  run generates and stores nothing. --disk defaults to 40 (smaller is
+  exit code 2), the host name holds no dots and at most 15 characters,
+  and an arm64 type is exit code 2.
 - The host name is the name with every character other than letters,
   digits, hyphens and dots replaced by a hyphen, cut to 64 characters.
 - An instance of the name in the region is exit code 1: use ensure.
@@ -731,10 +754,16 @@ vSwitches and the security group as well.
 			if kpStep.Resource != "" {
 				plan.Add(kpStep)
 			}
+			var win *windowsLogin
 			if f.windows() {
-				rt.Infof("note: a Windows instance has no key pair and no password: set its password in the ECS console (reset the instance password) before you log in")
+				// Before the first write: a password that cannot be stored
+				// would be lost once the instance exists.
+				if err := rt.PrepareSecrets(); err != nil {
+					return fmt.Errorf("the Windows password could not be stored, nothing was created: %w", err)
+				}
+				win = newWindowsLogin(rt, s, name)
 			}
-			plan.Add(runStep(rt, s, name, host, &f, image, func() string { return sg.ID }, func() string { return vsw.ID }, func() string { return kp.Name }, nil, &instID))
+			plan.Add(runStep(rt, s, name, host, &f, image, func() string { return sg.ID }, func() string { return vsw.ID }, func() string { return kp.Name }, nil, win, &instID))
 			if wait || f.eip {
 				plan.Add(waitStep(rt, s, name, id, timeout))
 			}
@@ -742,7 +771,11 @@ vSwitches and the security group as well.
 				var res eipRef
 				plan.Add(eipStep(rt, s, name, id, ep, &res))
 			}
-			return rt.Ensure(ctx, "aliyun.ecs.instance.create", s.target(), &plan)
+			err = rt.Ensure(ctx, "aliyun.ecs.instance.create", s.target(), &plan)
+			if werr := win.finish(ctx); werr != nil {
+				err = errors.Join(err, werr)
+			}
+			return err
 		},
 	}
 	f.add(cmd, false, true, "instance type id, or a size <cores>H<memory>G such as 2H4G resolved to the cheapest x86 type in stock (required, unless defaults.aliyun.ecs_instance_type is set)", "security group of the instance, name or id (required)")
@@ -920,7 +953,8 @@ switch the protection off in the console first. --wait then waits until
 the instance is no longer listed.
 
 An EIP bound to the instance is not released: it becomes idle, stays billed
-and is reused by the next ensure.`,
+and is reused by the next ensure. The Windows credentials polyctl stored
+for the instance (see password) are removed once it is deleted.`,
 		Example: "  polyctl aliyun ecs instance delete site-a --yes",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -985,6 +1019,7 @@ and is reused by the next ensure.`,
 				return err
 			}
 			dropInstance(ctx, rt, s.profile, in.ID)
+			forgetLogin(ctx, rt, s, in.ID)
 			del.Detail = "deleted"
 			if forced {
 				del.Detail = "deleted (forced)"

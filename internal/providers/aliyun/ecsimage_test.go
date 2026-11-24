@@ -8,6 +8,7 @@ import (
 
 	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/secrets"
 )
 
 // The image of create follows the architecture of the type: an arm64 type
@@ -60,8 +61,8 @@ func TestInstanceCreateWindows(t *testing.T) {
 	if len(h.api.callsFor("DescribeKeyPairs")) != 0 {
 		t.Error("windows looked up key pairs")
 	}
-	if !strings.Contains(h.stderr.String(), "no key pair and no password") {
-		t.Errorf("stderr = %s", h.stderr.String())
+	if !secrets.ValidPassword(run.Get("Password")) || !strings.Contains(h.stderr.String(), "is stored encrypted") {
+		t.Errorf("Password %q, stderr = %s", run.Get("Password"), h.stderr.String())
 	}
 	// A larger --disk is kept.
 	if err := h.run("ecs", "instance", "create", "win-b", "--os", "windows", "--type", "ecs.u1-c1m2.large", "--security-group", "sg-common", "--disk", "60", "--no-wait"); err != nil {
@@ -128,7 +129,7 @@ func TestInstanceEnsureImageNotFoundAndDryRun(t *testing.T) {
 		t.Errorf("writes = %v", f.writes)
 	}
 	run := h.api.callsFor("RunInstances")[0]
-	if run.Get("ImageId") != "win2025_datacenter_zh.vhd" || run.Get("SystemDisk.Size") != "40" || run.Get("KeyPairName") != "" {
+	if run.Get("ImageId") != "win2025_datacenter_zh.vhd" || run.Get("SystemDisk.Size") != "40" || run.Get("KeyPairName") != "" || !secrets.ValidPassword(run.Get("Password")) {
 		t.Errorf("RunInstances = %v", run)
 	}
 }

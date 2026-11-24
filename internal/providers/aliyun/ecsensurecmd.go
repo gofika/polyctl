@@ -66,7 +66,12 @@ profile's), Running, with an EIP. Running it again changes nothing.
   see Instance sizes below), --image or the newest image of --os for the
   type's architecture (as for create, --os windows included), a --disk GiB
   --disk-category system disk, pay as you go, without a public address of
-  its own. It is waited for until Running (every 2 seconds, --timeout 10m);
+  its own. A Linux instance logs in with its key pair only (polyctl never
+  sets a password). A new --os windows instance gets a generated
+  Administrator password, stored encrypted and shown as create shows it
+  (printed at the end when interactive; otherwise a note names
+  ` + "`polyctl aliyun ecs instance password <name|id>`" + `); an existing
+  instance keeps its password. It is waited for until Running (every 2 seconds, --timeout 10m);
   --no-wait returns at once and skips the EIP.
 - --eip (default; --eip=false skips it) binds an idle EIP of the region,
   else a new one (see aliyun eip address), unless the instance holds one.
@@ -197,6 +202,9 @@ type instanceEnsure struct {
 	eip    eipRef
 	// knownIP is the EIP of an instance that holds one already.
 	knownIP string
+	// win is the login of a new Windows instance (nil otherwise: an
+	// existing instance keeps its password).
+	win *windowsLogin
 }
 
 func (e *instanceEnsure) id() string { return e.instID }
@@ -286,7 +294,7 @@ func (e *instanceEnsure) planNew(ctx context.Context, cmd *cobra.Command, host s
 	rt, s := e.rt, e.s
 	var kp platform.KeyPairPlan
 	if e.f.windows() {
-		rt.Infof("note: a Windows instance has no key pair and no password: set its password in the ECS console (reset the instance password) before you log in")
+		e.win = newWindowsLogin(rt, s, e.name)
 	} else {
 		in, err := e.f.keyInput(rt)
 		if err != nil {
@@ -468,7 +476,7 @@ func (e *instanceEnsure) planNew(ctx context.Context, cmd *cobra.Command, host s
 
 	// The instance.
 	e.plan.Add(runStep(rt, s, e.name, host, e.f, image, func() string { return groupID }, func() string { return vswID },
-		func() string { return kp.Name }, func() bool { return groupCreated || vswFresh }, &e.instID))
+		func() string { return kp.Name }, func() bool { return groupCreated || vswFresh }, e.win, &e.instID))
 	if e.wait {
 		e.plan.Add(waitStep(rt, s, e.name, e.id, e.timeout))
 	}
@@ -521,6 +529,13 @@ func orPending(id string, pending bool) string {
 // run runs the plan and prints the report with the result.
 func (e *instanceEnsure) run(ctx context.Context) error {
 	rt := e.rt
+	if e.win != nil {
+		// Before the first write: a password that cannot be stored would
+		// be lost once the instance exists.
+		if err := rt.PrepareSecrets(); err != nil {
+			return fmt.Errorf("the Windows password could not be stored, nothing was created: %w", err)
+		}
+	}
 	rep, err := rt.RunPlan(ctx, e.s.target(), &e.plan)
 	if rep.Changes == nil {
 		rep.Changes = []platform.Change{}
@@ -539,6 +554,9 @@ func (e *instanceEnsure) run(ctx context.Context) error {
 	}
 	if rerr := rt.Render(out, func() output.Grid { return app.ChangeGrid(rep.Changes) }); rerr != nil && err == nil {
 		err = rerr
+	}
+	if werr := e.win.finish(ctx); werr != nil {
+		err = errors.Join(err, werr)
 	}
 	if err != nil && !rep.DryRun && !errors.Is(err, app.ErrUsage) {
 		rt.NotifyFailure(ctx, app.Failure{Event: "aliyun.ecs.instance.ensure.failed", Platform: string(platform.Aliyun), Profile: e.s.profile,
