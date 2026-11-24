@@ -513,7 +513,7 @@ What each command asks, and what it needs instead:
 | any command whose domain, zone or resource name matches several owners or resources | which one, from the matches with their accounts and ids | `--profile` / `--platform`, or the id (exit code 5 otherwise) |
 | `dns list` / `set` / `add` / `ensure` / `delete` without `<domain>` | the zone, from the indexed zones (restricted by `--profile` / `--platform`) | `<domain>` |
 | `dns set` / `add` without `--type` / `--value` | the record type (from the types the platform writes), then the value, checked as typed (`dns set` shows the current value) | `--type` and `--value` |
-| `dns delete <domain>` without `--type`, `--id` or `--all` | the records to delete (multiple choice; the zone's SOA and apex NS are not offered, records owned by another service are marked) | `--type` (with `--name`), `--id` or `--all` |
+| `dns delete <domain>` without `--type`, `--id` or `--all` | the records to delete (multiple choice; the zone's SOA and apex NS are not offered, records owned by another service are marked; `--name` and `--value` narrow the list) | `--type` (with `--name`), `--id` or `--all` |
 | `domain info` / `which` / `ns check` / `ns get` / `ns set` without `<domain>` | the domain, from the index (`ns get` / `ns set`: registered domains) | `<domain>` |
 | `domain ns set <domain>` without nameservers (also `namecom` / `godaddy domain ns set`) | the nameserver set of a DNS zone of the domain known to the index, or "Enter nameservers..." | `<nameserver>...` |
 | `find` without the query | the IP address or DNS name, checked as typed | `<ip\|dns-name>` |

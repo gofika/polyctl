@@ -357,7 +357,21 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 			}
 			var matches []platform.Record
 			if pick {
-				if matches, err = pickRecords(rt, dns, platform.Zone{ID: t.ResourceID, Name: t.Domain}, existing); err != nil {
+				// --name and --value given without --type narrow the
+				// records offered.
+				cands := existing
+				if name != "" {
+					cands = app.MatchRecords(cands, platform.FQDN(name, t.Domain), "", value)
+				} else if value != "" {
+					var kept []platform.Record
+					for _, r := range cands {
+						if r.Value == value {
+							kept = append(kept, r)
+						}
+					}
+					cands = kept
+				}
+				if matches, err = pickRecords(rt, dns, platform.Zone{ID: t.ResourceID, Name: t.Domain}, cands); err != nil {
 					return err
 				}
 			} else if id != "" {

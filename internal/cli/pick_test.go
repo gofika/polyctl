@@ -82,6 +82,17 @@ func TestDNSDeletePicksRecords(t *testing.T) {
 		t.Errorf("record options %+v", a.Options)
 	}
 	p.Done()
+	// --name without --type narrows the records offered; a dry run still
+	// asks and deletes nothing.
+	p = prompttest.New(t, []string{"r1"})
+	r = runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), "dns", "delete", "example.com", "--name", "h1", "--dry-run")
+	if r.err != nil || fc.count("DeleteRecord") != 1 {
+		t.Fatalf("narrowed dry run: %v, %q, calls %v", r.err, r.stderr, fc.calls)
+	}
+	if a := p.Find("Delete which records of example.com?"); prompttest.Values(a.Options) != "r1" {
+		t.Errorf("narrowed options %+v", a.Options)
+	}
+	p.Done()
 	// Nothing ticked: nothing to do.
 	r = runFlow(t, context.Background(), cfgPath, prompttest.New(t, []string{}), strings.NewReader(""), "dns", "delete", "example.com")
 	if r.code != ExitOK || fc.count("DeleteRecord") != 1 {
