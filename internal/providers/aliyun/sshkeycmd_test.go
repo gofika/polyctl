@@ -67,7 +67,10 @@ func newECSKeyRig(t *testing.T, users []string, loginUsers ...string) *ecsKeyRig
 	if err := os.WriteFile(filepath.Join(home, ".ssh", "id_ed25519"), pem.EncodeToMemory(block), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// The instance's key pair ops is the login key.
+	f.addKeyPair("ops", md5Hex(t, string(ssh.MarshalAuthorizedKey(signer.PublicKey()))), "2026-11-17T13:54Z")
 	r.vm = f.addVM("i-1", "web-1", instRunning, "ecs.u1-c1m1.large", "vpc-1", "vsw-b")
+	r.vm["KeyPairName"] = "ops"
 	r.vm["OSType"] = "linux"
 	r.vm["PublicIpAddress"] = map[string]any{"IpAddress": []string{r.srv.Host}}
 	return r
@@ -241,5 +244,20 @@ func TestECSSSHKeyPick(t *testing.T) {
 	p.Done()
 	if v := prompttest.Values(p.Find("Instance").Options); v != "i-1" {
 		t.Errorf("offered %q, want the running Linux instance only", v)
+	}
+}
+
+// A key pair whose private key is not on this machine: no local key is
+// tried, and the error says so.
+func TestECSSSHKeyForeignKeyPair(t *testing.T) {
+	r := newECSKeyRig(t, []string{"ecs-user"}, "root", "ecs-user")
+	r.vm["KeyPairName"] = "someone-else"
+	r.f.addKeyPair("someone-else", strings.Repeat("ab", 16), "2026-11-17T13:54Z")
+	err := r.run("list", "web-1")
+	if err == nil || !strings.Contains(err.Error(), "the key pair someone-else of instance web-1 (i-1) has no private key on this machine") {
+		t.Fatalf("foreign key pair: %v", err)
+	}
+	if n := len(r.srv.Commands()); n != 0 {
+		t.Errorf("logged in with a key that is not the key pair's (%d commands)", n)
 	}
 }

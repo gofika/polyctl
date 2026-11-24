@@ -85,7 +85,8 @@ func newKeyRig(t *testing.T, users ...string) *keyRig {
 	}
 	_ = os.WriteFile(filepath.Join(sshDir, "id_ed25519.pub"), []byte(r.login.line("me@laptop")+"\n"), 0o644)
 	r.inst = app.SSHKeyInstance{Name: "web-1", ID: "i-1", Running: true, PublicIP: r.srv.Host,
-		LoginUsers: users[:1], Target: platform.Target{Platform: platform.NameCom, Profile: "a", Region: "r1"}}
+		LoginUsers: users[:1], Target: platform.Target{Platform: platform.NameCom, Profile: "a", Region: "r1"},
+		KeyPairName: "ops", KeyPair: &platform.KeyPair{Name: "ops", PublicKey: r.login.pub}}
 	return r
 }
 
@@ -395,75 +396,6 @@ func TestSSHKeyInteractive(t *testing.T) {
 	}
 	if r.file("ec2-user") != r.login.line("me")+"\n" {
 		t.Errorf("after remove %q", r.file("ec2-user"))
-	}
-}
-
-// EC2 Instance Connect: when no local key logs in, --instance-connect
-// pushes a one-time key for each login user in turn.
-func TestSSHKeyInstanceConnect(t *testing.T) {
-	r := newKeyRig(t, "ec2-user")
-	stranger := sshtest.New(t)
-	stranger.System = r.sys
-	r.srv = stranger // no key is authorized there
-	var pushed []string
-	r.inst.InstanceConnect = func(ctx context.Context, user string, key ssh.PublicKey) error {
-		pushed = append(pushed, user)
-		stranger.Authorize(user, key)
-		return nil
-	}
-	sc := r.spec()
-	sc.InstanceConnect = true
-	nk := newSSHTestKey(t)
-	err := r.runSpec(sc, "add", "web-1", "--ssh-key", nk.line("k"), "--accept-new-host-key")
-	if err == nil || !strings.Contains(err.Error(), "--instance-connect") || len(pushed) != 0 {
-		t.Fatalf("without the flag: %v (pushed %v)", err, pushed)
-	}
-	if err := r.runSpec(sc, "add", "web-1", "--ssh-key", nk.line("k"), "--instance-connect"); err != nil {
-		t.Fatal(err)
-	}
-	if len(pushed) != 1 || pushed[0] != "ec2-user" || r.file("ec2-user") != nk.line("k")+"\n" {
-		t.Errorf("pushed %v, file %q", pushed, r.file("ec2-user"))
-	}
-}
-
-// The interactive flow offers EC2 Instance Connect (default no) only for an
-// image known to ship it; for another image the hint names the flag with a
-// condition and nothing is pushed.
-func TestSSHKeyInstanceConnectOffer(t *testing.T) {
-	r := newKeyRig(t, "ec2-user")
-	stranger := sshtest.New(t)
-	stranger.System = r.sys
-	r.srv = stranger
-	var pushed []string
-	r.inst.InstanceConnect = func(ctx context.Context, user string, key ssh.PublicKey) error {
-		pushed = append(pushed, user)
-		stranger.Authorize(user, key)
-		return nil
-	}
-	sc := r.spec()
-	sc.InstanceConnect = true
-	nk := newSSHTestKey(t)
-
-	p := prompttest.New(t, true) // the host key only
-	r.h.rt.Picker = p
-	err := r.runSpec(sc, "add", "web-1", "--ssh-key", nk.line("k"))
-	p.Done()
-	if err == nil || !strings.Contains(err.Error(), "--instance-connect when EC2 Instance Connect is installed") || len(pushed) != 0 {
-		t.Fatalf("not offered: %v (pushed %v)", err, pushed)
-	}
-
-	r.inst.InstanceConnectOffer = true
-	p = prompttest.New(t, true)
-	r.h.rt.Picker = p
-	if err := r.runSpec(sc, "add", "web-1", "--ssh-key", nk.line("k")); err != nil {
-		t.Fatal(err)
-	}
-	p.Done()
-	if a := p.Find("Log in with a one-time key pushed by EC2 Instance Connect (needs ec2-instance-connect:SendSSHPublicKey)?"); a.Default != "false" {
-		t.Errorf("offer default %q", a.Default)
-	}
-	if len(pushed) != 1 || r.file("ec2-user") != nk.line("k")+"\n" {
-		t.Errorf("pushed %v, file %q", pushed, r.file("ec2-user"))
 	}
 }
 

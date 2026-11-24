@@ -98,8 +98,10 @@ func newEC2KeyRig(t *testing.T, image string, users []string, loginUsers ...stri
 	old := newEC2IC
 	newEC2IC = func(cfg awssdk.Config) ec2icAPI { r.ic.region = cfg.Region; return r.ic }
 	t.Cleanup(func() { newEC2IC = old })
+	// The instance's key pair ops is the login key.
+	r.h.add("ap-east-1", newFakeKeyPair("ops", r.login))
 	in := running("i-0web", "web-1")
-	in.pub, in.image = r.srv.Host, image
+	in.pub, in.image, in.keyName = r.srv.Host, image, "ops"
 	r.inst = r.h.addInstance("ap-east-1", in)
 	return r
 }
@@ -185,7 +187,7 @@ func TestEC2SSHKeyAddListRemove(t *testing.T) {
 		t.Fatalf("remove = %+v, file %q", c, r.file("ec2-user"))
 	}
 	if len(r.ic.calls) != 0 {
-		t.Errorf("EC2 Instance Connect used without the flag: %v", r.ic.calls)
+		t.Errorf("EC2 Instance Connect used although the key pair's key logged in: %v", r.ic.calls)
 	}
 }
 
@@ -211,7 +213,9 @@ func TestEC2SSHKeyLoginUsers(t *testing.T) {
 		t.Errorf("--login-user still notes:\n%s", r.h.stderr.String())
 	}
 
-	// A RHEL instance whose image is gone: ec2-user, then root.
+	// A RHEL instance whose image is gone: ec2-user, then root (EC2
+	// Instance Connect, tried next, is denied here).
+	r.ic.err = &fakeAPIError{"AuthException", "you do not have access to the EC2 instance"}
 	r.inst.image, r.inst.platformDetails = "ami-0gone", "Red Hat Enterprise Linux"
 	err := r.run("list", "web-1")
 	errOut = r.h.stderr.String()
@@ -248,18 +252,19 @@ func TestEC2SSHKeyRefusals(t *testing.T) {
 	}
 }
 
-// --instance-connect: no local key logs in, so a one-time key is pushed for
-// the login user of the image (with the instance's zone) and the key is
-// added in that session; a denied push names the IAM action (exit code 3).
+// The key pair's key does not log in, so a one-time key is pushed with EC2
+// Instance Connect, without a flag or a question, for the login user of the
+// image (with the instance's zone), and the key is added in that session;
+// a denied push names the IAM action (exit code 3). An instance whose key
+// pair has no local private key goes straight to EC2 Instance Connect.
 func TestEC2SSHKeyInstanceConnect(t *testing.T) {
 	r := newEC2KeyRig(t, "ami-0x86", []string{"ec2-user"}) // no key authorized
 	_, line := newKeyLine(t, "alice@laptop")
-	err := r.run("add", "web-1", "--ssh-key", line)
-	if err == nil || !strings.Contains(err.Error(), "or use --instance-connect") || strings.Contains(err.Error(), "installed on the image") {
-		t.Fatalf("no key: %v", err)
-	}
-	if err := r.run("add", "web-1", "--ssh-key", line, "--instance-connect"); err != nil {
+	if err := r.run("add", "web-1", "--ssh-key", line); err != nil {
 		t.Fatalf("%v\n%s", err, r.h.stderr.String())
+	}
+	if !strings.Contains(r.h.stderr.String(), "did not log in") || !strings.Contains(r.h.stderr.String(), "trying EC2 Instance Connect") {
+		t.Errorf("stderr:\n%s", r.h.stderr.String())
 	}
 	if len(r.ic.calls) != 1 {
 		t.Fatalf("calls = %d", len(r.ic.calls))
@@ -274,25 +279,29 @@ func TestEC2SSHKeyInstanceConnect(t *testing.T) {
 
 	r.ic.err = &fakeAPIError{"AccessDeniedException", "not authorized to perform ec2-instance-connect:SendSSHPublicKey"}
 	_, other := newKeyLine(t, "bob@desk")
-	err = r.run("add", "web-1", "--ssh-key", other, "--instance-connect")
-	if !errors.Is(err, platform.ErrUnauthorized) || !strings.Contains(err.Error(), "IAM action ec2-instance-connect:SendSSHPublicKey") {
+	err := r.run("add", "web-1", "--ssh-key", other)
+	if !errors.Is(err, platform.ErrUnauthorized) || !strings.Contains(err.Error(), "IAM action ec2-instance-connect:SendSSHPublicKey") || !strings.Contains(err.Error(), "--identity-file") {
 		t.Fatalf("denied: %v", err)
 	}
 
 	// AuthException (no access to the instance or OS user) is exit code 3 too.
 	r.ic.err = &fakeAPIError{"AuthException", "you do not have access to the EC2 instance"}
-	err = r.run("add", "web-1", "--ssh-key", other, "--instance-connect")
+	err = r.run("add", "web-1", "--ssh-key", other)
 	if !errors.Is(err, platform.ErrUnauthorized) || !strings.Contains(err.Error(), "IAM action ec2-instance-connect:SendSSHPublicKey") {
 		t.Fatalf("auth exception: %v", err)
 	}
 
-	// An image without EC2 Instance Connect: the hint names the condition.
-	r.addImage("ami-0deb", "debian-12-amd64-20261101", "Debian 12")
-	r.inst.image = "ami-0deb"
+	// A key pair of someone else: no local key is offered at all.
 	r.ic.err = nil
-	err = r.run("add", "web-1", "--ssh-key", other)
-	if err == nil || !strings.Contains(err.Error(), "when EC2 Instance Connect is installed on the image") || !strings.Contains(err.Error(), "admin") {
-		t.Fatalf("debian: %v", err)
+	r.h.add("ap-east-1", newFakeKeyPair("someone-else", genED25519(t)))
+	r.inst.keyName = "someone-else"
+	r.srv.Authorize("ec2-user", r.login)
+	calls := len(r.ic.calls)
+	if err := r.run("add", "web-1", "--ssh-key", other); err != nil {
+		t.Fatalf("%v\n%s", err, r.h.stderr.String())
+	}
+	if len(r.ic.calls) != calls+1 || !strings.Contains(r.h.stderr.String(), "the key pair someone-else of instance web-1 (i-0web) has no private key on this machine") {
+		t.Errorf("calls %d, stderr:\n%s", len(r.ic.calls)-calls, r.h.stderr.String())
 	}
 }
 

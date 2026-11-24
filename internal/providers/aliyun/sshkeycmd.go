@@ -56,8 +56,9 @@ func ecsSSHKeyCmd(rt *app.Runtime) *cobra.Command {
 with (DescribeInstances ImageOptions.LoginAsNonRoot): ecs-user for an
 instance created to log in as ecs-user, which cannot log in as root;
 otherwise root, then ecs-user. Pass --login-user for a user added by hand.
-The key pair bound to the instance (the console allows one) stays as it
-is; these commands only edit authorized_keys, which needs no restart.`,
+The key pair is the one bound to the instance (ecs:DescribeKeyPairs,
+matched by fingerprint); it stays as it is: these commands only edit
+authorized_keys, which needs no restart.`,
 		Flags: func(cmd *cobra.Command) {
 			cmd.Flags().StringVar(&region, "region", "", "region of the instance (default: look it up in the inventory of every account)")
 		},
@@ -82,6 +83,19 @@ is; these commands only edit authorized_keys, which needs no restart.`,
 				return inst, nil
 			}
 			inst.LoginUsers, inst.LoginUsersFrom = ecsLoginUsers(in)
+			inst.KeyPairName = in.KeyPair
+			inst.KeyPairMatch = platform.MatchByFingerprintMD5
+			if in.KeyPair != "" {
+				kps, err := s.c.listKeyPairs(ctx, s.region, in.KeyPair, "")
+				switch {
+				case err != nil:
+					inst.KeyPairError = err.Error()
+				case len(kps) == 0:
+					inst.KeyPairError = "no key pair of that name in " + s.region
+				default:
+					inst.KeyPair = &platform.KeyPair{Name: kps[0].Name, Fingerprint: kps[0].Fingerprint}
+				}
+			}
 			return inst, nil
 		},
 	})

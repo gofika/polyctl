@@ -6,6 +6,8 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -22,8 +24,11 @@ import (
 // public keys a Linux instance accepts, with the same shape on every
 // platform. Compute Engine keeps them in metadata, which the platform API
 // edits (SSHKeyStore); on AWS and Alibaba Cloud an instance binds one key
-// pair at creation, so further keys are managed by logging in over SSH and
-// editing ~/.ssh/authorized_keys of the user (package sshremote).
+// pair at creation, so further keys are managed by editing
+// ~/.ssh/authorized_keys of the user (package sshremote): over SSH with the
+// local private key of that key pair, else through a temporary way in the
+// platform offers (a one-time key pushed for the login, or a command the
+// platform runs as root).
 
 // SSHKeyCommand describes the ssh-key commands of a platform.
 type SSHKeyCommand struct {
@@ -43,9 +48,6 @@ type SSHKeyCommand struct {
 	// Metadata says the keys are managed through the platform API
 	// (SSHKeyInstance.Metadata): the SSH flags are not registered.
 	Metadata bool
-	// InstanceConnect registers --instance-connect (AWS), see
-	// SSHKeyInstance.InstanceConnect.
-	InstanceConnect bool
 	// UserFromKey derives the user of a key when --user is not given (GCP:
 	// the user of the user@host that ends the key's comment), "" when it
 	// cannot. Nil: the user is the login user (SSH).
@@ -82,15 +84,43 @@ type SSHKeyInstance struct {
 	// LoginUsersNote is printed when LoginUsers are tried (not with
 	// --login-user): an image whose default user is unknown, say.
 	LoginUsersNote string
-	// InstanceConnect, when set, makes key a valid login of user for 60
-	// seconds (EC2 Instance Connect SendSSHPublicKey). It is offered when
-	// no local key logs in: with --instance-connect, or asked (default
-	// No) in the interactive flow.
-	InstanceConnect func(ctx context.Context, user string, key ssh.PublicKey) error
-	// InstanceConnectOffer says the image is known to ship EC2 Instance
-	// Connect: only then does the interactive flow offer it; otherwise it
-	// runs with --instance-connect only.
-	InstanceConnectOffer bool
+
+	// KeyPairName is the key pair the instance was created with, "" when
+	// it has none.
+	KeyPairName string
+	// KeyPair is that key pair as the platform API returns it (its public
+	// key, or a fingerprint KeyPairMatch understands); nil when it cannot
+	// be read (deleted, no permission), with KeyPairError saying why.
+	// Without --identity-file, only the local private keys of this key
+	// pair are offered: an instance whose key pair has none on this
+	// machine may have been created for someone else, and no other key is
+	// tried on it.
+	KeyPair      *platform.KeyPair
+	KeyPairError string
+	// KeyPairMatch tells whether a local key is the key pair's
+	// (platform.MatchByPublicKey when its Match is nil).
+	KeyPairMatch platform.KeyMatcher
+	// TempAccess are the temporary ways in, tried in order, without
+	// asking, when no local key of the key pair logs in.
+	TempAccess []SSHKeyAccess
+}
+
+// SSHKeyAccess is a temporary way into an instance that needs no local
+// private key. Exactly one of PushKey and RunCommand is set.
+type SSHKeyAccess struct {
+	// Name names it in notes and errors ("EC2 Instance Connect").
+	Name string
+	// Check, when set, says whether it can work at all (an agent that is
+	// online, say) before it is tried; an error is why not.
+	Check func(ctx context.Context) error
+	// PushKey makes key a valid SSH login of user for a short while (EC2
+	// Instance Connect SendSSHPublicKey): a key generated in memory is
+	// pushed for each login user in turn and used at once.
+	PushKey func(ctx context.Context, user string, key ssh.PublicKey) error
+	// RunCommand runs a command as root on the instance without SSH (Run
+	// Command, Cloud Assistant): the authorized_keys scripts run through
+	// it, as the target user.
+	RunCommand sshremote.RunCommand
 }
 
 // label names the instance in messages: "name (id)".
@@ -169,7 +199,6 @@ type sshKeyFlags struct {
 	identityFile string
 	loginUser    string
 	acceptNew    bool
-	connect      bool
 }
 
 // SSHKeyCommands builds the `ssh-key` group of a platform's instance tree:
@@ -196,19 +225,30 @@ func sshKeyMechanism(sc SSHKeyCommand) string {
 		return s
 	}
 	s := "An instance binds one key pair when it is created; these commands manage\n" +
-		"further keys by logging in over SSH and editing ~/.ssh/authorized_keys of\n" +
-		"the user, so the instance must be running and reachable on its SSH port.\n\n" +
-		"Address: the public IP, else the private IP (with a note); --address and\n" +
-		"--port override. Login: --identity-file (the only key then; an encrypted\n" +
-		"one asks for its passphrase on a terminal, and is exit code 2 in the\n" +
-		"non-interactive flow, where an SSH agent (SSH_AUTH_SOCK) is the way), else\n" +
-		"the keys of the SSH agent and ~/.ssh/id_ed25519, id_ecdsa and id_rsa. Login\n" +
-		"user: --login-user, else the default users of the instance (see below),\n" +
-		"tried in order. Host key: checked against ~/.ssh/known_hosts; a different\n" +
-		"key is refused (exit code 1) and never replaced; an unknown host is asked\n" +
-		"about on a terminal (default no), and needs --accept-new-host-key otherwise\n" +
-		"(exit code 2). No password is ever used or enabled. Keys of another user\n" +
-		"than the login user (--user) are edited as that user through `sudo -n -u`."
+		"further keys by editing ~/.ssh/authorized_keys of the user, so the instance\n" +
+		"must be running.\n\n" +
+		"Login: --identity-file, when given, is the only key (an encrypted one asks\n" +
+		"for its passphrase on a terminal, and is exit code 2 in the non-interactive\n" +
+		"flow, where an SSH agent (SSH_AUTH_SOCK) is the way). Otherwise only the\n" +
+		"local private key of the instance's key pair is offered: the key of the SSH\n" +
+		"agent, of ~/.ssh/id_ed25519, id_ecdsa or id_rsa, or of ~/.ssh/<key pair>.pem\n" +
+		"or ~/.ssh/<key pair> whose public key is the key pair's (an encrypted file\n" +
+		"is matched by its .pub, and only a match asks for its passphrase). No other\n" +
+		"key is tried. When there is none (no key pair, one that cannot be read, or\n" +
+		"no matching local key: the instance may have been created for someone\n" +
+		"else), a note says so and the platform's temporary ways in are tried\n" +
+		"instead, without asking (see below); when none works the error names each\n" +
+		"one and why.\n\n" +
+		"Over SSH: the address is the public IP, else the private IP (with a note);\n" +
+		"--address and --port override. Login user: --login-user, else the default\n" +
+		"users of the instance (see below), tried in order. Host key: checked\n" +
+		"against ~/.ssh/known_hosts; a different key is refused (exit code 1) and\n" +
+		"never replaced; an unknown host is asked about on a terminal (default no),\n" +
+		"and needs --accept-new-host-key otherwise (exit code 2). No password is ever\n" +
+		"used or enabled. Keys of another user than the login user (--user) are\n" +
+		"edited as that user through `sudo -n -u`. Through a command the platform\n" +
+		"runs as root, the keys are edited as the user (runuser, else sudo -n -u);\n" +
+		"the user is --user, else the first default user that exists."
 	if sc.Detail != "" {
 		s += "\n\n" + sc.Detail
 	}
@@ -224,13 +264,10 @@ func (sc SSHKeyCommand) addFlags(cmd *cobra.Command, f *sshKeyFlags) {
 	}
 	cmd.Flags().StringVar(&f.address, "address", "", "address to connect to (default: the instance's public IP, else its private IP)")
 	cmd.Flags().IntVar(&f.port, "port", 22, "SSH port")
-	cmd.Flags().StringVar(&f.identityFile, "identity-file", "", "private key to log in with (~ is expanded; never stored); default: the SSH agent and ~/.ssh/id_ed25519, id_ecdsa, id_rsa")
+	cmd.Flags().StringVar(&f.identityFile, "identity-file", "", "private key to log in with, the only one tried (~ is expanded; never stored); default: the local key of the instance's key pair")
 	_ = cmd.MarkFlagFilename("identity-file")
 	cmd.Flags().StringVar(&f.loginUser, "login-user", "", "user to log in as (default: the instance's default users, tried in order)")
 	cmd.Flags().BoolVar(&f.acceptNew, "accept-new-host-key", false, "trust and record the host key of an instance not in ~/.ssh/known_hosts yet (a changed key is still refused)")
-	if sc.InstanceConnect {
-		cmd.Flags().BoolVar(&f.connect, "instance-connect", false, "when no local key logs in, push a one-time key with EC2 Instance Connect (needs ec2-instance-connect:SendSSHPublicKey and an image with EC2 Instance Connect)")
-	}
 }
 
 func (sc SSHKeyCommand) userHelp() string {
@@ -468,8 +505,8 @@ func sshKeyRemoveCommand(rt *Runtime, sc SSHKeyCommand) *cobra.Command {
 			"are listed to pick from (several may be ticked).\n\n" +
 			"It asks for confirmation (default no; --yes answers yes, and the\n" +
 			"non-interactive flow needs it). It refuses (exit code 1) to remove the key\n" +
-			"the command logged in with, and the last key of the user, so that the\n" +
-			"user is never locked out of the instance.",
+			"the command logged in with (a local key), and the last key of the user,\n" +
+			"so that the user is never locked out of the instance.",
 		Example: "  polyctl " + sc.Tree + " ssh-key remove web-1 --fingerprint SHA256:abc... --yes\n" +
 			"  polyctl " + sc.Tree + " ssh-key remove web-1 --ssh-key-file ~/.ssh/old.pub --user deploy",
 		Args: sc.args(rt),
@@ -672,13 +709,23 @@ func keyEntrySummary(e SSHKeyEntry) string {
 // sshKeySession is an opened instance: the backend that lists and edits
 // its keys.
 type sshKeySession struct {
-	rt     *Runtime
-	sc     SSHKeyCommand
-	inst   *SSHKeyInstance
+	rt   *Runtime
+	sc   SSHKeyCommand
+	inst *SSHKeyInstance
+	// editor edits authorized_keys (nil for a metadata store): client
+	// over SSH, or a command run as root (access names it).
+	editor sshremote.KeyEditor
 	client *sshremote.Client
-	store  *SSHKeyListing
-	keys   *sshremote.KeySet
-	// customFile is reported once.
+	access string
+	// loginUser is the user the command is about without --user: the SSH
+	// login user, or the default user found through a run command.
+	loginUser string
+	// localKey says the SSH session authenticated with a local key (not a
+	// one-time key): only that key is guarded against removal.
+	localKey bool
+	store    *SSHKeyListing
+	keys     *sshremote.KeySet
+	// noted holds the notes printed, each once.
 	noted map[string]bool
 }
 
@@ -691,27 +738,30 @@ func (s *sshKeySession) close() {
 	}
 }
 
-// user is the user the command is about: --user, else the login user over
-// SSH; "" for a metadata store without --user.
+// user is the user the command is about: --user, else the login user; ""
+// for a metadata store without --user.
 func (s *sshKeySession) user(flag string) string {
 	if flag != "" {
 		return flag
 	}
-	if s.client != nil {
-		return s.client.User
-	}
-	return ""
+	return s.loginUser
 }
 
 func (s *sshKeySession) via(user string) string {
-	if s.client == nil {
-		return ""
+	switch {
+	case s.client != nil:
+		v := " via " + s.client.User + "@" + s.client.Addr
+		if s.client.NeedsSudo(user) {
+			v += " (sudo)"
+		}
+		if s.access != "" {
+			v += " (" + s.access + ")"
+		}
+		return v
+	case s.editor != nil:
+		return " via " + s.access + " (as root)"
 	}
-	v := " via " + s.client.User + "@" + s.client.Addr
-	if s.client.NeedsSudo(user) {
-		v += " (sudo)"
-	}
-	return v
+	return ""
 }
 
 func (s *sshKeySession) attrs(user string, key ssh.PublicKey) map[string]string {
@@ -720,11 +770,14 @@ func (s *sshKeySession) attrs(user string, key ssh.PublicKey) map[string]string 
 		a["login_user"] = s.client.User
 		a["address"] = s.client.Addr
 	}
+	if s.access != "" {
+		a["access"] = s.access
+	}
 	return a
 }
 
 func (s *sshKeySession) inUse(user string, k ssh.PublicKey) bool {
-	return s.client != nil && user == s.client.User && sshremote.SameKey(s.client.Key, k)
+	return s.localKey && s.client != nil && user == s.client.User && sshremote.SameKey(s.client.Key, k)
 }
 
 func (s *sshKeySession) row(e SSHKeyEntry) SSHKeyRow {
@@ -745,7 +798,7 @@ func (s *sshKeySession) note(msg string) {
 
 // list returns the keys of user ("" for every user of a metadata store).
 func (s *sshKeySession) list(ctx context.Context, user string) ([]SSHKeyEntry, error) {
-	if s.client == nil {
+	if s.editor == nil {
 		l, err := s.inst.Metadata.List(ctx)
 		if err != nil {
 			return nil, err
@@ -768,7 +821,7 @@ func (s *sshKeySession) list(ctx context.Context, user string) ([]SSHKeyEntry, e
 		})
 		return out, nil
 	}
-	ak, err := s.client.ListKeys(ctx, user)
+	ak, err := s.editor.ListKeys(ctx, user)
 	if err != nil {
 		return nil, err
 	}
@@ -784,7 +837,7 @@ func (s *sshKeySession) list(ctx context.Context, user string) ([]SSHKeyEntry, e
 
 // readOnly is why the keys cannot be written (OS Login), if they cannot.
 func (s *sshKeySession) readOnly(ctx context.Context) error {
-	if s.client != nil {
+	if s.editor != nil {
 		return nil
 	}
 	if s.store == nil {
@@ -796,17 +849,17 @@ func (s *sshKeySession) readOnly(ctx context.Context) error {
 }
 
 func (s *sshKeySession) add(ctx context.Context, user string, key *platform.PublicKey) (bool, error) {
-	if s.client == nil {
+	if s.editor == nil {
 		return s.inst.Metadata.Add(ctx, user, key)
 	}
-	return s.client.AddKey(ctx, user, key.Key, key.Comment)
+	return s.editor.AddKey(ctx, user, key.Key, key.Comment)
 }
 
 func (s *sshKeySession) remove(ctx context.Context, user string, keys []ssh.PublicKey) (int, error) {
-	if s.client == nil {
+	if s.editor == nil {
 		return s.inst.Metadata.Remove(ctx, user, keys)
 	}
-	return s.client.RemoveKeys(ctx, user, keys, func(ak *sshremote.AuthorizedKeys, _ []sshremote.Entry) error {
+	return s.editor.RemoveKeys(ctx, user, keys, func(ak *sshremote.AuthorizedKeys, _ []sshremote.Entry) error {
 		entries := make([]SSHKeyEntry, 0, len(ak.Entries))
 		for _, e := range ak.Entries {
 			entries = append(entries, SSHKeyEntry{User: user, Key: e.Key})
@@ -815,12 +868,12 @@ func (s *sshKeySession) remove(ctx context.Context, user string, keys []ssh.Publ
 	})
 }
 
-// guard refuses a removal that would lock the user out: the key the
-// command logged in with, or every key the user has in authorized_keys.
-// Keys kept in metadata can always be added again through the platform
-// API, so a metadata store has no guard.
+// guard refuses a removal that would lock the user out: the local key the
+// command logged in with, or every key the user has in authorized_keys
+// (whichever way the file is reached). Keys kept in metadata can always be
+// added again through the platform API, so a metadata store has no guard.
 func (s *sshKeySession) guard(user string, entries []SSHKeyEntry, remove []ssh.PublicKey) error {
-	if s.client == nil {
+	if s.editor == nil {
 		return nil
 	}
 	gone := func(k ssh.PublicKey) bool {
@@ -831,7 +884,7 @@ func (s *sshKeySession) guard(user string, entries []SSHKeyEntry, remove []ssh.P
 		}
 		return false
 	}
-	if s.client.Key != nil && user == s.client.User && gone(s.client.Key) {
+	if s.localKey && s.client != nil && s.client.Key != nil && user == s.client.User && gone(s.client.Key) {
 		return fmt.Errorf("refusing to remove %s of %s: it is the key this command logged in with, and removing it could lock you out; log in with another key (--identity-file) to remove it",
 			(&platform.PublicKey{Key: s.client.Key}).Summary(), user)
 	}
@@ -947,18 +1000,6 @@ func (sc SSHKeyCommand) open(ctx context.Context, rt *Runtime, f *sshKeyFlags, a
 		}
 		return nil, fmt.Errorf("instance %s is %s: its keys are edited over SSH, so it must be running; start it with `polyctl %s start %s`", inst.label(), state, sc.Tree, inst.ID)
 	}
-	addr := f.address
-	if addr == "" {
-		switch {
-		case inst.PublicIP != "":
-			addr = inst.PublicIP
-		case inst.PrivateIP != "":
-			addr = inst.PrivateIP
-			rt.Infof("note: instance %s has no public IP; connecting to its private IP %s (pass --address to use another)", inst.label(), addr)
-		default:
-			return nil, fmt.Errorf("instance %s has no IP address to connect to; pass --address", inst.label())
-		}
-	}
 	users := inst.LoginUsers
 	if f.loginUser != "" {
 		users = []string{f.loginUser}
@@ -983,14 +1024,6 @@ func (sc SSHKeyCommand) open(ctx context.Context, rt *Runtime, f *sshKeyFlags, a
 			return rt.Prompt().WithContext(ctx).Secret("Passphrase for " + HomeRelative(path) + " (empty to skip)")
 		}
 	}
-	ks, err := sshremote.LoadKeys(sshremote.KeyOptions{IdentityFile: f.identityFile, Passphrase: passphrase})
-	if err != nil {
-		return nil, err
-	}
-	s.keys = ks
-	for _, n := range ks.Notes {
-		rt.Infof("%s", n)
-	}
 	hk := &sshremote.HostKeys{AcceptNew: f.acceptNew, Notef: rt.Infof}
 	if rt.DryRun() {
 		hk.NoSave = true
@@ -1001,62 +1034,212 @@ func (sc SSHKeyCommand) open(ctx context.Context, rt *Runtime, f *sshKeyFlags, a
 			return rt.Pick().Confirm("Trust this host key and record it in ~/.ssh/known_hosts?", false)
 		}
 	}
-	o := sshremote.Options{Address: addr, Port: f.port, Users: users, Keys: ks, HostKeys: hk}
-	if f.identityFile == "" {
-		o.Passphrase = passphrase
-	}
-	c, err := sshremote.Dial(ctx, o)
-	var ae *sshremote.AuthError
-	if errors.As(err, &ae) && inst.InstanceConnect != nil {
-		c, err = s.instanceConnect(ctx, f, o, ae)
-	}
-	if errors.As(err, &ae) {
-		hint := "pass --identity-file <private key> (the key pair of the instance), load it into an SSH agent"
-		if f.loginUser == "" {
-			hint += ", or name the user with --login-user"
-		}
-		if inst.InstanceConnect != nil && !f.connect {
-			if inst.InstanceConnectOffer {
-				hint += ", or use --instance-connect"
-			} else {
-				hint += ", or use --instance-connect when EC2 Instance Connect is installed on the image"
+	addr, addrErr := f.address, error(nil)
+	addrDone := addr != ""
+	dial := func(ks *sshremote.KeySet, users []string, pass func(string) (string, error)) (*sshremote.Client, error) {
+		if !addrDone {
+			addrDone = true
+			switch {
+			case inst.PublicIP != "":
+				addr = inst.PublicIP
+			case inst.PrivateIP != "":
+				addr = inst.PrivateIP
+				rt.Infof("note: instance %s has no public IP; connecting to its private IP %s (pass --address to use another)", inst.label(), addr)
+			default:
+				addrErr = &noAddressError{inst: inst.label()}
 			}
 		}
-		return nil, fmt.Errorf("%w; %s", err, hint)
-	}
-	if err != nil {
-		return nil, err
-	}
-	s.client = c
-	if len(c.Tried) > 0 || f.loginUser == "" && len(users) > 1 {
-		from := ""
-		if inst.LoginUsersFrom != "" {
-			from = " (default users of " + inst.LoginUsersFrom + ")"
+		if addrErr != nil {
+			return nil, addrErr
 		}
-		rt.Infof("note: logged in to %s as %s%s with %s", c.Addr, c.User, from, c.KeySource)
+		return sshremote.Dial(ctx, sshremote.Options{Address: addr, Port: f.port, Users: users, Keys: ks, HostKeys: hk, Passphrase: pass})
 	}
-	return s, nil
-}
+	loginHint := ""
+	if f.loginUser == "" {
+		loginHint = ", or name the user with --login-user"
+	}
 
-// instanceConnect is the EC2 Instance Connect fallback: when no local key
-// logged in, a one-time key generated in memory is pushed for each login
-// user in turn and used within its 60 seconds. It runs with
-// --instance-connect, or when the interactive flow says yes (asked only
-// for an image known to ship EC2 Instance Connect).
-func (s *sshKeySession) instanceConnect(ctx context.Context, f *sshKeyFlags, o sshremote.Options, ae *sshremote.AuthError) (*sshremote.Client, error) {
-	if !f.connect {
-		if !s.rt.Interactive() || !s.inst.InstanceConnectOffer {
-			return nil, ae
-		}
-		s.rt.Infof("%v", ae)
-		ok, err := s.rt.Pick().Confirm("Log in with a one-time key pushed by EC2 Instance Connect (needs ec2-instance-connect:SendSSHPublicKey)?", false)
+	// --identity-file: that key only, whatever the key pair.
+	if f.identityFile != "" {
+		ks, err := sshremote.LoadKeys(sshremote.KeyOptions{IdentityFile: f.identityFile, Passphrase: passphrase})
 		if err != nil {
 			return nil, err
 		}
-		if !ok {
-			return nil, ae
+		s.keys = ks
+		c, err := dial(ks, users, nil)
+		var ae *sshremote.AuthError
+		if errors.As(err, &ae) {
+			return nil, fmt.Errorf("%w; pass the private key of a key the instance accepts with --identity-file%s", err, loginHint)
+		}
+		if err != nil {
+			return nil, err
+		}
+		s.useClient(c, true, "", users)
+		return s, nil
+	}
+
+	// The local private key of the key pair, if this machine has it.
+	// reason is why no local key logged in; why it was not even tried,
+	// with untried.
+	var reason string
+	untried := true
+	kpName := inst.KeyPairName
+	if inst.KeyPair != nil && inst.KeyPair.Name != "" {
+		kpName = inst.KeyPair.Name
+	}
+	switch {
+	case inst.KeyPair == nil && kpName == "":
+		reason = fmt.Sprintf("instance %s has no key pair", inst.label())
+	case inst.KeyPair == nil:
+		why := inst.KeyPairError
+		if why == "" {
+			why = "it cannot be read"
+		}
+		reason = fmt.Sprintf("the key pair %s of instance %s cannot be read (%s)", kpName, inst.label(), why)
+	default:
+		ks, err := sshremote.LoadKeys(sshremote.KeyOptions{Passphrase: passphrase, Match: inst.matchKeyPair(), Files: keyPairFiles(kpName)})
+		if err != nil {
+			return nil, err
+		}
+		s.keys = ks
+		for _, n := range ks.Notes {
+			rt.Infof("%s", n)
+		}
+		if len(ks.Signers) == 0 {
+			reason = fmt.Sprintf("the key pair %s of instance %s has no private key on this machine", kpName, inst.label())
+			break
+		}
+		c, err := dial(ks, users, nil)
+		if err == nil {
+			s.useClient(c, true, "", users)
+			return s, nil
+		}
+		if !canTryOtherAccess(err) {
+			return nil, err
+		}
+		if len(inst.TempAccess) == 0 {
+			return nil, fmt.Errorf("%w; pass the private key of a key the instance accepts with --identity-file%s", err, loginHint)
+		}
+		reason, untried = fmt.Sprintf("the key pair %s of instance %s did not log in: %v", kpName, inst.label(), err), false
+	}
+	if untried {
+		reason += ", so no local key is tried (the instance may have been created for someone else)"
+	}
+	if len(inst.TempAccess) == 0 {
+		return nil, fmt.Errorf("%s; pass the private key of a key the instance accepts with --identity-file%s", reason, loginHint)
+	}
+	names := make([]string, 0, len(inst.TempAccess))
+	for _, a := range inst.TempAccess {
+		names = append(names, a.Name)
+	}
+	rt.Infof("note: %s; trying %s", reason, strings.Join(names, ", then "))
+
+	// The temporary ways in, in order.
+	failures := []string{reason}
+	denied := true
+	for _, a := range inst.TempAccess {
+		var err error
+		if a.Check != nil {
+			err = a.Check(ctx)
+		}
+		if err == nil {
+			switch {
+			case a.PushKey != nil:
+				var c *sshremote.Client
+				c, err = s.pushKey(ctx, a, users, dial)
+				if err == nil {
+					s.useClient(c, false, a.Name, users)
+					return s, nil
+				}
+				if !canTryOtherAccess(err) && !errors.Is(err, errPushFailed) {
+					return nil, err
+				}
+			case a.RunCommand != nil:
+				ed := &sshremote.RootEditor{Run: a.RunCommand, Via: a.Name}
+				var u string
+				if u, err = ed.FirstUser(ctx, users); err == nil {
+					if u == "" {
+						u = users[0]
+					}
+					s.editor, s.access, s.loginUser = ed, a.Name, u
+					user := u
+					if f.user != "" {
+						user = f.user
+					}
+					rt.Infof("note: editing the keys of %s on instance %s through %s, which runs as root", user, inst.label(), a.Name)
+					return s, nil
+				}
+			default:
+				err = errors.New("no way to use it")
+			}
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		failures = append(failures, a.Name+": "+err.Error())
+		if !errors.Is(err, platform.ErrUnauthorized) {
+			denied = false
 		}
 	}
+	return nil, &sshKeyAccessError{denied: denied, msg: fmt.Sprintf("cannot reach the keys of instance %s: %s; pass the private key of a key the instance accepts with --identity-file%s",
+		inst.label(), strings.Join(failures, "; "), loginHint)}
+}
+
+// useClient makes c the session's editor.
+func (s *sshKeySession) useClient(c *sshremote.Client, local bool, access string, users []string) {
+	s.client, s.editor, s.loginUser, s.localKey, s.access = c, c, c.User, local, access
+	if len(c.Tried) > 0 || len(users) > 1 || access != "" {
+		from := ""
+		if s.inst.LoginUsersFrom != "" && len(users) > 1 {
+			from = " (default users of " + s.inst.LoginUsersFrom + ")"
+		}
+		s.rt.Infof("note: logged in to %s as %s%s with %s", c.Addr, c.User, from, c.KeySource)
+	}
+}
+
+// noAddressError is an instance with no IP address to connect to.
+type noAddressError struct{ inst string }
+
+func (e *noAddressError) Error() string {
+	return "instance " + e.inst + " has no IP address to connect to; pass --address"
+}
+
+// canTryOtherAccess reports whether an SSH login that failed with err
+// leaves room for another way in: the key was not accepted, or the address
+// cannot be reached. A host key refusal, a cancelled context and the like
+// stop at once.
+func canTryOtherAccess(err error) bool {
+	var ae *sshremote.AuthError
+	var ce *sshremote.ConnectError
+	var na *noAddressError
+	return errors.As(err, &ae) || errors.As(err, &ce) || errors.As(err, &na)
+}
+
+// errPushFailed marks a key the platform refused to push.
+var errPushFailed = errors.New("push failed")
+
+// sshKeyAccessError is the failure of every way into an instance; it is an
+// authorization failure when the platform denied every temporary way in.
+type sshKeyAccessError struct {
+	msg    string
+	denied bool
+}
+
+func (e *sshKeyAccessError) Error() string { return e.msg }
+
+func (e *sshKeyAccessError) Unwrap() error {
+	if e.denied {
+		return platform.ErrUnauthorized
+	}
+	return nil
+}
+
+// pushKey logs in with a one-time key generated in memory, pushed by a for
+// each login user in turn and used at once. A push that succeeds proves
+// nothing (the image may not use it): a login that fails moves on to the
+// next user.
+func (s *sshKeySession) pushKey(ctx context.Context, a SSHKeyAccess, users []string,
+	dial func(*sshremote.KeySet, []string, func(string) (string, error)) (*sshremote.Client, error)) (*sshremote.Client, error) {
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
@@ -1065,26 +1248,61 @@ func (s *sshKeySession) instanceConnect(ctx context.Context, f *sshKeyFlags, o s
 	if err != nil {
 		return nil, err
 	}
+	src := "a one-time " + a.Name + " key"
 	var tried []sshremote.Attempt
-	for _, u := range o.Users {
-		if err := s.inst.InstanceConnect(ctx, u, signer.PublicKey()); err != nil {
-			return nil, fmt.Errorf("EC2 Instance Connect for %s: %w", u, err)
+	addr := ""
+	for _, u := range users {
+		if err := a.PushKey(ctx, u, signer.PublicKey()); err != nil {
+			return nil, &pushError{user: u, err: err}
 		}
-		one := o
-		one.Users = []string{u}
-		one.Keys = &sshremote.KeySet{Signers: []sshremote.Signer{{Signer: signer, Source: "a one-time EC2 Instance Connect key"}}}
-		one.Passphrase = nil
-		c, err := sshremote.Dial(ctx, one)
-		var e *sshremote.AuthError
-		if errors.As(err, &e) {
-			tried = append(tried, e.Tried...)
+		ks := &sshremote.KeySet{Signers: []sshremote.Signer{{Signer: signer, Source: src}}}
+		c, err := dial(ks, []string{u}, nil)
+		var ae *sshremote.AuthError
+		if errors.As(err, &ae) {
+			tried, addr = append(tried, ae.Tried...), ae.Addr
 			continue
 		}
 		if err != nil {
 			return nil, err
 		}
-		c.Tried = append(append(ae.Tried, tried...), c.Tried...)
+		c.Tried = append(tried, c.Tried...)
 		return c, nil
 	}
-	return nil, &sshremote.AuthError{Addr: ae.Addr, Tried: tried, Keys: "a one-time EC2 Instance Connect key (is EC2 Instance Connect installed on the image?)"}
+	return nil, &sshremote.AuthError{Addr: addr, Tried: tried, Keys: src + " (does the image use it?)"}
+}
+
+// pushError is a key the platform did not push.
+type pushError struct {
+	user string
+	err  error
+}
+
+func (e *pushError) Error() string { return "pushing a key for " + e.user + ": " + e.err.Error() }
+
+func (e *pushError) Unwrap() []error { return []error{e.err, errPushFailed} }
+
+// matchKeyPair tells the local keys of the instance's key pair.
+func (i *SSHKeyInstance) matchKeyPair() func(ssh.PublicKey) bool {
+	m := i.KeyPairMatch
+	if m.Match == nil {
+		m = platform.MatchByPublicKey
+	}
+	kp := *i.KeyPair
+	return func(k ssh.PublicKey) bool { return m.Match(&platform.PublicKey{Key: k}, kp) }
+}
+
+// keyPairFiles are the private key files named after a key pair that are
+// looked at besides the default keys: ~/.ssh/<name>.pem (as the platform
+// downloads it) and ~/.ssh/<name>. A name that is not a plain file name is
+// left out.
+func keyPairFiles(name string) []string {
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\\x00") {
+		return nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	dir := filepath.Join(home, ".ssh")
+	return []string{filepath.Join(dir, name+".pem"), filepath.Join(dir, name)}
 }

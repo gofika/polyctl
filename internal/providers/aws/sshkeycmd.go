@@ -22,7 +22,9 @@ import (
 // `aws ec2 instance ssh-key list|add|remove` manage the keys of a Linux
 // instance over SSH (an instance binds one key pair at launch): the shared
 // commands of package app, with the login users derived from the
-// instance's image and EC2 Instance Connect as an opt-in fallback.
+// instance's image, the key pair the instance was launched with, and EC2
+// Instance Connect as the temporary way in when this machine has no private
+// key of that key pair.
 
 // ec2icAPI is the part of the EC2 Instance Connect API polyctl uses.
 type ec2icAPI interface {
@@ -195,12 +197,31 @@ func (c *client) sendSSHPublicKey(ctx context.Context, region, id, az, user stri
 	return nil
 }
 
+// instanceKeyPair reads the key pair an instance was launched with
+// (ec2:DescribeKeyPairs with its public key): nil and why, when it cannot
+// be read. KeyName stays on the instance after the key pair is deleted.
+func instanceKeyPair(ctx context.Context, l *locatedInstance) (*platform.KeyPair, string) {
+	name := awssdk.ToString(l.inst.KeyName)
+	if name == "" {
+		return nil, ""
+	}
+	recs, err := l.c.describeKeyPairs(ctx, l.region, true)
+	if err != nil {
+		return nil, err.Error()
+	}
+	for _, r := range recs {
+		if r.info.Name == name {
+			return &platform.KeyPair{Name: name, ID: r.info.KeyPairID, Fingerprint: r.info.Fingerprint, PublicKey: r.publicKey}, ""
+		}
+	}
+	return nil, "no key pair of that name in " + l.region + " (deleted?)"
+}
+
 func ec2SSHKeyCmd(rt *app.Runtime) *cobra.Command {
 	var region string
 	return app.SSHKeyCommands(rt, app.SSHKeyCommand{
-		Platform:        platform.AWS,
-		Tree:            ec2InstanceTree,
-		InstanceConnect: true,
+		Platform: platform.AWS,
+		Tree:     ec2InstanceTree,
 		Detail: `AWS EC2: the login users come from the instance's image (ec2:DescribeImages):
 ec2-user for Amazon Linux, Oracle Linux, FreeBSD and macOS, ubuntu for
 Ubuntu, admin for Debian, centos then ec2-user for CentOS, fedora then
@@ -208,12 +229,12 @@ ec2-user for Fedora, ec2-user then root for Red Hat and SUSE, rocky for
 Rocky Linux, bitnami for Bitnami. An image of another family, or one that
 cannot be read, gets ec2-user, ubuntu, admin, centos, rocky, fedora,
 bitnami and root tried in turn (pass --login-user to name the user).
---instance-connect: when no local key logs in, a key generated in memory for
-this run is pushed with EC2 Instance Connect (ec2-instance-connect:
-SendSSHPublicKey, valid 60 seconds) for each login user in turn. It works
-on images with EC2 Instance Connect installed (standard Amazon Linux 2023,
-Amazon Linux 2 since 2019-06-18 and Ubuntu 20.04 or later ship it); a
-terminal offers it (default no) for those images only.`,
+The key pair is the instance's KeyName (ec2:DescribeKeyPairs). Without a
+local private key of it, a key generated in memory for this run is pushed
+with EC2 Instance Connect (ec2-instance-connect:SendSSHPublicKey, valid 60
+seconds) for each login user in turn. It works on images with EC2 Instance
+Connect installed (standard Amazon Linux 2023, Amazon Linux 2 since
+2019-06-18 and Ubuntu 20.04 or later ship it).`,
 		Flags: func(cmd *cobra.Command) {
 			cmd.Flags().StringVar(&region, "region", "", "region of the instance (default: look it up in the inventory of every account)")
 		},
@@ -238,16 +259,17 @@ terminal offers it (default no) for those images only.`,
 			if inst.Windows || !inst.Running {
 				return inst, nil
 			}
-			var ic bool
-			inst.LoginUsers, inst.LoginUsersFrom, inst.LoginUsersNote, ic = instanceLoginUsers(ctx, l)
-			inst.InstanceConnectOffer = ic
+			inst.LoginUsers, inst.LoginUsersFrom, inst.LoginUsersNote, _ = instanceLoginUsers(ctx, l)
+			inst.KeyPairName = awssdk.ToString(l.inst.KeyName)
+			inst.KeyPair, inst.KeyPairError = instanceKeyPair(ctx, l)
+			inst.KeyPairMatch = platform.MatchAWS
 			az := ""
 			if l.inst.Placement != nil {
 				az = awssdk.ToString(l.inst.Placement.AvailabilityZone)
 			}
-			inst.InstanceConnect = func(ctx context.Context, user string, key ssh.PublicKey) error {
+			inst.TempAccess = []app.SSHKeyAccess{{Name: "EC2 Instance Connect", PushKey: func(ctx context.Context, user string, key ssh.PublicKey) error {
 				return l.c.sendSSHPublicKey(ctx, l.region, l.id(), az, user, key)
-			}
+			}}}
 			return inst, nil
 		},
 	})
