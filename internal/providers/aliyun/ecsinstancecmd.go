@@ -305,7 +305,7 @@ func (f *instanceFlags) resolveImage(ctx context.Context, s *ecsScope) (string, 
 	if f.image != "" {
 		return f.image, nil
 	}
-	im, err := s.c.latestAlinuxImage(ctx, s.region, archX86)
+	im, err := s.c.latestImage(ctx, s.region, f.osName, archX86)
 	if err != nil {
 		return "", err
 	}

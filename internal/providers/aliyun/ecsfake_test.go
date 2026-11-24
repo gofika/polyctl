@@ -65,6 +65,8 @@ type fakeECS struct {
 	initializing   map[string]int
 	disks          map[string]int
 	associateFails int
+	// typeArch is the CpuArchitecture of instance types (X86, ARM).
+	typeArch map[string]string
 }
 
 type fakeGroup struct {
@@ -434,6 +436,12 @@ func (f *fakeECS) describeImages(q url.Values) (int, any) {
 			continue
 		}
 		if v := q.Get("Architecture"); v != "" && im["Architecture"] != v {
+			continue
+		}
+		if v := q.Get("OSType"); v != "" && im["OSType"] != v {
+			continue
+		}
+		if v := q.Get("Status"); v != "" && im["Status"] != v {
 			continue
 		}
 		out = append(out, im)

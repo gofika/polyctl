@@ -26,6 +26,7 @@ const (
 	ioOptimized        = "optimized"
 	resourceInstance   = "instance"
 	cpuArchX86         = "X86"
+	cpuArchARM         = "ARM"
 	priceUnitHour      = "Hour"
 	operationUpgrade   = "Upgrade"
 	instanceTypesBatch = 10

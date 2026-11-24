@@ -10,33 +10,72 @@ import (
 
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/requests"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/ecs"
+
+	"github.com/gofika/polyctl/internal/app"
+	"github.com/gofika/polyctl/internal/platform"
 )
 
 // imagePageSize is the largest page DescribeImages accepts.
 const imagePageSize = 100
 
-// Operating systems and architectures `image latest` knows.
+// Operating systems (--os) and architectures (--arch) the newest public
+// image can be picked for.
 const (
 	osAlibabaCloudLinux = "alibaba-cloud-linux"
+	osWindows           = "windows"
 	archX86             = "x86_64"
 	archARM             = "arm64"
+	// windowsMinDiskGiB is the smallest system disk of the public Windows
+	// Server images (their image size).
+	windowsMinDiskGiB = 40
 )
 
-// alinuxFamilies are the image families of the plain Alibaba Cloud Linux
-// images, newest major version first. A family query returns the newest
-// image of that family only, and every variant (pro, container optimized,
-// agentic, GPU, ...) has a family of its own, so the plain image is never
-// confused with a newer variant. The arm64 3.2104 family name is not
-// verified; a family that answers nothing is skipped.
-var alinuxFamilies = map[string][]string{
-	archX86: {"acs:alibaba_cloud_linux_4_lts_x64", "acs:alibaba_cloud_linux_3_2104_lts_x64", "acs:alibaba_cloud_linux_2_1903_lts_x64"},
-	archARM: {"acs:alibaba_cloud_linux_4_lts_arm64", "acs:alibaba_cloud_linux_3_2104_lts_arm64"},
+// osImageRule says how the public images of an operating system are found:
+// the OSType of the DescribeImages query, and per architecture the pattern
+// of the image family of its plain images, whose first group is the OS
+// version. Nothing else (no family name, no image id) is written down, so
+// a new version is picked as soon as Alibaba Cloud publishes it.
+type osImageRule struct {
+	OSType   string
+	Label    string
+	Families map[string]*regexp.Regexp
 }
 
-// alinuxFamilyRE matches the family of a plain Alibaba Cloud Linux image
-// (the fallback when the family constants stop answering): the variants'
-// families do not match it.
-var alinuxFamilyRE = regexp.MustCompile(`^acs:alibaba_cloud_linux_(\d+)(_\d+)?_lts_(x64|arm64)$`)
+// osImageFamilyPatterns are the operating systems --os takes. Alibaba
+// Cloud Linux: the standard LTS images (acs:alibaba_cloud_linux_4_lts_x64,
+// acs:alibaba_cloud_linux_3_2104_lts_x64); the pro, container optimized,
+// agentic, GPU and compliance variants have families of their own that do
+// not match. Windows Server: the Chinese Datacenter edition
+// (acs:win_2025_datacenter_x64_zh); the English, Core, UEFI and container
+// editions do not match, and there is no arm64 edition.
+var osImageFamilyPatterns = map[string]osImageRule{
+	osAlibabaCloudLinux: {OSType: "linux", Label: "Alibaba Cloud Linux", Families: map[string]*regexp.Regexp{
+		archX86: regexp.MustCompile(`^acs:alibaba_cloud_linux_(\d+)(?:_\d+)?_lts_x64$`),
+		archARM: regexp.MustCompile(`^acs:alibaba_cloud_linux_(\d+)(?:_\d+)?_lts_arm64$`),
+	}},
+	osWindows: {OSType: "windows", Label: "Windows Server", Families: map[string]*regexp.Regexp{
+		archX86: regexp.MustCompile(`^acs:win_(\d+)_datacenter_x64_zh$`),
+	}},
+}
+
+// supportedOSes lists the values of --os.
+const supportedOSes = osAlibabaCloudLinux + " or " + osWindows
+
+// checkImageOS refuses an --os or --arch the image cannot be picked for
+// (a usage error, before any request).
+func checkImageOS(osName, arch string) error {
+	rule, ok := osImageFamilyPatterns[osName]
+	if !ok {
+		return app.UsageErrf("unsupported os %q: --os takes %s (pass --image <id> for any other system)", osName, supportedOSes)
+	}
+	if arch != archX86 && arch != archARM {
+		return app.UsageErrf("unsupported architecture %q: --arch takes %s or %s", arch, archX86, archARM)
+	}
+	if rule.Families[arch] == nil {
+		return app.UsageErrf("--os %s has no %s image: use an %s instance type (or pass --image <id>)", osName, arch, archX86)
+	}
+	return nil
+}
 
 // imageInfo is the output of `image latest`.
 type imageInfo struct {
@@ -57,14 +96,6 @@ func imageFrom(region string, im ecs.Image) imageInfo {
 		Architecture: im.Architecture, CreationTime: im.CreationTime, Region: region}
 }
 
-// familyArch is the architecture suffix of the families ("x64", "arm64").
-func familyArch(arch string) string {
-	if arch == archX86 {
-		return "x64"
-	}
-	return arch
-}
-
 // usableImage reports whether a system image can be used: available (or
 // without a status), of the architecture asked for (or without one).
 func usableImage(im ecs.Image, arch string) bool {
@@ -77,16 +108,9 @@ func usableImage(im ecs.Image, arch string) bool {
 	return im.Architecture == "" || strings.EqualFold(im.Architecture, arch)
 }
 
-// newestFirst sorts images by CreationTime, newest first (ISO 8601 sorts
-// as text).
-func newestFirst(images []ecs.Image) {
-	sort.SliceStable(images, func(i, j int) bool { return images[i].CreationTime > images[j].CreationTime })
-}
-
-// describeImages runs DescribeImages for the available system images of a
-// region, of one family when family is not "", of one architecture when
-// arch is not "", every page.
-func (c *client) describeImages(ctx context.Context, region, family, arch string) ([]ecs.Image, error) {
+// describeImages lists the available public (system) images of a region
+// of one OS type and architecture, every page.
+func (c *client) describeImages(ctx context.Context, region, osType, arch string) ([]ecs.Image, error) {
 	region = c.regionOr(region)
 	cl, err := c.ecsClient(ctx, region)
 	if err != nil {
@@ -101,15 +125,11 @@ func (c *client) describeImages(ctx context.Context, region, family, arch string
 		c.route(req, endpointECS)
 		req.RegionId = region
 		req.ImageOwnerAlias = "system"
+		req.OSType = osType
+		req.Architecture = arch
 		req.Status = "Available"
 		req.PageNumber = requests.NewInteger(page)
 		req.PageSize = requests.NewInteger(imagePageSize)
-		if family != "" {
-			req.ImageFamily = family
-		} else {
-			req.OSType = "linux"
-			req.Architecture = arch
-		}
 		resp, err := cl.DescribeImages(req)
 		if err != nil {
 			return nil, wrapErr("ecs DescribeImages "+region, err)
@@ -122,64 +142,90 @@ func (c *client) describeImages(ctx context.Context, region, family, arch string
 	return out, nil
 }
 
-// pickLatestAlinux picks the newest plain Alibaba Cloud Linux image of an
-// architecture from a listing: images whose family is a plain one (by
-// alinuxFamilyRE), highest major version first, then the newest. Names and
-// OSNameEn are never used to tell versions apart ("2.1903" holds a 3).
-func pickLatestAlinux(images []ecs.Image, arch string) (ecs.Image, bool) {
+// pickLatestImage picks the newest image whose family matches family:
+// the highest OS version (the first group) first, then the newest
+// CreationTime (UTC ISO 8601, compared as text), then the image id.
+// Names and OS names are never used to tell versions apart ("2.1903"
+// holds a 3).
+func pickLatestImage(images []ecs.Image, family *regexp.Regexp, arch string) (ecs.Image, bool) {
 	type cand struct {
-		im    ecs.Image
-		major int
+		im      ecs.Image
+		version int
 	}
 	var cands []cand
 	for _, im := range images {
-		m := alinuxFamilyRE.FindStringSubmatch(im.ImageFamily)
-		if m == nil || m[3] != familyArch(arch) || !usableImage(im, arch) {
+		m := family.FindStringSubmatch(im.ImageFamily)
+		if m == nil || !usableImage(im, arch) {
 			continue
 		}
-		major, _ := strconv.Atoi(m[1])
-		cands = append(cands, cand{im, major})
+		v, err := strconv.Atoi(m[1])
+		if err != nil {
+			continue
+		}
+		cands = append(cands, cand{im, v})
 	}
 	if len(cands) == 0 {
 		return ecs.Image{}, false
 	}
 	sort.SliceStable(cands, func(i, j int) bool {
-		if cands[i].major != cands[j].major {
-			return cands[i].major > cands[j].major
+		a, b := cands[i], cands[j]
+		if a.version != b.version {
+			return a.version > b.version
 		}
-		return cands[i].im.CreationTime > cands[j].im.CreationTime
+		if a.im.CreationTime != b.im.CreationTime {
+			return a.im.CreationTime > b.im.CreationTime
+		}
+		return a.im.ImageId < b.im.ImageId
 	})
 	return cands[0].im, true
 }
 
-// latestAlinuxImage returns the newest plain Alibaba Cloud Linux image of a
-// region and architecture: the first family of alinuxFamilies that answers
-// (at most one request per family), else the whole listing of system
-// images filtered by pickLatestAlinux.
-func (c *client) latestAlinuxImage(ctx context.Context, region, arch string) (imageInfo, error) {
-	region = c.regionOr(region)
-	for _, fam := range alinuxFamilies[arch] {
-		images, err := c.describeImages(ctx, region, fam, "")
-		if err != nil {
-			return imageInfo{}, err
-		}
-		var ok []ecs.Image
-		for _, im := range images {
-			if usableImage(im, arch) && (im.ImageFamily == "" || im.ImageFamily == fam) {
-				ok = append(ok, im)
-			}
-		}
-		if len(ok) > 0 {
-			newestFirst(ok)
-			return imageFrom(region, ok[0]), nil
-		}
+// latestImage returns the newest public image of an OS (a key of
+// osImageFamilyPatterns) for an architecture in a region; none is
+// platform.ErrNotFound.
+func (c *client) latestImage(ctx context.Context, region, osName, arch string) (imageInfo, error) {
+	if err := checkImageOS(osName, arch); err != nil {
+		return imageInfo{}, err
 	}
-	images, err := c.describeImages(ctx, region, "", arch)
+	region = c.regionOr(region)
+	rule := osImageFamilyPatterns[osName]
+	family := rule.Families[arch]
+	images, err := c.describeImages(ctx, region, rule.OSType, arch)
 	if err != nil {
 		return imageInfo{}, err
 	}
-	if im, ok := pickLatestAlinux(images, arch); ok {
+	if im, ok := pickLatestImage(images, family, arch); ok {
 		return imageFrom(region, im), nil
 	}
-	return imageInfo{}, fmt.Errorf("no available Alibaba Cloud Linux system image for %s in %s", arch, region)
+	return imageInfo{}, fmt.Errorf("%w: no public %s image matching %s in %s for %s; pass --image <id>",
+		platform.ErrNotFound, rule.Label, family, region, arch)
+}
+
+// typeArch returns the architecture of an instance type (x86_64 or arm64)
+// from DescribeInstanceTypes; known is false when the region does not
+// list the type.
+func (c *client) typeArch(ctx context.Context, region, typ string) (arch string, known bool, err error) {
+	region = c.regionOr(region)
+	cl, err := c.ecsClient(ctx, region)
+	if err != nil {
+		return "", false, err
+	}
+	req := ecs.CreateDescribeInstanceTypesRequest()
+	c.route(req, endpointECS)
+	req.RegionId = region
+	req.InstanceTypes = &[]string{typ}
+	resp, err := cl.DescribeInstanceTypes(req)
+	if err != nil {
+		return "", false, wrapErr("ecs DescribeInstanceTypes "+typ, err)
+	}
+	for _, t := range resp.InstanceTypes.InstanceType {
+		if t.InstanceTypeId != typ {
+			continue
+		}
+		if strings.EqualFold(t.CpuArchitecture, cpuArchARM) {
+			return archARM, true, nil
+		}
+		return archX86, true, nil
+	}
+	return archX86, false, nil
 }
