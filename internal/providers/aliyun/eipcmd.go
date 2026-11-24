@@ -14,6 +14,7 @@ import (
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/output"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt"
 )
 
 // newEIPCmd is `aliyun eip`: elastic IP addresses.
@@ -354,24 +355,66 @@ id, found through the inventory in every selected account; required). The
 EIP is looked up in the instance's region. The EIP has to be Available (an
 EIP bound elsewhere is exit code 1) and the instance has to be a VPC instance
 without an EIP; an EIP already bound to the instance is unchanged. The
-command waits up to 30 seconds for the EIP to be InUse.`,
+command waits up to 30 seconds for the EIP to be InUse. On a terminal a
+missing --instance is picked from the instances without a public address
+or EIP, and a missing EIP from the idle EIPs of the instance's region, or
+"Allocate a new EIP..." (defaults.aliyun.eip; always a choice, also when no
+EIP is idle).`,
 		Example: "  polyctl aliyun eip address associate 203.0.113.10 --instance site-a",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			ref := args[0]
-			if instance == "" {
+			ref := app.Arg(args, 0)
+			if instance == "" && !rt.Interactive() {
 				return app.UsageErrf("--instance is required: name the ECS instance to bind the EIP to")
 			}
-			if err := checkEIPRef(ref); err != nil {
-				return err
+			if ref != "" {
+				if err := checkEIPRef(ref); err != nil {
+					return err
+				}
 			}
 			if rt.Flags.Offline {
 				return app.ErrOffline
 			}
+			if instance == "" {
+				// The interactive flow offers the VPC instances without a
+				// public address of their own or an EIP.
+				picked, err := instanceArg(ctx, rt, nil, region, "aliyun instance without a public address", func(in Instance) bool {
+					return in.EIP == "" && in.PublicIP == "" && (in.Status == instRunning || in.Status == instStopped)
+				})
+				if err != nil {
+					return err
+				}
+				instance = picked[0]
+			}
 			s, inst, err := instanceScope(ctx, rt, instance, region)
 			if err != nil {
 				return err
+			}
+			if ref == "" {
+				// The idle EIPs of the instance's region, or a new one.
+				pick, err := pickIdleEIPOf(ctx, rt, s)
+				if err != nil {
+					return err
+				}
+				if pick == allocateEIPValue {
+					if inst.EIP != "" {
+						return fmt.Errorf("instance %s holds the EIP %s already: an instance holds one EIP", inst.ID, inst.EIP)
+					}
+					spec, err := eipSettings(rt, s.profile, "", "")
+					if err != nil {
+						return err
+					}
+					if spec.ResourceGroup, err = resolveResourceGroup(ctx, rt, s, ""); err != nil {
+						return err
+					}
+					var plan platform.Plan
+					var res eipRef
+					instID := inst.ID
+					plan.Add(eipStep(rt, s, instanceLabel(inst), func() string { return instID }, eipPlan{spec: spec}, &res))
+					return rt.Ensure(ctx, "aliyun.eip.address.associate", s.target(), &plan)
+				}
+				ref = pick
 			}
 			e, err := s.c.getEIP(ctx, s.region, ref)
 			if err != nil {
@@ -573,4 +616,36 @@ func renderEIPEnsure(ctx context.Context, rt *app.Runtime, s *ecsScope, plan *pl
 			Error: err.Error(), Changes: rep.Changes})
 	}
 	return err
+}
+
+// allocateEIPValue is the value of "Allocate a new EIP...".
+const allocateEIPValue = "\x00allocate"
+
+// pickIdleEIPOf asks for an idle EIP of the scope's region (bound to
+// nothing, Available, not managed by a cloud product), labelled with its
+// address, bandwidth and ISP, or "Allocate a new EIP..." (the settings of
+// defaults.aliyun.eip). It returns the allocation id or allocateEIPValue.
+func pickIdleEIPOf(ctx context.Context, rt *app.Runtime, s *ecsScope) (string, error) {
+	eips, err := s.c.listEIPs(ctx, s.region, eipFilter{})
+	if err != nil {
+		return "", err
+	}
+	var opts []prompt.Option
+	for _, e := range eips {
+		if !e.idle("") {
+			continue
+		}
+		bw := ""
+		if e.Bandwidth != "" {
+			bw = e.Bandwidth + " Mbps"
+		}
+		opts = append(opts, prompt.Option{Label: joinLabel(e.IP, e.AllocationID, bw, e.ISP, e.Name), Value: e.AllocationID})
+	}
+	if len(opts) == 0 && rt.Interactive() {
+		// A new EIP is billed: it is chosen, never implied by an empty
+		// list.
+		return rt.Pick().Select("EIP ("+s.where()+"; no idle EIP)", []prompt.Option{{Label: "Allocate a new EIP...", Value: allocateEIPValue}}, allocateEIPValue)
+	}
+	return rt.Choose(app.Choice{Title: "EIP (" + s.where() + ")", Options: opts, Arg: "<allocation-id|ip>", Required: true,
+		CreateLabel: "Allocate a new EIP...", Create: func() (string, error) { return allocateEIPValue, nil }})
 }
