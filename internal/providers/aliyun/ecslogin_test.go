@@ -399,6 +399,19 @@ func TestImageDecidesTheLogin(t *testing.T) {
 	if !errors.Is(err, platform.ErrNotFound) || len(f.writes) != 0 {
 		t.Errorf("missing image = %v, writes %v", err, f.writes)
 	}
+	// A deprecated image is never used: not found too, with a hint, and
+	// the lookup asks for available images only.
+	old := img("m-old", "", "Ubuntu 18.04 64 bit", "x86_64", "2020-01-01T00:00:00Z")
+	old["Status"], old["ImageOwnerAlias"] = "Deprecated", "self"
+	f.images = append(f.images, old)
+	err = h.run(append(append([]string{}, base...), "--image", "m-old", "--key-pair", "ops")...)
+	if !errors.Is(err, platform.ErrNotFound) || !strings.Contains(err.Error(), "deprecated") ||
+		!strings.Contains(err.Error(), "polyctl aliyun ecs image latest") || !strings.Contains(err.Error(), "--os") || len(f.writes) != 0 {
+		t.Errorf("deprecated image = %v, writes %v", err, f.writes)
+	}
+	if q := h.api.callsFor("DescribeImages"); q[len(q)-1].Get("Status") != "Available" {
+		t.Errorf("DescribeImages Status = %q", q[len(q)-1].Get("Status"))
+	}
 
 	// A Linux --image with a key pair sends the key pair and no password.
 	f.addKeyPair("ops", "aa", "2026-11-17T16:10Z")

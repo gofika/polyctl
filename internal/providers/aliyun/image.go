@@ -143,8 +143,9 @@ func (c *client) describeImages(ctx context.Context, region, osType, arch string
 }
 
 // describeImage returns the image of an id in a region, whoever owns it
-// (a public, custom, shared or marketplace image), available or
-// deprecated. None is platform.ErrNotFound.
+// (a public, custom, shared or marketplace image), when it is Available:
+// a deprecated image is never used, so it is platform.ErrNotFound as a
+// missing one is, with a hint naming the newest public images.
 func (c *client) describeImage(ctx context.Context, region, id string) (ecs.Image, error) {
 	region = c.regionOr(region)
 	cl, err := c.ecsClient(ctx, region)
@@ -155,7 +156,7 @@ func (c *client) describeImage(ctx context.Context, region, id string) (ecs.Imag
 	c.route(req, endpointECS)
 	req.RegionId = region
 	req.ImageId = id
-	req.Status = "Available,Deprecated"
+	req.Status = "Available"
 	resp, err := cl.DescribeImages(req)
 	if err != nil {
 		return ecs.Image{}, wrapErr("ecs DescribeImages "+id, err)
@@ -165,7 +166,9 @@ func (c *client) describeImage(ctx context.Context, region, id string) (ecs.Imag
 			return im, nil
 		}
 	}
-	return ecs.Image{}, fmt.Errorf("%w: image %s in %s", platform.ErrNotFound, id, region)
+	return ecs.Image{}, fmt.Errorf("%w: no available image %s in %s (missing, or deprecated); "+
+		"pass an available --image (`polyctl aliyun ecs image latest` shows the newest public one), or leave --image out to use --os",
+		platform.ErrNotFound, id, region)
 }
 
 // windowsImage reports a Windows image (OSType windows).

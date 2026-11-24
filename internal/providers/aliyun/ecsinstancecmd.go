@@ -668,7 +668,8 @@ vSwitches and the security group as well.
   the newest public image of --os (alibaba-cloud-linux, or windows; see
   image latest) for the architecture of the type (a size resolves to an
   x86 type). The system disk is --disk GiB of --disk-category.
-- --image is read first (DescribeImages; a missing image is exit code 4):
+- --image is read first (DescribeImages, available images only: a missing
+  or deprecated image is exit code 4):
   an image whose OSType is windows (such as an English Windows Server
   image, which --os windows never picks) is created as --os windows is,
   below, with --disk defaulting to 40 or the image's size if larger
