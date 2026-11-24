@@ -3,6 +3,7 @@ package aliyun
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/gofika/polyctl/internal/app"
@@ -179,4 +180,123 @@ func pickRuleIDs(rt *app.Runtime, sg *securityGroup, have []sgRule) ([]string, e
 	}
 	return rt.ChooseMany(app.Choice{Title: "Rules to remove from " + orID(sg.Name, sg.ID), Options: opts, Arg: "--rule or --rule-id",
 		Empty: app.NothingToDof("security group %s has no ingress rules", sg.ID)})
+}
+
+// vpcArg fills in a missing <name|id> of vpc get in the interactive flow:
+// every VPC of the region; none is nothing to do.
+func vpcArg(ctx context.Context, rt *app.Runtime, s *ecsScope, args []string) ([]string, error) {
+	if len(args) > 0 {
+		return args, nil
+	}
+	vpcs, err := s.c.listVPCs(ctx, s.region, true)
+	if err != nil {
+		return nil, err
+	}
+	var opts []prompt.Option
+	for _, v := range vpcs {
+		opts = append(opts, prompt.Option{Label: vpcLabel(v), Value: v.ID})
+	}
+	id, err := rt.Choose(app.Choice{Title: "VPC (" + s.where() + ")", Options: opts, Arg: "<name|id>", What: "VPC in " + s.where()})
+	if err != nil {
+		return nil, err
+	}
+	return []string{id}, nil
+}
+
+// vswArg fills in a missing <name|id> of vswitch get in the interactive
+// flow: every vSwitch of the region (of --vpc when given); none is nothing
+// to do.
+func vswArg(ctx context.Context, rt *app.Runtime, s *ecsScope, args []string, vpcRef string) ([]string, error) {
+	if len(args) > 0 {
+		return args, nil
+	}
+	vpc := ""
+	if vpcRef != "" {
+		v, err := resolveVPC(ctx, s, vpcRef)
+		if err != nil {
+			return nil, err
+		}
+		vpc = v.ID
+	}
+	list, err := s.c.listVSwitches(ctx, s.region, vpc, "", "")
+	if err != nil {
+		return nil, err
+	}
+	names := map[string]string{}
+	if vpcs, err := s.c.listVPCs(ctx, s.region, true); err == nil {
+		for _, v := range vpcs {
+			names[v.ID] = v.Name
+		}
+	}
+	var opts []prompt.Option
+	for _, v := range list {
+		opts = append(opts, prompt.Option{Label: joinLabel(vswLabel(v, names), v.Status), Value: v.ID})
+	}
+	id, err := rt.Choose(app.Choice{Title: "vSwitch (" + s.where() + ")", Options: opts, Arg: "<name|id>", What: "vSwitch in " + s.where()})
+	if err != nil {
+		return nil, err
+	}
+	return []string{id}, nil
+}
+
+// askNetName asks for the name of a new VPC or vSwitch, proposal (when
+// valid and free) as the default, checked as it is typed against the
+// rules and taken.
+func askNetName(rt *app.Runtime, kind, idPrefix, title, proposal string, taken func(string) string) (string, error) {
+	if checkNetName(kind, idPrefix, proposal) != nil || taken(proposal) != "" {
+		proposal = ""
+	}
+	return rt.AskInput("<name>", title, proposal, func(v string) error {
+		v = strings.TrimSpace(v)
+		if err := checkNetName(kind, idPrefix, v); err != nil {
+			return inline(err)
+		}
+		if id := taken(v); id != "" {
+			return fmt.Errorf("%s %q already exists (%s)", kind, v, id)
+		}
+		return nil
+	})
+}
+
+// pickZone asks for a zone of the region for a vSwitch of vpc: the zones
+// where instance types are in stock, those already holding a vSwitch of the
+// VPC marked; the first default zone (b, c) without one is preselected.
+func pickZone(ctx context.Context, rt *app.Runtime, s *ecsScope, existing []vSwitch) (zoneTarget, error) {
+	found, err := s.c.stockedTypes(ctx, s.region, stockQuery{})
+	if err != nil {
+		return zoneTarget{}, err
+	}
+	var zones []string
+	for _, tz := range found {
+		if !slices.Contains(zones, tz.Zone) {
+			zones = append(zones, tz.Zone)
+		}
+	}
+	slices.Sort(zones)
+	used := map[string][]string{}
+	for _, v := range existing {
+		used[v.Zone] = append(used[v.Zone], nameOr(v.Name, v.ID))
+	}
+	var opts []prompt.Option
+	for _, z := range zones {
+		label := z
+		if u := used[z]; len(u) > 0 {
+			label += "  (vSwitch " + strings.Join(u, ", ") + ")"
+		}
+		opts = append(opts, prompt.Option{Label: label, Value: z})
+	}
+	def := ""
+	for _, suffix := range defaultZones {
+		z := s.region + "-" + suffix
+		if slices.Contains(zones, z) && len(used[z]) == 0 {
+			def = z
+			break
+		}
+	}
+	z, err := rt.Choose(app.Choice{Title: "Zone (" + s.region + ")", Options: opts, Default: def, Arg: "--zone", Required: true,
+		Empty: app.UsageErrf("--zone is required, and no zone of %s offers instances", s.region)})
+	if err != nil {
+		return zoneTarget{}, err
+	}
+	return parseZone(s.region, z, "zone")
 }

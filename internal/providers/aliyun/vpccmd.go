@@ -443,11 +443,14 @@ func vpcGetCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "get <name|id>",
 		Short: "Show a VPC and its vSwitches",
-		Args:  cobra.ExactArgs(1),
+		Args:  app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			s, err := netReadScope(ctx, rt, region)
 			if err != nil {
+				return err
+			}
+			if args, err = vpcArg(ctx, rt, s, args); err != nil {
 				return err
 			}
 			v, err := resolveVPC(ctx, s, args[0])
@@ -492,12 +495,40 @@ func vpcCreateCmd(rt *app.Runtime) *cobra.Command {
 		Long: `Create the VPC <name> with the CIDR block --cidr (172.16.0.0/12 by default; it
 cannot be changed later). A VPC of that name in the region is an error (exit
 code 1): use ensure to reuse it. With --wait the command returns once the VPC
-is Available (about 3 seconds), bounded by --timeout.`,
+is Available (about 3 seconds), bounded by --timeout. On a terminal a
+missing <name> is asked (the naming.aliyun_vpc name proposed when it is
+free), checked as it is typed.`,
 		Example: "  polyctl aliyun vpc vpc create web --cidr 10.0.0.0/16 --wait",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			name := args[0]
+			name := app.Arg(args, 0)
+			if name == "" {
+				// The interactive flow asks for the name, the one of
+				// naming.aliyun_vpc proposed when it is free.
+				if rt.Flags.Offline {
+					return app.ErrOffline
+				}
+				s, err := openECSScope(ctx, rt, region)
+				if err != nil {
+					return err
+				}
+				vpcs, err := s.c.listVPCs(ctx, s.region, true)
+				if err != nil {
+					return err
+				}
+				proposal, _ := rt.ResourceName("aliyun_vpc", "", map[string]string{"region": s.region})
+				if name, err = askNetName(rt, "VPC", "vpc-", "Name of the new VPC", proposal, func(n string) string {
+					for _, v := range vpcs {
+						if v.Name == n {
+							return v.ID
+						}
+					}
+					return ""
+				}); err != nil {
+					return err
+				}
+			}
 			if err := checkNetName("VPC", "vpc-", name); err != nil {
 				return err
 			}
@@ -775,11 +806,14 @@ func vswGetCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "get <name|id>",
 		Short: "Show a vSwitch",
-		Args:  cobra.ExactArgs(1),
+		Args:  app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			s, err := netReadScope(ctx, rt, region)
 			if err != nil {
+				return err
+			}
+			if args, err = vswArg(ctx, rt, s, args, vpcRef); err != nil {
 				return err
 			}
 			v, err := resolveVSwitch(ctx, s, args[0], vpcRef)
@@ -812,16 +846,22 @@ or a zone id of the region), both required. --cidr gives its block (inside
 the VPC's, aligned to its mask); without it the first free /22 of the VPC's
 block is taken. A vSwitch of that name in the same zone of the VPC is an
 error (exit code 1): use ensure. The command waits up to 30 seconds for the
-vSwitch to be Available; running out of time is only a warning.`,
+vSwitch to be Available; running out of time is only a warning. On a
+terminal a missing --vpc is picked from the Available VPCs, a missing --zone
+from the zones that offer instances (the first default zone without a
+vSwitch of the VPC preselected), and a missing <name> asked (the
+naming.aliyun_vswitch name of the zone proposed).`,
 		Example: "  polyctl aliyun vpc vswitch create web-b --vpc cn-hongkong-vpc --zone b --cidr 172.16.8.0/22",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			name := args[0]
-			if err := checkNetName("vSwitch", "vsw-", name); err != nil {
-				return err
+			name := app.Arg(args, 0)
+			if name != "" {
+				if err := checkNetName("vSwitch", "vsw-", name); err != nil {
+					return err
+				}
 			}
-			if vpcRef == "" || zone == "" {
+			if (vpcRef == "" || zone == "") && !rt.Interactive() {
 				return app.UsageErrf("--vpc and --zone are required: a vSwitch belongs to one VPC and one zone")
 			}
 			if cidr != "" {
@@ -838,17 +878,43 @@ vSwitch to be Available; running out of time is only a warning.`,
 			if err != nil {
 				return err
 			}
-			z, err := parseZone(s.region, zone, "zone")
-			if err != nil {
-				return err
+			var z zoneTarget
+			if zone != "" {
+				if z, err = parseZone(s.region, zone, "zone"); err != nil {
+					return err
+				}
 			}
-			v, err := resolveVPC(ctx, s, vpcRef)
+			var v vpcInfo
+			if vpcRef == "" {
+				prefer, _ := rt.ResourceName("aliyun_vpc", "", map[string]string{"region": s.region})
+				v, err = pickVPC(ctx, rt, s, "--vpc", prefer, nil)
+			} else {
+				v, err = resolveVPC(ctx, s, vpcRef)
+			}
 			if err != nil {
 				return err
 			}
 			existing, err := s.c.listVSwitches(ctx, s.region, v.ID, "", "")
 			if err != nil {
 				return err
+			}
+			if zone == "" {
+				if z, err = pickZone(ctx, rt, s, existing); err != nil {
+					return err
+				}
+			}
+			if name == "" {
+				proposal, _ := vswName(rt, s.region, "", z)
+				if name, err = askNetName(rt, "vSwitch", "vsw-", "Name of the new vSwitch ("+z.ID+")", proposal, func(n string) string {
+					for _, e := range existing {
+						if e.Name == n && e.Zone == z.ID {
+							return e.ID
+						}
+					}
+					return ""
+				}); err != nil {
+					return err
+				}
 			}
 			for _, e := range existing {
 				if e.Name == name && e.Zone == z.ID {
@@ -935,7 +1001,12 @@ which must exist) has a vSwitch in each of --zones (b,c by default: the zones
 			}
 			v, err := resolveVPC(ctx, s, ref)
 			if vpcRef == "" && errors.Is(err, platform.ErrNotFound) {
-				return app.UsageErrf("the default VPC %q (naming.aliyun_vpc) does not exist in %s; pass --vpc <id|name>, or create it with `polyctl aliyun vpc vpc ensure`", ref, s.region)
+				missing := app.UsageErrf("the default VPC %q (naming.aliyun_vpc) does not exist in %s; pass --vpc <id|name>, or create it with `polyctl aliyun vpc vpc ensure`", ref, s.region)
+				if !rt.Interactive() {
+					return missing
+				}
+				// The interactive flow offers the VPCs of the region.
+				v, err = pickVPC(ctx, rt, s, "--vpc", "", missing)
 			}
 			if err != nil {
 				return err

@@ -560,6 +560,10 @@ What each command asks, and what it needs instead:
 | `aliyun ecs security-group rule remove` without `--rule` / `--rule-id` | the rules to remove, from the rules of the group (multiple choice; none is nothing to do) | `--rule` or `--rule-id` |
 | `aliyun ecs security-group create` without `--vpc` / `<name>` | the VPC, from the Available VPCs of the region (the `naming.aliyun_vpc` one preselected); the name, checked as typed against the groups of that VPC | `--vpc` and `<name>` |
 | `aliyun ecs security-group ensure` without `<name>`, or when the default VPC does not exist | the group, from the groups of the region, or "New security group..." (its name checked as typed); the VPC, from the Available VPCs of the region | `<name>`; `--vpc` or `--instance` when the default VPC does not exist |
+| `aliyun vpc vpc get` / `vswitch get` without `<name\|id>` | the VPC or vSwitch, from those of the region (`vswitch get`: of `--vpc` when given; none is nothing to do) | `<name\|id>` |
+| `aliyun vpc vpc create` without `<name>` | the name (the `naming.aliyun_vpc` one proposed when it is free), checked as typed against the VPCs of the region | `<name>` |
+| `aliyun vpc vswitch create` without `--vpc` / `--zone` / `<name>` | the VPC, from the Available VPCs (the `naming.aliyun_vpc` one preselected); the zone, from the zones that offer instances (zones holding a vSwitch of the VPC marked, the first default zone without one preselected); the name (the `naming.aliyun_vswitch` one of the zone proposed), checked as typed | `--vpc`, `--zone` and `<name>` |
+| `aliyun vpc vswitch ensure` when the default VPC does not exist | the VPC, from the Available VPCs of the region | `--vpc` |
 
 A re-authentication (`auth login` for an account the profile already has) reuses what the previous login recorded (username, start URL, account, role, project, region, method), so in the non-interactive flow usually only the secret has to be passed again.
 
