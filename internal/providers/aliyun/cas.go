@@ -159,7 +159,7 @@ func (c *client) casClientFor(ctx context.Context, s casScope) (*cas.Client, cas
 	if casCentral(region) {
 		region = casRegionCentral
 	}
-	cl, err := cas.NewClientWithOptions(region, sdkConfig(), c.credential())
+	cl, err := cas.NewClientWithOptions(region, sdkConfig(ctx), c.credential())
 	if err != nil {
 		return nil, s, err
 	}
@@ -330,7 +330,7 @@ func (c *client) uploadCASCertificate(ctx context.Context, name, certPEM, keyPEM
 
 // uploadCASCertificateIn is uploadCASCertificate in the store s.
 func (c *client) uploadCASCertificateIn(ctx context.Context, s casScope, name, certPEM, keyPEM string) (string, error) {
-	cl, s, err := c.casClientFor(ctx, s)
+	cl, s, err := c.casClientFor(sendOnce(ctx), s)
 	if err != nil {
 		return "", err
 	}
@@ -364,7 +364,7 @@ func (c *client) deleteCASCertificateIn(ctx context.Context, s casScope, id stri
 	if err != nil {
 		return fmt.Errorf("%w: certificate id %q is not an integer", platform.ErrInvalidInput, id)
 	}
-	cl, s, err := c.casClientFor(ctx, s)
+	cl, s, err := c.casClientFor(sendOnce(ctx), s)
 	if err != nil {
 		return err
 	}

@@ -213,7 +213,7 @@ func (c *client) StartInstance(ctx context.Context, region, id string) error {
 	if region == "" {
 		region = c.region
 	}
-	cl, err := c.ecsClient(ctx, region)
+	cl, err := c.ecsClient(sendOnce(ctx), region)
 	if err != nil {
 		return err
 	}
@@ -231,7 +231,7 @@ func (c *client) StopInstance(ctx context.Context, region, id string, force bool
 	if region == "" {
 		region = c.region
 	}
-	cl, err := c.ecsClient(ctx, region)
+	cl, err := c.ecsClient(sendOnce(ctx), region)
 	if err != nil {
 		return err
 	}

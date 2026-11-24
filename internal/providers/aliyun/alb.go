@@ -56,7 +56,7 @@ type albClient struct {
 }
 
 func (c *client) albClient(ctx context.Context, region string) (*albClient, error) {
-	cl, err := alb.NewClientWithOptions(region, sdkConfig(), c.credential())
+	cl, err := alb.NewClientWithOptions(region, sdkConfig(ctx), c.credential())
 	if err != nil {
 		return nil, err
 	}

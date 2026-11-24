@@ -151,6 +151,8 @@ func (c *client) runShellCommand(ctx context.Context, region, id, command string
 	req.FormParams = map[string]string{"CommandContent": base64.StdEncoding.EncodeToString([]byte(prog))}
 	req.Timeout = requests.NewInteger(assistantTimeout)
 	req.KeepCommand = requests.NewBoolean(false)
+	// A resent request runs the script again without a token.
+	req.ClientToken = clientToken()
 	resp, err := cl.RunCommand(req)
 	if err != nil {
 		w := wrapErr("ecs RunCommand "+region, err)

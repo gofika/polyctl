@@ -288,7 +288,7 @@ func (c *client) associateEIP(ctx context.Context, region, allocationID, instanc
 }
 
 func (c *client) resourceManagerClient(ctx context.Context) (*resourcemanager.Client, error) {
-	cl, err := resourcemanager.NewClientWithOptions(c.region, sdkConfig(), c.credential())
+	cl, err := resourcemanager.NewClientWithOptions(c.region, sdkConfig(ctx), c.credential())
 	if err != nil {
 		return nil, err
 	}

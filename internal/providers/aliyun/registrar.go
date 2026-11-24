@@ -184,6 +184,12 @@ func (c *client) SetNameservers(ctx context.Context, name string, ns []string) e
 	if err != nil {
 		return err
 	}
+	// The change takes no ClientToken: it is sent once, the polling of the
+	// task keeps the retries.
+	once, err := c.domainClient(sendOnce(ctx))
+	if err != nil {
+		return err
+	}
 	name = platform.NormalizeDomain(name)
 	servers := make([]string, 0, len(ns))
 	for _, s := range ns {
@@ -196,7 +202,7 @@ func (c *client) SetNameservers(ctx context.Context, name string, ns []string) e
 	req.DomainName = &[]string{name}
 	req.DomainNameServer = &servers
 	req.AliyunDns = requests.NewBoolean(false)
-	resp, err := cl.SaveBatchTaskForModifyingDomainDns(req)
+	resp, err := once.SaveBatchTaskForModifyingDomainDns(req)
 	if err != nil {
 		return wrapErr("domain SaveBatchTaskForModifyingDomainDns "+name, err)
 	}

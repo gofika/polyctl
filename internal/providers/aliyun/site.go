@@ -94,7 +94,7 @@ func bssEndpoint(site string) (region, host string) {
 // and returns the account's currency.
 func (c *client) queryBalance(ctx context.Context, site string) (string, error) {
 	region, host := bssEndpoint(site)
-	cl, err := bssopenapi.NewClientWithOptions(region, sdkConfig(), c.credential())
+	cl, err := bssopenapi.NewClientWithOptions(region, sdkConfig(ctx), c.credential())
 	if err != nil {
 		return "", err
 	}

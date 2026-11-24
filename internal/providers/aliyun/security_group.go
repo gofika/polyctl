@@ -410,6 +410,7 @@ func (c *client) createSecurityGroup(ctx context.Context, region, name, vpc, des
 	req.SecurityGroupName = name
 	req.VpcId = vpc
 	req.Description = desc
+	req.ClientToken = clientToken()
 	resp, err := cl.CreateSecurityGroup(req)
 	if err != nil {
 		return "", wrapErr("ecs CreateSecurityGroup "+name, err)
@@ -420,7 +421,7 @@ func (c *client) createSecurityGroup(ctx context.Context, region, name, vpc, des
 // deleteSecurityGroup deletes a group.
 func (c *client) deleteSecurityGroup(ctx context.Context, region, id string) error {
 	region = c.regionOr(region)
-	cl, err := c.ecsClient(ctx, region)
+	cl, err := c.ecsClient(sendOnce(ctx), region)
 	if err != nil {
 		return err
 	}
@@ -457,6 +458,7 @@ func (c *client) authorizeIngress(ctx context.Context, region, id string, rules 
 		req.RegionId = region
 		req.SecurityGroupId = id
 		req.Permissions = &perms
+		req.ClientToken = clientToken()
 		if _, err := cl.AuthorizeSecurityGroup(req); err != nil {
 			return wrapErr("ecs AuthorizeSecurityGroup "+id, err)
 		}
@@ -485,6 +487,7 @@ func (c *client) revokeIngress(ctx context.Context, region, id string, ruleIDs [
 	req.SecurityGroupId = id
 	ids := append([]string(nil), ruleIDs...)
 	req.SecurityGroupRuleId = &ids
+	req.ClientToken = clientToken()
 	if _, err := cl.RevokeSecurityGroup(req); err != nil {
 		return wrapErr("ecs RevokeSecurityGroup "+id, err)
 	}
@@ -495,7 +498,7 @@ func (c *client) revokeIngress(ctx context.Context, region, id string, ruleIDs [
 // other groups).
 func (c *client) joinSecurityGroup(ctx context.Context, region, instanceID, sgID string) error {
 	region = c.regionOr(region)
-	cl, err := c.ecsClient(ctx, region)
+	cl, err := c.ecsClient(sendOnce(ctx), region)
 	if err != nil {
 		return err
 	}

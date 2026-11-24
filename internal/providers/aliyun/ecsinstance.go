@@ -208,7 +208,7 @@ func (c *client) instanceStatus(ctx context.Context, region, id string) (string,
 // deleteInstance deletes an instance; force deletes a running one.
 func (c *client) deleteInstance(ctx context.Context, region, id string, force bool) error {
 	region = c.regionOr(region)
-	cl, err := c.ecsClient(ctx, region)
+	cl, err := c.ecsClient(sendOnce(ctx), region)
 	if err != nil {
 		return err
 	}
@@ -229,7 +229,7 @@ func (c *client) deleteInstance(ctx context.Context, region, id string, force bo
 // API has no ForceReboot).
 func (c *client) rebootInstance(ctx context.Context, region, id string, force bool) error {
 	region = c.regionOr(region)
-	cl, err := c.ecsClient(ctx, region)
+	cl, err := c.ecsClient(sendOnce(ctx), region)
 	if err != nil {
 		return err
 	}
@@ -258,9 +258,10 @@ func (c *client) modifyInstanceSpec(ctx context.Context, region, id, typ string)
 	req.RegionId = region
 	req.InstanceId = id
 	req.InstanceType = typ
-	// No ClientToken: one derived from the content would make a later
-	// change back to an earlier type (a -> b -> a -> b) replay the answer of
-	// the first request and change nothing.
+	// A fresh ClientToken per change, not one derived from the content: that
+	// would make a later change back to an earlier type (a -> b -> a -> b)
+	// replay the answer of the first request and change nothing.
+	req.ClientToken = clientToken()
 	if _, err := cl.ModifyInstanceSpec(req); err != nil {
 		return wrapErr("ecs ModifyInstanceSpec "+id, err)
 	}

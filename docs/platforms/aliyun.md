@@ -54,6 +54,7 @@ A RAM denial (`Forbidden.RAM`) exits with code 3. The RAM actions of `ecs instan
 - **Confirmations.** Destructive commands ask first (default no). `--yes` skips the question; the non-interactive flow needs `--yes` or exits with code 2. See [Interactive use](../interactive.md).
 - **`ensure`** is idempotent: it changes only what differs, reports `unchanged` for the rest, never deletes anything and never rolls back. If a step fails, run it again to continue. `--dry-run` reads everything and reports what would change, with `(pending)` for ids that do not exist yet.
 - Errors carry the Alibaba Cloud code and message.
+- **Resent requests.** A request whose answer is lost (timeout, connection error, HTTP 5xx) is sent again up to twice. A write that Alibaba Cloud makes idempotent with a client token (creates, security group rules, Cloud Assistant commands, type changes, ALB, EIP, VPC) is resent with the same token, so it never acts twice. A write without one (DNS records, deletes, start, stop, reboot, key pair imports, joining a group, certificate uploads and deletes, nameserver changes) is sent once: a lost answer is an error (exit code 1) although the platform may have carried it out; check with the matching list or get command, or run an `ensure` again.
 
 ## Command reference
 

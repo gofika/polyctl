@@ -144,7 +144,7 @@ func (c *client) boundKeyPair(ctx context.Context, region, name string) (*platfo
 // itself is sent, not its comment.
 func (c *client) importKeyPair(ctx context.Context, region, name string, key *platform.PublicKey) (keyPairInfo, error) {
 	region = c.regionOr(region)
-	cl, err := c.ecsClient(ctx, region)
+	cl, err := c.ecsClient(sendOnce(ctx), region)
 	if err != nil {
 		return keyPairInfo{}, err
 	}

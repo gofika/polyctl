@@ -91,9 +91,29 @@ func (t ctxTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	return t.base.RoundTrip(r.WithContext(t.ctx))
 }
 
-// sdkConfig returns the SDK configuration shared by all service clients.
-func sdkConfig() *sdk.Config {
-	return sdk.NewConfig().WithScheme("HTTPS").WithTimeout(requestTimeout).WithAutoRetry(true).WithMaxRetryTime(2)
+// sendOnceKey marks a context whose SDK clients send each request once.
+type sendOnceKey struct{}
+
+// sendOnce marks ctx so that the SDK clients created with it never resend
+// a request. The SDK resends a request whose answer timed out or was a 5xx,
+// although the platform may have carried out the first one: a write that
+// takes no ClientToken (deletes, DNS records, key pairs, certificates,
+// start, stop) is created with such a client, so it is sent once and a lost
+// answer is an error the caller can check, not a duplicate or a false
+// failure. Writes that take a ClientToken keep the retries: the token makes
+// the platform answer a resent request with the result of the first.
+func sendOnce(ctx context.Context) context.Context {
+	return context.WithValue(ctx, sendOnceKey{}, true)
+}
+
+// sdkConfig returns the SDK configuration of a service client created with
+// ctx: two automatic retries, none when ctx is marked by sendOnce.
+func sdkConfig(ctx context.Context) *sdk.Config {
+	cfg := sdk.NewConfig().WithScheme("HTTPS").WithTimeout(requestTimeout)
+	if once, _ := ctx.Value(sendOnceKey{}).(bool); once {
+		return cfg.WithAutoRetry(false).WithMaxRetryTime(0)
+	}
+	return cfg.WithAutoRetry(true).WithMaxRetryTime(2)
 }
 
 func (c *client) credential() *credentials.AccessKeyCredential {
@@ -112,7 +132,7 @@ func (c *client) route(r requests.AcsRequest, endpoint string) {
 }
 
 func (c *client) dnsClient(ctx context.Context) (*alidns.Client, error) {
-	cl, err := alidns.NewClientWithOptions(c.region, sdkConfig(), c.credential())
+	cl, err := alidns.NewClientWithOptions(c.region, sdkConfig(ctx), c.credential())
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +170,7 @@ func (c *client) routeRegistrar(r requests.AcsRequest) {
 
 func (c *client) domainClient(ctx context.Context) (*domain.Client, error) {
 	region, _ := c.registrarEndpoint()
-	cl, err := domain.NewClientWithOptions(region, sdkConfig(), c.credential())
+	cl, err := domain.NewClientWithOptions(region, sdkConfig(ctx), c.credential())
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +179,7 @@ func (c *client) domainClient(ctx context.Context) (*domain.Client, error) {
 }
 
 func (c *client) stsClient(ctx context.Context) (*sts.Client, error) {
-	cl, err := sts.NewClientWithOptions(c.region, sdkConfig(), c.credential())
+	cl, err := sts.NewClientWithOptions(c.region, sdkConfig(ctx), c.credential())
 	if err != nil {
 		return nil, err
 	}
@@ -171,7 +191,7 @@ func (c *client) ecsClient(ctx context.Context, region string) (*ecs.Client, err
 	if region == "" {
 		region = c.region
 	}
-	cl, err := ecs.NewClientWithOptions(region, sdkConfig(), c.credential())
+	cl, err := ecs.NewClientWithOptions(region, sdkConfig(ctx), c.credential())
 	if err != nil {
 		return nil, err
 	}

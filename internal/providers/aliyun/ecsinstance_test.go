@@ -279,15 +279,24 @@ func TestRunInstanceParameterErrorsAreNotNotFound(t *testing.T) {
 	}
 }
 
-func TestModifyInstanceSpecHasNoClientToken(t *testing.T) {
+// Each type change has a fresh client token, never one derived from the
+// content: a change back to an earlier type (a -> b -> a -> b) would replay
+// the answer of the first request and change nothing.
+func TestModifyInstanceSpecTokenIsFreshPerChange(t *testing.T) {
 	api := newFakeAPI(t)
 	f := newFakeCompute(t, api)
 	f.addVM("i-1", "a", instStopped, "ecs.u1-c1m1.large", "vpc-1", "vsw-1")
-	if err := api.client().modifyInstanceSpec(context.Background(), "cn-shanghai", "i-1", "ecs.u1-c1m2.large"); err != nil {
-		t.Fatal(err)
+	for range 2 {
+		if err := api.client().modifyInstanceSpec(context.Background(), "cn-shanghai", "i-1", "ecs.u1-c1m2.large"); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if q := api.callsFor("ModifyInstanceSpec")[0]; q.Get("ClientToken") != "" || q.Get("InstanceType") != "ecs.u1-c1m2.large" {
+	calls := api.callsFor("ModifyInstanceSpec")
+	if q := calls[0]; q.Get("ClientToken") == "" || q.Get("InstanceType") != "ecs.u1-c1m2.large" {
 		t.Errorf("query = %v", q)
+	}
+	if calls[1].Get("ClientToken") == calls[0].Get("ClientToken") {
+		t.Errorf("two changes share token %q", calls[0].Get("ClientToken"))
 	}
 }
 

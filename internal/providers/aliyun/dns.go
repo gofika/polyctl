@@ -196,7 +196,7 @@ func mxValue(r platform.Record) (string, *int) {
 
 // CreateRecord adds a record to a zone.
 func (c *client) CreateRecord(ctx context.Context, zoneID string, r platform.Record) (*platform.Record, error) {
-	cl, err := c.dnsClient(ctx)
+	cl, err := c.dnsClient(sendOnce(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -232,7 +232,7 @@ func (c *client) UpdateRecord(ctx context.Context, zoneID string, r platform.Rec
 	if r.ID == "" {
 		return nil, fmt.Errorf("update record: record id is required")
 	}
-	cl, err := c.dnsClient(ctx)
+	cl, err := c.dnsClient(sendOnce(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -268,7 +268,7 @@ func (c *client) DeleteRecord(ctx context.Context, zoneID, recordID string) erro
 	if recordID == "" {
 		return fmt.Errorf("delete record: record id is required")
 	}
-	cl, err := c.dnsClient(ctx)
+	cl, err := c.dnsClient(sendOnce(ctx))
 	if err != nil {
 		return err
 	}

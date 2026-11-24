@@ -65,7 +65,7 @@ type vSwitch struct {
 func vpcEndpoint(region string) string { return "vpc." + region + ".aliyuncs.com" }
 
 func (c *client) vpcClient(ctx context.Context, region string) (*vpc.Client, error) {
-	cl, err := vpc.NewClientWithOptions(region, sdkConfig(), c.credential())
+	cl, err := vpc.NewClientWithOptions(region, sdkConfig(ctx), c.credential())
 	if err != nil {
 		return nil, err
 	}
