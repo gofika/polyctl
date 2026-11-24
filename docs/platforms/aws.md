@@ -239,7 +239,7 @@ polyctl aws elbv2 load-balancer ensure site-xz7 --instance site-xz7 --listener t
 - `target-group create <name> --protocol <p> --port <n>` — VPC from `--vpc` or `defaults.aws.vpc_id`; `--target-type instance|ip`; health check via `--health-check-protocol`, `--health-check-port`, `--health-check-interval` (5-300 s); `--target <id>[:<port>]` registers targets (`[2001:db8::1]:80` for IPv6).
 - `target-group update` — `--add-target`, `--remove-target`, or `--set-target` (exactly these targets on the ports named; not combinable with the other two); health check protocol and interval. Protocol, port, VPC and target type cannot change. Deregistered targets drain first (300 s by default).
 - `target-group delete` asks; a group still in use is exit code 1.
-- `listener create <lb> --protocol <p> --port <n> --target-group <name|arn>` — `TLS` / `HTTPS` need `--cert <acm-arn>`. An existing port is exit code 1 (use `update`).
+- `listener create <lb> --protocol <p> --port <n> --target-group <name|arn>` — `TLS` / `HTTPS` need `--cert <acm-arn>`; a terminal offers the issued, unexpired ACM certificates of the region of every key type. An existing port is exit code 1 (use `update`).
 - `listener update` changes target group and protocol in place; `listener delete` asks (the target group stays).
 
 Errors: AWS `ValidationError` is exit code 2 (exit code 1 for target registration and IP address type); resources in use, deletion protection, `InvalidConfigurationRequest` and quotas (`TooManyLoadBalancers`, `TooManyTargets`, ...) are exit code 1.

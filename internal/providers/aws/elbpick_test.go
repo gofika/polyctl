@@ -120,7 +120,8 @@ func TestListenerCreateAsks(t *testing.T) {
 func TestListenerCreateNewTG(t *testing.T) {
 	h := elbPickHarness(t)
 	exp := time.Now().Add(90 * 24 * time.Hour)
-	h.addCert(&fakeCert{region: "ap-east-1", domain: "example.com", status: acmIssued, notAfter: &exp})
+	// A P-384 certificate: ACM lists it only when its key type is asked for.
+	h.addCert(&fakeCert{region: "ap-east-1", domain: "example.com", status: acmIssued, notAfter: &exp, keyAlg: "EC_secp384r1"})
 
 	p := prompttest.New(t, prompttest.Label("site-xz7-lb"), "TLS", "443", prompttest.Label("Create a new target group"),
 		"db-target", "web-8443", "TCP", prompttest.KeepDefault{}, prompttest.Label("example.com"))

@@ -249,7 +249,9 @@ func pickCert(ctx context.Context, rt *app.Runtime, s *lbScope) (string, error) 
 	if !rt.Interactive() {
 		return "", app.UsageErrf("--cert is required")
 	}
-	certs, err := s.c.ListCertificates(ctx, platform.CertificateFilter{Region: s.region, Statuses: []string{"ISSUED"}})
+	// Every key type: without them ACM lists only P-256 and RSA 2048
+	// certificates; a key type the listener cannot use is refused by ELB.
+	certs, err := s.c.ListCertificates(ctx, platform.CertificateFilter{Region: s.region, Statuses: []string{"ISSUED"}, KeyTypes: acmSyncKeyTypes})
 	if err != nil {
 		return "", err
 	}
