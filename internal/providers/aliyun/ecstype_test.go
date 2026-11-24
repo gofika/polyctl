@@ -102,6 +102,9 @@ func (c *fakeCatalog) sizeMatch(q url.Values) (func(typ string) bool, error) {
 	if it := q.Get("InstanceType"); it != "" {
 		return func(typ string) bool { return typ == it }, nil
 	}
+	if q.Get("Cores") == "" && q.Get("Memory") == "" {
+		return func(string) bool { return true }, nil
+	}
 	cores, err := strconv.Atoi(q.Get("Cores"))
 	if err != nil {
 		return nil, err

@@ -812,11 +812,19 @@ before the account is opened. A declined confirmation is exit code 0.
 		Use:   verb + " <name|id>",
 		Short: title + " an ECS instance",
 		Long:  long,
-		Args:  cobra.ExactArgs(1),
+		Args:  app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			wait, timeout, err := w.Resolve(cmd)
 			if err != nil {
+				return err
+			}
+			// start offers the Stopped instances, stop the running ones.
+			keep, what := statusIn(instStopped), "Stopped aliyun instance"
+			if verb == "stop" {
+				keep, what = statusIn(instRunning, instStarting), "Running aliyun instance"
+			}
+			if args, err = instanceArg(ctx, rt, args, region, what, keep); err != nil {
 				return err
 			}
 			// Before anything else: the non-interactive flow without --yes

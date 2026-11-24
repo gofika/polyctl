@@ -174,9 +174,13 @@ instance's own one, else its EIP's; the private address is the primary
 address of its network interface. With --offline the local inventory is
 shown as it is (exit code 6 when it does not hold the instance).`,
 		Example: "  polyctl aliyun ecs instance get site-a -o json",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+			args, err := instanceArg(ctx, rt, args, region, "aliyun instance", nil)
+			if err != nil {
+				return err
+			}
 			if rt.Flags.Offline {
 				res, err := rt.ResolveResource(ctx, platform.Aliyun, platform.ResInstance, args[0])
 				if errors.Is(err, platform.ErrNotFound) {
@@ -1040,11 +1044,14 @@ An EIP bound to the instance is not released: it becomes idle, stays billed
 and is reused by the next ensure. The Windows credentials polyctl stored
 for the instance (see password) are removed once it is deleted.`,
 		Example: "  polyctl aliyun ecs instance delete site-a --yes",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			wait, timeout, err := w.Resolve(cmd)
 			if err != nil {
+				return err
+			}
+			if args, err = instanceArg(ctx, rt, args, region, "aliyun instance", nil); err != nil {
 				return err
 			}
 			if !rt.DryRun() {
@@ -1150,11 +1157,14 @@ leaving Running (or 30 seconds after the reboot), so a read taken before
 the reboot began does not end the wait; a Stopped read on the way is
 accepted for 30 seconds.`,
 		Example: "  polyctl aliyun ecs instance reboot site-a --wait",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			wait, timeout, err := w.Resolve(cmd)
 			if err != nil {
+				return err
+			}
+			if args, err = instanceArg(ctx, rt, args, region, "Running aliyun instance", statusIn(instRunning)); err != nil {
 				return err
 			}
 			// A forced reboot cuts the power: the non-interactive flow
@@ -1263,14 +1273,17 @@ The choice is printed on stderr ("2H4G -> ecs.e-c1m2.large
 (cn-hongkong-b, 0.0123 CNY/hour)") and shown in the change report; no
 match is exit code 4, a size of 0 vCPUs or 0 GiB exit code 2.`,
 		Example: "  polyctl aliyun ecs instance resize site-a --type ecs.u1-c1m2.large --yes --wait",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			if typ == "" {
+			if typ == "" && !rt.Interactive() {
 				return app.UsageErrf("--type is required")
 			}
 			size, isSize, err := platform.ParseTypeShorthand(typ)
 			if err != nil {
+				return err
+			}
+			if args, err = instanceArg(ctx, rt, args, region, "Running or Stopped aliyun instance", statusIn(instRunning, instStopped)); err != nil {
 				return err
 			}
 			wait, timeout, err := w.Resolve(cmd)
@@ -1289,6 +1302,25 @@ match is exit code 4, a size of 0 vCPUs or 0 GiB exit code 2.`,
 			}
 			label := instanceLabel(in)
 			res := "instance/" + label
+			if typ == "" {
+				// The interactive flow asks for the size, among those the
+				// instance can change to in its zone.
+				var cur *platform.TypeShorthand
+				if in.CPU > 0 && in.MemoryMB > 0 {
+					c := platform.TypeShorthand{Cores: in.CPU, MemoryGiB: float64(in.MemoryMB) / 1024}
+					cur = &c
+				}
+				var zones []string
+				if in.Zone != "" {
+					zones = []string{in.Zone}
+				}
+				if typ, err = pickSize(ctx, rt, s, zones, in.ID, cur, ""); err != nil {
+					return err
+				}
+				if size, isSize, err = platform.ParseTypeShorthand(typ); err != nil {
+					return err
+				}
+			}
 			typeDesc := typ
 			if isSize {
 				if size.Matches(in.CPU, in.MemoryMB) {

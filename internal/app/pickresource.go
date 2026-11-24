@@ -31,6 +31,9 @@ type ResourcePick struct {
 	Label func(inventory.Resource) string
 	// Value is what the command resolves the pick with; nil means the id.
 	Value func(inventory.Resource) string
+	// What names the candidates in the message of an empty list ("stopped
+	// aliyun instance"); "" names the platform and kind.
+	What string
 }
 
 // PickResource asks for one of the resources of kind held by the accounts
@@ -69,6 +72,9 @@ func (rt *Runtime) PickResource(ctx context.Context, p ResourcePick) (string, er
 	what := string(p.Kind)
 	if p.Platform != "" {
 		what = string(p.Platform) + " " + what
+	}
+	if p.What != "" {
+		what = p.What
 	}
 	return rt.Choose(Choice{Title: p.Title, Options: opts, Arg: p.Arg, Required: p.Required, What: what})
 }

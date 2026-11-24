@@ -46,8 +46,8 @@ type typeZone struct {
 }
 
 // stockQuery asks DescribeAvailableResource for the types in stock: by
-// size (Cores and Memory, matched exactly) or by an exact InstanceType;
-// Zone limits the answer to one zone.
+// size (Cores and Memory, matched exactly), by an exact InstanceType, or
+// every type (neither); Zone limits the answer to one zone.
 type stockQuery struct {
 	Cores        int
 	Memory       float64
@@ -89,9 +89,10 @@ func (c *client) stockedTypes(ctx context.Context, region string, q stockQuery) 
 	req.InstanceChargeType = instanceChargeType
 	req.IoOptimized = ioOptimized
 	req.ResourceType = resourceInstance
-	if q.InstanceType != "" {
+	switch {
+	case q.InstanceType != "":
 		req.InstanceType = q.InstanceType
-	} else {
+	case q.Cores > 0:
 		req.Cores = requests.NewInteger(q.Cores)
 		req.Memory = memoryGiB(q.Memory)
 	}
@@ -110,7 +111,8 @@ func memoryGiB(gib float64) requests.Float {
 }
 
 // modifiableTypes returns the instance types of the size an instance can
-// change to (DescribeResourcesModification), in stock, with their zones.
+// change to (DescribeResourcesModification), in stock, with their zones;
+// cores 0 lists the types of every size.
 func (c *client) modifiableTypes(ctx context.Context, region, id string, cores int, memory float64) ([]typeZone, error) {
 	region = c.regionOr(region)
 	cl, err := c.ecsClient(ctx, region)
@@ -126,8 +128,10 @@ func (c *client) modifiableTypes(ctx context.Context, region, id string, cores i
 	// default, written out): it lists every type the instance can change
 	// to, smaller ones included.
 	req.OperationType = operationUpgrade
-	req.Cores = requests.NewInteger(cores)
-	req.Memory = memoryGiB(memory)
+	if cores > 0 {
+		req.Cores = requests.NewInteger(cores)
+		req.Memory = memoryGiB(memory)
+	}
 	resp, err := cl.DescribeResourcesModification(req)
 	if err != nil {
 		return nil, wrapErr("ecs DescribeResourcesModification "+id, err)
@@ -138,12 +142,34 @@ func (c *client) modifiableTypes(ctx context.Context, region, id string, cores i
 // x86Types returns which of types are x86 types (DescribeInstanceTypes
 // with CpuArchitecture X86, at most 10 types a call).
 func (c *client) x86Types(ctx context.Context, region string, types []string) (map[string]bool, error) {
+	info, err := c.x86TypeInfo(ctx, region, types)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	for t := range info {
+		out[t] = true
+	}
+	return out, nil
+}
+
+// typeInfo is what the size pick needs of an instance type.
+type typeInfo struct {
+	Cores  int
+	Memory float64
+	GPUs   int
+}
+
+// x86TypeInfo returns the x86 types among types with their vCPUs, memory
+// and GPUs (DescribeInstanceTypes with CpuArchitecture X86, at most 10
+// types a call); other types are left out.
+func (c *client) x86TypeInfo(ctx context.Context, region string, types []string) (map[string]typeInfo, error) {
 	region = c.regionOr(region)
 	cl, err := c.ecsClient(ctx, region)
 	if err != nil {
 		return nil, err
 	}
-	out := map[string]bool{}
+	out := map[string]typeInfo{}
 	for batch := range slices.Chunk(types, instanceTypesBatch) {
 		next := ""
 		for {
@@ -163,7 +189,7 @@ func (c *client) x86Types(ctx context.Context, region string, types []string) (m
 			}
 			for _, t := range resp.InstanceTypes.InstanceType {
 				if t.CpuArchitecture == "" || t.CpuArchitecture == cpuArchX86 {
-					out[t.InstanceTypeId] = true
+					out[t.InstanceTypeId] = typeInfo{Cores: t.CpuCoreCount, Memory: t.MemorySize, GPUs: t.GPUAmount}
 				}
 			}
 			if resp.NextToken == "" || resp.NextToken == next {
