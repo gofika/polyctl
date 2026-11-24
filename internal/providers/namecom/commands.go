@@ -303,8 +303,12 @@ func newDomainGetCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "get <domain>",
 		Short: "Show the details of a registered domain",
-		Args:  cobra.ExactArgs(1),
+		Args:  app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			args, err := rt.DomainArg(cmd.Context(), args, platform.NameCom, platform.ResDomain, nil)
+			if err != nil {
+				return err
+			}
 			profile, err := rt.ProfileFor(platform.NameCom)
 			if err != nil {
 				return err
@@ -323,8 +327,12 @@ func newDomainNSGetCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "get <domain>",
 		Short: "Show the nameservers of a domain",
-		Args:  cobra.ExactArgs(1),
+		Args:  app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			args, err := rt.DomainArg(cmd.Context(), args, platform.NameCom, platform.ResDomain, nil)
+			if err != nil {
+				return err
+			}
 			profile, err := rt.ProfileFor(platform.NameCom)
 			if err != nil {
 				return err
@@ -351,8 +359,19 @@ func newDomainNSSetCmd(rt *app.Runtime) *cobra.Command {
 		Short:   "Replace the nameservers of a domain",
 		Long:    "Replace the nameservers of <domain> with the ones given.\n" + app.NameserverHelp,
 		Example: "  polyctl namecom domain ns set example.com ns1.example.net ns2.example.net",
-		Args:    app.NameserverArgs,
+		Args:    app.NameserverArgsOrInteractive(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			args, err := rt.DomainArg(cmd.Context(), args, platform.NameCom, platform.ResDomain, nil)
+			if err != nil {
+				return err
+			}
+			if len(args) < 2 {
+				ns, err := rt.PickNameservers(cmd.Context(), args[0])
+				if err != nil {
+					return err
+				}
+				args = append(args, ns...)
+			}
 			ns, err := app.Nameservers(args[1:])
 			if err != nil {
 				return err
@@ -391,8 +410,15 @@ func newDomainLockCmd(rt *app.Runtime, lock bool) *cobra.Command {
 	return &cobra.Command{
 		Use:   use,
 		Short: short,
-		Args:  cobra.ExactArgs(1),
+		Args:  app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// lock offers the unlocked domains, unlock the locked ones.
+			args, err := rt.DomainArg(cmd.Context(), args, platform.NameCom, platform.ResDomain, func(d platform.Domain) bool {
+				return (d.Locked != nil && *d.Locked) != lock
+			})
+			if err != nil {
+				return err
+			}
 			c, p, err := open(cmd.Context(), rt)
 			if err != nil {
 				return err
@@ -415,9 +441,28 @@ func newDomainAutorenewCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:       "autorenew <domain> on|off",
 		Short:     "Enable or disable automatic renewal of a domain",
-		Args:      cobra.ExactArgs(2),
+		Args:      app.ArgsOrInteractive(rt, 2, nil),
 		ValidArgs: []string{"on", "off"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			args, err := rt.DomainArg(cmd.Context(), args, platform.NameCom, platform.ResDomain, nil)
+			if err != nil {
+				return err
+			}
+			if len(args) < 2 {
+				profile, err := rt.ProfileFor(platform.NameCom)
+				if err != nil {
+					return err
+				}
+				var cur *bool
+				if d, _, err := loadDomain(cmd.Context(), rt, profile, args[0]); err == nil {
+					cur = d.AutoRenew
+				}
+				v, err := rt.PickOnOff("Automatic renewal of "+args[0], cur)
+				if err != nil {
+					return err
+				}
+				args = append(args, v)
+			}
 			var enabled bool
 			switch strings.ToLower(args[1]) {
 			case "on", "enable", "true":
@@ -490,8 +535,12 @@ func newDNSListCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list <domain>",
 		Short: "List the DNS records of a domain",
-		Args:  cobra.ExactArgs(1),
+		Args:  app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			args, err := rt.DomainArg(cmd.Context(), args, platform.NameCom, platform.ResZone, nil)
+			if err != nil {
+				return err
+			}
 			domain := platform.NormalizeDomain(args[0])
 			profile, err := rt.ProfileFor(platform.NameCom)
 			if err != nil {
@@ -555,10 +604,24 @@ func newDNSCreateCmd(rt *app.Runtime) *cobra.Command {
 		Use:     "create <domain>",
 		Example: "  polyctl namecom dns create example.com --type A --name www --value 1.2.3.4",
 		Short:   "Create a DNS record",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if typ == "" || value == "" {
+			args, err := rt.DomainArg(cmd.Context(), args, platform.NameCom, platform.ResZone, nil)
+			if err != nil {
+				return err
+			}
+			if (typ == "" || value == "") && !rt.Interactive() {
 				return app.UsageErrf("--type and --value are required")
+			}
+			if typ == "" {
+				if typ, err = rt.PickRecordType(platform.NameCom); err != nil {
+					return err
+				}
+			}
+			if value == "" {
+				if value, err = rt.AskRecordValue(strings.ToUpper(typ), ""); err != nil {
+					return err
+				}
 			}
 			domain := platform.NormalizeDomain(args[0])
 			c, p, err := open(cmd.Context(), rt)
@@ -600,8 +663,19 @@ func newDNSUpdateCmd(rt *app.Runtime) *cobra.Command {
 		Short: "Update one DNS record (fields that are not given keep their value)",
 		Long: "Update the DNS record <record-id> of <domain>; the ids are shown by\n" +
 			"`polyctl namecom dns list`. Only the fields given are changed.",
-		Args: app.RecordIDArgs,
+		Args: app.RecordIDArgsOrInteractive(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			args, err := rt.DomainArg(cmd.Context(), args, platform.NameCom, platform.ResZone, nil)
+			if err != nil {
+				return err
+			}
+			if len(args) < 2 {
+				id, err := pickRecord(cmd.Context(), rt, args[0], "Update")
+				if err != nil {
+					return err
+				}
+				args = append(args, id)
+			}
 			id := args[1]
 			domain := platform.NormalizeDomain(args[0])
 			c, p, err := open(cmd.Context(), rt)
@@ -655,8 +729,19 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "delete <domain> <record-id>",
 		Short: "Delete one DNS record (ids are shown by `polyctl namecom dns list`)",
-		Args:  app.RecordIDArgs,
+		Args:  app.RecordIDArgsOrInteractive(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			args, err := rt.DomainArg(cmd.Context(), args, platform.NameCom, platform.ResZone, nil)
+			if err != nil {
+				return err
+			}
+			if len(args) < 2 {
+				id, err := pickRecord(cmd.Context(), rt, args[0], "Delete")
+				if err != nil {
+					return err
+				}
+				args = append(args, id)
+			}
 			id := args[1]
 			domain := platform.NormalizeDomain(args[0])
 			// Canonicalise the id once so the inventory delete and the output
@@ -682,4 +767,18 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 		},
 	}
 	return cmd
+}
+
+// pickRecord asks for one record of domain (the <record-id> of dns update
+// and dns delete), read live.
+func pickRecord(ctx context.Context, rt *app.Runtime, domain, verb string) (string, error) {
+	c, _, err := open(ctx, rt)
+	if err != nil {
+		return "", err
+	}
+	recs, err := c.ListRecords(ctx, platform.NormalizeDomain(domain))
+	if err != nil {
+		return "", err
+	}
+	return rt.PickRecordID(verb+" which record of "+platform.NormalizeDomain(domain)+"?", recs, nil)
 }

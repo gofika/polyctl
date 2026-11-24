@@ -63,3 +63,18 @@ func (rt *Runtime) PickRecordID(title string, recs []platform.Record, mark func(
 	}
 	return rt.Choose(Choice{Title: title, Options: opts, Arg: "<record-id>", What: "record"})
 }
+
+// PickOnOff asks to switch something on or off, the opposite of the
+// current state (nil: unknown) preselected; it returns "on" or "off".
+func (rt *Runtime) PickOnOff(title string, current *bool) (string, error) {
+	def, onLabel, offLabel := "on", "On", "Off"
+	if current != nil {
+		if *current {
+			def, onLabel = "off", "On  (current)"
+		} else {
+			offLabel = "Off  (current)"
+		}
+	}
+	return rt.Choose(Choice{Title: title, Arg: "on|off", Default: def,
+		Options: []prompt.Option{{Label: onLabel, Value: "on"}, {Label: offLabel, Value: "off"}}})
+}

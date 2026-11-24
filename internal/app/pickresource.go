@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/gofika/polyctl/internal/config"
@@ -117,4 +118,80 @@ func (rt *Runtime) resourceRows(ctx context.Context, id platform.ID, kind platfo
 		out = append(out, rows...)
 	}
 	return out, nil
+}
+
+// DomainArg fills in a missing <domain> argument of a platform command in
+// the interactive flow with a domain (kind ResDomain) or zone (ResZone) of
+// the profile the command uses on platform id, as the inventory knows them
+// (synced first when stale). filter keeps the usable ones (nil: all), such
+// as the unlocked domains for lock. With the argument given, or in the
+// non-interactive flow (where cobra already refused a missing argument),
+// args is returned as it is.
+func (rt *Runtime) DomainArg(ctx context.Context, args []string, id platform.ID, kind platform.ResourceType, filter func(platform.Domain) bool) ([]string, error) {
+	if len(args) > 0 {
+		return args, nil
+	}
+	profile, err := rt.ProfileFor(id)
+	if err != nil {
+		return nil, err
+	}
+	title := "Domain"
+	if kind == platform.ResZone {
+		title = "DNS zone"
+	}
+	v, err := rt.PickResource(ctx, ResourcePick{Platform: id, Kind: kind, Title: title, Arg: "<domain>",
+		Filter: func(r inventory.Resource) bool {
+			if r.Profile != profile {
+				return false
+			}
+			if filter == nil {
+				return true
+			}
+			var d platform.Domain
+			_ = r.Decode(&d)
+			return filter(d)
+		},
+		Label: func(r inventory.Resource) string { return domainLabel(r) },
+		Value: func(r inventory.Resource) string {
+			if r.Name != "" {
+				return r.Name
+			}
+			return r.ID
+		}})
+	if err != nil {
+		return nil, err
+	}
+	return []string{v}, nil
+}
+
+// domainLabel shows a domain or zone row: "example.com  ACTIVE  expires
+// 2027-03-01  locked  autorenew  namecom/acme".
+func domainLabel(r inventory.Resource) string {
+	name := r.Name
+	if name == "" {
+		name = r.ID
+	}
+	parts := []string{name}
+	if r.Type == platform.ResDomain {
+		var d platform.Domain
+		if r.Decode(&d) == nil {
+			if d.Status != "" {
+				parts = append(parts, d.Status)
+			}
+			if d.ExpiresAt != "" {
+				exp := d.ExpiresAt
+				if len(exp) > 10 {
+					exp = exp[:10]
+				}
+				parts = append(parts, "expires "+exp)
+			}
+			if d.Locked != nil && *d.Locked {
+				parts = append(parts, "locked")
+			}
+			if d.AutoRenew != nil && *d.AutoRenew {
+				parts = append(parts, "autorenew")
+			}
+		}
+	}
+	return strings.Join(append(parts, string(r.Platform)+"/"+r.Profile), "  ")
 }

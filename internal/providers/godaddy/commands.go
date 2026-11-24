@@ -249,8 +249,12 @@ func newDomainGetCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "get <domain>",
 		Short: "Show the details of a domain",
-		Args:  cobra.ExactArgs(1),
+		Args:  app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			args, err := rt.DomainArg(cmd.Context(), args, platform.GoDaddy, platform.ResDomain, nil)
+			if err != nil {
+				return err
+			}
 			d, profile, cached, err := loadDomain(cmd.Context(), rt, args[0])
 			if err != nil {
 				return err
@@ -273,8 +277,12 @@ func newDomainNSGetCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "get <domain>",
 		Short: "Show the nameservers of a domain",
-		Args:  cobra.ExactArgs(1),
+		Args:  app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			args, err := rt.DomainArg(cmd.Context(), args, platform.GoDaddy, platform.ResDomain, nil)
+			if err != nil {
+				return err
+			}
 			d, profile, cached, err := loadDomain(cmd.Context(), rt, args[0])
 			if err != nil {
 				return err
@@ -291,8 +299,19 @@ func newDomainNSSetCmd(rt *app.Runtime) *cobra.Command {
 		Short:   "Replace the nameservers of a domain",
 		Long:    "Replace the nameservers of <domain> with the ones given (GoDaddy wants at\nleast two).\n" + app.NameserverHelp,
 		Example: "  polyctl godaddy domain ns set example.com ns1.example.net ns2.example.net",
-		Args:    app.NameserverArgs,
+		Args:    app.NameserverArgsOrInteractive(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			args, err := rt.DomainArg(cmd.Context(), args, platform.GoDaddy, platform.ResDomain, nil)
+			if err != nil {
+				return err
+			}
+			if len(args) < 2 {
+				ns, err := rt.PickNameservers(cmd.Context(), args[0])
+				if err != nil {
+					return err
+				}
+				args = append(args, ns...)
+			}
 			ns, err := app.Nameservers(args[1:])
 			if err != nil {
 				return err
@@ -330,8 +349,15 @@ func newDomainLockCmd(rt *app.Runtime, lock bool) *cobra.Command {
 	return &cobra.Command{
 		Use:   use,
 		Short: short,
-		Args:  cobra.ExactArgs(1),
+		Args:  app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// lock offers the unlocked domains, unlock the locked ones.
+			args, err := rt.DomainArg(cmd.Context(), args, platform.GoDaddy, platform.ResDomain, func(d platform.Domain) bool {
+				return (d.Locked != nil && *d.Locked) != lock
+			})
+			if err != nil {
+				return err
+			}
 			if rt.Flags.Offline {
 				return app.ErrOffline
 			}
@@ -360,9 +386,24 @@ func newDomainAutoRenewCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:       "autorenew <domain> on|off",
 		Short:     "Enable or disable automatic renewal",
-		Args:      cobra.ExactArgs(2),
+		Args:      app.ArgsOrInteractive(rt, 2, nil),
 		ValidArgs: []string{"on", "off"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			args, err := rt.DomainArg(cmd.Context(), args, platform.GoDaddy, platform.ResDomain, nil)
+			if err != nil {
+				return err
+			}
+			if len(args) < 2 {
+				var cur *bool
+				if d, _, _, err := loadDomain(cmd.Context(), rt, args[0]); err == nil {
+					cur = d.AutoRenew
+				}
+				v, err := rt.PickOnOff("Automatic renewal of "+args[0], cur)
+				if err != nil {
+					return err
+				}
+				args = append(args, v)
+			}
 			var on bool
 			switch strings.ToLower(args[1]) {
 			case "on", "true", "yes":
@@ -498,8 +539,12 @@ func newDNSListCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list <domain>",
 		Short: "List the DNS records of a domain",
-		Args:  cobra.ExactArgs(1),
+		Args:  app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			args, err := rt.DomainArg(cmd.Context(), args, platform.GoDaddy, platform.ResZone, nil)
+			if err != nil {
+				return err
+			}
 			profile, err := rt.ProfileFor(platform.GoDaddy)
 			if err != nil {
 				return err
@@ -573,10 +618,24 @@ func newDNSAddCmd(rt *app.Runtime) *cobra.Command {
 		Use:     "add <domain>",
 		Short:   "Add a DNS record (existing records of the same name and type are kept)",
 		Example: "  polyctl godaddy dns add example.com --type A --name www --value 1.2.3.4",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if typ == "" || value == "" {
+			args, err := rt.DomainArg(cmd.Context(), args, platform.GoDaddy, platform.ResZone, nil)
+			if err != nil {
+				return err
+			}
+			if (typ == "" || value == "") && !rt.Interactive() {
 				return app.UsageErrf("--type and --value are required")
+			}
+			if typ == "" {
+				if typ, err = rt.PickRecordType(platform.GoDaddy); err != nil {
+					return err
+				}
+			}
+			if value == "" {
+				if value, err = rt.AskRecordValue(strings.ToUpper(typ), ""); err != nil {
+					return err
+				}
 			}
 			if rt.Flags.Offline {
 				return app.ErrOffline
@@ -619,10 +678,26 @@ set is created when it does not exist, and every record it holds is replaced
 when it does. Repeat --value for several records. To add a record and keep
 the existing ones use ` + "`polyctl godaddy dns add`" + `.`,
 		Example: "  polyctl godaddy dns upsert example.com --type A --name www --value 1.2.3.4 --value 5.6.7.8",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if typ == "" || len(values) == 0 {
+			args, err := rt.DomainArg(cmd.Context(), args, platform.GoDaddy, platform.ResZone, nil)
+			if err != nil {
+				return err
+			}
+			if (typ == "" || len(values) == 0) && !rt.Interactive() {
 				return app.UsageErrf("--type and at least one --value are required")
+			}
+			if typ == "" {
+				if typ, err = rt.PickRecordType(platform.GoDaddy); err != nil {
+					return err
+				}
+			}
+			if len(values) == 0 {
+				v, err := rt.AskRecordValue(strings.ToUpper(typ), "")
+				if err != nil {
+					return err
+				}
+				values = []string{v}
 			}
 			if rt.Flags.Offline {
 				return app.ErrOffline
@@ -666,10 +741,32 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 GoDaddy addresses records by name and type, so the id is an optional second
 way to pick a single record here, not a required argument.`,
 		Example: "  polyctl godaddy dns delete example.com --type A --name www",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			args, err := rt.DomainArg(cmd.Context(), args, platform.GoDaddy, platform.ResZone, nil)
+			if err != nil {
+				return err
+			}
 			if id == "" && typ == "" {
-				return app.UsageErrf("--type (with --name) or --id is required")
+				// The interactive flow lists the records to pick one.
+				if !rt.Interactive() {
+					return app.UsageErrf("--type (with --name) or --id is required")
+				}
+				if rt.Flags.Offline {
+					return app.ErrOffline
+				}
+				c, _, err := openClient(cmd.Context(), rt)
+				if err != nil {
+					return err
+				}
+				zone := platform.NormalizeDomain(args[0])
+				recs, err := c.ListRecords(cmd.Context(), zone)
+				if err != nil {
+					return err
+				}
+				if id, err = rt.PickRecordID("Delete which record of "+zone+"?", recs, nil); err != nil {
+					return err
+				}
 			}
 			if rt.Flags.Offline {
 				return app.ErrOffline
