@@ -262,7 +262,10 @@ func builtinNetwork(ctx context.Context, rt *app.Runtime, c *client) (string, er
 	}
 	nets, err := c.listNetworks(ctx)
 	if err != nil {
-		return "", err
+		// Without the permission to list networks, "default" is used as in
+		// the non-interactive flow: reading it reports what is wrong.
+		rt.Verbosef("list networks: %v", err)
+		return "default", nil
 	}
 	var opts []prompt.Option
 	for _, n := range nets {
