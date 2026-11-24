@@ -51,6 +51,9 @@ type HostKeys struct {
 	Trust func(host string, key ssh.PublicKey) (bool, error)
 	// Notef prints a note on stderr (a key added to known_hosts).
 	Notef func(format string, args ...any)
+	// NoSave trusts a new key for this run only, without writing
+	// known_hosts (a dry run writes nothing).
+	NoSave bool
 
 	mu sync.Mutex
 	// accepted holds the keys trusted in this run, by address, so that
@@ -194,8 +197,10 @@ func (h *HostKeys) check(addr string, key ssh.PublicKey) error {
 			return ErrHostKeyDeclined
 		}
 	}
-	if err := h.appendKey(host, key); err != nil {
-		return err
+	if !h.NoSave {
+		if err := h.appendKey(host, key); err != nil {
+			return err
+		}
 	}
 	h.mu.Lock()
 	if h.accepted == nil {
@@ -203,7 +208,11 @@ func (h *HostKeys) check(addr string, key ssh.PublicKey) error {
 	}
 	h.accepted[addr] = key.Marshal()
 	h.mu.Unlock()
-	if h.Notef != nil {
+	switch {
+	case h.Notef == nil:
+	case h.NoSave:
+		h.Notef("note: trusted the %s host key of %s (%s) for this run only; %s is not changed", algorithmName(key.Type()), host, fp, homeRel(h.path()))
+	default:
 		h.Notef("note: added the %s host key of %s (%s) to %s", algorithmName(key.Type()), host, fp, homeRel(h.path()))
 	}
 	return nil
