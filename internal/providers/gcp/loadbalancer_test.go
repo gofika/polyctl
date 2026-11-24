@@ -262,6 +262,30 @@ func TestLBEnsureAddressPromotesRuleIP(t *testing.T) {
 	}
 }
 
+// A rule made outside polyctl on a STANDARD tier IP: the address is
+// reserved in that tier, as the IP cannot change pools.
+func TestLBEnsureAddressPromotesStandardTier(t *testing.T) {
+	h := lbHarness(t, app.Flags{})
+	ensureHTTP(t, h)
+	h.gce.mu.Lock()
+	for _, fr := range h.gce.forwardingRules["proj"] {
+		if fr.Name == "fr-web-1" {
+			fr.NetworkTier = "STANDARD"
+		}
+	}
+	h.gce.mu.Unlock()
+	h.rt.Flags.DryRun = true
+	rep := ensureHTTP(t, h, "--address", "lb-web-1-ip")
+	h.rt.Flags.DryRun = false
+	if r := strings.Join(rows(rep), "\n"); !strings.Contains(r, "of forwarding rule fr-web-1, standard tier") {
+		t.Errorf("dry run =\n%s", r)
+	}
+	ensureHTTP(t, h, "--address", "lb-web-1-ip")
+	if a := h.gce.address("us-central1", "lb-web-1-ip"); a == nil || a.NetworkTier != "STANDARD" {
+		t.Errorf("address = %+v, want STANDARD tier", a)
+	}
+}
+
 func TestLBEnsureTCPReusesGroup(t *testing.T) {
 	h := lbHarness(t, app.Flags{})
 	ensureHTTP(t, h)

@@ -190,6 +190,15 @@ func TestPromoteStep(t *testing.T) {
 	if _, err := s.Apply(ctx); err != nil || f.address("us-central1", "web-1-external-ip").Address != "34.1.0.9" {
 		t.Errorf("promote = %v", err)
 	}
+	// A STANDARD tier IP stays in its tier.
+	s, _, _ = c.promoteStep(promoteSpec{Region: "us-central1", Name: "std-ip", IP: "35.1.0.9", Type: addrExternal, NetworkTier: "STANDARD", Fatal: true, List: list})
+	if _, err := s.Apply(ctx); err != nil || f.address("us-central1", "std-ip").NetworkTier != "STANDARD" {
+		t.Errorf("promote standard = %v %+v", err, f.address("us-central1", "std-ip"))
+	}
+	in := &compute.Instance{NetworkInterfaces: []*compute.NetworkInterface{{AccessConfigs: []*compute.AccessConfig{{NatIP: "35.1.0.9", NetworkTier: "STANDARD"}}}}}
+	if accessTier(in, "35.1.0.9") != "STANDARD" || accessTier(in, "") != "" {
+		t.Error("accessTier")
+	}
 	// A failed internal promotion is a warning.
 	var warned string
 	f.opFail["insertAddress"] = compute.OperationErrorErrors{Code: "INTERNAL_ERROR", Message: "x"}

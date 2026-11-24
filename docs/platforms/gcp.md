@@ -169,7 +169,7 @@ polyctl gcp compute instance resize web-1 --machine-type e2-standard-8 --yes
 ```
 
 - The type is checked in the instance's zone first (exit code 2). The same type is `unchanged`.
-- A running instance is stopped after confirmation. Its ephemeral IPs are made static first (`{name}-external-ip` / `{name}-internal-ip`) so they survive the stop.
+- A running instance is stopped after confirmation. Its ephemeral IPs are made static first (`{name}-external-ip` / `{name}-internal-ip`) so they survive the stop; an external IP keeps its network tier (a standard tier IP becomes a standard tier address).
 - The instance ends in the power state it had. `--start` starts a stopped one; `--start=false` leaves a running one stopped.
 - `--wait-port <n>` waits up to 5 minutes until that TCP port (22 for SSH) accepts connections.
 
@@ -293,7 +293,7 @@ Requirements, checked before anything is written (also in `--dry-run`):
 | `--health-check-port` | backend port | TCP health check port. |
 | `--health-check-name` | `check-{port}` | Shared by the load balancers of the region. |
 | `--name` | `lb-{instance}` (tcp: `lb-tcp-{instance}`) | Load balancer name; other components follow it (`ig-`, `bs-`, `proxy-`, `fr-`). |
-| `--address` | ephemeral IP | Regional static external address, reserved when missing (suggested `{lb-name}-ip`). |
+| `--address` | ephemeral IP | Regional static external address, reserved when missing (suggested `{lb-name}-ip`). When the forwarding rule already exists, the address is reserved with its IP, in the rule's network tier. |
 | `--health-timeout` | `3m` | Wait for a `HEALTHY` backend (http/https). Timing out is reported `skipped` with a checklist, exit code 0. |
 | `--no-wait` / `--timeout` | wait, `10m` | `--no-wait` skips the health wait; `--timeout` bounds each operation. |
 | `--zone` / `--region` | the instance's | `--zone` pins the instance (only one in that zone is used); a different `--region` is noted and the instance's region used. |

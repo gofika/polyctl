@@ -208,6 +208,10 @@ type promoteSpec struct {
 	Region, Name, IP, Type string
 	// SubnetURL is the NIC's subnetwork (internal addresses only).
 	SubnetURL string
+	// NetworkTier is the tier of the access config holding an external IP
+	// (an ephemeral IP can only become a static address of its own tier);
+	// empty means PREMIUM.
+	NetworkTier string
 	// Fatal makes a failure stop the command (external); otherwise it is
 	// a warning and a skipped row (internal).
 	Fatal bool
@@ -216,6 +220,27 @@ type promoteSpec struct {
 	List   []*compute.Address
 	ByName *compute.Address
 	Warn   func(string)
+}
+
+// tierOr is the network tier, PREMIUM when the API reports none.
+func tierOr(tier string) string {
+	if tier == "" {
+		return "PREMIUM"
+	}
+	return tier
+}
+
+// accessTier is the network tier of the instance's access config that
+// holds ip, "" when none does.
+func accessTier(in *compute.Instance, ip string) string {
+	for _, nic := range in.NetworkInterfaces {
+		for _, ac := range nic.AccessConfigs {
+			if ac.NatIP == ip && ip != "" {
+				return ac.NetworkTier
+			}
+		}
+	}
+	return ""
 }
 
 // promoteStep returns the step that makes ip static: unchanged when an
@@ -239,7 +264,7 @@ func (c *client) promoteStep(p promoteSpec) (step platform.Step, ok bool, err er
 	}
 	body := &compute.Address{Name: p.Name, Address: p.IP, AddressType: p.Type}
 	if p.Type == addrExternal {
-		body.NetworkTier = "PREMIUM"
+		body.NetworkTier = tierOr(p.NetworkTier)
 	} else {
 		body.Purpose = "GCE_ENDPOINT"
 		body.Subnetwork = p.SubnetURL

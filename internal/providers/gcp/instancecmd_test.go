@@ -585,6 +585,22 @@ func TestInstanceDeleteInteractive(t *testing.T) {
 	}
 }
 
+// An instance made outside polyctl with a STANDARD tier ephemeral IP: the
+// IP is promoted to a static address of that tier.
+func TestInstanceResizeKeepsStandardTier(t *testing.T) {
+	h := newGCPHarness(t, app.Flags{}, nil)
+	in := h.gce.addInstance("proj", "us-central1-a", "web-1", "10.128.0.5", "35.1.0.5")
+	h.gce.mu.Lock()
+	in.NetworkInterfaces[0].AccessConfigs[0].NetworkTier = "STANDARD"
+	h.gce.mu.Unlock()
+	if err := h.run("compute", "instance", "resize", "web-1", "--machine-type", "e2-standard-4", "--yes"); err != nil {
+		t.Fatalf("%v\n%s", err, h.stderr.String())
+	}
+	if a := h.gce.address("us-central1", "web-1-external-ip"); a == nil || a.Address != "35.1.0.5" || a.NetworkTier != "STANDARD" {
+		t.Errorf("promoted external = %+v", a)
+	}
+}
+
 func TestInstanceResize(t *testing.T) {
 	h := newGCPHarness(t, app.Flags{}, nil)
 	h.gce.addInstance("proj", "us-central1-a", "web-1", "10.128.0.5", "34.1.0.5")

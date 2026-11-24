@@ -871,8 +871,11 @@ func (e *lbEnsure) ruleSteps(ctx context.Context) ([]platform.Step, error) {
 			body := &compute.Address{Name: addr, AddressType: addrExternal, NetworkTier: "PREMIUM"}
 			desc := "external, premium tier, " + region
 			if fr != nil && fr.IPAddress != "" {
+				// The ephemeral IP can only become a static address of
+				// the rule's own tier.
 				body.Address = fr.IPAddress
-				desc = "promote " + fr.IPAddress + " of forwarding rule " + fr.Name + ", premium tier, " + region
+				body.NetworkTier = tierOr(fr.NetworkTier)
+				desc = "promote " + fr.IPAddress + " of forwarding rule " + fr.Name + ", " + strings.ToLower(body.NetworkTier) + " tier, " + region
 			}
 			steps = append(steps, platform.Step{Resource: "address/" + addr, Action: platform.Created, Desc: desc,
 				Apply: func(ctx context.Context) (platform.Change, error) {

@@ -189,7 +189,7 @@ size <cores>H<memory>G.`,
 					subnet = l.inst.NetworkInterfaces[0].Subnetwork
 				}
 				for _, p := range []promoteSpec{
-					{Region: region, Name: extName, IP: origExt, Type: addrExternal, Fatal: true, List: list, ByName: find(extName), Warn: warn},
+					{Region: region, Name: extName, IP: origExt, Type: addrExternal, NetworkTier: accessTier(l.inst, origExt), Fatal: true, List: list, ByName: find(extName), Warn: warn},
 					{Region: region, Name: intName, IP: origInt, Type: addrInternal, SubnetURL: subnet, List: list, ByName: find(intName), Warn: warn},
 				} {
 					step, ok, err := l.c.promoteStep(p)
