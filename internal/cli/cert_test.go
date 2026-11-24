@@ -208,14 +208,14 @@ func TestCertEnsureAccountQuestions(t *testing.T) {
 		t.Fatal("wrote before the questions were answered")
 	}
 	// Interactive: asked, then issued.
-	picker := &scriptedPicker{t: t, answers: []any{"not-an-address", "ops@example.net", true}}
+	picker := &scriptedPicker{T: t, Answers: []any{"not-an-address", "ops@example.net", true}}
 	res := runFlow(t, context.Background(), cfgPath, picker, strings.NewReader(""), "cert", "ensure", "example.com")
-	if res.code != ExitOK || iss.registers != 1 || len(picker.asked) != 3 {
-		t.Fatalf("interactive = %+v, asked %v", res, picker.asked)
+	if res.code != ExitOK || iss.registers != 1 || len(picker.Asked) != 3 {
+		t.Fatalf("interactive = %+v, asked %v", res, picker.Asked)
 	}
 	// Declining the terms of service is not a failure.
 	_, cfgPath2, _, iss2 := certSetup(t)
-	picker = &scriptedPicker{t: t, answers: []any{"ops@example.net", false}}
+	picker = &scriptedPicker{T: t, Answers: []any{"ops@example.net", false}}
 	res = runFlow(t, context.Background(), cfgPath2, picker, strings.NewReader(""), "cert", "ensure", "example.com")
 	if res.code != ExitOK || iss2.registers != 0 || !errors.Is(res.err, platform.ErrNothingToDo) {
 		t.Fatalf("declined = %+v", res)

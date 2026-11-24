@@ -286,20 +286,20 @@ func TestProxiedSeparateValueIsNamed(t *testing.T) {
 func TestNonInteractiveFlagBeatsEnv(t *testing.T) {
 	_, cfgPath := setupMulti(t)
 	t.Setenv(app.EnvNonInteractive, "1")
-	p := &scriptedPicker{t: t, answers: []any{"b"}}
-	if r := runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), "--non-interactive=false", "auth", "use"); r.err != nil || len(p.asked) != 1 {
-		t.Errorf("--non-interactive=false with the variable set: %v, prompts %v; want the profile asked for", r.err, p.titles())
+	p := &scriptedPicker{T: t, Answers: []any{"b"}}
+	if r := runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), "--non-interactive=false", "auth", "use"); r.err != nil || len(p.Asked) != 1 {
+		t.Errorf("--non-interactive=false with the variable set: %v, prompts %v; want the profile asked for", r.err, p.Titles())
 	}
 	for _, flag := range [][]string{nil, {"--non-interactive"}, {"--non-interactive=true"}} {
-		p = &scriptedPicker{t: t}
+		p = &scriptedPicker{T: t}
 		r := runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), append(flag, "auth", "use")...)
-		if r.code != ExitUsage || len(p.asked) != 0 {
-			t.Errorf("%v with the variable set: exit %d (%v), prompts %v; want a usage error", flag, r.code, r.err, p.titles())
+		if r.code != ExitUsage || len(p.Asked) != 0 {
+			t.Errorf("%v with the variable set: exit %d (%v), prompts %v; want a usage error", flag, r.code, r.err, p.Titles())
 		}
 	}
 	t.Setenv(app.EnvNonInteractive, "0")
-	p = &scriptedPicker{t: t}
-	if r := runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), "--non-interactive", "auth", "use"); r.code != ExitUsage || len(p.asked) != 0 {
-		t.Errorf("--non-interactive with the variable off: exit %d (%v), prompts %v", r.code, r.err, p.titles())
+	p = &scriptedPicker{T: t}
+	if r := runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), "--non-interactive", "auth", "use"); r.code != ExitUsage || len(p.Asked) != 0 {
+		t.Errorf("--non-interactive with the variable off: exit %d (%v), prompts %v", r.code, r.err, p.Titles())
 	}
 }

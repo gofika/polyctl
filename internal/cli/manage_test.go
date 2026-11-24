@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -17,168 +16,25 @@ import (
 	"github.com/gofika/polyctl/internal/creds"
 	"github.com/gofika/polyctl/internal/platform"
 	"github.com/gofika/polyctl/internal/prompt"
+	"github.com/gofika/polyctl/internal/prompt/prompttest"
 )
 
-// abort is a scripted answer: the user leaves the prompt with Esc or Ctrl-C.
-type abort struct{}
+// The scripted picker of these tests is the shared prompttest.Picker.
+type (
+	scriptedPicker = prompttest.Picker
+	abort          = prompttest.Abort
+	then           = prompttest.Then
+	keepDefault    = prompttest.KeepDefault
+	asked          = prompttest.Asked
+)
 
-// then is a scripted answer that first runs do, while the prompt is open,
-// and then answers with answer: what happens while the user looks at a menu.
-type then struct {
-	do     func()
-	answer any
-}
-
-// keepDefault is a scripted answer to Input: the user accepts the default.
-type keepDefault struct{}
-
-// asked records one prompt shown by the scripted picker.
-type asked struct {
-	Kind    string // select, multi, confirm or input
-	Title   string
-	Options []prompt.Option
-	Default string
-}
-
-// scriptedPicker answers prompts from a fixed list: a string for Select and
-// Input, a []string for MultiSelect, a bool for Confirm, abort{} for any of
-// them. It fails the test on an unexpected prompt or a mismatched answer.
-type scriptedPicker struct {
-	t       *testing.T
-	answers []any
-	asked   []asked
-}
-
-func (p *scriptedPicker) next(a asked) (any, error) {
-	p.t.Helper()
-	p.asked = append(p.asked, a)
-	if len(p.answers) == 0 {
-		p.t.Errorf("unexpected %s prompt %q: no scripted answer left", a.Kind, a.Title)
-		return nil, prompt.ErrAborted
-	}
-	v := p.answers[0]
-	p.answers = p.answers[1:]
-	if th, ok := v.(then); ok {
-		th.do()
-		v = th.answer
-	}
-	if _, ok := v.(abort); ok {
-		return nil, prompt.ErrAborted
-	}
-	return v, nil
-}
-
-func hasValue(opts []prompt.Option, v string) bool {
-	for _, o := range opts {
-		if o.Value == v {
-			return true
-		}
-	}
-	return false
-}
-
-func (p *scriptedPicker) Select(title string, opts []prompt.Option, def string) (string, error) {
-	p.t.Helper()
-	v, err := p.next(asked{Kind: "select", Title: title, Options: opts, Default: def})
-	if err != nil {
-		return "", err
-	}
-	s, ok := v.(string)
-	if !ok || !hasValue(opts, s) {
-		p.t.Errorf("select %q: scripted answer %#v is not one of the options %v", title, v, opts)
-		return "", prompt.ErrAborted
-	}
-	return s, nil
-}
-
-func (p *scriptedPicker) MultiSelect(title string, opts []prompt.Option) ([]string, error) {
-	p.t.Helper()
-	v, err := p.next(asked{Kind: "multi", Title: title, Options: opts})
-	if err != nil {
-		return nil, err
-	}
-	vs, ok := v.([]string)
-	if !ok {
-		p.t.Errorf("multi-select %q: scripted answer %#v is not a []string", title, v)
-		return nil, prompt.ErrAborted
-	}
-	for _, s := range vs {
-		if !hasValue(opts, s) {
-			p.t.Errorf("multi-select %q: %q is not one of the options %v", title, s, opts)
-		}
-	}
-	return vs, nil
-}
-
-func (p *scriptedPicker) Confirm(title string, def bool) (bool, error) {
-	p.t.Helper()
-	v, err := p.next(asked{Kind: "confirm", Title: title, Default: fmt.Sprint(def)})
-	if err != nil {
-		return false, err
-	}
-	b, ok := v.(bool)
-	if !ok {
-		p.t.Errorf("confirm %q: scripted answer %#v is not a bool", title, v)
-		return false, prompt.ErrAborted
-	}
-	return b, nil
-}
-
-// Input behaves like the terminal: a value the validator rejects keeps the
-// prompt open, and the next scripted answer is the user's correction.
-func (p *scriptedPicker) Input(title, def string, validate func(string) error) (string, error) {
-	p.t.Helper()
-	for {
-		v, err := p.next(asked{Kind: "input", Title: title, Default: def})
-		if err != nil {
-			return "", err
-		}
-		s, ok := v.(string)
-		if _, keep := v.(keepDefault); keep {
-			s, ok = def, true
-		}
-		if !ok {
-			p.t.Errorf("input %q: scripted answer %#v is not a string", title, v)
-			return "", prompt.ErrAborted
-		}
-		if validate == nil || validate(s) == nil {
-			return s, nil
-		}
-	}
-}
-
-// find returns the first recorded prompt with the given title.
-func (p *scriptedPicker) find(title string) *asked {
-	for i := range p.asked {
-		if p.asked[i].Title == title {
-			return &p.asked[i]
-		}
-	}
-	p.t.Errorf("no prompt titled %q was shown; prompts: %v", title, p.titles())
-	return &asked{}
-}
-
-func (p *scriptedPicker) titles() []string {
-	var out []string
-	for _, a := range p.asked {
-		out = append(out, a.Kind+":"+a.Title)
-	}
-	return out
-}
-
-func values(opts []prompt.Option) string {
-	var out []string
-	for _, o := range opts {
-		out = append(out, o.Value)
-	}
-	return strings.Join(out, " ")
-}
+var values = prompttest.Values
 
 // runPick executes the command tree with a scripted picker, which makes the
 // runtime interactive. Every scripted answer must be used.
 func runPick(t *testing.T, cfgPath string, answers []any, args ...string) (stdout, stderr string, err error, p *scriptedPicker) {
 	t.Helper()
-	p = &scriptedPicker{t: t, answers: answers}
+	p = &scriptedPicker{T: t, Answers: answers}
 	var out, errb bytes.Buffer
 	rt := app.New(app.Flags{}, strings.NewReader(""), &out, &errb)
 	rt.Picker = p
@@ -189,8 +45,8 @@ func runPick(t *testing.T, cfgPath string, answers []any, args ...string) (stdou
 	root.SetErr(&errb)
 	err = root.ExecuteContext(context.Background())
 	_ = rt.Close()
-	if len(p.answers) != 0 {
-		t.Errorf("%d scripted answer(s) were never asked for: %#v (prompts: %v)", len(p.answers), p.answers, p.titles())
+	if len(p.Answers) != 0 {
+		t.Errorf("%d scripted answer(s) were never asked for: %#v (prompts: %v)", len(p.Answers), p.Answers, p.Titles())
 	}
 	return out.String(), errb.String(), err, p
 }
@@ -225,7 +81,7 @@ func TestRuntimeInteractive(t *testing.T) {
 	if _, err := rt.Pick().Select("Platform", nil, ""); ExitCodeFor(err) != ExitUsage {
 		t.Errorf("Pick without a terminal: Select = %v, want a usage error", err)
 	}
-	fake := &scriptedPicker{t: t}
+	fake := &scriptedPicker{T: t}
 	rt.Picker = fake
 	if !rt.Interactive() || rt.Pick() != prompt.Picker(fake) {
 		t.Error("an injected picker makes the runtime interactive and is the one returned")
@@ -240,8 +96,8 @@ func TestRuntimeInteractive(t *testing.T) {
 	if rt.Interactive() || rt.Pick() == prompt.Picker(fake) {
 		t.Error("POLYCTL_NON_INTERACTIVE=1 must switch the interactive flow off, with a picker present too")
 	}
-	if len(fake.asked) != 0 {
-		t.Errorf("the picker was asked: %v", fake.titles())
+	if len(fake.Asked) != 0 {
+		t.Errorf("the picker was asked: %v", fake.Titles())
 	}
 }
 
@@ -317,7 +173,7 @@ func TestAuthUsePicksProfile(t *testing.T) {
 	if err != nil || stdout != "" || !strings.Contains(stderr, `current profile set to "b"`) {
 		t.Fatalf("auth use: %v (stdout %q, stderr %q)", err, stdout, stderr)
 	}
-	q := p.asked[0]
+	q := p.Asked[0]
 	if q.Kind != "select" || values(q.Options) != "a b" || q.Default != "a" {
 		t.Errorf("prompt = %+v, want a select of a and b with the current profile preselected", q)
 	}
@@ -345,8 +201,8 @@ func TestAuthUsePickWithoutProfiles(t *testing.T) {
 		err.Error() != "nothing to do: no profiles configured (run `polyctl auth login <platform> [--profile <name>]`)" {
 		t.Errorf("auth use without profiles = %v (exit %d, stdout %q), want nothing to do", err, ExitCodeFor(err), stdout)
 	}
-	if len(p.asked) != 0 {
-		t.Errorf("prompted with nothing to choose: %v", p.titles())
+	if len(p.Asked) != 0 {
+		t.Errorf("prompted with nothing to choose: %v", p.Titles())
 	}
 }
 
@@ -356,7 +212,7 @@ func TestAuthLoginPicksPlatform(t *testing.T) {
 	if err != nil || stdout != "" {
 		t.Fatalf("auth login: %v (stdout %q, stderr %q)", err, stdout, stderr)
 	}
-	q := p.asked[0]
+	q := p.Asked[0]
 	if q.Kind != "select" || q.Title != "Platform" || len(q.Options) != len(platform.Providers()) {
 		t.Errorf("prompt = %+v, want a select of every platform", q)
 	}
@@ -436,17 +292,17 @@ func TestAuthLogoutPicksAccounts(t *testing.T) {
 	if err != nil || stdout != "" {
 		t.Fatalf("logout: %v (stdout %q, stderr %q)", err, stdout, stderr)
 	}
-	q := p.find(removeTitle)
+	q := p.Find(removeTitle)
 	if q.Kind != "multi" || values(q.Options) != "a/"+p1+" a/"+p2+" b/"+p2 {
 		t.Errorf("prompt = %+v", q)
 	}
 	if want := "a / " + p2 + "  account=acct-a2"; q.Options[1].Label != want {
 		t.Errorf("label = %q, want %q", q.Options[1].Label, want)
 	}
-	if c := p.asked[1]; c.Kind != "confirm" || c.Title != "Remove 1 entry?" || c.Default != "false" {
+	if c := p.Asked[1]; c.Kind != "confirm" || c.Title != "Remove 1 entry?" || c.Default != "false" {
 		t.Errorf("confirmation = %+v, want default No", c)
 	}
-	if c := p.asked[2]; c.Kind != "confirm" || c.Title != keepTitle || c.Default != "false" {
+	if c := p.Asked[2]; c.Kind != "confirm" || c.Title != keepTitle || c.Default != "false" {
 		t.Errorf("inventory question = %+v, want default No", c)
 	}
 	if !strings.Contains(stderr, "account  a / "+p2) || strings.Contains(stderr, "profile  a") {
@@ -472,7 +328,7 @@ func TestAuthLogoutPicksAccounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("logout %s: %v (stderr %q)", p1, err, stderr)
 	}
-	if got := values(p.find(removeTitle).Options); got != "a/"+p1 {
+	if got := values(p.Find(removeTitle).Options); got != "a/"+p1 {
 		t.Errorf("options with a platform argument = %q", got)
 	}
 	if !strings.Contains(stderr, "profile  a (the current profile)") || !strings.Contains(stderr, `profile "a" removed`) {
@@ -488,8 +344,8 @@ func TestAuthLogoutPicksAccounts(t *testing.T) {
 
 	// No account on the platform: nothing to do, without a prompt.
 	_, _, err, p = runPick(t, cfgPath, nil, "auth", "logout", p1)
-	if !errors.Is(err, errNothingToDo) || ExitCodeFor(err) != ExitOK || err.Error() != "nothing to do: no "+p1+" account configured" || len(p.asked) != 0 {
-		t.Errorf("logout of a platform without accounts = %v (exit %d, prompts %v)", err, ExitCodeFor(err), p.titles())
+	if !errors.Is(err, errNothingToDo) || ExitCodeFor(err) != ExitOK || err.Error() != "nothing to do: no "+p1+" account configured" || len(p.Asked) != 0 {
+		t.Errorf("logout of a platform without accounts = %v (exit %d, prompts %v)", err, ExitCodeFor(err), p.Titles())
 	}
 	if got := accountNames(loadConfig(t, cfgPath)); got != "b/"+p2 {
 		t.Errorf("accounts = %q, want nothing removed", got)
@@ -509,8 +365,8 @@ func TestAuthLogoutPickFlags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(p.asked) != 2 {
-		t.Errorf("prompts = %v, want no inventory question", p.titles())
+	if len(p.Asked) != 2 {
+		t.Errorf("prompts = %v, want no inventory question", p.Titles())
 	}
 	if got := inventoryOwners(t, dir); got != "a/"+p1+" a/"+p2+" b/"+p2 {
 		t.Errorf("inventory = %q, want everything kept", got)
@@ -520,8 +376,8 @@ func TestAuthLogoutPickFlags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(p.asked) != 1 {
-		t.Errorf("prompts = %v, want only the selection", p.titles())
+	if len(p.Asked) != 1 {
+		t.Errorf("prompts = %v, want only the selection", p.Titles())
 	}
 	if !strings.Contains(stderr, `profile "a" removed`) || !strings.Contains(stderr, `profile "b" removed`) {
 		t.Errorf("stderr = %q", stderr)
@@ -536,8 +392,8 @@ func TestAuthLogoutPickFlags(t *testing.T) {
 		t.Error("secrets of removed accounts survived")
 	}
 	_, _, err, p = runPick(t, cfgPath, nil, "auth", "logout")
-	if !errors.Is(err, errNothingToDo) || ExitCodeFor(err) != ExitOK || !strings.Contains(err.Error(), "no profiles configured") || len(p.asked) != 0 {
-		t.Errorf("logout with nothing configured = %v (exit %d, prompts %v), want nothing to do", err, ExitCodeFor(err), p.titles())
+	if !errors.Is(err, errNothingToDo) || ExitCodeFor(err) != ExitOK || !strings.Contains(err.Error(), "no profiles configured") || len(p.Asked) != 0 {
+		t.Errorf("logout with nothing configured = %v (exit %d, prompts %v), want nothing to do", err, ExitCodeFor(err), p.Titles())
 	}
 }
 
@@ -555,11 +411,11 @@ func TestAuthLogoutPicksEmptyProfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("logout: %v (stderr %q)", err, stderr)
 	}
-	if got := values(p.find(removeTitle).Options); got != "a/"+p1+" hollow/" {
+	if got := values(p.Find(removeTitle).Options); got != "a/"+p1+" hollow/" {
 		t.Errorf("options = %q", got)
 	}
-	if len(p.asked) != 2 {
-		t.Errorf("prompts = %v, want no inventory question for a profile without accounts", p.titles())
+	if len(p.Asked) != 2 {
+		t.Errorf("prompts = %v, want no inventory question for a profile without accounts", p.Titles())
 	}
 	cfg = loadConfig(t, cfgPath)
 	if _, ok := cfg.Profiles["hollow"]; ok || cfg.CurrentProfile != "" || accountNames(cfg) != "a/"+p1 {
@@ -599,7 +455,7 @@ func TestAuthManageMenu(t *testing.T) {
 		t.Errorf("an action failed: %q", stderr)
 	}
 
-	menu := p.find(menuTitle)
+	menu := p.Find(menuTitle)
 	if got := values(menu.Options); got != strings.Join([]string{actDetails, actUse, actLogin, actVerify, actRename, actRemove, actQuit}, " ") {
 		t.Errorf("menu = %q", got)
 	}
@@ -627,7 +483,7 @@ func TestAuthManageMenu(t *testing.T) {
 	}
 
 	// Switch.
-	if q := p.find("Switch to which profile?"); q.Default != "a" || values(q.Options) != "a b" {
+	if q := p.Find("Switch to which profile?"); q.Default != "a" || values(q.Options) != "a b" {
 		t.Errorf("switch prompt = %+v", q)
 	}
 	if !strings.Contains(stderr, `current profile set to "b"`) {
@@ -635,7 +491,7 @@ func TestAuthManageMenu(t *testing.T) {
 	}
 
 	// Logins.
-	q := p.find("Add the account to which profile?")
+	q := p.Find("Add the account to which profile?")
 	if values(q.Options) != "a b "+newProfileValue || q.Default != "b" {
 		t.Errorf("target profile prompt = %+v", q)
 	}
@@ -646,7 +502,7 @@ func TestAuthManageMenu(t *testing.T) {
 	}
 
 	// Verification: first one account, then all of them.
-	if q := p.find("Verify which accounts? (ctrl+a ticks all)"); q.Kind != "multi" || values(q.Options) != "a/"+p1+" a/"+p2+" b/"+p1+" b/"+p2+" c/"+p1 {
+	if q := p.Find("Verify which accounts? (ctrl+a ticks all)"); q.Kind != "multi" || values(q.Options) != "a/"+p1+" a/"+p2+" b/"+p1+" b/"+p2+" c/"+p1 {
 		t.Errorf("verify prompt = %+v", q)
 	}
 	if n := strings.Count(stderr, "fake-account"); n != 6 {
@@ -665,7 +521,7 @@ func TestAuthManageMenu(t *testing.T) {
 	}
 
 	// Removal.
-	if q := p.find(removeTitle); values(q.Options) != "a/"+p1+" a/"+p2+" b2/"+p1+" b2/"+p2+" c/"+p1 {
+	if q := p.Find(removeTitle); values(q.Options) != "a/"+p1+" a/"+p2+" b2/"+p1+" b2/"+p2+" c/"+p1 {
 		t.Errorf("remove prompt = %+v", q)
 	}
 	if !strings.Contains(stderr, "profile  c\n") || !strings.Contains(stderr, `profile "c" removed`) {
@@ -713,16 +569,16 @@ func TestAuthManageEmptyConfig(t *testing.T) {
 	if err != nil || stdout != "" {
 		t.Fatalf("auth manage: %v (stdout %q, stderr %q)", err, stdout, stderr)
 	}
-	if got := values(p.asked[0].Options); got != actLogin+" "+actQuit {
+	if got := values(p.Asked[0].Options); got != actLogin+" "+actQuit {
 		t.Errorf("menu without profiles = %q", got)
 	}
 	if !strings.Contains(stderr, "no accounts configured") {
 		t.Errorf("stderr lacks the empty table note: %q", stderr)
 	}
-	if q := p.find("Name of the new profile"); q.Kind != "input" || q.Default != config.DefaultProfile {
+	if q := p.Find("Name of the new profile"); q.Kind != "input" || q.Default != config.DefaultProfile {
 		t.Errorf("name prompt = %+v", q)
 	}
-	for _, a := range p.asked {
+	for _, a := range p.Asked {
 		if a.Title == "Add the account to which profile?" {
 			t.Error("asked to choose among profiles when there is none")
 		}
@@ -734,7 +590,7 @@ func TestAuthManageEmptyConfig(t *testing.T) {
 	if token(t, dir, creds.Key("default", p1)) != "fake" {
 		t.Error("the secret was not stored")
 	}
-	if got := values(p.asked[len(p.asked)-1].Options); !strings.Contains(got, actDetails) || !strings.Contains(got, actRemove) {
+	if got := values(p.Asked[len(p.Asked)-1].Options); !strings.Contains(got, actDetails) || !strings.Contains(got, actRemove) {
 		t.Errorf("menu after the login = %q", got)
 	}
 }
@@ -763,7 +619,7 @@ func TestAuthManageAbortAndErrors(t *testing.T) {
 		t.Errorf("aborted actions: %v (stderr %q)", err, stderr)
 	}
 	menus := 0
-	for _, a := range p.asked {
+	for _, a := range p.Asked {
 		if a.Title == menuTitle {
 			menus++
 		}
@@ -811,8 +667,8 @@ func TestAuthManageDetailsSingleAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(p.asked) != 2 {
-		t.Errorf("prompts = %v, want only the two menus", p.titles())
+	if len(p.Asked) != 2 {
+		t.Errorf("prompts = %v, want only the two menus", p.Titles())
 	}
 	for _, want := range []string{"Current profile      no", "Credentials present  no", "Cached resources     none (never synced)"} {
 		if !strings.Contains(stderr, want) {
@@ -1251,7 +1107,7 @@ func TestRemovalListingOmitsUnselectedEmptyProfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("logout %s: %v (stderr %q)", p2, err, stderr)
 	}
-	if got := values(p.find(removeTitle).Options); got != "a/"+p2+" b/"+p2 {
+	if got := values(p.Find(removeTitle).Options); got != "a/"+p2+" b/"+p2 {
 		t.Errorf("options with a platform argument = %q", got)
 	}
 	if got, want := removalListing(t, stderr), []string{"account  b / " + p2 + "  account=acct-b", "profile  b"}; !reflect.DeepEqual(got, want) {
@@ -1269,7 +1125,7 @@ func TestRemovalListingOmitsUnselectedEmptyProfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("logout: %v (stderr %q)", err, stderr)
 	}
-	if got := values(p.find(removeTitle).Options); got != "a/"+p1+" a/"+p2+" hollow/" {
+	if got := values(p.Find(removeTitle).Options); got != "a/"+p1+" a/"+p2+" hollow/" {
 		t.Errorf("options = %q", got)
 	}
 	if got, want := removalListing(t, stderr), []string{"account  a / " + p1 + "  account=acct-a"}; !reflect.DeepEqual(got, want) {
@@ -1406,8 +1262,8 @@ func TestAuthLoginOffline(t *testing.T) {
 	if !errors.Is(err, app.ErrOffline) || ExitCodeFor(err) != ExitOffline {
 		t.Errorf("interactive auth login --offline = %v, want app.ErrOffline", err)
 	}
-	if len(p.asked) != 0 {
-		t.Errorf("auth login --offline asked %v before failing", p.titles())
+	if len(p.Asked) != 0 {
+		t.Errorf("auth login --offline asked %v before failing", p.Titles())
 	}
 	unchanged("interactive auth login --offline")
 
@@ -1431,7 +1287,7 @@ func TestAuthLoginOffline(t *testing.T) {
 	if err != nil || stdout != "" {
 		t.Fatalf("auth manage --offline: %v (stdout %q, stderr %q)", err, stdout, stderr)
 	}
-	for _, a := range p.asked {
+	for _, a := range p.Asked {
 		if a.Title != menuTitle {
 			t.Errorf("auth manage --offline asked %q", a.Title)
 		}

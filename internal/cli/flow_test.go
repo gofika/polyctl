@@ -176,8 +176,8 @@ func flowCases() []flowCase {
 			name: "auth login: platform", setup: setupEmpty, args: []string{"auth", "login"},
 			answers: []any{p1},
 			interactive: func(t *testing.T, dir string, r flowResult, p *scriptedPicker) {
-				if r.err != nil || loginCalls() != 1 || token(t, dir, creds.Key(config.DefaultProfile, p1)) != "fake" || p.find("Platform").Kind != "select" {
-					t.Errorf("auth login with the platform picked: %v, %d login(s), prompts %v", r.err, loginCalls(), p.titles())
+				if r.err != nil || loginCalls() != 1 || token(t, dir, creds.Key(config.DefaultProfile, p1)) != "fake" || p.Find("Platform").Kind != "select" {
+					t.Errorf("auth login with the platform picked: %v, %d login(s), prompts %v", r.err, loginCalls(), p.Titles())
 				}
 			},
 			piped: p1 + "\n", wantCode: ExitUsage, wantMsg: []string{"auth login: <platform> is required", "one of:", p1, p2},
@@ -228,8 +228,8 @@ func flowCases() []flowCase {
 			answers: []any{[]string{"b/" + p2}, true, false},
 			interactive: func(t *testing.T, dir string, r flowResult, p *scriptedPicker) {
 				profileB(false)(t, dir, r)
-				if r.err != nil || p.find(removeTitle).Kind != "multi" || p.find("Remove 1 entry?").Kind != "confirm" || p.find(keepTitle).Kind != "confirm" {
-					t.Errorf("auth logout: %v, prompts %v", r.err, p.titles())
+				if r.err != nil || p.Find(removeTitle).Kind != "multi" || p.Find("Remove 1 entry?").Kind != "confirm" || p.Find(keepTitle).Kind != "confirm" {
+					t.Errorf("auth logout: %v, prompts %v", r.err, p.Titles())
 				}
 			},
 			piped: "y\ny\n", wantCode: ExitUsage, wantMsg: []string{"--profile <name> is required"},
@@ -241,8 +241,8 @@ func flowCases() []flowCase {
 			answers: []any{[]string{"b/" + p2}},
 			interactive: func(t *testing.T, dir string, r flowResult, p *scriptedPicker) {
 				profileB(false)(t, dir, r)
-				if r.err != nil || len(p.asked) != 1 || p.asked[0].Kind != "multi" {
-					t.Errorf("auth logout --yes: %v, prompts %v; want the selection only", r.err, p.titles())
+				if r.err != nil || len(p.Asked) != 1 || p.Asked[0].Kind != "multi" {
+					t.Errorf("auth logout --yes: %v, prompts %v; want the selection only", r.err, p.Titles())
 				}
 			},
 			piped: "y\n", wantCode: ExitUsage, wantMsg: []string{"--profile <name> is required"},
@@ -253,8 +253,8 @@ func flowCases() []flowCase {
 			answers: []any{[]string{"b/" + p2}, true, true},
 			interactive: func(t *testing.T, dir string, r flowResult, p *scriptedPicker) {
 				profileB(false)(t, dir, r)
-				if r.err != nil || strings.Contains(values(p.find(removeTitle).Options), "a/"+p1) {
-					t.Errorf("auth logout %s: %v, options %q", p2, r.err, values(p.find(removeTitle).Options))
+				if r.err != nil || strings.Contains(values(p.Find(removeTitle).Options), "a/"+p1) {
+					t.Errorf("auth logout %s: %v, options %q", p2, r.err, values(p.Find(removeTitle).Options))
 				}
 			},
 			piped: "y\n", wantCode: ExitUsage, wantMsg: []string{"--profile <name> is required"},
@@ -264,8 +264,8 @@ func flowCases() []flowCase {
 			name: "auth manage: menu", setup: setupMulti, args: []string{"auth", "manage"},
 			answers: []any{actQuit},
 			interactive: func(t *testing.T, dir string, r flowResult, p *scriptedPicker) {
-				if r.err != nil || p.find(menuTitle).Kind != "select" {
-					t.Errorf("auth manage: %v, prompts %v", r.err, p.titles())
+				if r.err != nil || p.Find(menuTitle).Kind != "select" {
+					t.Errorf("auth manage: %v, prompts %v", r.err, p.Titles())
 				}
 			},
 			piped: "q\n", wantCode: ExitUsage, wantMsg: []string{"auth manage is interactive only", "auth list", "auth use <profile>", "auth logout [platform] --profile <name>"},
@@ -378,10 +378,10 @@ func TestFlowMatrix(t *testing.T) {
 				t.Run("interactive", func(t *testing.T) {
 					clearLoginEnv(t)
 					dir, cfgPath := tc.setup(t)
-					p := &scriptedPicker{t: t, answers: tc.answers}
+					p := &scriptedPicker{T: t, Answers: tc.answers}
 					r := runFlow(t, context.Background(), cfgPath, p, strings.NewReader(tc.typed), tc.args...)
-					if len(p.answers) != 0 {
-						t.Errorf("%d scripted answer(s) were never asked for (prompts: %v)", len(p.answers), p.titles())
+					if len(p.Answers) != 0 {
+						t.Errorf("%d scripted answer(s) were never asked for (prompts: %v)", len(p.Answers), p.Titles())
 					}
 					tc.interactive(t, dir, r, p)
 				})
@@ -394,13 +394,13 @@ func TestFlowMatrix(t *testing.T) {
 					// The picker has no answers: any question fails the test.
 					var p *scriptedPicker
 					if sit.terminal {
-						p = &scriptedPicker{t: t}
+						p = &scriptedPicker{T: t}
 					}
 					asked := func() int {
 						if p == nil {
 							return 0
 						}
-						return len(p.asked)
+						return len(p.Asked)
 					}
 					before := diskState(t, dir)
 
@@ -416,7 +416,7 @@ func TestFlowMatrix(t *testing.T) {
 						}
 					}
 					if asked() != 0 {
-						t.Errorf("the picker was asked: %v", p.titles())
+						t.Errorf("the picker was asked: %v", p.Titles())
 					}
 					if stdin.reads != 0 && tc.piped != "" {
 						t.Errorf("stdin was read %d time(s): it is data, not a conversation", stdin.reads)
@@ -448,7 +448,7 @@ func TestFlowMatrix(t *testing.T) {
 						t.Fatalf("%v: exit %d (%v), stderr %q", tc.complete, r.code, r.err, r.stderr)
 					}
 					if asked() != 0 {
-						t.Errorf("%v: the picker was asked: %v", tc.complete, p.titles())
+						t.Errorf("%v: the picker was asked: %v", tc.complete, p.Titles())
 					}
 					if tc.completePiped == "" && stdin.reads != 0 {
 						t.Errorf("%v: stdin was read %d time(s)", tc.complete, stdin.reads)
@@ -467,11 +467,11 @@ func TestFlowMatrix(t *testing.T) {
 // action proceeds, on a terminal too.
 func TestNonInteractiveWithYesAsksNothing(t *testing.T) {
 	_, cfgPath := setupTwoRecords(t)
-	p := &scriptedPicker{t: t}
+	p := &scriptedPicker{T: t}
 	stdin := &countingReader{r: strings.NewReader("n\n")}
 	r := runFlow(t, context.Background(), cfgPath, p, stdin, "dns", "delete", flowZone, "--type", "A", "--name", "www", "--non-interactive", "--yes")
-	if r.err != nil || client("a").count("DeleteRecord") != 2 || len(p.asked) != 0 || stdin.reads != 0 || strings.Contains(r.stderr, "(y/N)") {
-		t.Errorf("--non-interactive --yes: %v, %d deletes, prompts %v, %d stdin reads, stderr %q", r.err, client("a").count("DeleteRecord"), p.titles(), stdin.reads, r.stderr)
+	if r.err != nil || client("a").count("DeleteRecord") != 2 || len(p.Asked) != 0 || stdin.reads != 0 || strings.Contains(r.stderr, "(y/N)") {
+		t.Errorf("--non-interactive --yes: %v, %d deletes, prompts %v, %d stdin reads, stderr %q", r.err, client("a").count("DeleteRecord"), p.Titles(), stdin.reads, r.stderr)
 	}
 }
 
@@ -507,17 +507,17 @@ func TestNonInteractiveEnvInvalid(t *testing.T) {
 	_, cfgPath := setupMulti(t)
 	t.Setenv(app.EnvNonInteractive, "maybe")
 	for _, args := range [][]string{{"auth", "list"}, {"auth", "login"}, {"auth", "use"}, {"auth", "manage"}} {
-		p := &scriptedPicker{t: t}
+		p := &scriptedPicker{T: t}
 		r := runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), args...)
-		if r.code != ExitUsage || len(p.asked) != 0 {
-			t.Errorf("%v: exit %d (%v), prompts %v; want a usage error and no question", args, r.code, r.err, p.titles())
+		if r.code != ExitUsage || len(p.Asked) != 0 {
+			t.Errorf("%v: exit %d (%v), prompts %v; want a usage error and no question", args, r.code, r.err, p.Titles())
 		}
 	}
 	// The message names the variable and its value, also where the argument
 	// check runs before Init: a person on a terminal must learn why the
 	// picker did not open, not be told to pass an argument.
 	for _, args := range [][]string{{"auth", "list"}, {"auth", "login"}, {"auth", "use"}} {
-		for _, p := range []*scriptedPicker{nil, {t: t}} {
+		for _, p := range []*scriptedPicker{nil, {T: t}} {
 			r := runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), args...)
 			if r.code != ExitUsage || r.err == nil || !strings.Contains(r.err.Error(), app.EnvNonInteractive) || !strings.Contains(r.err.Error(), `"maybe"`) || strings.Contains(r.err.Error(), "is required") {
 				t.Errorf("%v (picker %v): exit %d, the error does not name the variable and its value: %v", args, p != nil, r.code, r.err)
@@ -533,9 +533,9 @@ func TestNonInteractiveEnvInvalid(t *testing.T) {
 	// The values that switch it off leave the interactive flow alone.
 	for _, off := range []string{"0", "false", "no", ""} {
 		t.Setenv(app.EnvNonInteractive, off)
-		p := &scriptedPicker{t: t, answers: []any{"b"}}
-		if r := runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), "auth", "use"); r.err != nil || len(p.asked) != 1 {
-			t.Errorf("POLYCTL_NON_INTERACTIVE=%q: %v, prompts %v; want the profile asked for", off, r.err, p.titles())
+		p := &scriptedPicker{T: t, Answers: []any{"b"}}
+		if r := runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), "auth", "use"); r.err != nil || len(p.Asked) != 1 {
+			t.Errorf("POLYCTL_NON_INTERACTIVE=%q: %v, prompts %v; want the profile asked for", off, r.err, p.Titles())
 		}
 	}
 }

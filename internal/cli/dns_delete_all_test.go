@@ -56,7 +56,7 @@ func TestDNSDeleteAllNothingToDo(t *testing.T) {
 	_, cfgPath, fc = ensureZone(t,
 		platform.Record{ID: "ns1", ZoneID: "z1", Name: "example.com", Type: "NS", Value: "ns1.example.net"},
 		platform.Record{ID: "soa", ZoneID: "z1", Name: "example.com", Type: "SOA", Value: "ns1.example.net hostmaster.example.com 1 2 3 4 5"})
-	p := &scriptedPicker{t: t}
+	p := &scriptedPicker{T: t}
 	r := runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), "dns", "delete", "example.com", "--all")
 	if r.err != nil || writes(fc) != 0 || strings.Count(r.stdout, "skipped") != 2 || strings.Contains(r.stderr, "(y/N)") || !strings.Contains(r.stdout, "system record") {
 		t.Errorf("system records only: %v, %q, %q, %v", r.err, r.stdout, r.stderr, fc.calls)
@@ -87,7 +87,7 @@ func TestDNSDeleteAllInteractive(t *testing.T) {
 		platform.Record{ID: "ns1", ZoneID: "z1", Name: "example.com", Type: "NS", Value: "ns1.example.net"})
 	for _, typed := range []string{"n\n", "\n", ""} {
 		_, cfgPath, fc := ensureZone(t, recs...)
-		p := &scriptedPicker{t: t}
+		p := &scriptedPicker{T: t}
 		r := runFlow(t, context.Background(), cfgPath, p, strings.NewReader(typed), "dns", "delete", "example.com", "--all")
 		if r.code != ExitOK || writes(fc) != 0 || !strings.Contains(fmt.Sprint(r.err), "cancelled") {
 			t.Errorf("answer %q: exit %d, %v, stderr %q, calls %v", typed, r.code, r.err, r.stderr, fc.calls)
@@ -99,7 +99,7 @@ func TestDNSDeleteAllInteractive(t *testing.T) {
 		}
 	}
 	_, cfgPath, fc := ensureZone(t, recs...)
-	r := runFlow(t, context.Background(), cfgPath, &scriptedPicker{t: t}, strings.NewReader("yes\n"), "dns", "delete", "example.com", "--all")
+	r := runFlow(t, context.Background(), cfgPath, &scriptedPicker{T: t}, strings.NewReader("yes\n"), "dns", "delete", "example.com", "--all")
 	if r.err != nil || fc.count("DeleteRecord") != 3 || len(fc.records["z1"]) != 1 {
 		t.Errorf("confirmed: %v, %v", r.err, fc.calls)
 	}

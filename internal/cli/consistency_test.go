@@ -134,7 +134,7 @@ func TestAuthManageShowsProfilesWithoutAccounts(t *testing.T) {
 	if got := currentRows(stderr); len(got) != 1 || got[0] != "hollow" {
 		t.Errorf("rows marked current = %v in %q", got, stderr)
 	}
-	if got := values(p.asked[0].Options); got != strings.Join([]string{actUse, actLogin, actRename, actRemove, actQuit}, " ") {
+	if got := values(p.Asked[0].Options); got != strings.Join([]string{actUse, actLogin, actRename, actRemove, actQuit}, " ") {
 		t.Errorf("menu = %q", got)
 	}
 }
@@ -294,8 +294,8 @@ func TestAuthManageDoesNotShowAFailedSwitch(t *testing.T) {
 		actUse,
 		// The config becomes unwritable while the profile list is open, and
 		// writable again while the menu is shown the next time.
-		then{do: func() { restore = breakSaves(t, cfgPath) }, answer: "b"},
-		then{do: func() { restore() }, answer: actQuit},
+		then{Do: func() { restore = breakSaves(t, cfgPath) }, Answer: "b"},
+		then{Do: func() { restore() }, Answer: actQuit},
 	}, "auth", "manage")
 	if err != nil {
 		t.Fatalf("auth manage: %v (stderr %q)", err, stderr)
@@ -330,7 +330,7 @@ func TestAuthManageKeepsChangesOfOtherProcesses(t *testing.T) {
 		}
 	}
 	_, stderr, err, p := runPick(t, cfgPath, []any{
-		then{do: elsewhere, answer: actRename}, "b", "b2",
+		then{Do: elsewhere, Answer: actRename}, "b", "b2",
 		actQuit,
 	}, "auth", "manage")
 	if err != nil {
@@ -344,7 +344,7 @@ func TestAuthManageKeepsChangesOfOtherProcesses(t *testing.T) {
 		t.Errorf("accounts = %q, current = %q; the other process's changes were lost", got, cfg.CurrentProfile)
 	}
 	// The profile list offered for the rename already shows the new profile.
-	if got := values(p.find("Rename which profile?").Options); got != "a added b" {
+	if got := values(p.Find("Rename which profile?").Options); got != "a added b" {
 		t.Errorf("profiles offered = %q", got)
 	}
 
@@ -360,7 +360,7 @@ func TestAuthManageKeepsChangesOfOtherProcesses(t *testing.T) {
 		}
 	}
 	_, stderr, err, _ = runPick(t, cfgPath, []any{
-		actUse, then{do: removeB, answer: "b"},
+		actUse, then{Do: removeB, Answer: "b"},
 		actQuit,
 	}, "auth", "manage")
 	if err != nil {
@@ -833,7 +833,7 @@ func TestInteractiveRemovalAfterAChangeDuringThePrompts(t *testing.T) {
 	_, stderr, err, _ := runPick(t, cfgPath, []any{
 		[]string{"a/" + p1, "a/" + p2, "b/" + p2, "hollow/"},
 		true,
-		then{do: change, answer: false},
+		then{Do: change, Answer: false},
 	}, "auth", "logout")
 	if err != nil {
 		t.Fatalf("auth logout: %v (stderr %q)", err, stderr)
@@ -935,7 +935,7 @@ func TestDNSDeleteDeclinedIsNotAnError(t *testing.T) {
 	// The question belongs to the interactive flow. "n", and an empty
 	// answer: the default is no.
 	for _, answer := range []string{"n\n", "no\n", "\n"} {
-		r := runFlow(t, context.Background(), cfgPath, &scriptedPicker{t: t}, strings.NewReader(answer), args...)
+		r := runFlow(t, context.Background(), cfgPath, &scriptedPicker{T: t}, strings.NewReader(answer), args...)
 		if r.code != ExitOK || !errors.Is(r.err, errNothingToDo) || r.err.Error() != "nothing to do: no record was deleted" || strings.Contains(r.stderr, "deleted www") {
 			t.Errorf("answer %q: %v, exit %d (stderr %q), want the note and exit code 0", answer, r.err, r.code, r.stderr)
 		}
@@ -954,7 +954,7 @@ func TestDNSDeleteDeclinedIsNotAnError(t *testing.T) {
 	// waits for the answer, is a no as well.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	r := runFlow(t, ctx, cfgPath, &scriptedPicker{t: t}, leavingReader(t, cancel), args...)
+	r := runFlow(t, ctx, cfgPath, &scriptedPicker{T: t}, leavingReader(t, cancel), args...)
 	if !errors.Is(r.err, errNothingToDo) || r.code != ExitOK || r.err.Error() != "nothing to do: no record was deleted" {
 		t.Errorf("left confirmation = %v (exit %d), want nothing to do", r.err, r.code)
 	}
@@ -982,7 +982,7 @@ func TestDNSDeleteDeclinedIsNotAnError(t *testing.T) {
 	}
 
 	// Answering yes deletes both.
-	r = runFlow(t, context.Background(), cfgPath, &scriptedPicker{t: t}, strings.NewReader("y\n"), args...)
+	r = runFlow(t, context.Background(), cfgPath, &scriptedPicker{T: t}, strings.NewReader("y\n"), args...)
 	if r.code != ExitOK || r.err != nil || strings.Contains(r.stderr, "nothing to do") {
 		t.Fatalf("confirmed dns delete: %v, exit %d (stderr %q)", r.err, r.code, r.stderr)
 	}
@@ -1007,8 +1007,8 @@ func TestAuthManageNothingToDoIsANote(t *testing.T) {
 		})
 	}
 	stdout, stderr, err, p := runPick(t, cfgPath, []any{
-		then{do: hollow, answer: actDetails},
-		then{do: empty, answer: actUse},
+		then{Do: hollow, Answer: actDetails},
+		then{Do: empty, Answer: actUse},
 		actQuit,
 	}, "auth", "manage")
 	if err != nil || stdout != "" {
@@ -1026,10 +1026,10 @@ func TestAuthManageNothingToDoIsANote(t *testing.T) {
 		t.Errorf("a note was reported as an error: %q", stderr)
 	}
 	// The menu went on after each note, and nothing else was asked.
-	if len(p.asked) != 3 || p.asked[0].Title != menuTitle || p.asked[1].Title != menuTitle || p.asked[2].Title != menuTitle {
-		t.Fatalf("prompts = %v, want the menu three times", p.titles())
+	if len(p.Asked) != 3 || p.Asked[0].Title != menuTitle || p.Asked[1].Title != menuTitle || p.Asked[2].Title != menuTitle {
+		t.Fatalf("prompts = %v, want the menu three times", p.Titles())
 	}
-	if got := values(p.asked[2].Options); got != actLogin+" "+actQuit {
+	if got := values(p.Asked[2].Options); got != actLogin+" "+actQuit {
 		t.Errorf("menu after the config was emptied = %q", got)
 	}
 }
