@@ -49,3 +49,12 @@ func TestRunShellCommandCutOutput(t *testing.T) {
 		}
 	}
 }
+
+// An instance DescribeInstanceInformation rejects as an invalid id is one
+// Systems Manager does not manage.
+func TestSSMManagedLinuxInvalidInstanceID(t *testing.T) {
+	cl, _ := runCommandClient(t, fakeRunCommand{describeErr: &fakeAPIError{"InvalidInstanceId", "Instance id i-1 is not valid"}})
+	if err := cl.ssmManagedLinux(t.Context(), "r", "i-1"); !errors.Is(err, errNotManaged) {
+		t.Errorf("err = %v", err)
+	}
+}

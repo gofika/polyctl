@@ -59,6 +59,9 @@ func (c *client) ssmManagedLinux(ctx context.Context, region, id string) error {
 		if errors.Is(mapErr(err), platform.ErrUnauthorized) {
 			return nil
 		}
+		if apiErrorCode(err) == "InvalidInstanceId" {
+			return errNotManaged
+		}
 		return fmt.Errorf("ssm:DescribeInstanceInformation in %s: %w", region, mapErr(err))
 	}
 	for _, in := range out.InstanceInformationList {
@@ -73,8 +76,11 @@ func (c *client) ssmManagedLinux(ctx context.Context, region, id string) error {
 		}
 		return nil
 	}
-	return errors.New("the instance is not managed by Systems Manager (no SSM Agent registered: it needs the agent and an instance profile that allows Systems Manager)")
+	return errNotManaged
 }
+
+// errNotManaged is an instance Systems Manager does not manage.
+var errNotManaged = errors.New("the instance is not managed by Systems Manager (no SSM Agent registered: it needs the agent and an instance profile that allows Systems Manager)")
 
 // runShellCommand runs command as root on the instance with Run Command
 // (ssm:SendCommand of AWS-RunShellScript, then ssm:GetCommandInvocation
