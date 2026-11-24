@@ -402,3 +402,61 @@ func TestCustomAuthorizedKeysFile(t *testing.T) {
 		}
 	}
 }
+
+// With Match, only the key pair's key is loaded: from a default key, from
+// an extra file (~/.ssh/<key pair>.pem), and from an encrypted file whose
+// .pub sibling matches, whose passphrase alone is asked for; an encrypted
+// key without .pub gets a note, and without a way to ask, a matching
+// encrypted key gets a note too.
+func TestLoadKeysMatch(t *testing.T) {
+	h := home(t)
+	sshDir := filepath.Join(h, ".ssh")
+	def, extra, enc, other, nopub := newKey(t), newKey(t), newKey(t), newKey(t), newKey(t)
+	writePrivate(t, filepath.Join(sshDir, "id_ed25519"), def, "")
+	writePrivate(t, filepath.Join(sshDir, "ops.pem"), extra, "")
+	writePrivate(t, filepath.Join(sshDir, "id_ecdsa"), enc, "pw")
+	_ = os.WriteFile(filepath.Join(sshDir, "id_ecdsa.pub"), ssh.MarshalAuthorizedKey(enc.pub), 0o644)
+	writePrivate(t, filepath.Join(sshDir, "id_rsa"), other, "pw2")
+	_ = os.WriteFile(filepath.Join(sshDir, "id_rsa.pub"), ssh.MarshalAuthorizedKey(other.pub), 0o644)
+	writePrivate(t, filepath.Join(sshDir, "ops"), nopub, "pw3")
+	files := []string{filepath.Join(sshDir, "ops.pem"), filepath.Join(sshDir, "ops")}
+
+	load := func(want ssh.PublicKey, pass func(string) (string, error)) (*KeySet, []string) {
+		t.Helper()
+		var asked []string
+		var p func(string) (string, error)
+		if pass != nil {
+			p = func(path string) (string, error) { asked = append(asked, filepath.Base(path)); return pass(path) }
+		}
+		ks, err := LoadKeys(KeyOptions{Match: func(k ssh.PublicKey) bool { return SameKey(k, want) }, Files: files, Passphrase: p})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ks, asked
+	}
+	pw := func(string) (string, error) { return "pw", nil }
+	for _, c := range []struct {
+		name string
+		want testKey
+		src  string
+	}{{"default", def, "~/.ssh/id_ed25519"}, {"extra", extra, "~/.ssh/ops.pem"}, {"encrypted", enc, "~/.ssh/id_ecdsa"}} {
+		ks, asked := load(c.want.pub, pw)
+		if len(ks.Signers) != 1 || !SameKey(ks.Signers[0].PublicKey(), c.want.pub) || ks.Signers[0].Source != c.src || len(ks.Locked) != 0 {
+			t.Errorf("%s: signers %+v locked %v", c.name, ks.Signers, ks.Locked)
+		}
+		if c.name == "encrypted" && strings.Join(asked, ",") != "id_ecdsa" || c.name != "encrypted" && len(asked) != 0 {
+			t.Errorf("%s: passphrase asked for %v", c.name, asked)
+		}
+		if !strings.Contains(strings.Join(ks.Notes, "\n"), "~/.ssh/ops is encrypted and has no readable") {
+			t.Errorf("%s: notes %v", c.name, ks.Notes)
+		}
+	}
+	ks, _ := load(newKey(t).pub, pw)
+	if len(ks.Signers) != 0 {
+		t.Errorf("no match: %+v", ks.Signers)
+	}
+	ks, _ = load(enc.pub, nil)
+	if len(ks.Signers) != 0 || !strings.Contains(strings.Join(ks.Notes, "\n"), "~/.ssh/id_ecdsa holds the instance's key pair but is encrypted") {
+		t.Errorf("non-interactive: %+v %v", ks.Signers, ks.Notes)
+	}
+}
