@@ -699,7 +699,7 @@ func newECSCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{Use: "ecs", Short: "Elastic Compute Service: instances, security groups, key pairs and images"}
 	instance := &cobra.Command{Use: "instance", Short: "ECS instances"}
 	instance.AddCommand(newECSListCmd(rt), ecsGetCmd(rt), ecsCreateCmd(rt), ecsDeleteCmd(rt), ecsRebootCmd(rt), ecsResizeCmd(rt),
-		newECSStartCmd(rt), newECSStopCmd(rt), ecsEnsureCmd(rt), ecsPasswordCmd(rt))
+		newECSStartCmd(rt), newECSStopCmd(rt), ecsEnsureCmd(rt), ecsPasswordCmd(rt), ecsSSHKeyCmd(rt))
 	cmd.AddCommand(instance, newSecurityGroupCmd(rt), newKeyPairCmd(rt), newImageCmd(rt))
 	return cmd
 }

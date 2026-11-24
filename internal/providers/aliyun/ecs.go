@@ -31,6 +31,11 @@ type Instance struct {
 	ImageID      string `json:"image_id,omitempty" yaml:"image_id,omitempty"`
 	HostName     string `json:"host_name,omitempty" yaml:"host_name,omitempty"`
 	KeyPair      string `json:"key_pair,omitempty" yaml:"key_pair,omitempty"`
+	// OSType is linux or windows.
+	OSType string `json:"os_type,omitempty" yaml:"os_type,omitempty"`
+	// LoginAsNonRoot says the instance was created to log in as ecs-user
+	// instead of root (ImageOptions.LoginAsNonRoot of DescribeInstances).
+	LoginAsNonRoot bool `json:"login_as_non_root,omitempty" yaml:"login_as_non_root,omitempty"`
 	// DeletionProtection refuses every DeleteInstance, forced or not.
 	DeletionProtection bool `json:"deletion_protection,omitempty" yaml:"deletion_protection,omitempty"`
 	// EIP and EIPAllocationID are the elastic IP address bound to the
@@ -71,6 +76,9 @@ func instanceFromECS(i ecs.Instance) Instance {
 		ImageID:      i.ImageId,
 		HostName:     i.HostName,
 		KeyPair:      i.KeyPairName,
+		OSType:       i.OSType,
+
+		LoginAsNonRoot: i.ImageOptions.LoginAsNonRoot,
 
 		DeletionProtection: i.DeletionProtection,
 		EIP:                i.EipAddress.IpAddress,
