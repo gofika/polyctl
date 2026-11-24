@@ -981,12 +981,19 @@ func (s *sshKeySession) pickRemovals(entries []SSHKeyEntry) ([]sshKeyMatch, erro
 
 // open resolves the instance and reaches its keys: the metadata store, or
 // an SSH login.
-func (sc SSHKeyCommand) open(ctx context.Context, rt *Runtime, f *sshKeyFlags, arg string) (*sshKeySession, error) {
+func (sc SSHKeyCommand) open(ctx context.Context, rt *Runtime, f *sshKeyFlags, arg string) (_ *sshKeySession, err error) {
 	inst, err := sc.Resolve(ctx, arg)
 	if err != nil {
 		return nil, err
 	}
 	s := &sshKeySession{rt: rt, sc: sc, inst: inst}
+	defer func() {
+		// The caller closes an opened session; a failed one releases the
+		// keys (the SSH agent connection) here.
+		if err != nil {
+			s.close()
+		}
+	}()
 	if inst.Windows {
 		return nil, fmt.Errorf("%w: instance %s runs Windows, which logs in with a password, not an SSH key; `polyctl %s password %s` shows it", platform.ErrNotSupported, inst.label(), sc.Tree, inst.ID)
 	}
