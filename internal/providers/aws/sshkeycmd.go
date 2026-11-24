@@ -239,12 +239,13 @@ The key pair is the instance's KeyName (ec2:DescribeKeyPairs, matched by
 public key). Without a local private key of it, no other local key is
 tried; the keys are reached through Systems Manager Run Command
 (ssm:SendCommand of AWS-RunShellScript, run as root, the key script as the
-target user) when the instance's SSM Agent is online
-(ssm:DescribeInstanceInformation), else through EC2 Instance Connect: a key
-generated in memory for this run is pushed (ec2-instance-connect:
-SendSSHPublicKey, valid 60 seconds) for each login user in turn. Instance
-Connect works on images with it installed (standard Amazon Linux 2023,
-Amazon Linux 2 since 2019-06-18 and Ubuntu 20.04 or later ship it).`,
+target user; ssm:GetCommandInvocation) when the instance's SSM Agent is
+online (ssm:DescribeInstanceInformation), else through EC2 Instance
+Connect: a key generated in memory for this run is pushed
+(ec2-instance-connect:SendSSHPublicKey, valid 60 seconds) for each login
+user in turn. Instance Connect works on images with it installed
+(standard Amazon Linux 2023, Amazon Linux 2 since 2019-06-18 and Ubuntu
+20.04 or later ship it).`,
 		Flags: func(cmd *cobra.Command) {
 			cmd.Flags().StringVar(&region, "region", "", "region of the instance (default: look it up in the inventory of every account)")
 		},
