@@ -219,7 +219,9 @@ terminal offers it (default no) for those images only.`,
 		},
 		Resolve: func(ctx context.Context, arg string) (*app.SSHKeyInstance, error) {
 			if arg == "" {
-				ref, err := pickInstanceRef(ctx, rt, "<name|id>", "", region, "running AWS instance", false, statesIn(stateRunning))
+				ref, err := pickInstanceRef(ctx, rt, "<name|id>", "", region, "running Linux instance", false, func(in instanceInfo) bool {
+					return in.State == stateRunning && in.Platform != string(ec2types.PlatformValuesWindows)
+				})
 				if err != nil {
 					return nil, err
 				}

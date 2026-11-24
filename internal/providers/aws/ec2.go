@@ -26,6 +26,9 @@ type instanceInfo struct {
 	SubnetID   string            `json:"subnet_id,omitempty" yaml:"subnet_id,omitempty"`
 	PublicDNS  string            `json:"public_dns,omitempty" yaml:"public_dns,omitempty"`
 	PrivateDNS string            `json:"private_dns,omitempty" yaml:"private_dns,omitempty"`
+	// Platform is "windows" for a Windows instance, empty otherwise (the
+	// EC2 Platform field).
+	Platform string `json:"platform,omitempty" yaml:"platform,omitempty"`
 	// Interfaces are every network interface with all its addresses
 	// (polyctl find).
 	Interfaces []netIface `json:"interfaces,omitempty" yaml:"interfaces,omitempty"`
@@ -51,6 +54,7 @@ func instanceFrom(region string, in ec2types.Instance) instanceInfo {
 	}
 	info.VpcID, info.SubnetID = awssdk.ToString(in.VpcId), awssdk.ToString(in.SubnetId)
 	info.PublicDNS, info.PrivateDNS = awssdk.ToString(in.PublicDnsName), awssdk.ToString(in.PrivateDnsName)
+	info.Platform = string(in.Platform)
 	for _, ni := range in.NetworkInterfaces {
 		info.Interfaces = append(info.Interfaces, netIfaceFromInstance(ni))
 	}

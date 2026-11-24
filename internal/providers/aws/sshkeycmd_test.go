@@ -20,6 +20,7 @@ import (
 
 	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt/prompttest"
 	"github.com/gofika/polyctl/internal/sshremote"
 	"github.com/gofika/polyctl/internal/sshremote/sshtest"
 )
@@ -329,5 +330,26 @@ func TestFamilyOf(t *testing.T) {
 		if strings.Join(f.Users, ",") != c.users || f.InstanceConnect != c.ic {
 			t.Errorf("%q: users %v ic %v, want %s %v", c.name, f.Users, f.InstanceConnect, c.users, c.ic)
 		}
+	}
+}
+
+// On a terminal, ssh-key list without <name|id> offers the running Linux
+// instances only.
+func TestEC2SSHKeyPick(t *testing.T) {
+	r := newEC2KeyRig(t, "ami-0x86", []string{"ec2-user"}, "ec2-user")
+	r.h.rt.Flags.NonInteractive, r.h.rt.Flags.NonInteractiveSet = false, true
+	r.inst.id = "i-0aaaaaaaaaaaaaaa1" // an id that resolves as one
+	win := running("i-0aaaaaaaaaaaaaaa2", "win-1")
+	win.platform = "windows"
+	r.h.addInstance("ap-east-1", win)
+	r.h.addInstance("ap-east-1", &fakeInstance{id: "i-0aaaaaaaaaaaaaaa3", name: "web-off", typ: "t3.nano", state: stateStopped, priv: "10.0.1.5"})
+	p := prompttest.New(t, "i-0aaaaaaaaaaaaaaa1")
+	r.h.rt.Picker = p
+	if err := r.run("list"); err != nil {
+		t.Fatalf("%v\n%s", err, r.h.stderr.String())
+	}
+	p.Done()
+	if v := prompttest.Values(p.Find("Instance").Options); v != "i-0aaaaaaaaaaaaaaa1" {
+		t.Errorf("offered %q, want the running Linux instance only", v)
 	}
 }
