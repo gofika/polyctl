@@ -203,12 +203,12 @@ func sshKeyMechanism(sc SSHKeyCommand) string {
 		"one asks for its passphrase on a terminal, and is exit code 2 in the\n" +
 		"non-interactive flow, where an SSH agent (SSH_AUTH_SOCK) is the way), else\n" +
 		"the keys of the SSH agent and ~/.ssh/id_ed25519, id_ecdsa and id_rsa. Login\n" +
-		"user: --login-user, else the default users of the instance's image, tried\n" +
-		"in order. Host key: checked against ~/.ssh/known_hosts; a different key is\n" +
-		"refused (exit code 1) and never replaced; an unknown host is asked about on\n" +
-		"a terminal (default no), and needs --accept-new-host-key otherwise (exit\n" +
-		"code 2). No password is ever used or enabled. Keys of another user than the\n" +
-		"login user (--user) are edited as that user through `sudo -n -u`."
+		"user: --login-user, else the default users of the instance (see below),\n" +
+		"tried in order. Host key: checked against ~/.ssh/known_hosts; a different\n" +
+		"key is refused (exit code 1) and never replaced; an unknown host is asked\n" +
+		"about on a terminal (default no), and needs --accept-new-host-key otherwise\n" +
+		"(exit code 2). No password is ever used or enabled. Keys of another user\n" +
+		"than the login user (--user) are edited as that user through `sudo -n -u`."
 	if sc.Detail != "" {
 		s += "\n\n" + sc.Detail
 	}
@@ -226,7 +226,7 @@ func (sc SSHKeyCommand) addFlags(cmd *cobra.Command, f *sshKeyFlags) {
 	cmd.Flags().IntVar(&f.port, "port", 22, "SSH port")
 	cmd.Flags().StringVar(&f.identityFile, "identity-file", "", "private key to log in with (~ is expanded; never stored); default: the SSH agent and ~/.ssh/id_ed25519, id_ecdsa, id_rsa")
 	_ = cmd.MarkFlagFilename("identity-file")
-	cmd.Flags().StringVar(&f.loginUser, "login-user", "", "user to log in as (default: the image's default users, tried in order)")
+	cmd.Flags().StringVar(&f.loginUser, "login-user", "", "user to log in as (default: the instance's default users, tried in order)")
 	cmd.Flags().BoolVar(&f.acceptNew, "accept-new-host-key", false, "trust and record the host key of an instance not in ~/.ssh/known_hosts yet (a changed key is still refused)")
 	if sc.InstanceConnect {
 		cmd.Flags().BoolVar(&f.connect, "instance-connect", false, "when no local key logs in, push a one-time key with EC2 Instance Connect (needs ec2-instance-connect:SendSSHPublicKey and an image with EC2 Instance Connect)")
