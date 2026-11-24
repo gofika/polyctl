@@ -5,6 +5,9 @@ import (
 	"strings"
 	"testing"
 
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+
 	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/platform"
 	"github.com/gofika/polyctl/internal/prompt"
@@ -154,5 +157,73 @@ func TestInstanceResizeTypePick(t *testing.T) {
 	h.rt.Flags.NonInteractive = true
 	if err := h.run("ec2", "instance", "resize", "web"); !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "--type") {
 		t.Errorf("non-interactive = %v", err)
+	}
+}
+
+// addSubnets puts subnets into the fake account: the default subnet of
+// ap-east-1a, another of ap-east-1b, and a pending one never offered.
+func (h *awsHarness) addSubnets() {
+	h.ec2.mu.Lock()
+	defer h.ec2.mu.Unlock()
+	if h.ec2.find.subnets == nil {
+		h.ec2.find.subnets = map[string]ec2types.Subnet{}
+	}
+	h.ec2.find.subnets["ap-east-1/subnet-0def"] = ec2types.Subnet{SubnetId: awssdk.String("subnet-0def"), AvailabilityZone: awssdk.String("ap-east-1a"), VpcId: awssdk.String("vpc-0abc"),
+		CidrBlock: awssdk.String("10.0.1.0/24"), DefaultForAz: awssdk.Bool(true), AvailableIpAddressCount: awssdk.Int32(250), Tags: []ec2types.Tag{{Key: awssdk.String("Name"), Value: awssdk.String("public-a")}}}
+	h.ec2.find.subnets["ap-east-1/subnet-0b"] = ec2types.Subnet{SubnetId: awssdk.String("subnet-0b"), AvailabilityZone: awssdk.String("ap-east-1b"), VpcId: awssdk.String("vpc-0abc"), CidrBlock: awssdk.String("10.0.2.0/24")}
+	h.ec2.find.subnets["ap-east-1/subnet-0p"] = ec2types.Subnet{SubnetId: awssdk.String("subnet-0p"), AvailabilityZone: awssdk.String("ap-east-1a"), VpcId: awssdk.String("vpc-0abc"), State: ec2types.SubnetStatePending}
+}
+
+// create without <name>, --subnet and --type asks for the name (checked
+// against the live instances), the subnet (available ones, the zone's
+// default preselected) and the size offered in the subnet's zone.
+func TestInstanceCreateAsks(t *testing.T) {
+	useFakeClock(t)
+	h := newAWSHarness(t, app.Flags{NonInteractiveSet: true}, map[string]any{"security_group_ids": []any{"sg-0aaa"}, "key_name": "site-key"})
+	h.add("ap-east-1", newFakeKeyPair("site-key", genED25519(t)))
+	h.addSubnets()
+	h.addInstance("ap-east-1", running("i-0aaaaaaaaaaaaaaa1", "web-01"))
+
+	p := prompttest.New(t, "web-01", "site-new", "subnet-0b", "2H4G")
+	h.rt.Picker = p
+	if err := h.run("ec2", "instance", "create", "--no-wait"); err != nil {
+		t.Fatalf("create: %v\n%s", err, h.stderr.String())
+	}
+	p.Done()
+	sub := p.Find("Subnet")
+	if v := prompttest.Values(sub.Options); v != "subnet-0def subnet-0b" || sub.Default != "subnet-0def" {
+		t.Errorf("subnets offered %q (default %q), want the available ones", v, sub.Default)
+	}
+	if l := prompttest.Labels(sub.Options); !strings.Contains(l, "public-a  subnet-0def  ap-east-1a  10.0.1.0/24  vpc-0abc  250 free IPs  [default for zone]") {
+		t.Errorf("subnet labels: %s", l)
+	}
+	if size := p.Asked[3]; !strings.Contains(size.Title, "ap-east-1b") {
+		t.Errorf("size pick %q is not of the subnet's zone", size.Title)
+	}
+	in := h.ec2.inst.runs[0]
+	if in.InstanceType != "t3.medium" || awssdk.ToString(in.NetworkInterfaces[0].SubnetId) != "subnet-0b" || tagValue(in.TagSpecifications[0].Tags, "Name") != "site-new" {
+		t.Errorf("run input = %+v", in)
+	}
+
+	// The non-interactive flow names the missing setting, before any write.
+	h.rt.Picker = nil
+	h.rt.Flags.NonInteractive = true
+	if err := h.run("ec2", "instance", "create", "x", "--type", "t3.nano"); !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "--subnet") {
+		t.Errorf("non-interactive = %v", err)
+	}
+}
+
+// Without an available subnet, create is a usage error naming --subnet:
+// polyctl creates no subnets.
+func TestInstanceCreateNoSubnet(t *testing.T) {
+	useFakeClock(t)
+	h := newAWSHarness(t, app.Flags{NonInteractiveSet: true}, map[string]any{"key_name": "site-key", "instance_type": "t3.nano"})
+	h.add("ap-east-1", newFakeKeyPair("site-key", genED25519(t)))
+	h.rt.Picker = prompttest.New(t)
+	if err := h.run("ec2", "instance", "create", "x"); !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "--subnet") {
+		t.Errorf("create = %v", err)
+	}
+	if w := h.writes(); len(w) != 0 {
+		t.Errorf("writes = %v", w)
 	}
 }

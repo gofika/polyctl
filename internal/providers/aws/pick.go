@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 
 	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/inventory"
@@ -224,4 +226,99 @@ func checkTypeInput(x86 bool) func(string) error {
 		}
 		return nil
 	}
+}
+
+// availableSubnets lists the available subnets of region (every page),
+// those of vpc and az when given, sorted by availability zone, then id.
+func (c *client) availableSubnets(ctx context.Context, region, vpc, az string) ([]ec2types.Subnet, error) {
+	region = c.regionOr(region)
+	filters := []ec2types.Filter{{Name: awssdk.String("state"), Values: []string{string(ec2types.SubnetStateAvailable)}}}
+	if vpc != "" {
+		filters = append(filters, ec2types.Filter{Name: awssdk.String("vpc-id"), Values: []string{vpc}})
+	}
+	if az != "" {
+		filters = append(filters, ec2types.Filter{Name: awssdk.String("availability-zone"), Values: []string{az}})
+	}
+	pg := ec2.NewDescribeSubnetsPaginator(c.ec2For(region), &ec2.DescribeSubnetsInput{Filters: filters})
+	var out []ec2types.Subnet
+	for pg.HasMorePages() {
+		page, err := pg.NextPage(ctx)
+		if err != nil {
+			return nil, ec2Err("DescribeSubnets", region, err)
+		}
+		for _, sn := range page.Subnets {
+			if sn.State == "" || sn.State == ec2types.SubnetStateAvailable {
+				out = append(out, sn)
+			}
+		}
+	}
+	slices.SortFunc(out, func(a, b ec2types.Subnet) int {
+		if c := strings.Compare(awssdk.ToString(a.AvailabilityZone), awssdk.ToString(b.AvailabilityZone)); c != 0 {
+			return c
+		}
+		return strings.Compare(awssdk.ToString(a.SubnetId), awssdk.ToString(b.SubnetId))
+	})
+	return out, nil
+}
+
+// tagName returns the Name tag of tags.
+func tagName(tags []ec2types.Tag) string {
+	for _, t := range tags {
+		if awssdk.ToString(t.Key) == "Name" {
+			return awssdk.ToString(t.Value)
+		}
+	}
+	return ""
+}
+
+// subnetLabel: "public-a  subnet-0def  ap-east-1a  10.0.1.0/24  vpc-0abc
+// 250 free IPs  [default for zone]".
+func subnetLabel(sn ec2types.Subnet) string {
+	free := ""
+	if sn.AvailableIpAddressCount != nil {
+		free = fmt.Sprintf("%d free IPs", awssdk.ToInt32(sn.AvailableIpAddressCount))
+	}
+	def := ""
+	if awssdk.ToBool(sn.DefaultForAz) {
+		def = "[default for zone]"
+	}
+	id := awssdk.ToString(sn.SubnetId)
+	return joinLabel(nameOr(tagName(sn.Tags), id), id, awssdk.ToString(sn.AvailabilityZone), awssdk.ToString(sn.CidrBlock), awssdk.ToString(sn.VpcId), free, def)
+}
+
+// pickSubnet asks for the subnet of a create (--subnet) in the interactive
+// flow: the available subnets of region (of vpc when given), the first
+// default subnet of a zone preselected. polyctl creates no subnets: none
+// is a usage error naming --subnet. It returns the subnet chosen.
+func pickSubnet(ctx context.Context, rt *app.Runtime, c *client, region, vpc string) (ec2types.Subnet, error) {
+	if !rt.Interactive() {
+		return ec2types.Subnet{}, app.UsageErrf("--subnet is required")
+	}
+	subnets, err := c.availableSubnets(ctx, region, vpc, "")
+	if err != nil {
+		return ec2types.Subnet{}, err
+	}
+	var opts []prompt.Option
+	def := ""
+	for _, sn := range subnets {
+		id := awssdk.ToString(sn.SubnetId)
+		if def == "" && awssdk.ToBool(sn.DefaultForAz) {
+			def = id
+		}
+		opts = append(opts, prompt.Option{Label: subnetLabel(sn), Value: id})
+	}
+	what := "available subnet in " + c.regionOr(region)
+	if vpc != "" {
+		what = "available subnet of " + vpc
+	}
+	v, err := rt.Choose(app.Choice{Title: "Subnet", Options: opts, Default: def, Arg: "--subnet", Required: true, What: what})
+	if err != nil {
+		return ec2types.Subnet{}, err
+	}
+	for _, sn := range subnets {
+		if awssdk.ToString(sn.SubnetId) == v {
+			return sn, nil
+		}
+	}
+	return ec2types.Subnet{}, fmt.Errorf("unexpected subnet %q", v)
 }

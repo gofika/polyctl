@@ -2,6 +2,8 @@ package aws
 
 import (
 	"context"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -111,6 +113,43 @@ func (f *fakeEC2) DescribeSubnets(_ context.Context, in *ec2.DescribeSubnetsInpu
 	f.shared.mu.Lock()
 	defer f.shared.mu.Unlock()
 	out := &ec2.DescribeSubnetsOutput{}
+	if len(in.SubnetIds) == 0 {
+		// A filtered listing of the region (state, vpc-id,
+		// availability-zone), sorted by id; a subnet without a state is
+		// available.
+		var keys []string
+		for k := range f.shared.find.subnets {
+			if strings.HasPrefix(k, f.region+"/") {
+				keys = append(keys, k)
+			}
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			sn := f.shared.find.subnets[k]
+			ok := true
+			for _, flt := range in.Filters {
+				var v string
+				switch awssdk.ToString(flt.Name) {
+				case "state":
+					v = string(sn.State)
+					if v == "" {
+						v = "available"
+					}
+				case "vpc-id":
+					v = awssdk.ToString(sn.VpcId)
+				case "availability-zone":
+					v = awssdk.ToString(sn.AvailabilityZone)
+				default:
+					return nil, &fakeAPIError{"InvalidParameterValue", "unknown filter " + awssdk.ToString(flt.Name)}
+				}
+				ok = ok && slices.Contains(flt.Values, v)
+			}
+			if ok {
+				out.Subnets = append(out.Subnets, sn)
+			}
+		}
+		return out, nil
+	}
 	for _, id := range in.SubnetIds {
 		if sn, ok := f.shared.find.subnets[f.region+"/"+id]; ok {
 			out.Subnets = append(out.Subnets, sn)

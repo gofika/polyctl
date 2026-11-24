@@ -526,6 +526,17 @@ an empty value is exit code 1.`,
 
 // ------------------------------------------------------------- create
 
+// checkSizeArch refuses a size with --arch arm64: a size resolves to an
+// x86_64 type.
+func checkSizeArch(typ, arch string) error {
+	if _, isSize, err := platform.ParseTypeShorthand(typ); err != nil {
+		return err
+	} else if isSize && arch == "arm64" {
+		return app.UsageErrf("--type %s with --arch arm64: a size resolves to an x86_64 type; pass an exact arm64 type such as t4g.medium", typ)
+	}
+	return nil
+}
+
 // parseTags parses --tag key=value flags.
 func parseTags(args []string) (map[string]string, error) {
 	out := map[string]string{}
@@ -645,9 +656,9 @@ code 1): AWS does not keep names unique, and two instances of one name
 cannot be told apart later.
 
 The image is --ami, or the latest Amazon Linux 2023 image of the instance
-type's architecture (--arch, by default arm64 for Graviton types and x86_64
-otherwise; a size resolves to an x86_64 type; polyctl never picks arm64
-by itself): the SSM parameter al2023-ami-kernel-default-<arch> first;
+type's architecture (--arch, x86_64 by default; only a type that runs
+nothing else, such as t4g.small, gets arm64: a size resolves to an x86_64
+type and polyctl never proposes or picks arm64 by itself): the SSM parameter al2023-ami-kernel-default-<arch> first;
 when the parameter cannot be read or its image is not available, the
 newest standard Amazon image named "al2023-ami-2023.*-kernel-*-<arch>" of
 any kernel line (highest release, then latest creation time; minimal
@@ -667,8 +678,10 @@ Windows_Server-<year>-English-Full-Base-<date>. An arm64 type is exit code
 instance too.
 
 --type, --subnet, --sg and --key-pair default to defaults.aws.instance_type,
-subnet_id, security_group_ids and key_name in config.yaml; a missing type
-or subnet is a usage error. The type may also be a size <cores>H<memory>G
+subnet_id, security_group_ids and key_name in config.yaml. A terminal asks
+for a missing <name> (checked as typed), subnet (the available subnets of
+the region) and type (the T3 sizes offered in the subnet's zone, or a size
+or type typed); the non-interactive flow is a usage error for each. The type may also be a size <cores>H<memory>G
 (2H2G, 2H4G, 4H8G, 2H0.5G), resolved in the subnet's availability zone on
 every run (in a dry run too, never remembered): the T3 type of exactly
 that shape (2H0.5G t3.nano, 2H1G t3.micro, 2H2G t3.small, 2H4G t3.medium,
@@ -684,7 +697,8 @@ interface with a public IP unless --public-ip=false. --ssh-key /
 under --key-pair when none does. A key pair is required: Linux instances
 log in with a key only, and polyctl never sets or enables a password.
 Without --key-pair, --ssh-key, --ssh-key-file or defaults.aws.key_name (an
-existing key pair) a terminal asks for a public key file, and the
+existing key pair) a terminal offers the key pairs of the region or
+importing a new one from a public key file, and the
 non-interactive flow is exit code 2 before anything is created (with --ami,
 once the image is read and is not a Windows image).
 
@@ -715,12 +729,12 @@ running and prints its addresses.`,
 		Example: `  polyctl aws ec2 instance create site-new --type c6a.xlarge --disk 400 --dry-run
   polyctl aws ec2 instance create site-new --type 2H4G --dry-run
   polyctl aws ec2 instance create win-1 --os windows --type t3.large
-  polyctl aws ec2 instance create site-new --type t4g.small --ssh-key-file ~/.ssh/id_ed25519.pub --key-pair ops`,
-		Args: cobra.ExactArgs(1),
+  polyctl aws ec2 instance create site-new --type t3.small --ssh-key-file ~/.ssh/id_ed25519.pub --key-pair ops`,
+		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			name := strings.TrimSpace(args[0])
-			if name == "" || len(name) > 256 {
+			name := strings.TrimSpace(app.Arg(args, 0))
+			if (len(args) > 0 && name == "") || len(name) > 256 {
 				return app.UsageErrf("the instance name must be 1 to 256 characters")
 			}
 			wait, timeout, err := wf.Resolve(cmd)
@@ -778,17 +792,24 @@ running and prints its addresses.`,
 			if err != nil {
 				return err
 			}
-			if typ, err = rt.RequireSetting(profile, platform.AWS, "instance_type", "type", typ); err != nil {
+			// The interactive flow asks for a missing type and subnet once
+			// the account is open (the subnet first: the sizes offered
+			// depend on its zone).
+			if typ, err = rt.Setting(profile, platform.AWS, "instance_type", typ); err != nil {
 				return err
 			}
-			size, isSize, err := platform.ParseTypeShorthand(typ)
-			if err != nil {
+			if typ == "" && !rt.Interactive() {
+				_, err := rt.RequireSetting(profile, platform.AWS, "instance_type", "type", typ)
 				return err
 			}
-			if isSize && arch == "arm64" {
-				return app.UsageErrf("--type %s with --arch arm64: a size resolves to an x86_64 type; pass an exact arm64 type such as t4g.medium", typ)
+			if err := checkSizeArch(typ, arch); err != nil {
+				return err
 			}
-			if subnet, err = rt.RequireSetting(profile, platform.AWS, "subnet_id", "subnet", subnet); err != nil {
+			if subnet, err = rt.Setting(profile, platform.AWS, "subnet_id", subnet); err != nil {
+				return err
+			}
+			if subnet == "" && !rt.Interactive() {
+				_, err := rt.RequireSetting(profile, platform.AWS, "subnet_id", "subnet", subnet)
 				return err
 			}
 			if sgs, err = rt.SettingList(profile, platform.AWS, "security_group_ids", sgs); err != nil {
@@ -814,7 +835,6 @@ running and prints its addresses.`,
 			for k, v := range extraTags {
 				tags[k] = v
 			}
-			tags["Name"] = name
 			base := keyInputBase()
 			base.DefaultName = defaultKey
 			keyIn, err := rt.KeyInput(&keys, base)
@@ -829,6 +849,25 @@ running and prints its addresses.`,
 			region = c.regionOr(region)
 			target := platform.Target{Platform: platform.AWS, Profile: prof.Name, Region: region}
 
+			if name == "" {
+				if name, err = rt.AskInput("<name>", "Name of the new instance", "", func(s string) error {
+					s = strings.TrimSpace(s)
+					if s == "" || len(s) > 256 {
+						return errors.New("the instance name must be 1 to 256 characters")
+					}
+					found, err := c.findInstances(ctx, region, s)
+					if err != nil {
+						return err
+					}
+					if live := liveInstances(found); len(live) > 0 {
+						return fmt.Errorf("instance %q already exists in %s (%s)", s, region, awssdk.ToString(live[0].InstanceId))
+					}
+					return nil
+				}); err != nil {
+					return err
+				}
+			}
+			tags["Name"] = name
 			existing, err := c.findInstances(ctx, region, name)
 			if err != nil {
 				return err
@@ -837,11 +876,38 @@ running and prints its addresses.`,
 				return fmt.Errorf("instance %q already exists in %s (%s, %s): use `polyctl aws ec2 instance get %s`, or choose another name",
 					name, region, awssdk.ToString(live[0].InstanceId), instanceState(live[0]), name)
 			}
-			var choice *typeChoice
-			if isSize {
-				az, err := c.subnetAZ(ctx, region, subnet)
+			subnetZone := ""
+			if subnet == "" {
+				sn, err := pickSubnet(ctx, rt, c, region, "")
 				if err != nil {
 					return err
+				}
+				subnet, subnetZone = awssdk.ToString(sn.SubnetId), awssdk.ToString(sn.AvailabilityZone)
+			}
+			if typ == "" {
+				if subnetZone == "" {
+					if subnetZone, err = c.subnetAZ(ctx, region, subnet); err != nil {
+						return err
+					}
+				}
+				if typ, err = pickInstanceType(ctx, rt, c, region, subnetZone, "", arch != "arm64"); err != nil {
+					return err
+				}
+				if err := checkSizeArch(typ, arch); err != nil {
+					return err
+				}
+			}
+			size, isSize, err := platform.ParseTypeShorthand(typ)
+			if err != nil {
+				return err
+			}
+			var choice *typeChoice
+			if isSize {
+				az := subnetZone
+				if az == "" {
+					if az, err = c.subnetAZ(ctx, region, subnet); err != nil {
+						return err
+					}
 				}
 				ch, err := c.resolveTypeSize(ctx, region, az, size)
 				if err != nil {
@@ -1023,7 +1089,7 @@ running and prints its addresses.`,
 	cmd.Flags().StringVar(&typ, "type", "", "instance type such as c6a.xlarge, or a size <cores>H<memory>G such as 2H4G (default: defaults.aws.instance_type)")
 	cmd.Flags().StringVar(&ami, "ami", "", "image id (default: the latest image of --os)")
 	cmd.Flags().StringVar(&osName, "os", "al2023", "system whose latest image is used when --ami is not given: al2023 or windows (Windows Server English Full Base, newest year)")
-	cmd.Flags().StringVar(&arch, "arch", "", "image architecture, x86_64 or arm64 (default: from the instance type)")
+	cmd.Flags().StringVar(&arch, "arch", "", "image architecture, x86_64 or arm64 (default: x86_64, or arm64 for a type that runs only arm64)")
 	cmd.Flags().StringVar(&subnet, "subnet", "", "subnet id (default: defaults.aws.subnet_id)")
 	cmd.Flags().StringArrayVar(&sgs, "sg", nil, "security group id (repeatable; default: defaults.aws.security_group_ids)")
 	app.AddKeyFlags(cmd, &keys)
