@@ -56,8 +56,8 @@ type fakeCompute struct {
 	// machineDeprecated is the Deprecated state of a machine type name.
 	machineDeprecated map[string]string
 	// zones and regions are listed by Zones.List and Regions.List.
-	zones   []*compute.Zone
-	regions []*compute.Region
+	zones       []*compute.Zone
+	regions     []*compute.Region
 	networks    map[string]*compute.Network // project/name
 	subnets     map[string][]*compute.Subnetwork
 	projectMeta map[string]*compute.Metadata
