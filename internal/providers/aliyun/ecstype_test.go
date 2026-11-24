@@ -341,10 +341,12 @@ func TestResolveTypeSizeNoMatch(t *testing.T) {
 	if _, err := c.resolveTypeSize(context.Background(), "cn-shanghai", r); !errors.Is(err, platform.ErrNotFound) || !strings.Contains(err.Error(), "2H3G (2 vCPUs, 3 GiB)") {
 		t.Errorf("no size = %v", err)
 	}
-	// In stock only in another zone: the hint names it.
+	// In stock only in another zone: the hint names it, but never a zone
+	// that only an ARM type of the size is in stock in (zone g).
+	cat.add("ecs.g8y.xlarge", 2, 4, "ARM", map[string]float64{"cn-shanghai-g": 0.01})
 	r.Size, r.Zones = size(t, "2H4G"), []string{"cn-shanghai-e", "cn-shanghai-f"}
 	_, err := c.resolveTypeSize(context.Background(), "cn-shanghai", r)
-	if !errors.Is(err, platform.ErrNotFound) || !strings.Contains(err.Error(), "zones cn-shanghai-e, cn-shanghai-f of cn-shanghai") || !strings.Contains(err.Error(), "in stock in cn-shanghai-b, cn-shanghai-c, cn-shanghai-d") {
+	if !errors.Is(err, platform.ErrNotFound) || !strings.Contains(err.Error(), "zones cn-shanghai-e, cn-shanghai-f of cn-shanghai") || !strings.Contains(err.Error(), "in stock in cn-shanghai-b, cn-shanghai-c, cn-shanghai-d:") {
 		t.Errorf("other zones = %v", err)
 	}
 	// A zone without stock counts as none.

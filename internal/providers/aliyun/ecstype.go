@@ -351,6 +351,22 @@ func (c *client) resolveTypeSize(ctx context.Context, region string, r typeReque
 	if err != nil {
 		return nil, err
 	}
+	// Only x86 types are candidates, and only zones that offer one are
+	// named as elsewhere: polyctl never picks an arm64 type by itself.
+	var types []string
+	for _, tz := range found {
+		if tz.Type != r.Current && !slices.Contains(types, tz.Type) {
+			types = append(types, tz.Type)
+		}
+	}
+	if len(types) > 0 {
+		sort.Strings(types)
+		x86, err := c.x86Types(ctx, region, types)
+		if err != nil {
+			return nil, err
+		}
+		found = slices.DeleteFunc(found, func(tz typeZone) bool { return !x86[tz.Type] })
+	}
 	var cands []typeZone
 	var elsewhere []string
 	for _, tz := range found {
@@ -363,20 +379,6 @@ func (c *client) resolveTypeSize(ctx context.Context, region string, r typeReque
 		case !slices.Contains(cands, tz):
 			cands = append(cands, tz)
 		}
-	}
-	if len(cands) > 0 {
-		var types []string
-		for _, tz := range cands {
-			if !slices.Contains(types, tz.Type) {
-				types = append(types, tz.Type)
-			}
-		}
-		sort.Strings(types)
-		x86, err := c.x86Types(ctx, region, types)
-		if err != nil {
-			return nil, err
-		}
-		cands = slices.DeleteFunc(cands, func(tz typeZone) bool { return !x86[tz.Type] })
 	}
 	sort.Slice(cands, func(i, j int) bool {
 		if cands[i].Type != cands[j].Type {
