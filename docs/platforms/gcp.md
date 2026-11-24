@@ -148,7 +148,7 @@ Notes:
 
 - Linux instances log in with an SSH key only; polyctl never sets a password. Keys go into the instance's `ssh-keys` metadata, together with `defaults.gcp.ssh_keys`. A Linux create without any key is allowed only when the project metadata holds SSH keys or enables OS Login; otherwise exit code 2 before anything is written.
 - A key the project metadata already holds for that user is not repeated (unless `--ssh-key-instance-only`). With `block-project-ssh-keys=TRUE` all keys go to the instance. With `enable-oslogin=TRUE` you get a warning: OS Login ignores `ssh-keys`.
-- The instance gets Shielded VM (vTPM, integrity monitoring), live migration with automatic restart (unless `--spot`) and no deletion protection. Both disks are deleted with the instance.
+- The instance gets Shielded VM (vTPM, integrity monitoring), automatic restart and the host maintenance policy Compute Engine picks for the machine type (live migration, or stop for GPU machine types that cannot migrate; with `--spot` it stops and does not restart), and no deletion protection. Both disks are deleted with the instance.
 - Windows instances get a user and password from the guest agent once running; see [Instances](../instances.md). `password <name|id>` shows them again, `--reset` sets a new one.
 - Nothing is rolled back on failure: reserved addresses stay and are reused by the next create of the same name.
 - Static address names come from `naming.gcp_instance_external_ip` / `naming.gcp_instance_internal_ip`.

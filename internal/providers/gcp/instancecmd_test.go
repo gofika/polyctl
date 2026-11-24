@@ -201,7 +201,9 @@ func TestInstanceCreate(t *testing.T) {
 	if len(in.ServiceAccounts) != 1 || in.ServiceAccounts[0].Email != "default" || len(in.ServiceAccounts[0].Scopes) != 6 {
 		t.Errorf("service accounts = %+v", in.ServiceAccounts)
 	}
-	if in.Scheduling == nil || in.Scheduling.ProvisioningModel != "STANDARD" || in.ShieldedInstanceConfig == nil || !in.ShieldedInstanceConfig.EnableVtpm || in.CanIpForward {
+	// OnHostMaintenance is left to Compute Engine (GPU machine types
+	// cannot migrate).
+	if in.Scheduling == nil || in.Scheduling.ProvisioningModel != "STANDARD" || in.Scheduling.OnHostMaintenance != "" || in.ShieldedInstanceConfig == nil || !in.ShieldedInstanceConfig.EnableVtpm || in.CanIpForward {
 		t.Errorf("scheduling / shielded / ip forward = %+v %+v %v", in.Scheduling, in.ShieldedInstanceConfig, in.CanIpForward)
 	}
 	if v, ok := metadataValue(in.Metadata, "ssh-keys"); !ok || !strings.HasPrefix(v, "alice:ssh-ed25519 ") {
@@ -1006,5 +1008,21 @@ func TestInstanceZoneNamesEveryOtherZone(t *testing.T) {
 	err := h.run("compute", "instance", "get", "web-1", "--zone", "us-central1-b")
 	if exitClass(err) != "notfound" || !strings.Contains(err.Error(), "in zones us-central1-a, us-central1-c") {
 		t.Errorf("err = %v", err)
+	}
+}
+
+// A standard instance leaves OnHostMaintenance to Compute Engine, which
+// picks TERMINATE for GPU machine types that cannot migrate; Spot always
+// terminates.
+func TestInstanceBodyScheduling(t *testing.T) {
+	for _, tc := range []struct {
+		spot bool
+		want string
+	}{{false, ""}, {true, "TERMINATE"}} {
+		o := &createOptions{machineType: "g2-standard-4", diskType: "pd-balanced", network: "default", spot: tc.spot}
+		in := instanceBody(&client{}, o, "gpu-1", "us-central1-a", "us-central1", "", "img", 10, nil, nil, "", "")
+		if in.Scheduling == nil || in.Scheduling.OnHostMaintenance != tc.want {
+			t.Errorf("spot %v: scheduling = %+v", tc.spot, in.Scheduling)
+		}
 	}
 }

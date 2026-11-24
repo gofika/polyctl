@@ -1271,7 +1271,9 @@ func instanceBody(c *client, o *createOptions, name, zone, region, subnet, image
 	if o.spot {
 		in.Scheduling = &compute.Scheduling{ProvisioningModel: "SPOT", OnHostMaintenance: "TERMINATE", AutomaticRestart: &restart, Preemptible: true}
 	} else {
-		in.Scheduling = &compute.Scheduling{ProvisioningModel: "STANDARD", OnHostMaintenance: "MIGRATE", AutomaticRestart: &restart, Preemptible: false,
+		// OnHostMaintenance is left out: Compute Engine picks MIGRATE, or
+		// TERMINATE for machine types with GPUs, which cannot migrate.
+		in.Scheduling = &compute.Scheduling{ProvisioningModel: "STANDARD", AutomaticRestart: &restart, Preemptible: false,
 			ForceSendFields: []string{"Preemptible"}}
 	}
 	if len(tags) > 0 {
