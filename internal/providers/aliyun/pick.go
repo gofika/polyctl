@@ -390,3 +390,28 @@ func pickVSwitchOf(ctx context.Context, rt *app.Runtime, s *ecsScope, vpc, zone,
 	}
 	return nil, fmt.Errorf("vSwitch %s is no longer listed", id)
 }
+
+// pickEnsureName asks for the <name> of instance ensure in the interactive
+// flow: the instances of the region (read live), or "New instance name..."
+// for a name checked as it is typed.
+func pickEnsureName(ctx context.Context, rt *app.Runtime, s *ecsScope) (string, error) {
+	rows, err := s.c.instanceResources(ctx, s.region)
+	if err != nil {
+		return "", err
+	}
+	var opts []prompt.Option
+	seen := map[string]bool{}
+	for _, r := range rows {
+		in, ok := r.Data.(Instance)
+		if !ok {
+			in = Instance{ID: r.ID, Name: r.Name}
+		}
+		if in.Name == "" || seen[in.Name] {
+			continue
+		}
+		seen[in.Name] = true
+		opts = append(opts, prompt.Option{Label: instanceOptionLabel(in), Value: in.Name})
+	}
+	return rt.Choose(app.Choice{Title: "Instance to ensure (" + s.where() + ")", Options: opts, Arg: "<name>", Required: true,
+		CreateLabel: "New instance name...", Create: func() (string, error) { return askInstanceName(rt) }})
+}

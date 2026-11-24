@@ -163,3 +163,24 @@ func TestInstanceCreateDefaultKeyPair(t *testing.T) {
 		t.Errorf("RunInstances = %v", run)
 	}
 }
+
+// ensure without <name> offers the instances of the region, or a new name.
+func TestInstanceEnsureInteractiveName(t *testing.T) {
+	t.Setenv(app.EnvNonInteractive, "")
+	h, f, _ := computeHarness(t, app.Flags{DryRun: true})
+	siteNet(f)
+	f.addVM("i-1", "site-a", instRunning, "ecs.u1-c1m1.large", "vpc-1", "vsw-b")
+	f.addKeyPair("ops", "aa", "2026-11-17T16:10Z")
+	p := prompttest.New(t, prompttest.Label("New instance name"), "site-b")
+	h.rt.Picker = p
+	if err := h.run("ecs", "instance", "ensure", "--key-pair", "ops"); err != nil {
+		t.Fatalf("ensure: %v\n%s", err, h.stderr.String())
+	}
+	p.Done()
+	if l := prompttest.Labels(p.Asked[0].Options); !strings.Contains(l, "site-a  i-1") {
+		t.Errorf("labels: %s", l)
+	}
+	if !strings.Contains(h.stdout.String(), "instance/site-b") {
+		t.Errorf("stdout = %s", h.stdout.String())
+	}
+}

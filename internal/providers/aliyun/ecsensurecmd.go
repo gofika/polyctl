@@ -84,10 +84,22 @@ profile's), Running, with an EIP. Running it again changes nothing.
 		Example: `  polyctl aliyun ecs instance ensure site-a --type ecs.u1-c1m1.large --disk 40 \
     --ssh-key-file ~/.ssh/id_ed25519.pub --key-pair ops --region cn-hongkong
   polyctl aliyun ecs instance ensure site-a --ssh-key-file ~/.ssh/id_ed25519.pub --dry-run`,
-		Args: cobra.ExactArgs(1),
+		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			name := args[0]
+			name := app.Arg(args, 0)
+			if name == "" {
+				if rt.Flags.Offline {
+					return app.ErrOffline
+				}
+				s, err := openECSScope(ctx, rt, f.region)
+				if err != nil {
+					return err
+				}
+				if name, err = pickEnsureName(ctx, rt, s); err != nil {
+					return err
+				}
+			}
 			if err := checkInstanceName(name); err != nil {
 				return err
 			}
