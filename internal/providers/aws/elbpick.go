@@ -78,7 +78,7 @@ func pickTG(ctx context.Context, rt *app.Runtime, s *lbScope, arg, what string, 
 	return pickTGOrCreate(ctx, rt, s, arg, what, required, keep, nil)
 }
 
-// pickTGOrCreate is pickTG with a last "New target group..." option that
+// pickTGOrCreate is pickTG with a last "Create a new target group..." option that
 // runs create (nil: none).
 func pickTGOrCreate(ctx context.Context, rt *app.Runtime, s *lbScope, arg, what string, required bool, keep func(platform.LBTargetGroup) bool, create func() (string, error)) (string, error) {
 	if !rt.Interactive() {
@@ -96,7 +96,7 @@ func pickTGOrCreate(ctx context.Context, rt *app.Runtime, s *lbScope, arg, what 
 	}
 	c := app.Choice{Title: "Target group", Options: opts, Arg: arg, Required: required, What: what + " in " + s.where()}
 	if create != nil {
-		c.CreateLabel, c.Create = "New target group...", create
+		c.CreateLabel, c.Create = "Create a new target group...", create
 	}
 	return rt.Choose(c)
 }

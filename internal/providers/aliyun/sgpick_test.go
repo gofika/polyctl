@@ -110,7 +110,7 @@ func TestSGEnsurePick(t *testing.T) {
 	t.Setenv(app.EnvNonInteractive, "")
 	h, f := sgHarness(t, app.Flags{DryRun: true})
 	f.addGroup("sg-1", "web", "vpc-main")
-	p := prompttest.New(t, prompttest.Label("New security group"), "sg-x", "app")
+	p := prompttest.New(t, prompttest.Label("Create a new security group"), "sg-x", "app")
 	h.rt.Picker = p
 	if err := h.run("ecs", "security-group", "ensure"); err != nil {
 		t.Fatalf("ensure: %v\n%s", err, h.stderr.String())

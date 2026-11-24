@@ -393,7 +393,7 @@ func pickVSwitchOf(ctx context.Context, rt *app.Runtime, s *ecsScope, vpc, zone,
 }
 
 // pickEnsureName asks for the <name> of instance ensure in the interactive
-// flow: the instances of the region (read live), or "New instance name..."
+// flow: the instances of the region (read live), or "Create a new instance..."
 // for a name checked as it is typed.
 func pickEnsureName(ctx context.Context, rt *app.Runtime, s *ecsScope) (string, error) {
 	rows, err := s.c.instanceResources(ctx, s.region)
@@ -414,5 +414,5 @@ func pickEnsureName(ctx context.Context, rt *app.Runtime, s *ecsScope) (string, 
 		opts = append(opts, prompt.Option{Label: instanceOptionLabel(in), Value: in.Name})
 	}
 	return rt.Choose(app.Choice{Title: "Instance to ensure (" + s.where() + ")", Options: opts, Arg: "<name>", Required: true,
-		CreateLabel: "New instance name...", Create: func() (string, error) { return askInstanceName(rt) }})
+		CreateLabel: "Create a new instance...", Create: func() (string, error) { return askInstanceName(rt) }})
 }

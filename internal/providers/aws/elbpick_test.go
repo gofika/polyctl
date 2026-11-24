@@ -114,7 +114,7 @@ func TestListenerCreateAsks(t *testing.T) {
 	}
 }
 
-// listener create's target group pick offers "New target group...": its
+// listener create's target group pick offers "Create a new target group...": its
 // name, protocol (for TLS: TCP or TLS) and port are asked, and the group is
 // created before the listener that forwards to it.
 func TestListenerCreateNewTG(t *testing.T) {
@@ -122,7 +122,7 @@ func TestListenerCreateNewTG(t *testing.T) {
 	exp := time.Now().Add(90 * 24 * time.Hour)
 	h.addCert(&fakeCert{region: "ap-east-1", domain: "example.com", status: acmIssued, notAfter: &exp})
 
-	p := prompttest.New(t, prompttest.Label("site-xz7-lb"), "TLS", "443", prompttest.Label("New target group"),
+	p := prompttest.New(t, prompttest.Label("site-xz7-lb"), "TLS", "443", prompttest.Label("Create a new target group"),
 		"db-target", "web-8443", "TCP", prompttest.KeepDefault{}, prompttest.Label("example.com"))
 	h.rt.Picker = p
 	if err := h.run("elbv2", "listener", "create"); err != nil {
@@ -145,7 +145,7 @@ func TestListenerCreateNewTG(t *testing.T) {
 
 	// Leaving the questions of the new group creates nothing.
 	h.resetELB()
-	h.rt.Picker = prompttest.New(t, prompttest.Label("site-xz7-lb"), "TCP", "9000", prompttest.Label("New target group"), prompttest.Abort{})
+	h.rt.Picker = prompttest.New(t, prompttest.Label("site-xz7-lb"), "TCP", "9000", prompttest.Label("Create a new target group"), prompttest.Abort{})
 	if err := h.run("elbv2", "listener", "create"); !errors.Is(err, prompt.ErrAborted) || len(h.elbWrites()) != 0 {
 		t.Errorf("abort = %v, writes %v", err, h.elbWrites())
 	}

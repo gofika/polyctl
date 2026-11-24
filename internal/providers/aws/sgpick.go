@@ -173,11 +173,11 @@ func askSGName(ctx context.Context, rt *app.Runtime, s *sgScope, vpc string) (st
 	})
 }
 
-// newSGValue is the value of "New security group..." of ensure.
+// newSGValue is the value of "Create a new security group..." of ensure.
 const newSGValue = "\x00new-sg"
 
 // sgEnsureName asks for the <name> of ensure in the interactive flow: one
-// of the groups of vpc, or "New security group..." (its name checked as it
+// of the groups of vpc, or "Create a new security group..." (its name checked as it
 // is typed).
 func sgEnsureName(ctx context.Context, rt *app.Runtime, s *sgScope, vpc string) (string, error) {
 	sgs, err := s.c.ListSecurityGroups(ctx, s.region, platform.SecurityGroupFilter{VPC: vpc})
@@ -189,5 +189,5 @@ func sgEnsureName(ctx context.Context, rt *app.Runtime, s *sgScope, vpc string) 
 		opts = append(opts, prompt.Option{Label: sgOptionLabel(g), Value: g.Name})
 	}
 	return rt.Choose(app.Choice{Title: "Security group", Options: opts, Arg: "<name>", Required: true,
-		CreateLabel: "New security group...", Create: func() (string, error) { return askSGName(ctx, rt, s, vpc) }})
+		CreateLabel: "Create a new security group...", Create: func() (string, error) { return askSGName(ctx, rt, s, vpc) }})
 }

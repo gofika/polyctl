@@ -45,11 +45,11 @@ func sgArg(ctx context.Context, rt *app.Runtime, s *ecsScope, args []string, vpc
 	return []string{id}, nil
 }
 
-// newGroupValue is the value of "New security group...".
+// newGroupValue is the value of "Create a new security group...".
 const newGroupValue = "\x00new-group"
 
 // sgEnsureArg fills in a missing <name> of security-group ensure: the
-// groups of the region (chosen by id), or "New security group..." for a
+// groups of the region (chosen by id), or "Create a new security group..." for a
 // name (naming.aliyun_ecs_security_group proposed, checked as it is
 // typed).
 func sgEnsureArg(ctx context.Context, rt *app.Runtime, s *ecsScope) (string, error) {
@@ -69,7 +69,7 @@ func sgEnsureArg(ctx context.Context, rt *app.Runtime, s *ecsScope) (string, err
 		def = ""
 	}
 	return rt.Choose(app.Choice{Title: "Security group to ensure (" + s.where() + ")", Options: opts, Arg: "<name>", Required: true,
-		CreateLabel: "New security group...", Create: func() (string, error) {
+		CreateLabel: "Create a new security group...", Create: func() (string, error) {
 			return rt.AskInput("<name>", "Name of the security group", def, func(v string) error { return inline(checkSGName(strings.TrimSpace(v))) })
 		}})
 }

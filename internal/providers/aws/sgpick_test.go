@@ -158,7 +158,7 @@ func TestSGCreateEnsureAsks(t *testing.T) {
 	if err := h.run("ec2", "security-group", "ensure"); err != nil {
 		t.Fatalf("ensure existing: %v", err)
 	}
-	if l := prompttest.Labels(p.Asked[1].Options); !strings.Contains(l, "New security group...") {
+	if l := prompttest.Labels(p.Asked[1].Options); !strings.Contains(l, "Create a new security group...") {
 		t.Errorf("ensure options: %s", l)
 	}
 	if a := actions(h.report()); a["security-group/web unchanged"] != 1 {

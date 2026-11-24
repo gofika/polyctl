@@ -171,7 +171,7 @@ func TestInstanceEnsureInteractiveName(t *testing.T) {
 	siteNet(f)
 	f.addVM("i-1", "site-a", instRunning, "ecs.u1-c1m1.large", "vpc-1", "vsw-b")
 	f.addKeyPair("ops", "aa", "2026-11-17T16:10Z")
-	p := prompttest.New(t, prompttest.Label("New instance name"), "site-b")
+	p := prompttest.New(t, prompttest.Label("Create a new instance"), "site-b")
 	h.rt.Picker = p
 	if err := h.run("ecs", "instance", "ensure", "--key-pair", "ops"); err != nil {
 		t.Fatalf("ensure: %v\n%s", err, h.stderr.String())
