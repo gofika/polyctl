@@ -246,10 +246,15 @@ func newZoneGetCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "get <zone>",
 		Short: "Show one managed zone (by managed zone name or DNS name)",
-		Args:  cobra.ExactArgs(1),
+		Long: `Show one managed zone, given by its managed zone name or DNS name. On a
+terminal, without <zone> the managed zones of the profile are offered.`,
+		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			profile, err := rt.ProfileFor(platform.GCP)
 			if err != nil {
+				return err
+			}
+			if args, err = zoneArg(cmd.Context(), rt, args, profile, false); err != nil {
 				return err
 			}
 			var z *platform.Zone
@@ -384,10 +389,16 @@ func newRecordListCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list <zone>",
 		Short: "List record values of a managed zone (one row per value)",
-		Args:  cobra.ExactArgs(1),
+		Long: `List the record values of a managed zone, one row per value (--type and
+--name filter). On a terminal, without <zone> the managed zones of the
+profile are offered.`,
+		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			profile, err := rt.ProfileFor(platform.GCP)
 			if err != nil {
+				return err
+			}
+			if args, err = zoneArg(cmd.Context(), rt, args, profile, false); err != nil {
 				return err
 			}
 			z, err := resolveZone(cmd.Context(), rt, profile, args[0])
@@ -432,10 +443,16 @@ equal to the given --value list (repeat --value for multi-value sets).
 
 MX and SRV values take the priority from --priority, or as a leading number
 inside the value ("10 mail.example.com"). Hostnames get the trailing dot
-Cloud DNS expects; TXT values are quoted automatically.`,
-		Args: cobra.ExactArgs(1),
+Cloud DNS expects; TXT values are quoted automatically.
+
+On a terminal, a missing <zone> is picked from the managed zones of the
+profile, a missing --type from the record types, and a missing --value is
+asked (one value, checked as it is typed; the current values of the set
+are shown, and the first one proposed). --name defaults to the apex and is
+not asked.`,
+		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if typ == "" || len(values) == 0 {
+			if (typ == "" || len(values) == 0) && !rt.Interactive() {
 				return app.UsageErrf("--type and at least one --value are required")
 			}
 			if rt.Flags.Offline {
@@ -445,12 +462,40 @@ Cloud DNS expects; TXT values are quoted automatically.`,
 			if err != nil {
 				return err
 			}
+			if args, err = zoneArg(cmd.Context(), rt, args, profile, true); err != nil {
+				return err
+			}
 			z, err := resolveZone(cmd.Context(), rt, profile, args[0])
 			if err != nil {
 				return err
 			}
+			if typ == "" {
+				if typ, err = rt.PickRecordType(platform.GCP); err != nil {
+					return err
+				}
+			}
 			typ = strings.ToUpper(typ)
 			fqdn := platform.FQDN(name, z.Name)
+			if len(values) == 0 {
+				recs, _, err := cachedRecords(cmd.Context(), rt, profile, z)
+				if err != nil {
+					return err
+				}
+				var cur []string
+				for _, r := range app.MatchRecords(recs, fqdn, typ, "") {
+					cur = append(cur, recordValue(r))
+				}
+				def := ""
+				if len(cur) > 0 {
+					def = cur[0]
+					rt.Infof("%s %s is now: %s (the set becomes the value you enter)", fqdn, typ, strings.Join(cur, ", "))
+				}
+				v, err := rt.AskRecordValue(typ, def)
+				if err != nil {
+					return err
+				}
+				values = []string{v}
+			}
 			raw := make([]string, 0, len(values))
 			for _, v := range values {
 				rec := platform.Record{Name: fqdn, Type: typ, Value: v}
@@ -501,10 +546,16 @@ func newRecordDeleteCmd(rt *app.Runtime) *cobra.Command {
 		Long: `Delete the record set of --name and --type, only one of its values (--value),
 or the record value given with --id. Cloud DNS addresses records by name and
 type, so the id is an optional second way to pick one value here, not a
-required argument.`,
-		Args: cobra.ExactArgs(1),
+required argument.
+
+On a terminal, a missing <zone> is picked from the managed zones of the
+profile, and without --name and --type (or --id) the record sets of the
+zone are offered (of --name when it is given; the apex SOA and NS sets
+left out), then, for a set of several values, the whole set or one value.`,
+		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if id == "" && (typ == "" || name == "") {
+			pick := id == "" && (typ == "" || name == "")
+			if pick && !rt.Interactive() {
 				return app.UsageErrf("--name and --type (or --id) are required")
 			}
 			if rt.Flags.Offline {
@@ -514,9 +565,42 @@ required argument.`,
 			if err != nil {
 				return err
 			}
+			if args, err = zoneArg(cmd.Context(), rt, args, profile, false); err != nil {
+				return err
+			}
 			z, err := resolveZone(cmd.Context(), rt, profile, args[0])
 			if err != nil {
 				return err
+			}
+			if pick {
+				recs, _, err := cachedRecords(cmd.Context(), rt, profile, z)
+				if err != nil {
+					return err
+				}
+				if name != "" {
+					recs = app.MatchRecords(recs, platform.FQDN(name, z.Name), "", "")
+				}
+				if typ != "" {
+					var f []platform.Record
+					for _, r := range recs {
+						if strings.EqualFold(r.Type, typ) {
+							f = append(f, r)
+						}
+					}
+					recs = f
+				}
+				set, one, err := pickRecordToDelete(rt, z, recs)
+				if err != nil {
+					return err
+				}
+				name, typ = set.Name, set.Type
+				if one != nil {
+					value = one.Value
+					if one.Priority != nil {
+						priority = *one.Priority
+						_ = cmd.Flags().Set("priority", strconv.Itoa(priority))
+					}
+				}
 			}
 			change := platform.Change{Resource: app.RecordResource(platform.FQDN(name, z.Name), typ), Action: platform.Deleted, Detail: "the whole record set"}
 			switch {

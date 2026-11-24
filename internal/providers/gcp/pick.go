@@ -361,3 +361,114 @@ func pickSSHKey(rt *app.Runtime, sshUser string, md *compute.Metadata) ([]sshKey
 	}
 	return loadSSHKeyFile(path, strings.TrimSpace(user))
 }
+
+// zoneArg fills in a missing <zone> of a gcp dns command in the
+// interactive flow with a managed zone of the profile (from the
+// inventory, synced when stale), labelled "<zone>  <dns name>
+// <visibility>  <N> nameservers"; the value is the managed zone name,
+// which resolveZone finds again. required (upsert) turns an empty list
+// into a usage error naming <zone> (polyctl cannot create managed zones)
+// instead of "nothing to do". With the argument given, args is returned.
+func zoneArg(ctx context.Context, rt *app.Runtime, args []string, profile string, required bool) ([]string, error) {
+	if len(args) > 0 {
+		return args, nil
+	}
+	if !rt.Interactive() {
+		return nil, app.UsageErrf("<zone> is required")
+	}
+	zones, _, err := cachedZones(ctx, rt, profile)
+	if err != nil && !errors.Is(err, inventory.ErrNeverSynced) {
+		return nil, err
+	}
+	sort.Slice(zones, func(i, j int) bool { return zones[i].ID < zones[j].ID })
+	var opts []prompt.Option
+	for _, z := range zones {
+		opts = append(opts, prompt.Option{Label: joinLabel(z.ID, z.Name, z.Status, fmt.Sprintf("%d nameservers", len(z.Nameservers))), Value: z.ID})
+	}
+	def := ""
+	if len(opts) == 1 {
+		def = opts[0].Value
+	}
+	v, err := rt.Choose(app.Choice{Title: "Managed zone", Options: opts, Default: def, Arg: "<zone>", Required: required,
+		What: "managed zone in gcp/" + profile})
+	if err != nil {
+		return nil, err
+	}
+	return []string{v}, nil
+}
+
+// recordSet is the records of one name and type of a zone.
+type recordSet struct {
+	Name, Type string
+	Records    []platform.Record
+}
+
+// recordSetsOf groups records into sets, sorted by name and type.
+func recordSetsOf(recs []platform.Record) []recordSet {
+	sortRecords(recs)
+	var out []recordSet
+	for _, r := range recs {
+		if n := len(out); n > 0 && out[n-1].Name == r.Name && out[n-1].Type == r.Type {
+			out[n-1].Records = append(out[n-1].Records, r)
+			continue
+		}
+		out = append(out, recordSet{Name: r.Name, Type: r.Type, Records: []platform.Record{r}})
+	}
+	return out
+}
+
+// recordValue is a record value as shown: "10 mail.example.com" for MX.
+func recordValue(r platform.Record) string {
+	if r.Priority != nil {
+		return fmt.Sprintf("%d %s", *r.Priority, r.Value)
+	}
+	return r.Value
+}
+
+// recordSetLabel: "www.example.com  A  192.0.2.1, +1 more  ttl 300".
+func recordSetLabel(s recordSet) string {
+	v := recordValue(s.Records[0])
+	if n := len(s.Records); n > 1 {
+		v += fmt.Sprintf(", +%d more", n-1)
+	}
+	ttl := ""
+	if s.Records[0].TTL > 0 {
+		ttl = fmt.Sprintf("ttl %d", s.Records[0].TTL)
+	}
+	return joinLabel(s.Name, s.Type, v, ttl)
+}
+
+// pickRecordToDelete asks, in the interactive flow, which record set of
+// zone z to delete (the apex SOA and NS sets, which Cloud DNS refuses to
+// delete, left out), then, for a set of several values, the whole set or
+// one value. It returns the set and the value chosen (nil: the whole
+// set). An empty zone is nothing to do.
+func pickRecordToDelete(rt *app.Runtime, z *zoneRef, recs []platform.Record) (recordSet, *platform.Record, error) {
+	sets := recordSetsOf(recs)
+	var opts []prompt.Option
+	for i, s := range sets {
+		if (s.Type == "SOA" || s.Type == "NS") && platform.NormalizeDomain(s.Name) == platform.NormalizeDomain(z.Name) {
+			continue
+		}
+		opts = append(opts, prompt.Option{Label: recordSetLabel(s), Value: strconv.Itoa(i)})
+	}
+	v, err := rt.Choose(app.Choice{Title: "Record set to delete", Options: opts, Arg: "--name and --type", What: "deletable record set in zone " + z.ID})
+	if err != nil {
+		return recordSet{}, nil, err
+	}
+	i, _ := strconv.Atoi(v)
+	s := sets[i]
+	if len(s.Records) == 1 {
+		return s, nil, nil
+	}
+	vopts := []prompt.Option{{Label: fmt.Sprintf("The whole set (%d values)", len(s.Records)), Value: "all"}}
+	for j, r := range s.Records {
+		vopts = append(vopts, prompt.Option{Label: "Only " + recordValue(r), Value: strconv.Itoa(j)})
+	}
+	w, err := rt.Pick().Select("Delete which values of "+s.Name+" "+s.Type+"?", vopts, "all")
+	if err != nil || w == "all" {
+		return s, nil, err
+	}
+	j, _ := strconv.Atoi(w)
+	return s, &s.Records[j], nil
+}
