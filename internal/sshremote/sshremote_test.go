@@ -321,12 +321,10 @@ func TestIdentityFile(t *testing.T) {
 	}
 }
 
-// The agent's keys are offered; the one that authenticated is recorded.
-func TestAgentKeys(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the test agent listens on a unix socket")
-	}
-	home(t)
+// serveAgent serves keys from an SSH agent on a unix socket for the test
+// (SSH_AUTH_SOCK).
+func serveAgent(t *testing.T, keys ...testKey) {
+	t.Helper()
 	dir, err := os.MkdirTemp("", "ag")
 	if err != nil {
 		t.Fatal(err)
@@ -339,8 +337,7 @@ func TestAgentKeys(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = ln.Close() })
 	kr := agent.NewKeyring()
-	a, b := newKey(t), newKey(t)
-	for _, k := range []testKey{a, b} {
+	for _, k := range keys {
 		if err := kr.Add(agent.AddedKey{PrivateKey: k.priv}); err != nil {
 			t.Fatal(err)
 		}
@@ -355,6 +352,16 @@ func TestAgentKeys(t *testing.T) {
 		}
 	}()
 	t.Setenv(EnvAgent, sock)
+}
+
+// The agent's keys are offered; the one that authenticated is recorded.
+func TestAgentKeys(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test agent listens on a unix socket")
+	}
+	home(t)
+	a, b := newKey(t), newKey(t)
+	serveAgent(t, a, b)
 	srv := sshtest.New(t)
 	srv.Authorize("alice", b.pub)
 	ks, err := LoadKeys(KeyOptions{})
@@ -406,8 +413,8 @@ func TestCustomAuthorizedKeysFile(t *testing.T) {
 // With Match, only the key pair's key is loaded: from a default key, from
 // an extra file (~/.ssh/<key pair>.pem), and from an encrypted file whose
 // .pub sibling matches, whose passphrase alone is asked for; an encrypted
-// key without .pub gets a note, and without a way to ask, a matching
-// encrypted key gets a note too.
+// key without .pub gets a note when no key matched, and without a way to
+// ask, a matching encrypted key gets a note too.
 func TestLoadKeysMatch(t *testing.T) {
 	h := home(t)
 	sshDir := filepath.Join(h, ".ssh")
@@ -447,16 +454,43 @@ func TestLoadKeysMatch(t *testing.T) {
 		if c.name == "encrypted" && strings.Join(asked, ",") != "id_ecdsa" || c.name != "encrypted" && len(asked) != 0 {
 			t.Errorf("%s: passphrase asked for %v", c.name, asked)
 		}
-		if !strings.Contains(strings.Join(ks.Notes, "\n"), "~/.ssh/ops is encrypted and has no readable") {
-			t.Errorf("%s: notes %v", c.name, ks.Notes)
+		if strings.Contains(strings.Join(ks.Notes, "\n"), "~/.ssh/ops is encrypted and has no readable") {
+			t.Errorf("%s: a note about an undecidable file although a key matched: %v", c.name, ks.Notes)
 		}
 	}
 	ks, _ := load(newKey(t).pub, pw)
-	if len(ks.Signers) != 0 {
-		t.Errorf("no match: %+v", ks.Signers)
+	if len(ks.Signers) != 0 || !strings.Contains(strings.Join(ks.Notes, "\n"), "~/.ssh/ops is encrypted and has no readable") {
+		t.Errorf("no match: %+v %v", ks.Signers, ks.Notes)
 	}
 	ks, _ = load(enc.pub, nil)
 	if len(ks.Signers) != 0 || !strings.Contains(strings.Join(ks.Notes, "\n"), "~/.ssh/id_ecdsa holds the instance's key pair but is encrypted") {
 		t.Errorf("non-interactive: %+v %v", ks.Signers, ks.Notes)
+	}
+}
+
+// A matching key the SSH agent already holds asks for no passphrase of the
+// encrypted file that holds it too, in either flow.
+func TestLoadKeysMatchAgentFirst(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the test agent listens on a unix socket")
+	}
+	h := home(t)
+	sshDir := filepath.Join(h, ".ssh")
+	k := newKey(t)
+	writePrivate(t, filepath.Join(sshDir, "id_ed25519"), k, "pw")
+	_ = os.WriteFile(filepath.Join(sshDir, "id_ed25519.pub"), ssh.MarshalAuthorizedKey(k.pub), 0o644)
+	serveAgent(t, k)
+	for _, pass := range []func(string) (string, error){nil, func(p string) (string, error) {
+		t.Errorf("passphrase asked for %s although the agent holds the key", p)
+		return "", nil
+	}} {
+		ks, err := LoadKeys(KeyOptions{Match: func(p ssh.PublicKey) bool { return SameKey(p, k.pub) }, Passphrase: pass})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(ks.Signers) != 1 || ks.Signers[0].Source != "SSH agent" || len(ks.Notes) != 0 {
+			t.Errorf("signers %+v notes %v", ks.Signers, ks.Notes)
+		}
+		ks.Close()
 	}
 }

@@ -116,6 +116,7 @@ func LoadKeys(opts KeyOptions) (*KeySet, error) {
 		}
 	}
 	seen := map[string]bool{}
+	var encrypted []encryptedKey
 	for _, path := range append(defaultKeyFiles(), opts.Files...) {
 		if seen[path] {
 			continue
@@ -133,9 +134,7 @@ func LoadKeys(opts KeyOptions) (*KeySet, error) {
 				ks.Locked = append(ks.Locked, path)
 				continue
 			}
-			if err := ks.unlockMatching(path, data, opts); err != nil {
-				return nil, err
-			}
+			encrypted = append(encrypted, encryptedKey{path, data})
 		case err != nil:
 			ks.Notes = append(ks.Notes, fmt.Sprintf("note: %s is not a usable private key: %v", homeRel(path), err))
 		default:
@@ -144,36 +143,65 @@ func LoadKeys(opts KeyOptions) (*KeySet, error) {
 			}
 		}
 	}
+	// The encrypted files come last: a matching key the agent or an
+	// unencrypted file already holds asks for no passphrase, and the files
+	// whose key cannot be told matter only when no key matched.
+	var unknown []string
+	for _, e := range encrypted {
+		known, err := ks.unlockMatching(e.path, e.data, opts)
+		if err != nil {
+			return nil, err
+		}
+		if !known {
+			unknown = append(unknown, e.path)
+		}
+	}
+	if len(ks.Signers) == 0 {
+		for _, path := range unknown {
+			ks.Notes = append(ks.Notes, fmt.Sprintf("note: %s is encrypted and has no readable %s.pub, so polyctl cannot tell whether it is the instance's key pair without its passphrase; pass it with --identity-file if it is", homeRel(path), homeRel(path)))
+		}
+	}
 	return ks, nil
 }
 
+// encryptedKey is an encrypted private key file read by LoadKeys.
+type encryptedKey struct {
+	path string
+	data []byte
+}
+
 // unlockMatching handles an encrypted key file when only matching keys are
-// wanted: its .pub sibling tells whether it matches, and only then is its
-// passphrase asked for.
-func (k *KeySet) unlockMatching(path string, data []byte, opts KeyOptions) error {
+// wanted: its .pub sibling tells whether it matches, and only then, when
+// the key set does not hold that key yet, is its passphrase asked for. known
+// is false when the file has no readable .pub to tell.
+func (k *KeySet) unlockMatching(path string, data []byte, opts KeyOptions) (known bool, err error) {
 	pubData, err := readKeyFile(path + ".pub")
 	if err != nil {
-		k.Notes = append(k.Notes, fmt.Sprintf("note: %s is encrypted and has no readable %s.pub, so polyctl cannot tell whether it is the instance's key pair without its passphrase; pass it with --identity-file if it is", homeRel(path), homeRel(path)))
-		return nil
+		return false, nil
 	}
 	pub, _, _, _, err := ssh.ParseAuthorizedKey(pubData)
 	if err != nil || !opts.Match(pub) {
-		return nil
+		return err == nil, nil
+	}
+	for _, s := range k.Signers {
+		if SameKey(s.PublicKey(), pub) {
+			return true, nil
+		}
 	}
 	if opts.Passphrase == nil {
 		k.Notes = append(k.Notes, fmt.Sprintf("note: %s holds the instance's key pair but is encrypted, and polyctl cannot ask for its passphrase in the non-interactive flow: add it to an SSH agent (ssh-add) and run polyctl with %s set", homeRel(path), EnvAgent))
-		return nil
+		return true, nil
 	}
 	s, err := unlock(path, data, opts.Passphrase, true)
 	if err != nil || s == nil {
-		return err
+		return true, err
 	}
 	if !SameKey(s.PublicKey(), pub) {
 		k.Notes = append(k.Notes, fmt.Sprintf("note: %s does not hold the key of %s.pub; it is left out", homeRel(path), homeRel(path)))
-		return nil
+		return true, nil
 	}
 	k.add(Signer{Signer: s, Source: homeRel(path)})
-	return nil
+	return true, nil
 }
 
 // Unlock asks for the passphrases of the locked default keys and adds the
