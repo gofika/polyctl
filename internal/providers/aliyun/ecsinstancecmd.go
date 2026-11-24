@@ -585,11 +585,20 @@ func runStep(rt *app.Runtime, s *ecsScope, name, host string, f *instanceFlags, 
 				return platform.Change{}, err
 			}
 			in, lerr := lookupNewInstance(ctx, s, iid)
-			if errors.Is(lerr, platform.ErrNotFound) {
-				// The token is derived from the content of the request: an
-				// instance of the same name and settings created and deleted
-				// before is answered again. Ask once more under a new token.
-				rt.Infof("note: RunInstances answered %s, an instance of an earlier identical request that no longer exists; asking again with a new client token", iid)
+			// The token is derived from the content of the request: an
+			// instance of the same name and settings created before is
+			// answered again although it was deleted or renamed since (a
+			// renamed one is not found by name, so the run creates the
+			// name again). Ask once more under a new token.
+			stale := ""
+			switch {
+			case errors.Is(lerr, platform.ErrNotFound):
+				stale = "that no longer exists"
+			case lerr == nil && in != nil && in.Name != name:
+				stale = fmt.Sprintf("named %q now", in.Name)
+			}
+			if stale != "" {
+				rt.Infof("note: RunInstances answered %s, an instance of an earlier identical request %s; asking again with a new client token", iid, stale)
 				spec.ClientToken = platform.ClientToken(spec.ClientToken, netClock().Now().UnixNano())
 				if iid, err = callKnown(ctx); err != nil {
 					return platform.Change{}, err

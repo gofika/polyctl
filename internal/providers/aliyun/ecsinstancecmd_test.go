@@ -385,6 +385,38 @@ func TestInstanceCreateAgainAfterDelete(t *testing.T) {
 	}
 }
 
+// An instance of an earlier identical request renamed since is answered
+// again by the same client token: it is not taken for the new instance, a
+// new token creates it.
+func TestInstanceCreateAgainAfterRename(t *testing.T) {
+	h, f, _ := computeHarness(t, app.Flags{})
+	siteNet(f)
+	f.addKeyPair("ops", "aa", "2026-11-17T16:10Z")
+	args := []string{"ecs", "instance", "create", "site-a", "--type", "ecs.u1-c1m1.large", "--security-group", "sg-common", "--key-pair", "ops"}
+	if err := h.run(args...); err != nil {
+		t.Fatalf("%v\n%s", err, h.stderr.String())
+	}
+	first := f.instances[0]["InstanceId"].(string)
+	f.instances[0]["InstanceName"] = "site-old"
+	if err := h.run(args...); err != nil {
+		t.Fatalf("%v\n%s", err, h.stderr.String())
+	}
+	runs := h.api.callsFor("RunInstances")
+	if len(runs) != 3 || runs[1].Get("ClientToken") != runs[0].Get("ClientToken") || runs[2].Get("ClientToken") == runs[1].Get("ClientToken") {
+		t.Fatalf("RunInstances calls = %d", len(runs))
+	}
+	if !strings.Contains(h.stderr.String(), `named "site-old" now`) {
+		t.Errorf("stderr = %q", h.stderr.String())
+	}
+	if len(f.instances) != 2 || f.vm(first)["InstanceName"] != "site-old" {
+		t.Fatalf("instances = %v", f.instances)
+	}
+	c := changeOf(t, reportOf(t, h), "instance/site-a")
+	if c.ID == first || c.ID == "" || f.vm(c.ID)["InstanceName"] != "site-a" {
+		t.Errorf("change = %+v", c)
+	}
+}
+
 // assertKeyOnly checks that a Linux RunInstances binds the key pair and
 // sets no password: none sent, none inherited from the image.
 func assertKeyOnly(t *testing.T, run url.Values, keyPair string) {

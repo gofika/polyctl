@@ -168,6 +168,7 @@ Instances are given by id (`i-...`) or name. Names are compared case-sensitively
 - Names: 2 to 128 characters, no `*`, not starting with `i-`. The host name is derived from the name (invalid characters become `-`). An instance of the same name in the region is exit code 1 (use `ensure`).
 - Waits until `Running` (unless `--no-wait`; `--eip` always waits), then binds an EIP if `--eip`.
 - Retries are safe: a repeated request never creates a second instance.
+- The client token is derived from the request, so ECS may answer an instance an earlier identical request created. When that instance was deleted or renamed since (it no longer holds the name), polyctl notes it on stderr and asks once more under a new token; the old instance is never reported, waited for or given the EIP as the new one.
 - No stock of the type in the zone is exit code 1: pass `--vswitch` in another zone or another `--type`.
 
 **`delete <name|id>`** (alias `terminate`) shows the instance and asks first. A `Running` instance is stopped, then deleted; `--force` deletes it at once. A new instance cannot be deleted for about 45 seconds; polyctl retries for up to 2 minutes. Deletion protection is exit code 1 (polyctl never turns it off). `--wait` waits until the instance is gone. A bound EIP is not released: it stays billed and the next `ensure` reuses it. Stored Windows credentials are removed after the delete.
