@@ -199,6 +199,7 @@ type fakeEC2s struct {
 	acm     fakeACMs
 	rds     fakeRDSs
 	ebs     fakeEBS
+	run     fakeRunCommand
 	// creates are the CreateKeyPair requests, deletedKeyPairs the names
 	// DeleteKeyPair was asked to delete.
 	creates         []*ec2.CreateKeyPairInput

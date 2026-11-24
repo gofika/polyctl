@@ -22,9 +22,15 @@ import (
 // `aws ec2 instance ssh-key list|add|remove` manage the keys of a Linux
 // instance over SSH (an instance binds one key pair at launch): the shared
 // commands of package app, with the login users derived from the
-// instance's image, the key pair the instance was launched with, and EC2
-// Instance Connect as the temporary way in when this machine has no private
-// key of that key pair.
+// instance's image and the key pair the instance was launched with. When
+// this machine has no private key of that key pair, the temporary ways in
+// are Systems Manager Run Command (runcommand.go), first, then EC2 Instance
+// Connect: Run Command needs no network path to port 22 nor the
+// ec2-instance-connect package, and puts no key on the instance, so it is
+// tried first on an instance whose SSM Agent is online; Instance Connect
+// covers the instances Systems Manager does not manage. A key pushed with
+// Instance Connect proves nothing until the login works (the push succeeds
+// on images without the package), which the shared code checks.
 
 // ec2icAPI is the part of the EC2 Instance Connect API polyctl uses.
 type ec2icAPI interface {
@@ -229,12 +235,16 @@ ec2-user for Fedora, ec2-user then root for Red Hat and SUSE, rocky for
 Rocky Linux, bitnami for Bitnami. An image of another family, or one that
 cannot be read, gets ec2-user, ubuntu, admin, centos, rocky, fedora,
 bitnami and root tried in turn (pass --login-user to name the user).
-The key pair is the instance's KeyName (ec2:DescribeKeyPairs). Without a
-local private key of it, a key generated in memory for this run is pushed
-with EC2 Instance Connect (ec2-instance-connect:SendSSHPublicKey, valid 60
-seconds) for each login user in turn. It works on images with EC2 Instance
-Connect installed (standard Amazon Linux 2023, Amazon Linux 2 since
-2019-06-18 and Ubuntu 20.04 or later ship it).`,
+The key pair is the instance's KeyName (ec2:DescribeKeyPairs, matched by
+public key). Without a local private key of it, no other local key is
+tried; the keys are reached through Systems Manager Run Command
+(ssm:SendCommand of AWS-RunShellScript, run as root, the key script as the
+target user) when the instance's SSM Agent is online
+(ssm:DescribeInstanceInformation), else through EC2 Instance Connect: a key
+generated in memory for this run is pushed (ec2-instance-connect:
+SendSSHPublicKey, valid 60 seconds) for each login user in turn. Instance
+Connect works on images with it installed (standard Amazon Linux 2023,
+Amazon Linux 2 since 2019-06-18 and Ubuntu 20.04 or later ship it).`,
 		Flags: func(cmd *cobra.Command) {
 			cmd.Flags().StringVar(&region, "region", "", "region of the instance (default: look it up in the inventory of every account)")
 		},
@@ -267,9 +277,16 @@ Connect installed (standard Amazon Linux 2023, Amazon Linux 2 since
 			if l.inst.Placement != nil {
 				az = awssdk.ToString(l.inst.Placement.AvailabilityZone)
 			}
-			inst.TempAccess = []app.SSHKeyAccess{{Name: "EC2 Instance Connect", PushKey: func(ctx context.Context, user string, key ssh.PublicKey) error {
-				return l.c.sendSSHPublicKey(ctx, l.region, l.id(), az, user, key)
-			}}}
+			inst.TempAccess = []app.SSHKeyAccess{
+				{Name: "SSM Run Command",
+					Check: func(ctx context.Context) error { return l.c.ssmManagedLinux(ctx, l.region, l.id()) },
+					RunCommand: func(ctx context.Context, cmd string) ([]byte, []byte, int, error) {
+						return l.c.runShellCommand(ctx, l.region, l.id(), cmd)
+					}},
+				{Name: "EC2 Instance Connect", PushKey: func(ctx context.Context, user string, key ssh.PublicKey) error {
+					return l.c.sendSSHPublicKey(ctx, l.region, l.id(), az, user, key)
+				}},
+			}
 			return inst, nil
 		},
 	})

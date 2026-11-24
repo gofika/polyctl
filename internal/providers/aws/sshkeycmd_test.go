@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/pem"
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +18,7 @@ import (
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/ec2instanceconnect"
+	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 	"golang.org/x/crypto/ssh"
 
 	"github.com/gofika/polyctl/internal/app"
@@ -252,18 +255,20 @@ func TestEC2SSHKeyRefusals(t *testing.T) {
 	}
 }
 
-// The key pair's key does not log in, so a one-time key is pushed with EC2
-// Instance Connect, without a flag or a question, for the login user of the
-// image (with the instance's zone), and the key is added in that session;
-// a denied push names the IAM action (exit code 3). An instance whose key
-// pair has no local private key goes straight to EC2 Instance Connect.
+// The key pair's key does not log in and Systems Manager does not manage
+// the instance, so a one-time key is pushed with EC2 Instance Connect,
+// without a flag or a question, for the login user of the image (with the
+// instance's zone), and the key is added in that session; a push denied
+// names the IAM action (exit code 3 when Run Command is denied too). An
+// instance whose key pair has no local private key goes straight to the
+// temporary ways in.
 func TestEC2SSHKeyInstanceConnect(t *testing.T) {
 	r := newEC2KeyRig(t, "ami-0x86", []string{"ec2-user"}) // no key authorized
 	_, line := newKeyLine(t, "alice@laptop")
 	if err := r.run("add", "web-1", "--ssh-key", line); err != nil {
 		t.Fatalf("%v\n%s", err, r.h.stderr.String())
 	}
-	if !strings.Contains(r.h.stderr.String(), "did not log in") || !strings.Contains(r.h.stderr.String(), "trying EC2 Instance Connect") {
+	if !strings.Contains(r.h.stderr.String(), "did not log in") || !strings.Contains(r.h.stderr.String(), "trying SSM Run Command, then EC2 Instance Connect") {
 		t.Errorf("stderr:\n%s", r.h.stderr.String())
 	}
 	if len(r.ic.calls) != 1 {
@@ -277,19 +282,32 @@ func TestEC2SSHKeyInstanceConnect(t *testing.T) {
 		t.Errorf("file %q", r.file("ec2-user"))
 	}
 
+	// A denied push on an instance Systems Manager does not manage: both
+	// reasons are named, and it is no authorization failure as a whole.
 	r.ic.err = &fakeAPIError{"AccessDeniedException", "not authorized to perform ec2-instance-connect:SendSSHPublicKey"}
 	_, other := newKeyLine(t, "bob@desk")
 	err := r.run("add", "web-1", "--ssh-key", other)
-	if !errors.Is(err, platform.ErrUnauthorized) || !strings.Contains(err.Error(), "IAM action ec2-instance-connect:SendSSHPublicKey") || !strings.Contains(err.Error(), "--identity-file") {
-		t.Fatalf("denied: %v", err)
+	if err == nil || errors.Is(err, platform.ErrUnauthorized) || !strings.Contains(err.Error(), "IAM action ec2-instance-connect:SendSSHPublicKey") ||
+		!strings.Contains(err.Error(), "SSM Run Command: the instance is not managed by Systems Manager") || !strings.Contains(err.Error(), "--identity-file") {
+		t.Fatalf("denied, unmanaged: %v", err)
 	}
 
-	// AuthException (no access to the instance or OS user) is exit code 3 too.
+	// Denied by both (exit code 3): the errors name the IAM actions.
+	// AuthException (no access to the instance or OS user) counts as
+	// denied too.
+	r.h.ec2.run.manage("i-0web", ssmtypes.PingStatusOnline)
+	r.h.ec2.run.sendErr = &fakeAPIError{"AccessDeniedException", "not authorized to perform ssm:SendCommand"}
+	err = r.run("add", "web-1", "--ssh-key", other)
+	if !errors.Is(err, platform.ErrUnauthorized) || !strings.Contains(err.Error(), "IAM action ec2-instance-connect:SendSSHPublicKey") ||
+		!strings.Contains(err.Error(), "IAM action ssm:SendCommand") {
+		t.Fatalf("denied: %v", err)
+	}
 	r.ic.err = &fakeAPIError{"AuthException", "you do not have access to the EC2 instance"}
 	err = r.run("add", "web-1", "--ssh-key", other)
 	if !errors.Is(err, platform.ErrUnauthorized) || !strings.Contains(err.Error(), "IAM action ec2-instance-connect:SendSSHPublicKey") {
 		t.Fatalf("auth exception: %v", err)
 	}
+	r.h.ec2.run = fakeRunCommand{}
 
 	// A key pair of someone else: no local key is offered at all.
 	r.ic.err = nil
@@ -360,5 +378,163 @@ func TestEC2SSHKeyPick(t *testing.T) {
 	p.Done()
 	if v := prompttest.Values(p.Find("Instance").Options); v != "i-0aaaaaaaaaaaaaaa1" {
 		t.Errorf("offered %q, want the running Linux instance only", v)
+	}
+}
+
+// useRunCommand makes the instance a managed node whose SSM Agent runs the
+// commands as root in the rig's fake system; scripts collects the programs
+// it ran (decoded).
+func (r *ec2KeyRig) useRunCommand(scripts *[]string) {
+	r.h.ec2.run.manage("i-0web", ssmtypes.PingStatusOnline)
+	r.h.ec2.run.exec = func(id, cmd string) (string, string, int) {
+		if scripts != nil {
+			if m := regexp.MustCompile(`echo ([A-Za-z0-9+/=]+) \|`).FindStringSubmatch(cmd); m != nil {
+				prog, _ := base64.StdEncoding.DecodeString(m[1])
+				*scripts = append(*scripts, string(prog))
+			}
+		}
+		return r.sys.Run("root", cmd, "")
+	}
+}
+
+// An instance whose key pair has no private key on this machine (created
+// for someone else) is never logged in to with a local key: on a managed
+// node whose agent is online the keys are listed and edited through Run
+// Command, as root running the key script as the login user, without EC2
+// Instance Connect. The invocation that is not visible at first is waited
+// for; --dry-run runs the read-only script only; the last key stays guarded.
+func TestEC2SSHKeyRunCommand(t *testing.T) {
+	r := newEC2KeyRig(t, "ami-0x86", []string{"ec2-user"}, "ec2-user")
+	r.h.add("ap-east-1", newFakeKeyPair("someone-else", genED25519(t)))
+	r.inst.keyName = "someone-else"
+	var scripts []string
+	r.useRunCommand(&scripts)
+	r.h.ec2.run.hidden = 2
+
+	k, line := newKeyLine(t, "alice@laptop")
+	r.h.rt.Flags.DryRun = true
+	if err := r.run("add", "web-1", "--ssh-key", line); err != nil {
+		t.Fatalf("%v\n%s", err, r.h.stderr.String())
+	}
+	if r.file("ec2-user") != "" || !strings.Contains(r.h.stdout.String(), "would_create") {
+		t.Fatalf("dry run: file %q out %q", r.file("ec2-user"), r.h.stdout.String())
+	}
+	for _, p := range scripts {
+		if strings.Contains(p, "sh -s -- 'apply'") {
+			t.Fatalf("the dry run ran the apply script:\n%s", p)
+		}
+	}
+	r.h.rt.Flags.DryRun = false
+	if err := r.run("add", "web-1", "--ssh-key", line); err != nil {
+		t.Fatalf("%v\n%s", err, r.h.stderr.String())
+	}
+	errOut := r.h.stderr.String()
+	for _, want := range []string{"the key pair someone-else of instance web-1 (i-0web) has no private key on this machine",
+		"no local key is tried", "trying SSM Run Command, then EC2 Instance Connect", "through SSM Run Command"} {
+		if !strings.Contains(errOut, want) {
+			t.Errorf("stderr lacks %q:\n%s", want, errOut)
+		}
+	}
+	if r.file("ec2-user") != line+"\n" {
+		t.Fatalf("file %q", r.file("ec2-user"))
+	}
+	if len(r.ic.calls) != 0 || len(r.srv.Commands()) != 0 {
+		t.Errorf("Instance Connect calls %d, SSH commands %d: want none", len(r.ic.calls), len(r.srv.Commands()))
+	}
+	f := &r.h.ec2.run
+	if len(f.sent) == 0 {
+		t.Fatal("no SendCommand")
+	}
+	in := f.sent[0]
+	if awssdk.ToString(in.DocumentName) != "AWS-RunShellScript" || strings.Join(in.InstanceIds, ",") != "i-0web" ||
+		strings.Join(in.Parameters["executionTimeout"], ",") != "60" || awssdk.ToInt32(in.TimeoutSeconds) != 30 {
+		t.Errorf("SendCommand = %+v", in)
+	}
+
+	if err := r.run("list", "web-1"); err != nil {
+		t.Fatal(err)
+	}
+	var rows []app.SSHKeyRow
+	r.h.jsonOut(&rows)
+	if len(rows) != 1 || rows[0].User != "ec2-user" || rows[0].Fingerprint != ssh.FingerprintSHA256(k) || rows[0].InUse {
+		t.Fatalf("rows = %+v", rows)
+	}
+	r.h.rt.Flags.Yes = true
+	if err := r.run("remove", "web-1", "--ssh-key", line); err == nil || !strings.Contains(err.Error(), "last key of ec2-user") {
+		t.Fatalf("last key: %v", err)
+	}
+
+	// A key pair deleted since launch (KeyName stays on the instance) and
+	// an instance launched without one go the same way.
+	r.inst.keyName = "gone"
+	if err := r.run("list", "web-1"); err != nil {
+		t.Fatal(err)
+	}
+	if s := r.h.stderr.String(); !strings.Contains(s, "the key pair gone of instance web-1 (i-0web) cannot be read (no key pair of that name in ap-east-1 (deleted?))") ||
+		!strings.Contains(s, "through SSM Run Command") {
+		t.Errorf("deleted key pair:\n%s", s)
+	}
+	r.inst.keyName = ""
+	if err := r.run("list", "web-1"); err != nil {
+		t.Fatal(err)
+	}
+	if s := r.h.stderr.String(); !strings.Contains(s, "instance web-1 (i-0web) has no key pair") || !strings.Contains(s, "through SSM Run Command") {
+		t.Errorf("no key pair:\n%s", s)
+	}
+	if len(r.ic.calls) != 0 || len(r.srv.Commands()) != 0 {
+		t.Errorf("Instance Connect calls %d, SSH commands %d: want none", len(r.ic.calls), len(r.srv.Commands()))
+	}
+}
+
+// Run Command is skipped or fails over to EC2 Instance Connect when the
+// agent is offline, when the command does not finish, and when its output
+// may be cut; when the credentials may not describe the node, SendCommand
+// is tried anyway.
+func TestEC2SSHKeyRunCommandFallback(t *testing.T) {
+	r := newEC2KeyRig(t, "ami-0x86", []string{"ec2-user"})
+	r.h.add("ap-east-1", newFakeKeyPair("someone-else", genED25519(t)))
+	r.inst.keyName = "someone-else"
+	r.useRunCommand(nil)
+	f := &r.h.ec2.run
+
+	cases := []struct {
+		name  string
+		setup func()
+		want  string
+	}{
+		{"offline", func() { f.manage("i-0web", ssmtypes.PingStatusConnectionLost) }, "SSM Run Command: the SSM Agent of the instance is not online (ping status ConnectionLost)"},
+		{"timed out", func() { f.status = ssmtypes.CommandInvocationStatusTimedOut }, "did not finish: TimedOut"},
+		{"cut", func() { f.stdoutPad = strings.Repeat("x", ssmStdoutLimit) }, "it may be cut"},
+	}
+	for _, c := range cases {
+		f.manage("i-0web", ssmtypes.PingStatusOnline)
+		f.status, f.stdoutPad, f.sent = "", "", nil
+		c.setup()
+		// Instance Connect fails too, so the error shows why Run Command did.
+		r.ic.err = &fakeAPIError{"EC2InstanceUnavailableException", "try later"}
+		err := r.run("list", "web-1")
+		if err == nil || !strings.Contains(err.Error(), c.want) || !strings.Contains(err.Error(), "EC2 Instance Connect: pushing a key") {
+			t.Errorf("%s: %v", c.name, err)
+		}
+		if c.name == "offline" && len(f.sent) != 0 {
+			t.Errorf("offline: SendCommand called")
+		}
+		// With Instance Connect working, it takes over.
+		r.ic.err = nil
+		if err := r.run("list", "web-1"); err != nil || !strings.Contains(r.h.stderr.String(), "with a one-time EC2 Instance Connect key") {
+			t.Errorf("%s: fallback %v\n%s", c.name, err, r.h.stderr.String())
+		}
+	}
+
+	// DescribeInstanceInformation denied: SendCommand decides.
+	f.manage("i-0web", ssmtypes.PingStatusOnline)
+	f.status, f.stdoutPad, f.sent = "", "", nil
+	f.describeErr = &fakeAPIError{"AccessDeniedException", "not authorized to perform ssm:DescribeInstanceInformation"}
+	calls := len(r.ic.calls)
+	if err := r.run("list", "web-1"); err != nil {
+		t.Fatalf("describe denied: %v\n%s", err, r.h.stderr.String())
+	}
+	if len(f.sent) == 0 || len(r.ic.calls) != calls {
+		t.Errorf("describe denied: sent %d, Instance Connect calls %d", len(f.sent), len(r.ic.calls)-calls)
 	}
 }
