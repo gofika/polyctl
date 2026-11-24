@@ -30,7 +30,7 @@ func TestRecordFromAPI(t *testing.T) {
 		t.Errorf("A record must not expose a priority: %+v", a2)
 	}
 	srv := recordFromAPI(zone, apiRecord{Type: "SRV", Name: "@", Data: "sip.example.com", TTL: 600, Priority: intp(5), Port: intp(5060), Weight: intp(20), Service: "_sip", Protocol: "_tcp"})
-	if srv.Name != "_sip._tcp.example.com" || srv.Value != "sip.example.com" || srv.ID != "SRV|@|sip.example.com" {
+	if srv.Name != "_sip._tcp.example.com" || srv.Value != "sip.example.com" || srv.ID != "SRV|@|sip.example.com|_sip|_tcp|5060|20|5" {
 		t.Errorf("SRV: %+v", srv)
 	}
 	if srv.Extra["port"] != 5060 || srv.Extra["weight"] != 20 || srv.Extra["service"] != "_sip" {

@@ -793,10 +793,11 @@ no; --yes skips it). The non-interactive flow asks nothing: --yes is required
 			}
 			target := platform.Target{Platform: platform.GoDaddy, Profile: p.Name, Domain: zone}
 			if id != "" {
-				t, n, d, err := DecodeRecordID(id)
+				k, err := decodeRecordID(id)
 				if err != nil {
 					return err
 				}
+				t, n, d := k.Type, k.Name, k.Data
 				// A dry run neither asks nor needs --yes: nothing is deleted.
 				if done, err := rt.WouldWrite(target, platform.Change{Resource: app.RecordResource(platform.FQDN(n, zone), t), Action: platform.Deleted, ID: id, Detail: d}); done || err != nil {
 					return err
@@ -806,7 +807,10 @@ no; --yes skips it). The non-interactive flow asks nothing: --yes is required
 					if err != nil {
 						return err
 					}
-					i := indexOfData(set, d)
+					i, err := k.find(set, zone, id)
+					if err != nil {
+						return err
+					}
 					if i < 0 {
 						return fmt.Errorf("%w: %s %s %q in zone %s", platform.ErrNotFound, t, n, d, zone)
 					}

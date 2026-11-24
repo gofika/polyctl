@@ -227,7 +227,7 @@ func (c *client) CreateRecord(ctx context.Context, zoneID string, r platform.Rec
 // returned record has a new ID whenever the content changes.
 func (c *client) UpdateRecord(ctx context.Context, zoneID string, r platform.Record) (*platform.Record, error) {
 	zone := platform.NormalizeDomain(zoneID)
-	oldType, oldName, oldData, err := DecodeRecordID(r.ID)
+	old, err := decodeRecordID(r.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -235,34 +235,29 @@ func (c *client) UpdateRecord(ctx context.Context, zoneID string, r platform.Rec
 	if err != nil {
 		return nil, err
 	}
-	if ar.Type != oldType || ar.Name != oldName {
-		// Make sure the old record exists before touching anything.
-		set, err := c.api.recordSet(ctx, zone, oldType, oldName)
-		if err != nil {
-			return nil, err
-		}
-		if indexOfData(set, oldData) < 0 {
-			return nil, fmt.Errorf("%w: %s %s %q in zone %s", platform.ErrNotFound, oldType, oldName, oldData, zone)
-		}
+	set, err := c.api.recordSet(ctx, zone, old.Type, old.Name)
+	if err != nil {
+		return nil, err
+	}
+	idx, err := old.find(set, zone, r.ID)
+	if err != nil {
+		return nil, err
+	}
+	if idx < 0 {
+		return nil, fmt.Errorf("%w: %s %s %q in zone %s", platform.ErrNotFound, old.Type, old.Name, old.Data, zone)
+	}
+	if ar.Type != old.Type || ar.Name != old.Name {
 		if err := c.api.addRecords(ctx, zone, []apiRecord{ar}); err != nil {
 			return nil, err
 		}
 		out := recordFromAPI(zone, ar)
-		if err := c.removeFromSet(ctx, zone, oldType, oldName, oldData); err != nil {
+		if err := c.removeFromSet(ctx, zone, old, r.ID); err != nil {
 			return nil, fmt.Errorf("new record %s was added but the old record could not be removed (delete it with `polyctl dns delete %s --id %q`): %w", out.ID, zone, r.ID, err)
 		}
 		return &out, nil
 	}
-	set, err := c.api.recordSet(ctx, zone, oldType, oldName)
-	if err != nil {
-		return nil, err
-	}
-	idx := indexOfData(set, oldData)
-	if idx < 0 {
-		return nil, fmt.Errorf("%w: %s %s %q in zone %s", platform.ErrNotFound, oldType, oldName, oldData, zone)
-	}
 	set[idx] = ar
-	if err := c.api.replaceRecordSet(ctx, zone, oldType, oldName, set); err != nil {
+	if err := c.api.replaceRecordSet(ctx, zone, old.Type, old.Name, set); err != nil {
 		return nil, err
 	}
 	out := recordFromAPI(zone, ar)
@@ -272,29 +267,32 @@ func (c *client) UpdateRecord(ctx context.Context, zoneID string, r platform.Rec
 // DeleteRecord removes one record. The rest of its type+name set is kept.
 func (c *client) DeleteRecord(ctx context.Context, zoneID, recordID string) error {
 	zone := platform.NormalizeDomain(zoneID)
-	typ, name, data, err := DecodeRecordID(recordID)
+	k, err := decodeRecordID(recordID)
 	if err != nil {
 		return err
 	}
-	return c.removeFromSet(ctx, zone, typ, name, data)
+	return c.removeFromSet(ctx, zone, k, recordID)
 }
 
-// removeFromSet deletes the entry with data from the type+name set: DELETE
+// removeFromSet deletes the record k names from its type+name set: DELETE
 // when it is the only entry, PUT with the remaining entries otherwise.
-func (c *client) removeFromSet(ctx context.Context, zone, typ, name, data string) error {
-	set, err := c.api.recordSet(ctx, zone, typ, name)
+func (c *client) removeFromSet(ctx context.Context, zone string, k recordKey, id string) error {
+	set, err := c.api.recordSet(ctx, zone, k.Type, k.Name)
 	if err != nil {
 		return err
 	}
-	idx := indexOfData(set, data)
+	idx, err := k.find(set, zone, id)
+	if err != nil {
+		return err
+	}
 	if idx < 0 {
-		return fmt.Errorf("%w: %s %s %q in zone %s", platform.ErrNotFound, typ, name, data, zone)
+		return fmt.Errorf("%w: %s %s %q in zone %s", platform.ErrNotFound, k.Type, k.Name, k.Data, zone)
 	}
 	if len(set) == 1 {
-		return c.api.deleteRecordSet(ctx, zone, typ, name)
+		return c.api.deleteRecordSet(ctx, zone, k.Type, k.Name)
 	}
 	rest := append(append([]apiRecord(nil), set[:idx]...), set[idx+1:]...)
-	return c.api.replaceRecordSet(ctx, zone, typ, name, rest)
+	return c.api.replaceRecordSet(ctx, zone, k.Type, k.Name, rest)
 }
 
 // ReplaceRecords replaces the whole type+name set with recs. An empty recs
@@ -333,13 +331,4 @@ func (c *client) DeleteRecordSet(ctx context.Context, zoneID, typ, relName strin
 		relName = "@"
 	}
 	return c.api.deleteRecordSet(ctx, platform.NormalizeDomain(zoneID), strings.ToUpper(typ), relName)
-}
-
-func indexOfData(set []apiRecord, data string) int {
-	for i, r := range set {
-		if r.Data == data {
-			return i
-		}
-	}
-	return -1
 }

@@ -33,7 +33,7 @@ GoDaddy has no record ids: records are addressed by type and name.
 - `--ttl` in seconds, minimum 600; `0` (default) uses GoDaddy's default.
 - `--priority` for MX/SRV records.
 
-The record id is synthetic, `TYPE|name|value` with each part percent-encoded, so the neutral `dns` commands and `godaddy dns delete --id` can target one record:
+The record id is synthetic, `TYPE|name|value` with each part percent-encoded, so the neutral `dns` commands and `godaddy dns delete --id` can target one record. MX ids add the priority (`MX|@|mail.example.com|10`) and SRV ids add service, protocol, port, weight and priority (`SRV|@|sip.example.com|_sip|_udp|5060|0|0`): GoDaddy keeps every SRV record of an owner in one set, and these fields tell apart records with the same target. An id without them (the only form older polyctl versions printed) still works while it names one record; when it matches several it is exit code 5 and the error lists the ids to use instead.
 
 ```sh
 polyctl godaddy dns upsert example.com --type A --name www --value 203.0.113.10 --value 203.0.113.11
