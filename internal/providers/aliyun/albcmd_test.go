@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gofika/polyctl/internal/app"
+	"github.com/gofika/polyctl/internal/config"
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/platform"
 )
@@ -171,6 +172,16 @@ func TestALBListForbiddenAndSyncWarning(t *testing.T) {
 	res, err := c.Sync(context.Background(), platform.ResLoadBalancer)
 	if len(res) != 0 || platform.AsRegionSyncError(err) == nil {
 		t.Errorf("sync = %v, %v; want an empty list with a warning", res, err)
+	}
+	// The denial is the same every time: the empty set is fresh for its
+	// TTL, not re-synced (and warned about) on every read.
+	ref := config.AccountRef{Profile: "ali", Platform: platform.Aliyun}
+	if _, err := h.rt.SyncAccount(context.Background(), ref, []platform.ResourceType{platform.ResLoadBalancer}); err != nil {
+		t.Fatal(err)
+	}
+	set := inventory.Set{Platform: platform.Aliyun, Profile: "ali", Type: platform.ResLoadBalancer}
+	if st, err := h.db().GetState(context.Background(), set); err != nil || !st.Fresh(time.Now()) {
+		t.Errorf("state after a sync without ALB permission = %+v, %v; want fresh", st, err)
 	}
 }
 

@@ -374,8 +374,10 @@ func (c *client) Sync(ctx context.Context, rt platform.ResourceType) ([]platform
 		if err != nil && platform.AsRegionSyncError(err) == nil && errors.Is(err, platform.ErrForbidden) {
 			// A RAM user without ALB permissions: a warning of the sync
 			// and an empty list, not a failure of the account (the list
-			// command reports the denial itself).
-			return nil, &platform.RegionSyncError{Failures: []platform.RegionError{{Region: "every region (no ALB read permission)", Err: err}}}
+			// command reports the denial itself). Partial: no stored row
+			// is kept and the empty set is fresh for its TTL, instead of
+			// being synced again on every read.
+			return nil, &platform.RegionSyncError{Failures: []platform.RegionError{{Region: "every region (no ALB read permission)", Err: err, Partial: true}}}
 		}
 		return res, err
 	case platform.ResSecurityGroup:
