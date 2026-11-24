@@ -108,6 +108,8 @@ type Runtime struct {
 	// ahead: a second reader on the same pipe would miss what the first
 	// one buffered.
 	prompt *prompt.IO
+	// chosenProfile holds the profiles picked by ProfileFor in this run.
+	chosenProfile map[platform.ID]string
 }
 
 // New creates a Runtime; nothing is loaded until first use.
@@ -677,7 +679,24 @@ func (rt *Runtime) ProfileFor(id platform.ID) (string, error) {
 	case 1:
 		return names[0], nil
 	}
-	return "", &AmbiguousError{What: fmt.Sprintf("profile for %s", id), Candidates: names}
+	if p, ok := rt.chosenProfile[id]; ok {
+		return p, nil
+	}
+	amb := &AmbiguousError{What: fmt.Sprintf("profile for %s", id), Candidates: names}
+	for _, n := range names {
+		amb.Options = append(amb.Options, prompt.Option{Label: n + "  (" + string(id) + " account)", Value: n})
+	}
+	// The interactive flow asks once per command run; the answer holds for
+	// every later lookup of the same platform.
+	p, err := rt.Disambiguate(amb)
+	if err != nil {
+		return "", err
+	}
+	if rt.chosenProfile == nil {
+		rt.chosenProfile = map[platform.ID]string{}
+	}
+	rt.chosenProfile[id] = p
+	return p, nil
 }
 
 // AmbiguousError is returned when more than one account or resource could

@@ -127,3 +127,26 @@ func TestArgsOrInteractive(t *testing.T) {
 	}
 }
 
+func TestProfileForAsksInTheInteractiveFlow(t *testing.T) {
+	h := newHarness(t, app.Flags{}, withProj)
+	p := prompttest.New(t, "proj")
+	h.rt.Picker = p
+	got, err := h.rt.ProfileFor(platform.NameCom)
+	if err != nil || got != "proj" {
+		t.Fatalf("ProfileFor = %q, %v", got, err)
+	}
+	if a := p.Find("Ambiguous profile for namecom; use which one?"); prompttest.Values(a.Options) != "a b proj" {
+		t.Errorf("offered %v", a.Options)
+	}
+	// The answer holds for the rest of the run: no second question.
+	if got, err = h.rt.ProfileFor(platform.NameCom); err != nil || got != "proj" {
+		t.Errorf("second ProfileFor = %q, %v", got, err)
+	}
+	p.Done()
+
+	// A command that must never ask (completion) keeps the error.
+	h.rt.NoPrompt = true
+	if _, err := h.rt.ProfileFor(platform.GoDaddy); !errors.As(err, new(*app.AmbiguousError)) {
+		t.Errorf("NoPrompt ProfileFor = %v, want *AmbiguousError", err)
+	}
+}
