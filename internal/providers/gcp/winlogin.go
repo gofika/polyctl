@@ -402,6 +402,10 @@ func (w *windowsLogin) step(id func() string) platform.Step {
 			}
 			w.password = pw
 			w.put(ctx)
+			if !w.stored {
+				// finish tries again, and says what became of it.
+				return platform.Change{Detail: "user " + w.user + ": password set, not stored yet"}, nil
+			}
 			return platform.Change{Detail: "user " + w.user + ": password set, stored encrypted"}, nil
 		}}
 }
