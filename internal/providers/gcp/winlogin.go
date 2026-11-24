@@ -19,6 +19,7 @@ import (
 	"google.golang.org/api/compute/v1"
 
 	"github.com/gofika/polyctl/internal/app"
+	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/platform"
 	"github.com/gofika/polyctl/internal/secrets"
 )
@@ -536,13 +537,20 @@ func runPasswordReset(ctx context.Context, rt *app.Runtime, ref, zone, user stri
 	id := strconv.FormatUint(l.inst.Id, 10)
 	ref2 := secrets.Ref{Platform: platform.GCP, Profile: l.profile, Location: l.zone, InstanceID: id}
 	if user == "" {
+		// The stored user: a plain column, readable even when the sealed
+		// password no longer decrypts (a lost data key), so that the reset
+		// does not create another administrator instead.
 		user = defaultWindowsUser
-		if st, err := rt.Secrets(); err == nil {
-			if c, err := st.Get(ctx, ref2); err == nil && c.User != "" {
-				user = c.User
-			} else if err != nil && !errors.Is(err, platform.ErrNotFound) {
-				rt.Verbosef("read the stored login of %s: %v", id, err)
-			}
+		db, err := rt.DB()
+		var row *inventory.SecretRow
+		if err == nil {
+			row, err = db.GetSecret(ctx, inventory.SecretKey{Platform: ref2.Platform, Profile: ref2.Profile, Location: ref2.Location, InstanceID: ref2.InstanceID})
+		}
+		switch {
+		case err != nil:
+			rt.Verbosef("read the stored login of %s: %v", id, err)
+		case row != nil && row.User != "":
+			user = row.User
 		}
 	}
 	if l.inst.Status != statusRunning {

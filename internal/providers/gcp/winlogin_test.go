@@ -22,6 +22,7 @@ import (
 
 	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/creds"
+	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/platform"
 	"github.com/gofika/polyctl/internal/secrets"
 )
@@ -626,6 +627,23 @@ func TestPasswordReset(t *testing.T) {
 	}
 	if reqs := h.gce.agent.requests; reqs[len(reqs)-1].UserName != "ops" {
 		t.Errorf("default user = %+v", reqs[len(reqs)-1])
+	}
+	// A stored row that no longer decrypts (a lost or changed data key)
+	// still names the user: the reset updates it instead of creating
+	// another administrator.
+	db, err := h.rt.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.PutSecret(t.Context(), inventory.SecretRow{SecretKey: inventory.SecretKey{Platform: platform.GCP, Profile: "lab", Location: "us-central1-a", InstanceID: id},
+		Name: "win-9", User: "ops", Nonce: make([]byte, 12), Sealed: []byte("not sealed with the data key")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.run(append(reset, "--yes")...); err != nil {
+		t.Fatalf("%v\n%s", err, h.stderr.String())
+	}
+	if reqs := h.gce.agent.requests; reqs[len(reqs)-1].UserName != "ops" || storedWin(t, h, id)[0].Password != agentPassword {
+		t.Errorf("user with an undecryptable row = %+v", reqs[len(reqs)-1])
 	}
 	if err := h.run(append(reset, "--yes", "--user", "a b")...); exitClass(err) != "usage" {
 		t.Errorf("bad user = %v", err)
