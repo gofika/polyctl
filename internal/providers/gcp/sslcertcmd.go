@@ -286,17 +286,29 @@ expired leaf are exit code 2. The name must follow the Compute Engine rule (a
 lower-case letter first, at most 63 characters; exit code 2). A certificate
 of that name in the scope is exit code 1: certificates cannot be changed, use
 update to replace one. --description defaults to "SSL certificate for
-<domain>".`,
+<domain>".
+
+On a terminal, what is missing is asked: the certificate, from the
+unexpired certificates of polyctl's certificate store, or two files checked
+as they are typed; the scope (Global, or a region that is UP; the region of
+defaults.gcp.zone preselected); the name, the templated name
+(naming.gcp_ssl_certificate) of the certificate's domain proposed, checked
+as it is typed against the certificates of the scope.`,
 		Example: "  polyctl gcp compute ssl-certificate create web-example-com-cert-20261117 --cert-file fullchain.pem --key-file privkey.pem --region <region>",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			name := args[0]
-			if err := checkCertName(name); err != nil {
+			name := app.Arg(args, 0)
+			if name != "" || !rt.Interactive() {
+				if err := checkCertName(name); err != nil {
+					return err
+				}
+			}
+			region, all, err := sf.resolve(!rt.Interactive())
+			if err != nil {
 				return err
 			}
-			region, _, err := sf.resolve(true)
-			if err != nil {
+			if err := askCertFiles(rt, &certFile, &keyFile, ""); err != nil {
 				return err
 			}
 			mat, err := loadCertMaterial(rt, certFile, keyFile)
@@ -307,7 +319,17 @@ update to replace one. --description defaults to "SSL certificate for
 			if err != nil {
 				return err
 			}
+			if all {
+				if region, err = pickCertScope(ctx, rt, c, profile); err != nil {
+					return err
+				}
+			}
 			s := certScope{c: c, region: region}
+			if name == "" {
+				if name, err = askCertName(ctx, rt, s, platform.CertDomain(mat.Names(), mat.Leaf.Subject.CommonName)); err != nil {
+					return err
+				}
+			}
 			existing, err := s.findCert(ctx, name)
 			if err != nil {
 				return fmt.Errorf("%w (gcp/%s)", err, profile)
@@ -362,23 +384,40 @@ candidate name that holds it already (a run whose switch failed) is reused.
 An old certificate still used elsewhere is skipped, not a failure.
 
 The files are checked as for create (exit code 2). A missing certificate is
-exit code 4; a Google-managed one cannot be replaced (exit code 1).`,
+exit code 4; a Google-managed one cannot be replaced (exit code 1).
+
+On a terminal, without <name> the self-managed certificates of every scope
+are offered (the scope then follows from the pick); a name without
+--region / --global is looked up in every scope (a pick when several
+scopes hold it); missing files are asked as for create, the store entry
+covering the certificate's domain preselected.`,
 		Example: "  polyctl gcp compute ssl-certificate update web-example-com-cert-20260901 --cert-file new-fullchain.pem --key-file new-privkey.pem --region <region>",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			name := args[0]
-			region, _, err := sf.resolve(true)
+			name := app.Arg(args, 0)
+			region, all, err := sf.resolve(!rt.Interactive())
 			if err != nil {
 				return err
 			}
-			mat, err := loadCertMaterial(rt, certFile, keyFile)
-			if err != nil {
-				return err
+			var mat *platform.CertMaterial
+			if !rt.Interactive() {
+				// Checked before any request.
+				if mat, err = loadCertMaterial(rt, certFile, keyFile); err != nil {
+					return err
+				}
 			}
 			c, profile, err := openGCP(ctx, rt)
 			if err != nil {
 				return err
+			}
+			if name == "" || all {
+				t, err := pickCert(ctx, rt, c, profile, name, func(sc *compute.SslCertificate, _ []string) bool { return sc.Type != certManaged },
+					"Google-managed certificates are renewed by Google")
+				if err != nil {
+					return err
+				}
+				name, region = t.name, t.region
 			}
 			cfg, err := rt.Config()
 			if err != nil {
@@ -394,6 +433,14 @@ exit code 4; a Google-managed one cannot be replaced (exit code 1).`,
 				return fmt.Errorf("certificate %s is Google-managed: Google renews it, and polyctl does not replace it", name)
 			}
 			oldFacts := factsOf(old)
+			if mat == nil {
+				if err := askCertFiles(rt, &certFile, &keyFile, oldFacts.Domain); err != nil {
+					return err
+				}
+				if mat, err = loadCertMaterial(rt, certFile, keyFile); err != nil {
+					return err
+				}
+			}
 			if oldFacts.Fingerprint == mat.Fingerprint {
 				rep := platform.Report{Target: target, DryRun: rt.DryRun(), Changes: []platform.Change{{Resource: "ssl-certificate/" + name,
 					Action: platform.Unchanged, ID: s.certURL(name), Detail: "already holds this certificate"}}}
@@ -466,19 +513,31 @@ HTTPS proxy still uses cannot be deleted: that is exit code 1, naming the
 proxies (switch them to another certificate first, for example with update).
 The certificate is shown first, then a confirmation is asked (default no;
 --yes skips it, and the non-interactive flow needs --yes). A missing
-certificate is exit code 4.`,
+certificate is exit code 4.
+
+On a terminal, without <name> the certificates of every scope that no
+proxy uses are offered (the scope then follows from the pick); a name
+without --region / --global is looked up in every scope.`,
 		Example: "  polyctl gcp compute ssl-certificate delete web-example-com-cert-20260901 --region <region> --yes",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			name := args[0]
-			region, _, err := sf.resolve(true)
+			name := app.Arg(args, 0)
+			region, all, err := sf.resolve(!rt.Interactive())
 			if err != nil {
 				return err
 			}
 			c, profile, err := openGCP(ctx, rt)
 			if err != nil {
 				return err
+			}
+			if name == "" || all {
+				t, err := pickCert(ctx, rt, c, profile, name, func(_ *compute.SslCertificate, users []string) bool { return len(users) == 0 },
+					"a target HTTPS proxy uses them")
+				if err != nil {
+					return err
+				}
+				name, region = t.name, t.region
 			}
 			s := certScope{c: c, region: region}
 			sc, err := s.getCert(ctx, name)
