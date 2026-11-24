@@ -1004,3 +1004,22 @@ func TestWindowsPendingDroppedByCreate(t *testing.T) {
 		t.Errorf("stored = %+v", got)
 	}
 }
+
+// A create run again after an uncertain one that kept its key pair says
+// why the key pair exists and what to do, instead of asking for a private
+// key file the user never had.
+func TestWindowsCreateAfterUncertainKeptKeyPair(t *testing.T) {
+	h := winHarness(t, app.Flags{})
+	h.ec2.inst.runLost = 100
+	if err := h.run(winCreate...); err == nil {
+		t.Fatal("unknown result succeeded")
+	}
+	h.ec2.mu.Lock()
+	h.ec2.inst.byRegion["ap-east-1"] = nil
+	h.ec2.mu.Unlock()
+	h.ec2.inst.runLost = 0
+	err := h.run(winCreate...)
+	if !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "was kept by an earlier create") || strings.Contains(err.Error(), "--key-file") {
+		t.Errorf("rerun = %v", err)
+	}
+}

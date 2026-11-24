@@ -340,6 +340,25 @@ func (w *windowsLogin) created(ctx context.Context, id string) {
 	w.dropPending(ctx)
 }
 
+// keptByUncertainCreate reports whether key pair kpName is the one an
+// uncertain create of instance name kept (see pending).
+func keptByUncertainCreate(ctx context.Context, rt *app.Runtime, profile, region, name, kpName string) bool {
+	st, err := rt.Secrets()
+	if err != nil {
+		return false
+	}
+	found, err := st.Find(ctx, platform.AWS, profile, region, name)
+	if err != nil {
+		return false
+	}
+	for _, c := range found {
+		if strings.HasPrefix(c.InstanceID, pendingInstancePrefix) && c.KeyPair == kpName {
+			return true
+		}
+	}
+	return false
+}
+
 // dropPending removes the logins stored under the name while an earlier
 // create of it was uncertain (see pending): this create found no instance
 // of the name, so that one launched nothing that lasted.
@@ -704,6 +723,10 @@ func windowsKeyPairStep(ctx context.Context, rt *app.Runtime, c *client, profile
 	}
 	for _, kp := range pairs {
 		if kp.Name == kpName {
+			if keptByUncertainCreate(ctx, rt, profile, region, name, kpName) {
+				return "", platform.Step{}, app.UsageErrf("key pair %q was kept by an earlier create of instance %s whose RunInstances result was unknown (its private key is stored): if that instance exists, `%s` fetches its password; if not, delete key pair %s in AWS (aws ec2 delete-key-pair --region %s --key-name %s) and run create again",
+					kpName, name, app.PasswordCommandLine(ec2InstanceTree, name), kpName, region, kpName)
+			}
 			return "", platform.Step{}, app.UsageErrf("key pair %q (naming.aws_windows_key_pair) already exists in %s: polyctl creates a new RSA key pair for a Windows instance and never reuses one; pass --key-pair %s --key-file <its RSA private key> to launch with it, or set naming.aws_windows_key_pair", kpName, region, kpName)
 		}
 	}
