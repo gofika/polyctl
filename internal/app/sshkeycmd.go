@@ -75,8 +75,8 @@ type SSHKeyInstance struct {
 	// else the private one (with a note), unless --address is given.
 	PublicIP, PrivateIP string
 	// LoginUsers are the users to try, in order, when --login-user is not
-	// given; LoginUsersFrom says what they were derived from (the image),
-	// for notes.
+	// given; LoginUsersFrom says what they were derived from (the image,
+	// or how the instance was created), for notes.
 	LoginUsers     []string
 	LoginUsersFrom string
 	// LoginUsersNote is printed when LoginUsers are tried (not with
