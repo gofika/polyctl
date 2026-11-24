@@ -314,12 +314,16 @@ func TestALBListenerGroupPickVPC(t *testing.T) {
 	if v := prompttest.Values(p.Asked[3].Options); v != "sgp-2" {
 		t.Errorf("update offered %q, want sgp-2 only", v)
 	}
+	alb.addLB("alb-3", "lb-3", "vpc-site", "Inactive")
 	p = prompttest.New(t, "alb-1", "https:443", "sgp-1", "1234567")
 	h.rt.Picker = p
 	if err := h.run("alb", "listener", "create"); err != nil {
 		t.Fatalf("create: %v\n%s", err, h.stderr.String())
 	}
 	p.Done()
+	if v := prompttest.Values(p.Asked[0].Options); strings.Contains(v, "alb-3") {
+		t.Errorf("create offered %q: alb-3 is not Active", v)
+	}
 	if v := prompttest.Values(p.Asked[2].Options); strings.Contains(v, "sgp-9") {
 		t.Errorf("create offered %q: sgp-9 is in another VPC", v)
 	}

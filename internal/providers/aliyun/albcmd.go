@@ -1154,7 +1154,7 @@ for the listener to be Running.`,
 				return err
 			}
 			if lbRef == "" {
-				if lbRef, err = pickLB(ctx, rt, sc, "--lb"); err != nil {
+				if lbRef, err = pickLB(ctx, rt, sc, "--lb", albStatusActive); err != nil {
 					return app.RequiredPick(err, "--lb")
 				}
 			}

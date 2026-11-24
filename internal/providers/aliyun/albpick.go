@@ -50,8 +50,9 @@ func lbArg(ctx context.Context, rt *app.Runtime, args []string, region string) (
 }
 
 // pickLB asks for one of the ALBs of the scope's region for the input arg
-// ("--lb"); it returns the id. None is nothing to do.
-func pickLB(ctx context.Context, rt *app.Runtime, sc *albScope, arg string) (string, error) {
+// ("--lb"), of one of statuses when given; it returns the id. None is
+// nothing to do.
+func pickLB(ctx context.Context, rt *app.Runtime, sc *albScope, arg string, statuses ...string) (string, error) {
 	if !rt.Interactive() {
 		return "", app.UsageErrf("%s is required", arg)
 	}
@@ -61,6 +62,9 @@ func pickLB(ctx context.Context, rt *app.Runtime, sc *albScope, arg string) (str
 	}
 	var opts []prompt.Option
 	for _, l := range lbs {
+		if len(statuses) > 0 && !slices.Contains(statuses, l.Status) {
+			continue
+		}
 		opts = append(opts, prompt.Option{Label: lbOptionLabel(l), Value: l.ID})
 	}
 	return rt.Choose(app.Choice{Title: "Load balancer (" + sc.where() + ")", Options: opts, Arg: arg, What: "load balancer in " + sc.where()})
