@@ -85,6 +85,18 @@ func (e *AuthError) Error() string {
 	return fmt.Sprintf("could not log in to %s as %s with %s", e.Addr, strings.Join(parts, ", "), keys)
 }
 
+// ConnectError is a connection that could not be made, or whose SSH
+// handshake failed for another reason than the host key or the keys: the
+// address is not reachable from here.
+type ConnectError struct {
+	Addr string
+	Err  error
+}
+
+func (e *ConnectError) Error() string { return "cannot connect to " + e.Addr + ": " + e.Err.Error() }
+
+func (e *ConnectError) Unwrap() error { return e.Err }
+
 // Client is an authenticated SSH connection.
 type Client struct {
 	conn *ssh.Client
@@ -204,7 +216,7 @@ func dialUser(ctx context.Context, o Options, user string) (*Client, string, err
 		if ctx.Err() != nil {
 			return nil, "", ctx.Err()
 		}
-		return nil, "", fmt.Errorf("cannot connect to %s: %w", addr, err)
+		return nil, "", &ConnectError{Addr: addr, Err: err}
 	}
 	_ = nc.SetDeadline(time.Now().Add(timeout))
 	stop := context.AfterFunc(ctx, func() { _ = nc.Close() })
@@ -221,7 +233,7 @@ func dialUser(ctx context.Context, o Options, user string) (*Client, string, err
 		if strings.Contains(err.Error(), "unable to authenticate") {
 			return nil, "no key accepted", nil
 		}
-		return nil, "", fmt.Errorf("ssh %s: %w", addr, err)
+		return nil, "", &ConnectError{Addr: addr, Err: fmt.Errorf("ssh handshake: %w", err)}
 	}
 	_ = nc.SetDeadline(time.Time{})
 	c := &Client{conn: ssh.NewClient(conn, chans, reqs), User: user, Addr: addr}
