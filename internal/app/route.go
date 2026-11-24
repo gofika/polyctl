@@ -36,11 +36,13 @@ var ErrDomainUnknown = errors.New("domain not found in local index")
 // kind (ResZone for DNS operations, ResDomain for registrar operations).
 //
 // Precedence: --profile and --platform restrict the search; otherwise the
-// longest matching domain in the index wins. If several accounts (or several
-// resources of one account) own the same best match, an AmbiguousError is
-// returned. When nothing is found and --refresh was given (or none of the
-// candidate profiles has ever been indexed), the relevant profiles are
-// indexed first and the lookup retried.
+// longest matching domain in the index wins. Index rows of accounts that are
+// no longer in the config (kept by `auth logout --keep-inventory`, or left by
+// a hand edit) take no part. If several accounts (or several resources of
+// one account) own the same best match, an AmbiguousError is returned.
+// With --refresh the candidate accounts are indexed before the lookup, once
+// per run and kind. Without it, a miss indexes them only when none of them
+// has ever been indexed, and the lookup is retried.
 func (rt *Runtime) ResolveDomain(ctx context.Context, domain string, kind platform.ResourceType) (*Target, error) {
 	domain = platform.NormalizeDomain(domain)
 	cands := platform.Candidates(domain)
@@ -55,20 +57,29 @@ func (rt *Runtime) ResolveDomain(ctx context.Context, domain string, kind platfo
 	if err != nil {
 		return nil, err
 	}
+	// The accounts able to hold kind, restricted to --profile / --platform.
+	// This reads the config only, so it works offline too; an unknown
+	// --profile fails here.
+	profiles, err := rt.indexCandidates(ctx, kind)
+	if err != nil {
+		return nil, err
+	}
+	selected := map[config.AccountRef]bool{}
+	for _, p := range profiles {
+		selected[p] = true
+	}
 	lookup := func() (*Target, error) {
 		entries, err := db.LookupDomain(ctx, cands, kind)
 		if err != nil {
 			return nil, err
 		}
-		if rt.Flags.Profile != "" || only != "" {
-			var filtered []inventory.IndexEntry
-			for _, e := range entries {
-				if (rt.Flags.Profile == "" || e.Profile == rt.Flags.Profile) && (only == "" || e.Platform == only) {
-					filtered = append(filtered, e)
-				}
+		var filtered []inventory.IndexEntry
+		for _, e := range entries {
+			if selected[config.AccountRef{Profile: e.Profile, Platform: e.Platform}] {
+				filtered = append(filtered, e)
 			}
-			entries = filtered
 		}
+		entries = filtered
 		if len(entries) == 0 {
 			return nil, nil
 		}
@@ -123,69 +134,83 @@ func (rt *Runtime) ResolveDomain(ctx context.Context, domain string, kind platfo
 		return &Target{Platform: o.Platform, Profile: o.Profile, Type: o.Type, ResourceID: o.ResourceID, Domain: o.Domain}, nil
 	}
 
+	notFound := func() error {
+		where := "any configured account"
+		if rt.Flags.Profile != "" || only != "" {
+			where = "the accounts selected by --profile / --platform"
+		}
+		return fmt.Errorf("%w: %q is not a %s in %s", ErrDomainUnknown, domain, kind, where)
+	}
+	index := func() {
+		rt.Infof("indexing %s across %d account(s)...", kind, len(profiles))
+		for _, p := range profiles {
+			if _, err := rt.SyncAccount(ctx, p, []platform.ResourceType{kind}); err != nil {
+				rt.Infof("warning: index %s: %v", p.Label(), err)
+			}
+		}
+	}
+	// --refresh re-indexes before the lookup, so that a zone moved to
+	// another account or deleted is not served from the old row.
+	refreshed := rt.routeRefreshed[kind]
+	if rt.Flags.Refresh && !refreshed && len(profiles) > 0 {
+		index()
+		if rt.routeRefreshed == nil {
+			rt.routeRefreshed = map[platform.ResourceType]bool{}
+		}
+		rt.routeRefreshed[kind] = true
+		refreshed = true
+	}
 	t, err := lookup()
 	if err != nil || t != nil {
 		return t, err
 	}
-	// Check the selection before blaming the index: an unknown --profile, or
-	// a --profile / --platform pair that names no account, is not something
-	// indexing can fix. This reads the config only, so it works offline too.
-	profiles, err := rt.indexCandidates(ctx, kind)
-	if err != nil {
-		return nil, err
-	}
+	// Check the selection before blaming the index: a --profile /
+	// --platform pair that names no account is not something indexing can
+	// fix.
 	if len(profiles) == 0 && (rt.Flags.Profile != "" || only != "") {
 		return nil, fmt.Errorf("%w: %q, and no account selected by --profile / --platform is able to manage %ss", ErrDomainUnknown, domain, kind)
 	}
 	if rt.Flags.Offline {
 		return nil, fmt.Errorf("%w: %q (%s); run `polyctl domain index` when online", ErrDomainUnknown, domain, kind)
 	}
-	// Decide whether to (re)index automatically: always when --refresh, or
-	// when the index has never been built for any of the candidate profiles.
-	// Once at least one profile is indexed, a miss no longer triggers a
-	// network scan: a profile whose sync keeps failing never gets a state,
-	// and re-indexing everything on every miss would hammer the platforms.
 	if len(profiles) == 0 {
 		return nil, fmt.Errorf("%w: %q, and no account is able to manage %ss (run `polyctl auth login`)", ErrDomainUnknown, domain, kind)
 	}
-	needIndex := rt.Flags.Refresh
-	if !needIndex {
-		var unindexed []string
-		for _, p := range profiles {
-			st, err := db.GetState(ctx, inventory.Set{Platform: p.Platform, Profile: p.Profile, Type: kind})
-			if err != nil {
-				return nil, err
-			}
-			if st == nil {
-				unindexed = append(unindexed, p.Label())
-			}
+	if refreshed {
+		return nil, notFound()
+	}
+	// Without --refresh, index automatically only when the index has never
+	// been built for any of the candidate profiles. Once at least one
+	// profile is indexed, a miss no longer triggers a network scan: a
+	// profile whose sync keeps failing never gets a state, and re-indexing
+	// everything on every miss would hammer the platforms.
+	var unindexed []string
+	for _, p := range profiles {
+		st, err := db.GetState(ctx, inventory.Set{Platform: p.Platform, Profile: p.Profile, Type: kind})
+		if err != nil {
+			return nil, err
 		}
-		switch {
-		case len(unindexed) == len(profiles):
-			needIndex = true
-		case len(unindexed) > 0:
-			return nil, fmt.Errorf("%w: %q (%s); account(s) %s not indexed yet, run `polyctl domain index` or retry with --refresh", ErrDomainUnknown, domain, kind, strings.Join(unindexed, ", "))
+		if st == nil {
+			unindexed = append(unindexed, p.Label())
 		}
+	}
+	needIndex := false
+	switch {
+	case len(unindexed) == len(profiles):
+		needIndex = true
+	case len(unindexed) > 0:
+		return nil, fmt.Errorf("%w: %q (%s); account(s) %s not indexed yet, run `polyctl domain index` or retry with --refresh", ErrDomainUnknown, domain, kind, strings.Join(unindexed, ", "))
 	}
 	if !needIndex {
 		return nil, fmt.Errorf("%w: %q (%s); run `polyctl domain index` or retry with --refresh", ErrDomainUnknown, domain, kind)
 	}
-	rt.Infof("indexing %s across %d account(s)...", kind, len(profiles))
-	for _, p := range profiles {
-		if _, err := rt.SyncAccount(ctx, p, []platform.ResourceType{kind}); err != nil {
-			rt.Infof("warning: index %s: %v", p.Label(), err)
-		}
-	}
+	index()
 	t, err = lookup()
 	if err != nil {
 		return nil, err
 	}
 	if t == nil {
-		where := "any configured account"
-		if rt.Flags.Profile != "" || only != "" {
-			where = "the accounts selected by --profile / --platform"
-		}
-		return nil, fmt.Errorf("%w: %q is not a %s in %s", ErrDomainUnknown, domain, kind, where)
+		return nil, notFound()
 	}
 	return t, nil
 }

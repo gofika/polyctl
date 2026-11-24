@@ -574,11 +574,11 @@ func TestOpenAndLoadProfile(t *testing.T) {
 	if !errors.Is(err, platform.ErrUnauthorized) || !strings.Contains(err.Error(), "auth login namecom --profile b") {
 		t.Errorf("LoadProfile without creds = %v", err)
 	}
-	if _, err := h.rt.LoadProfile("nobody", platform.NameCom); err == nil || !strings.Contains(err.Error(), "not found") {
+	if _, err := h.rt.LoadProfile("nobody", platform.NameCom); !errors.Is(err, platform.ErrNotFound) || !strings.Contains(err.Error(), `profile "nobody" not found`) {
 		t.Errorf("LoadProfile(nobody) = %v", err)
 	}
 	// An existing profile without an account on the platform.
-	if _, err := h.rt.LoadProfile("a", platform.GoDaddy); err == nil || !strings.Contains(err.Error(), `profile "a" has no godaddy account`) {
+	if _, err := h.rt.LoadProfile("a", platform.GoDaddy); !errors.Is(err, platform.ErrNotFound) || !strings.Contains(err.Error(), `profile "a" has no godaddy account`) {
 		t.Errorf("LoadProfile on a platform the profile lacks = %v", err)
 	}
 	if _, _, err := h.rt.Open(ctx, "a", platform.GoDaddy); err == nil {
@@ -843,5 +843,64 @@ func TestEnsureSetPartialRegionFailure(t *testing.T) {
 	}
 	if !strings.Contains(h.stderr.String(), "r2: unreachable") {
 		t.Errorf("stderr = %q", h.stderr.String())
+	}
+}
+
+// Index rows of an account that is no longer in the config (kept by
+// `auth logout --keep-inventory` or left by a hand edit) take no part in
+// routing: they neither win alone nor make a live owner ambiguous.
+func TestResolveDomainIgnoresRowsOfRemovedAccounts(t *testing.T) {
+	h := newHarness(t, app.Flags{}, func(c *config.Config) {
+		c.Profiles["old"] = profileOn(platform.NameCom)
+	})
+	h.seedStandard()
+	h.seedZones("old", zone("z-only", "only.com"), zone("z-old-other", "other.com"))
+	cfg, _ := h.rt.Config()
+	delete(cfg.Profiles, "old")
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	tgt, err := h.rt.ResolveDomain(ctx, "www.other.com", platform.ResZone)
+	if err != nil || tgt.Profile != "b" || tgt.ResourceID != "z-other" {
+		t.Errorf("other.com = %+v, %v; want b without ambiguity", tgt, err)
+	}
+	_, err = h.rt.ResolveDomain(ctx, "only.com", platform.ResZone)
+	if !errors.Is(err, app.ErrDomainUnknown) {
+		t.Errorf("only.com (owned by a removed account only) = %v, want ErrDomainUnknown", err)
+	}
+	for _, p := range []string{"a", "b", "c", "old"} {
+		if n := clientFor(p, platform.NameCom).count("Sync:zone") + clientFor(p, platform.GoDaddy).count("Sync:zone"); n != 0 {
+			t.Errorf("profile %s synced %d times without --refresh", p, n)
+		}
+	}
+}
+
+// --refresh re-indexes before the lookup, so a zone that moved to another
+// account is not served from the old row; later lookups in the same run do
+// not index again.
+func TestResolveDomainRefreshFixesAStaleHit(t *testing.T) {
+	h := newHarness(t, app.Flags{}, nil)
+	h.seedStandard()
+	// example.com moved from a to c.
+	h.client("a").zones = []platform.Zone{zone("z-shared-a", "shared.com")}
+	h.client("b").zones = []platform.Zone{zone("z-other", "other.com"), zone("z-shared-b", "shared.com"), zone("z-sub", "sub.example.com")}
+	h.client("c").zones = []platform.Zone{zone("z-moved", "example.com")}
+
+	if tgt, err := h.rt.ResolveDomain(ctx, "www.example.com", platform.ResZone); err != nil || tgt.Profile != "a" {
+		t.Fatalf("without --refresh the index row wins: %+v, %v", tgt, err)
+	}
+	h.rt.Flags.Refresh = true
+	tgt, err := h.rt.ResolveDomain(ctx, "www.example.com", platform.ResZone)
+	if err != nil || tgt.Profile != "c" || tgt.ResourceID != "z-moved" {
+		t.Fatalf("with --refresh = %+v, %v; want c/z-moved", tgt, err)
+	}
+	if _, err := h.rt.ResolveDomain(ctx, "mail.other.com", platform.ResZone); err != nil {
+		t.Errorf("second lookup: %v", err)
+	}
+	for _, p := range []string{"a", "b", "c"} {
+		if n := h.client(p).count("Sync:zone"); n != 1 {
+			t.Errorf("profile %s zone sync count = %d, want 1", p, n)
+		}
 	}
 }

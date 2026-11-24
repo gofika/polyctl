@@ -110,6 +110,9 @@ type Runtime struct {
 	prompt *prompt.IO
 	// chosenProfile holds the profiles picked by ProfileFor in this run.
 	chosenProfile map[platform.ID]string
+	// routeRefreshed records the kinds whose domain index --refresh has
+	// already rebuilt in this run, so that several lookups re-index once.
+	routeRefreshed map[platform.ResourceType]bool
 }
 
 // New creates a Runtime; nothing is loaded until first use.
@@ -644,7 +647,9 @@ func (rt *Runtime) LoadProfile(name string, id platform.ID) (platform.Profile, e
 	}
 	a, err := cfg.Account(name, id)
 	if err != nil {
-		return platform.Profile{}, err
+		// A profile or account missing from the config is a not-found
+		// selection (exit code 4), as an unknown --profile is in Accounts.
+		return platform.Profile{}, fmt.Errorf("%w: %v", platform.ErrNotFound, err)
 	}
 	st, err := rt.Creds()
 	if err != nil {

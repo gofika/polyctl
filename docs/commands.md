@@ -301,11 +301,12 @@ Platform coverage:
 ## Routing rules
 
 1. Without `--profile` / `--platform`, every account is searched. Each flag narrows the search; together they name one account.
-2. polyctl looks up the domain and its parents (`a.b.example.com`, `b.example.com`, `example.com`) in the domain index, for the kind the command needs (`zone` for `dns`, `domain` for registrar operations). **The longest match wins**, so a delegated sub-zone beats its parent.
+2. polyctl looks up the domain and its parents (`a.b.example.com`, `b.example.com`, `example.com`) in the domain index, for the kind the command needs (`zone` for `dns`, `domain` for registrar operations). **The longest match wins**, so a delegated sub-zone beats its parent. Index rows of accounts no longer in the config (kept by `auth logout --keep-inventory`, or left by a hand edit) are ignored.
 3. A match held by several accounts is exit code 5. The error lists the candidates as `platform/profile` and names the flag that tells them apart.
-4. No match: polyctl indexes the accounts automatically the first time, or with `--refresh`, then retries. Otherwise: "domain not found in local index" (exit code 4); run `polyctl domain index` or pass `--refresh`.
-5. With `--offline` nothing is indexed; an unknown domain is an error.
-6. An unknown `--profile`, or a `--profile` / `--platform` pair with no suitable account, is exit code 4.
+4. `--refresh` re-indexes the selected accounts before the lookup (once per run), so a zone moved to another account or deleted is not routed to its old owner. Without it, a match in the index is used as is.
+5. No match: polyctl indexes the accounts automatically the first time, then retries. Otherwise: "domain not found in local index" (exit code 4); run `polyctl domain index` or pass `--refresh`.
+6. With `--offline` nothing is indexed; an unknown domain is an error.
+7. An unknown `--profile`, or a `--profile` / `--platform` pair with no suitable account, is exit code 4.
 
 A registrar (name.com, GoDaddy) indexes a domain it holds as a zone only while it serves the domain's DNS: a domain whose nameservers point elsewhere (to Cloudflare, say), or a cancelled or expired GoDaddy domain, is not a second owner. The usual ambiguity is the same zone in two accounts, for example in the Cloudflare accounts of the profiles `acme` and `acme-old`; pass the flag the error names:
 
