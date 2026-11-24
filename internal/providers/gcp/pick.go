@@ -282,13 +282,19 @@ func builtinNetwork(ctx context.Context, rt *app.Runtime, c *client) (string, er
 		Arg: "--network", Required: true, What: "VPC network"})
 }
 
+// ordinarySubnet reports a subnetwork instances can use: no purpose, or
+// PRIVATE (not proxy-only or another special purpose).
+func ordinarySubnet(s *compute.Subnetwork) bool {
+	return s.Purpose == "" || strings.EqualFold(s.Purpose, "PRIVATE")
+}
+
 // pickSubnet asks, in the interactive flow, which of several subnetworks
 // of a network in a region create uses: the ordinary ones (no proxy-only
 // or other special purpose), labelled with their range.
 func pickSubnet(rt *app.Runtime, network, region string, subs []*compute.Subnetwork) (string, error) {
 	var opts []prompt.Option
 	for _, s := range subs {
-		if s.Purpose != "" && !strings.EqualFold(s.Purpose, "PRIVATE") {
+		if !ordinarySubnet(s) {
 			continue
 		}
 		opts = append(opts, prompt.Option{Label: joinLabel(s.Name, s.IpCidrRange, region), Value: s.Name})

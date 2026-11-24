@@ -651,8 +651,8 @@ an empty data disk ({name}-data). Both disks are deleted with the instance.
 
 The network is --network (default defaults.gcp.network, else "default");
 the subnetwork is --subnet (default defaults.gcp.subnet), else the only
-subnetwork of that network in the zone's region (several are a usage
-error). With --static-ip (default) the external and internal addresses
+ordinary subnetwork of that network in the zone's region (proxy-only ones
+left out; several are a usage error). With --static-ip (default) the external and internal addresses
 {name}-external-ip and {name}-internal-ip (naming.gcp_instance_external_ip
 and naming.gcp_instance_internal_ip) are reserved, or reused when they
 exist, and bound to the instance; --static-ip=false uses ephemeral ones.
@@ -1178,8 +1178,8 @@ func runCreate(cmd *cobra.Command, rt *app.Runtime, o *createOptions, name strin
 }
 
 // resolveSubnet decides the subnetwork of the NIC: the one given (which
-// must exist and belong to network), else the only subnetwork of network
-// in the region. Several are a pick in the interactive flow and a usage
+// must exist and belong to network), else the only ordinary (not
+// proxy-only) subnetwork of network in the region. Several are a pick in the interactive flow and a usage
 // error otherwise. None is "" for an auto-mode
 // (or legacy) network, where Compute Engine picks the region's one, and a
 // failure for a custom-mode network.
@@ -1194,9 +1194,17 @@ func resolveSubnet(ctx context.Context, rt *app.Runtime, c *client, region, netw
 		}
 		return subnet, nil
 	}
-	subs, err := c.subnetworksOf(ctx, region, network)
+	all, err := c.subnetworksOf(ctx, region, network)
 	if err != nil {
 		return "", err
+	}
+	// Only an ordinary subnetwork holds instances: a proxy-only one (such
+	// as the one a regional load balancer needs) is left out.
+	var subs []*compute.Subnetwork
+	for _, s := range all {
+		if ordinarySubnet(s) {
+			subs = append(subs, s)
+		}
 	}
 	switch len(subs) {
 	case 1:

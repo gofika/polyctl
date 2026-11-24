@@ -112,6 +112,23 @@ func TestInstanceCreatePicksSubnet(t *testing.T) {
 	}
 }
 
+// A proxy-only subnetwork next to the only ordinary one is not counted:
+// the ordinary one is used without --subnet, in either flow.
+func TestInstanceCreateSkipsProxyOnlySubnet(t *testing.T) {
+	h, _ := interactiveGCP(t, defaultsUS())
+	h.rt.Flags.DryRun = true
+	net := apiBase + "projects/proj/global/networks/default"
+	h.gce.subnets["proj/us-central1"] = append(h.gce.subnets["proj/us-central1"],
+		&compute.Subnetwork{Name: "proxy", Network: net, IpCidrRange: "10.129.0.0/23", Purpose: "REGIONAL_MANAGED_PROXY"})
+	h.nonInteractive()
+	if err := h.run("compute", "instance", "create", "web-9", "--ssh-key", "ops:"+testPublicKey(t, "")); err != nil {
+		t.Fatalf("create: %v\n%s", err, h.stderr.String())
+	}
+	if out := strings.Join(rows(h.report()), "\n"); strings.Contains(out, "proxy") {
+		t.Errorf("report names the proxy-only subnetwork:\n%s", out)
+	}
+}
+
 // A project without a network named default: the network is picked.
 func TestInstanceCreatePicksNetwork(t *testing.T) {
 	h, _ := interactiveGCP(t, defaultsUS())
