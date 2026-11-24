@@ -224,7 +224,7 @@ A key pair <name> that holds another key is never replaced: exit code 2.`,
 				}
 			}
 			in, err := rt.KeyInput(&keys, platform.KeyInput{NameFlag: "<name>", Match: platform.MatchByFingerprintMD5,
-				AllowedTypes: platform.AliyunKeyTypes, MinNameLength: keyPairNameMin})
+				AllowedTypes: platform.AliyunKeyTypes, MinNameLength: keyPairNameMin, CheckName: checkKeyPairName})
 			if err != nil {
 				return err
 			}

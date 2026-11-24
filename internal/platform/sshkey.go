@@ -302,14 +302,28 @@ var MatchAWS = KeyMatcher{Label: "matched by public key", Match: func(local *Pub
 // KeyPrompter asks the questions of the interactive flow of key pair
 // resolution. It is never used in the non-interactive flow.
 type KeyPrompter interface {
-	// KeyFile asks for the path of a public key file; candidates are the
-	// ~/.ssh/*.pub files found.
-	KeyFile(candidates []string) (string, error)
-	// KeyPairName asks for the name of the key pair to create; an empty
-	// answer cancels.
-	KeyPairName() (string, error)
+	// ChooseKeyPairOrCreate asks which existing key pair to use, or to
+	// import a new one (the answer ""). pairs are the key pairs of the
+	// target region, sorted by name; local maps the name of each key pair
+	// that holds one of the ~/.ssh/*.pub keys to that file.
+	ChooseKeyPairOrCreate(pairs []KeyPair, local map[string]string) (string, error)
+	// KeyFile asks for the public key file to import; candidates are the
+	// usable ~/.ssh/*.pub files (parsable, of an accepted type).
+	KeyFile(candidates []KeyFileCandidate) (string, error)
+	// KeyPairName asks for the name of the key pair to create; validate
+	// rejects an empty, malformed or taken name, and the question stays
+	// open until the answer passes. There is no default name.
+	KeyPairName(validate func(string) error) (string, error)
 	// ChooseKeyPair asks which of several key pairs holding the key to use.
 	ChooseKeyPair(names []string) (string, error)
+}
+
+// KeyFileCandidate is a ~/.ssh/*.pub file offered for import.
+type KeyFileCandidate struct {
+	Path string
+	Key  *PublicKey
+	// Registered names the key pairs that already hold the key.
+	Registered []string
 }
 
 // KeyInput is what a command knows about the key pair it needs.
@@ -332,6 +346,9 @@ type KeyInput struct {
 	// MinNameLength is the shortest acceptable key pair name (Alibaba Cloud
 	// wants 2).
 	MinNameLength int
+	// CheckName applies the platform's own name rules to a name asked for
+	// in the interactive flow (nil: none beyond MinNameLength).
+	CheckName func(string) error
 	// Interactive is the flow; Prompter asks its questions.
 	Interactive bool
 	Prompter    KeyPrompter
@@ -358,16 +375,19 @@ type KeyPairPlan struct {
 //     (a note says it was ignored); with several, --key-pair picks among
 //     them, else the interactive flow asks and the non-interactive flow is
 //     ambiguous (exit code 5). No match: the key pair is created, under
-//     --key-pair, else a name asked for in the interactive flow (an empty
-//     answer cancels, which is not an error). The non-interactive flow never
+//     --key-pair, else a name asked for in the interactive flow (validated
+//     inline: required, platform rules, not taken; leaving the question
+//     cancels, which is not an error). The non-interactive flow never
 //     invents a name: it is a usage error. An existing key pair of that name
 //     with another key is never overwritten: a usage error.
 //   - Without a key but with --key-pair: an existing key pair is used; a
 //     missing one needs a key, asked for in the interactive flow, a usage
 //     error otherwise.
 //   - With neither: the configured default key pair when it exists; else the
-//     interactive flow asks for a key file (and then a name), and the
-//     non-interactive flow is a usage error naming the flags.
+//     interactive flow offers the existing key pairs (those holding a
+//     ~/.ssh/*.pub key marked) and "import a new one", which asks for a key
+//     file and then a name (no default name); the non-interactive flow is a
+//     usage error naming the flags.
 //
 // It writes nothing: creating the key pair is the caller's Step.
 func ResolveKeyPair(ctx context.Context, lister KeyPairLister, in KeyInput) (KeyPairPlan, error) {
@@ -411,25 +431,31 @@ func ResolveKeyPair(ctx context.Context, lister KeyPairLister, in KeyInput) (Key
 			if !in.Interactive {
 				return KeyPairPlan{}, invalid("a key pair is required: pass %[1]s (an existing key pair), or --ssh-key-file <path> / --ssh-key <public key> with %[1]s to import one", nameUsage(in))
 			}
+			// Neither a key nor a name: offer the existing key pairs
+			// first, then importing a new one.
+			if len(pairs) > 0 && in.Prompter != nil {
+				name, err := in.Prompter.ChooseKeyPairOrCreate(sortedPairs(pairs), localMatches(in, pairs))
+				if err != nil {
+					return KeyPairPlan{}, err
+				}
+				if name != "" {
+					if _, ok := byName[name]; !ok {
+						return KeyPairPlan{}, invalid("key pair %q does not exist", name)
+					}
+					return existing(name, "chosen key pair"), nil
+				}
+			}
 		}
-		key, err := askKey(in)
+		key, err := askKey(in, pairs)
 		if err != nil {
 			return KeyPairPlan{}, err
 		}
 		in.Key = key
 	}
-	match := in.Match.Match
-	if match == nil {
-		// Without a matcher of its own, a listing that carries the public
-		// key is compared by key, any other by the MD5 fingerprint: never
-		// "no match", which would make an existing key pair look foreign.
-		match = func(local *PublicKey, kp KeyPair) bool {
-			if kp.PublicKey != nil {
-				return MatchByPublicKey.Match(local, kp)
-			}
-			return MatchByFingerprintMD5.Match(local, kp)
-		}
-	}
+	// Without a matcher of its own, a listing that carries the public key
+	// is compared by key, any other by the MD5 fingerprint: never "no
+	// match", which would make an existing key pair look foreign.
+	match := matcher(in)
 	var matched []string
 	for _, kp := range pairs {
 		if match(in.Key, kp) {
@@ -466,7 +492,24 @@ func ResolveKeyPair(ctx context.Context, lister KeyPairLister, in KeyInput) (Key
 		if !in.Interactive || in.Prompter == nil {
 			return KeyPairPlan{}, invalid("creating a key pair needs a name: pass %s (no name is ever chosen for you, since the key may be somebody else's)", nameUsage(in))
 		}
-		name, err = in.Prompter.KeyPairName()
+		name, err = in.Prompter.KeyPairName(func(s string) error {
+			s = strings.TrimSpace(s)
+			if s == "" {
+				return fmt.Errorf("a name is required (no name is chosen for you)")
+			}
+			if err := checkKeyPairName(s, in.MinNameLength); err != nil {
+				return err
+			}
+			if in.CheckName != nil {
+				if err := in.CheckName(s); err != nil {
+					return err
+				}
+			}
+			if _, ok := byName[s]; ok {
+				return fmt.Errorf("key pair %q already exists with another key", s)
+			}
+			return nil
+		})
 		if err != nil {
 			return KeyPairPlan{}, err
 		}
@@ -518,11 +561,11 @@ func checkKeyPairName(name string, min int) error {
 }
 
 // askKey asks for a public key file in the interactive flow.
-func askKey(in KeyInput) (*PublicKey, error) {
+func askKey(in KeyInput, pairs []KeyPair) (*PublicKey, error) {
 	if in.Prompter == nil {
 		return nil, invalid("a public key is required: pass --ssh-key-file <path> or --ssh-key <public key>")
 	}
-	path, err := in.Prompter.KeyFile(PublicKeyFiles())
+	path, err := in.Prompter.KeyFile(KeyFileCandidates(in, pairs))
 	if err != nil {
 		return nil, err
 	}
@@ -534,6 +577,71 @@ func askKey(in KeyInput) (*PublicKey, error) {
 		return nil, err
 	}
 	return key, nil
+}
+
+// matcher is in.Match.Match, or the default comparison of ResolveKeyPair.
+func matcher(in KeyInput) func(*PublicKey, KeyPair) bool {
+	if in.Match.Match != nil {
+		return in.Match.Match
+	}
+	return func(local *PublicKey, kp KeyPair) bool {
+		if kp.PublicKey != nil {
+			return MatchByPublicKey.Match(local, kp)
+		}
+		return MatchByFingerprintMD5.Match(local, kp)
+	}
+}
+
+// KeyFileCandidates loads the ~/.ssh/*.pub files and keeps the usable ones:
+// parsable public keys of a type the platform accepts. Each names the key
+// pairs that already hold it.
+func KeyFileCandidates(in KeyInput, pairs []KeyPair) []KeyFileCandidate {
+	match := matcher(in)
+	var out []KeyFileCandidate
+	for _, path := range PublicKeyFiles() {
+		key, err := LoadPublicKeyFile(path)
+		if err != nil || key.CheckType(allowedTypes(in)) != nil {
+			continue
+		}
+		c := KeyFileCandidate{Path: path, Key: key}
+		for _, kp := range sortedPairs(pairs) {
+			if match(key, kp) {
+				c.Registered = append(c.Registered, kp.Name)
+			}
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// localMatches maps the name of each key pair that holds one of the usable
+// ~/.ssh/*.pub keys to that file.
+func localMatches(in KeyInput, pairs []KeyPair) map[string]string {
+	out := map[string]string{}
+	for _, c := range KeyFileCandidates(in, pairs) {
+		for _, n := range c.Registered {
+			if _, ok := out[n]; !ok {
+				out[n] = c.Path
+			}
+		}
+	}
+	return out
+}
+
+func sortedPairs(pairs []KeyPair) []KeyPair {
+	out := append([]KeyPair(nil), pairs...)
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// DisplayFingerprint is the fingerprint to show for a key pair: the SHA256
+// fingerprint of its public key when the listing carries it, else the
+// fingerprint the platform reports.
+func (kp KeyPair) DisplayFingerprint() string {
+	if kp.PublicKey != nil {
+		return ssh.FingerprintSHA256(kp.PublicKey)
+	}
+	return kp.Fingerprint
 }
 
 // Step turns the plan into a Plan step: an Unchanged report when the key

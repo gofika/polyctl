@@ -423,7 +423,7 @@ func (f *instanceFlags) keyInput(rt *app.Runtime) (platform.KeyInput, error) {
 		}
 	}
 	in, err := rt.KeyInput(&f.keys, platform.KeyInput{Match: platform.MatchByFingerprintMD5,
-		AllowedTypes: platform.AliyunKeyTypes, MinNameLength: keyPairNameMin})
+		AllowedTypes: platform.AliyunKeyTypes, MinNameLength: keyPairNameMin, CheckName: checkKeyPairName})
 	if err != nil {
 		return in, err
 	}

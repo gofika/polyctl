@@ -97,10 +97,11 @@ func TestKeyInputFlags(t *testing.T) {
 	if err != nil || !plan.Create || plan.Name != "laptop" {
 		t.Fatalf("interactive plan = %+v, %v (asked %v)", plan, err, picker.titles)
 	}
-	// Leaving a question is "nothing to do".
+	// Leaving a question is prompt.ErrAborted, which every command turns
+	// into "cancelled" (exit code 0).
 	rt.Picker = &keyPicker{}
 	in, _ = rt.KeyInput(&KeyFlags{SSHKeyFile: file}, platform.KeyInput{Match: platform.MatchByPublicKey})
-	if _, err := platform.ResolveKeyPair(t.Context(), listKP{}, in); !errors.Is(err, platform.ErrNothingToDo) {
+	if _, err := platform.ResolveKeyPair(t.Context(), listKP{}, in); !errors.Is(err, prompt.ErrAborted) {
 		t.Errorf("left question = %v", err)
 	}
 }

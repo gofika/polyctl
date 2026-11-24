@@ -2,7 +2,9 @@ package app
 
 import (
 	"errors"
-	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -72,36 +74,75 @@ func (rt *Runtime) KeyInput(f *KeyFlags, base platform.KeyInput) (platform.KeyIn
 // keyPrompter asks the key pair questions with the runtime's picker.
 type keyPrompter struct{ rt *Runtime }
 
-const otherKeyFile = "\x00other"
+const (
+	otherKeyFile = "\x00other"
+	newKeyPair   = "\x00new"
+)
 
-func (p keyPrompter) KeyFile(candidates []string) (string, error) {
+// ChooseKeyPairOrCreate lists the existing key pairs, those holding a local
+// ~/.ssh/*.pub key marked (and the first of them preselected), with
+// "Import a new key pair..." last.
+func (p keyPrompter) ChooseKeyPairOrCreate(pairs []platform.KeyPair, local map[string]string) (string, error) {
+	opts := make([]prompt.Option, 0, len(pairs)+1)
+	def := ""
+	for _, kp := range pairs {
+		label := kp.Name
+		if fp := kp.DisplayFingerprint(); fp != "" {
+			label += "  " + fp
+		}
+		if f, ok := local[kp.Name]; ok {
+			label += "  [matches " + homeRelative(f) + "]"
+			if def == "" {
+				def = kp.Name
+			}
+		}
+		opts = append(opts, prompt.Option{Label: label, Value: kp.Name})
+	}
+	opts = append(opts, prompt.Option{Label: "Import a new key pair from a public key file...", Value: newKeyPair})
+	v, err := p.rt.Pick().Select("Key pair", opts, def)
+	if err != nil || v == newKeyPair {
+		return "", err
+	}
+	return v, nil
+}
+
+// KeyFile offers the usable ~/.ssh/*.pub files, each with its type,
+// fingerprint and comment and the key pairs already holding it, and
+// "Another file..." for a path checked as it is typed.
+func (p keyPrompter) KeyFile(candidates []platform.KeyFileCandidate) (string, error) {
 	pick := p.rt.Pick()
 	if len(candidates) > 0 {
 		opts := make([]prompt.Option, 0, len(candidates)+1)
+		def := ""
 		for _, c := range candidates {
-			opts = append(opts, prompt.Option{Label: c, Value: c})
+			label := homeRelative(c.Path) + "  " + c.Key.Summary()
+			if len(c.Registered) > 0 {
+				label += "  [already key pair " + strings.Join(c.Registered, ", ") + "]"
+			} else if def == "" || filepath.Base(c.Path) == "id_ed25519.pub" {
+				def = c.Path
+			}
+			opts = append(opts, prompt.Option{Label: label, Value: c.Path})
 		}
 		opts = append(opts, prompt.Option{Label: "Another file...", Value: otherKeyFile})
-		v, err := pick.Select("Public key file to import", opts, "")
+		v, err := pick.Select("Public key file to import", opts, def)
 		if err != nil {
-			return "", cancelled(err)
+			return "", err
 		}
 		if v != otherKeyFile {
 			return v, nil
 		}
 	}
-	v, err := pick.Input("Path of the public key file (.pub)", "", func(s string) error {
-		if s == "" {
+	return pick.Input("Path of the public key file (.pub)", "", func(s string) error {
+		if strings.TrimSpace(s) == "" {
 			return errors.New("a path is required")
 		}
-		return nil
+		_, err := platform.LoadPublicKeyFile(s)
+		return err
 	})
-	return v, cancelled(err)
 }
 
-func (p keyPrompter) KeyPairName() (string, error) {
-	v, err := p.rt.Pick().Input("Name of the key pair to create (empty cancels)", "", nil)
-	return v, cancelled(err)
+func (p keyPrompter) KeyPairName(validate func(string) error) (string, error) {
+	return p.rt.Pick().Input("Name of the new key pair", "", validate)
 }
 
 func (p keyPrompter) ChooseKeyPair(names []string) (string, error) {
@@ -109,14 +150,15 @@ func (p keyPrompter) ChooseKeyPair(names []string) (string, error) {
 	for _, n := range names {
 		opts = append(opts, prompt.Option{Label: n, Value: n})
 	}
-	v, err := p.rt.Pick().Select("The key is registered under several key pairs; use which one?", opts, "")
-	return v, cancelled(err)
+	return p.rt.Pick().Select("The key is registered under several key pairs; use which one?", opts, "")
 }
 
-// cancelled turns a question that was left into "nothing to do".
-func cancelled(err error) error {
-	if errors.Is(err, prompt.ErrAborted) {
-		return fmt.Errorf("%w: cancelled", platform.ErrNothingToDo)
+// homeRelative shows a path under the home directory as ~/...
+func homeRelative(path string) string {
+	if home, err := os.UserHomeDir(); err == nil {
+		if rel, err := filepath.Rel(home, path); err == nil && !strings.HasPrefix(rel, "..") {
+			return filepath.ToSlash(filepath.Join("~", rel))
+		}
 	}
-	return err
+	return path
 }

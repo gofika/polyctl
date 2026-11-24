@@ -21,6 +21,7 @@ import (
 	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/platform"
 	"github.com/gofika/polyctl/internal/prompt"
+	"github.com/gofika/polyctl/internal/prompt/prompttest"
 )
 
 // testKey returns a new public key line ("ssh-ed25519 AAAA... comment").
@@ -296,11 +297,53 @@ func TestKeyPairEnsureInteractive(t *testing.T) {
 	if len(c) != 1 || c[0].Get("KeyPairName") != "laptop" || md5Hex(t, c[0].Get("PublicKeyBody")) != md5Hex(t, line) {
 		t.Errorf("import = %v", c)
 	}
-	if len(p.titles) != 2 || !strings.Contains(p.titles[0], "public key file") || !strings.Contains(p.titles[1], "Name of the key pair") {
+	if len(p.titles) != 2 || !strings.Contains(p.titles[0], "public key file") || !strings.Contains(p.titles[1], "Name of the new key pair") {
 		t.Errorf("questions = %q", p.titles)
 	}
 }
 
 func ecsKeyPair(name, fp, created string) ecs.KeyPair {
 	return ecs.KeyPair{KeyPairName: name, KeyPairFingerPrint: fp, CreationTime: created}
+}
+
+// On a terminal, ensure without a key or a name lists the existing key
+// pairs, the one holding ~/.ssh/id_ed25519.pub marked and preselected, with
+// "Import a new key pair..." last; leaving the list changes nothing.
+func TestKeyPairEnsureOffersExistingKeyPairs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	line := testKey(t, "ed25519")
+	_ = os.MkdirAll(filepath.Join(home, ".ssh"), 0o700)
+	if err := os.WriteFile(filepath.Join(home, ".ssh", "id_ed25519.pub"), []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h, f := sgHarness(t, app.Flags{})
+	f.addKeyPair("laptop", md5Hex(t, line), "2026-11-17T13:54Z")
+	f.addKeyPair("other", fmt.Sprintf("%032x", 7), "2026-11-17T13:54Z")
+
+	p := prompttest.New(t, "other")
+	h.rt.Picker = p
+	if err := h.run("ecs", "key-pair", "ensure"); err != nil {
+		t.Fatal(err)
+	}
+	p.Done()
+	a := p.Find("Key pair")
+	labels := prompttest.Labels(a.Options)
+	if a.Default != "laptop" || !strings.Contains(labels, "[matches ~/.ssh/id_ed25519.pub]") || !strings.HasSuffix(labels, "Import a new key pair from a public key file...") {
+		t.Errorf("options (default %q):\n%s", a.Default, labels)
+	}
+	if c := h.api.callsFor("ImportKeyPair"); len(c) != 0 {
+		t.Errorf("an existing key pair was chosen, but ImportKeyPair ran: %v", c)
+	}
+
+	// Leaving the list: prompt.ErrAborted, which the command tree turns
+	// into "cancelled" with exit code 0 (app.QuietAbort); nothing imported.
+	h.rt.Picker = prompttest.New(t, prompttest.Abort{})
+	if err := h.run("ecs", "key-pair", "ensure"); !errors.Is(err, prompt.ErrAborted) {
+		t.Errorf("abort = %v", err)
+	}
+	if c := h.api.callsFor("ImportKeyPair"); len(c) != 0 {
+		t.Errorf("ImportKeyPair ran after a cancel: %v", c)
+	}
 }
