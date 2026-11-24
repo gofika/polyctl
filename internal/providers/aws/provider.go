@@ -343,71 +343,125 @@ func regionOrDefault(region string) string {
 	return region
 }
 
-// ssoRoleCredentials exchanges the stored Identity Center access token for
-// role credentials. When the access token has expired and a refresh token
-// is present, a fresh token is obtained and persisted through
-// Profile.UpdateSecret when available; the user must run `polyctl auth login`
-// again once the refresh token itself expires.
+// ssoRoleAPI and ssoTokenAPI are the Identity Center calls the SSO
+// credentials need; tests replace the clients.
+type ssoRoleAPI interface {
+	GetRoleCredentials(ctx context.Context, in *sso.GetRoleCredentialsInput, opts ...func(*sso.Options)) (*sso.GetRoleCredentialsOutput, error)
+}
+
+type ssoTokenAPI interface {
+	CreateToken(ctx context.Context, in *ssooidc.CreateTokenInput, opts ...func(*ssooidc.Options)) (*ssooidc.CreateTokenOutput, error)
+}
+
+var (
+	newSSORoleClient  = func(cfg awssdk.Config) ssoRoleAPI { return sso.NewFromConfig(cfg) }
+	newSSOTokenClient = func(cfg awssdk.Config) ssoTokenAPI { return ssooidc.NewFromConfig(cfg) }
+)
+
+// ssoCredentialsExpiryWindow is how long before they expire role
+// credentials are exchanged again.
+const ssoCredentialsExpiryWindow = 5 * time.Minute
+
+// ssoRoleCredentials returns the role credentials of the stored Identity
+// Center session as a provider that exchanges the access token again once
+// they are about to expire, so a long wait outlives the role session. When
+// the access token has expired and a refresh token is present, a fresh
+// token is obtained and persisted through Profile.UpdateSecret when
+// available; the user must run `polyctl auth login` again once the refresh
+// token itself expires. The first credentials are fetched here, so a
+// broken session fails before any API call.
 func ssoRoleCredentials(ctx context.Context, prof platform.Profile) (awssdk.CredentialsProvider, error) {
 	ssoRegion := prof.Meta(metaSSORegion)
 	if ssoRegion == "" {
 		ssoRegion = defaultRegion
 	}
 	accountID, roleName := prof.Meta(metaAccountID), prof.Meta(metaRoleName)
-	token := prof.Secret[secretAccessToken]
-	if token == "" || accountID == "" || roleName == "" {
+	if prof.Secret[secretAccessToken] == "" || accountID == "" || roleName == "" {
 		return nil, fmt.Errorf("%w: SSO session is incomplete; run `polyctl auth login aws --profile %s`", platform.ErrUnauthorized, prof.Name)
 	}
-	anon := awssdk.Config{Region: ssoRegion, Credentials: awssdk.AnonymousCredentials{}}
+	secret := make(map[string]string, len(prof.Secret))
+	for k, v := range prof.Secret {
+		secret[k] = v
+	}
+	sess := &ssoSession{prof: prof, secret: secret, accountID: accountID, roleName: roleName,
+		anon: awssdk.Config{Region: ssoRegion, Credentials: awssdk.AnonymousCredentials{}}}
+	cache := awssdk.NewCredentialsCache(awssdk.CredentialsProviderFunc(sess.retrieve), func(o *awssdk.CredentialsCacheOptions) {
+		o.ExpiryWindow = ssoCredentialsExpiryWindow
+	})
+	if _, err := cache.Retrieve(ctx); err != nil {
+		return nil, err
+	}
+	return cache, nil
+}
+
+// ssoSession is the Identity Center session behind SSO role credentials.
+// The credentials cache calls retrieve one at a time.
+type ssoSession struct {
+	prof                platform.Profile
+	secret              map[string]string
+	accountID, roleName string
+	anon                awssdk.Config
+}
+
+// retrieve exchanges the access token (refreshed first when it has
+// expired) for role credentials that expire when the role session does.
+func (s *ssoSession) retrieve(ctx context.Context) (awssdk.Credentials, error) {
+	name := s.prof.Name
+	token := s.secret[secretAccessToken]
 	expired := false
-	if exp := prof.Secret[secretTokenExpiresAt]; exp != "" {
+	if exp := s.secret[secretTokenExpiresAt]; exp != "" {
 		if t, err := time.Parse(time.RFC3339, exp); err == nil && time.Now().After(t.Add(-time.Minute)) {
 			expired = true
 		}
 	}
 	if expired {
-		rt, cid, csec := prof.Secret[secretRefreshToken], prof.Secret[secretClientID], prof.Secret[secretClientSecret]
+		rt, cid, csec := s.secret[secretRefreshToken], s.secret[secretClientID], s.secret[secretClientSecret]
 		if rt == "" || cid == "" || csec == "" {
-			return nil, fmt.Errorf("%w: the SSO session has expired; run `polyctl auth login aws --profile %s`", platform.ErrUnauthorized, prof.Name)
+			return awssdk.Credentials{}, fmt.Errorf("%w: the SSO session has expired; run `polyctl auth login aws --profile %s`", platform.ErrUnauthorized, name)
 		}
-		out, err := ssooidc.NewFromConfig(anon).CreateToken(ctx, &ssooidc.CreateTokenInput{
+		out, err := newSSOTokenClient(s.anon).CreateToken(ctx, &ssooidc.CreateTokenInput{
 			ClientId:     awssdk.String(cid),
 			ClientSecret: awssdk.String(csec),
 			GrantType:    awssdk.String("refresh_token"),
 			RefreshToken: awssdk.String(rt),
 		})
 		if err != nil {
-			return nil, fmt.Errorf("%w: the SSO session has expired and could not be refreshed (%v); run `polyctl auth login aws --profile %s`", platform.ErrUnauthorized, err, prof.Name)
+			return awssdk.Credentials{}, fmt.Errorf("%w: the SSO session has expired and could not be refreshed (%v); run `polyctl auth login aws --profile %s`", platform.ErrUnauthorized, err, name)
 		}
 		token = awssdk.ToString(out.AccessToken)
-		if prof.UpdateSecret != nil {
-			secret := make(map[string]string, len(prof.Secret)+2)
-			for k, v := range prof.Secret {
-				secret[k] = v
+		s.secret[secretAccessToken] = token
+		if out.RefreshToken != nil && *out.RefreshToken != "" {
+			s.secret[secretRefreshToken] = *out.RefreshToken
+		}
+		s.secret[secretTokenExpiresAt] = time.Now().Add(time.Duration(out.ExpiresIn) * time.Second).UTC().Format(time.RFC3339)
+		if s.prof.UpdateSecret != nil {
+			saved := make(map[string]string, len(s.secret))
+			for k, v := range s.secret {
+				saved[k] = v
 			}
-			secret[secretAccessToken] = token
-			if out.RefreshToken != nil && *out.RefreshToken != "" {
-				secret[secretRefreshToken] = *out.RefreshToken
-			}
-			secret[secretTokenExpiresAt] = time.Now().Add(time.Duration(out.ExpiresIn) * time.Second).UTC().Format(time.RFC3339)
-			_ = prof.UpdateSecret(secret) // best effort: a failure only means re-login sooner
+			_ = s.prof.UpdateSecret(saved) // best effort: a failure only means re-login sooner
 		}
 	}
-	out, err := sso.NewFromConfig(anon).GetRoleCredentials(ctx, &sso.GetRoleCredentialsInput{
+	out, err := newSSORoleClient(s.anon).GetRoleCredentials(ctx, &sso.GetRoleCredentialsInput{
 		AccessToken: awssdk.String(token),
-		AccountId:   awssdk.String(accountID),
-		RoleName:    awssdk.String(roleName),
+		AccountId:   awssdk.String(s.accountID),
+		RoleName:    awssdk.String(s.roleName),
 	})
 	if err != nil {
 		err = mapErr(err)
 		if errors.Is(err, platform.ErrUnauthorized) {
-			return nil, fmt.Errorf("%w; run `polyctl auth login aws --profile %s`", err, prof.Name)
+			return awssdk.Credentials{}, fmt.Errorf("%w; run `polyctl auth login aws --profile %s`", err, name)
 		}
-		return nil, fmt.Errorf("get SSO role credentials: %w", err)
+		return awssdk.Credentials{}, fmt.Errorf("get SSO role credentials: %w", err)
 	}
 	rc := out.RoleCredentials
 	if rc == nil || rc.AccessKeyId == nil {
-		return nil, fmt.Errorf("%w: Identity Center returned no role credentials", platform.ErrUnauthorized)
+		return awssdk.Credentials{}, fmt.Errorf("%w: Identity Center returned no role credentials", platform.ErrUnauthorized)
 	}
-	return credentials.NewStaticCredentialsProvider(awssdk.ToString(rc.AccessKeyId), awssdk.ToString(rc.SecretAccessKey), awssdk.ToString(rc.SessionToken)), nil
+	creds := awssdk.Credentials{AccessKeyID: awssdk.ToString(rc.AccessKeyId), SecretAccessKey: awssdk.ToString(rc.SecretAccessKey),
+		SessionToken: awssdk.ToString(rc.SessionToken), Source: "polyctl SSO"}
+	if rc.Expiration > 0 {
+		creds.CanExpire, creds.Expires = true, time.UnixMilli(rc.Expiration)
+	}
+	return creds, nil
 }

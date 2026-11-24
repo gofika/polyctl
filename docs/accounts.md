@@ -178,7 +178,7 @@ Keys: `method`, `region`, `start_url`, `sso_region`, `account_id`, `role_name`, 
 
 | `method` | Flow |
 | --- | --- |
-| `sso` (default) | IAM Identity Center device-code login. Asks for `start_url`, `sso_region`, `account_id`, `role_name` when not given, opens the verification URL and waits for approval. Role credentials are refreshed automatically; when the SSO session expires, log in again. |
+| `sso` (default) | IAM Identity Center device-code login. Asks for `start_url`, `sso_region`, `account_id`, `role_name` when not given, opens the verification URL and waits for approval. Role credentials are exchanged again before they expire, also during a long wait in one command (the access token is refreshed with the refresh token when it has expired); when the SSO session itself expires, log in again. |
 | `keys` | Static access key id, secret access key and optional session token: asked, passed with `--set`, or taken from `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` when neither key is given with `--set`. |
 | `profile` | References a profile in `~/.aws/config` / `~/.aws/credentials` (`aws_profile`). Nothing is copied; the AWS SDK resolves it. |
 
