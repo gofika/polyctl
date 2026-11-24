@@ -415,7 +415,16 @@ func TestECSSSHKeyCloudAssistantFailures(t *testing.T) {
 		t.Errorf("RunCommand denied: %v", err)
 	}
 
-	a.runErr, a.statusErr = "", "Forbidden.RAM"
+	// A denial of the result after the command was sent says it may have
+	// run.
+	a.runErr, a.resultsErr = "", "Forbidden.RAM"
+	err = r.run("list", "web-1")
+	if !errors.Is(err, platform.ErrForbidden) || !strings.Contains(err.Error(), "was sent, but its result is unknown") ||
+		!strings.Contains(err.Error(), "ecs:DescribeInvocationResults") {
+		t.Errorf("DescribeInvocationResults denied: %v", err)
+	}
+
+	a.resultsErr, a.statusErr = "", "Forbidden.RAM"
 	if err := r.run("list", "web-1"); err != nil || len(a.runs) == 0 {
 		t.Errorf("status check denied: %v (%d RunCommand calls)\n%s", err, len(a.runs), r.h.stderr.String())
 	}

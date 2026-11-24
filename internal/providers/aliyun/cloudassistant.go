@@ -155,7 +155,7 @@ func (c *client) runShellCommand(ctx context.Context, region, id, command string
 	if err != nil {
 		w := wrapErr("ecs RunCommand "+region, err)
 		if errors.Is(w, platform.ErrForbidden) || errors.Is(w, platform.ErrUnauthorized) {
-			return nil, nil, 0, fmt.Errorf("the credentials need the RAM actions ecs:RunCommand and ecs:DescribeInvocationResults on the instance: %w", w)
+			return nil, nil, 0, fmt.Errorf("the credentials need the RAM actions ecs:RunCommand (with ecs:CommandRunAs) and ecs:DescribeInvocationResults on the instance: %w", w)
 		}
 		return nil, nil, 0, w
 	}
@@ -202,7 +202,10 @@ func (c *client) runShellCommand(ctx context.Context, region, id, command string
 			return platform.KeepWaiting, "not visible yet", nil
 		})
 	if err != nil {
-		return nil, nil, 0, err
+		if ctx.Err() != nil {
+			return nil, nil, 0, err
+		}
+		return nil, nil, 0, fmt.Errorf("Cloud Assistant invocation %s on instance %s was sent, but its result is unknown (it may have run): %w", resp.InvokeId, id, err)
 	}
 	// Success and Failed (a non-zero exit) carry the exit status of a
 	// command that ran; anything else did not run or did not finish.
