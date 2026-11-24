@@ -185,7 +185,7 @@ type User struct {
 }
 
 // System is a fake Unix system: users with home directories under a
-// temporary directory, and fake id, getent, sudo and chown commands ahead
+// temporary directory, and fake id, getent, sudo, runuser and chown commands ahead
 // of the real ones in PATH. chown only records its arguments in ChownLog
 // (tests cannot change owners).
 type System struct {
@@ -260,6 +260,16 @@ if [ "${1:-}" = -u ]; then to=$2; shift 2; fi
 if [ -n "${FAKE_SUDO_PASSWORD:-}" ]; then echo "sudo: a password is required" >&2; exit 1; fi
 HOME=$(awk -F: -v u="$to" '$1 == u { print $6 }' "$FAKE_PASSWD")
 [ -n "$HOME" ] || { echo "sudo: unknown user $to" >&2; echo "sudo: error initializing audit plugin sudoers_audit" >&2; exit 1; }
+FAKE_USER=$to
+export FAKE_USER HOME
+exec "$@"
+`)
+	write("runuser", `[ "$1" = -u ] || { echo "fake runuser: -u expected" >&2; exit 2; }
+to=$2; shift 2
+[ "${1:-}" = -- ] && shift
+[ "$FAKE_USER" = root ] || { echo "runuser: may not be used by non-root users" >&2; exit 1; }
+HOME=$(awk -F: -v u="$to" '$1 == u { print $6 }' "$FAKE_PASSWD")
+[ -n "$HOME" ] || { echo "runuser: user $to does not exist" >&2; exit 1; }
 FAKE_USER=$to
 export FAKE_USER HOME
 exec "$@"
