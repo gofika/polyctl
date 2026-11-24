@@ -154,30 +154,69 @@ func TestPresentKeepsBothValuesAndCleansUpOne(t *testing.T) {
 
 func TestPresentDeletesStaleRecordsFirst(t *testing.T) {
 	f := &fakeDNS{relativeNames: true}
-	// More stale records than one page of most APIs, and records of other
-	// names that must stay.
+	ledger := OpenStore(t.TempDir(), LetsEncryptProduction).Challenges("example.com")
+	// More stale records of earlier runs than one page of most APIs, all
+	// in the ledger; one more the ledger lists in another zone, and one
+	// the zone no longer holds.
 	for i := range 150 {
-		f.records = append(f.records, platform.Record{ID: fmt.Sprintf("old%d", i), Name: challengeName, Type: "TXT", Value: fmt.Sprintf("stale-%d", i)})
+		id := fmt.Sprintf("old%d", i)
+		f.records = append(f.records, platform.Record{ID: id, Name: challengeName, Type: "TXT", Value: fmt.Sprintf("stale-%d", i)})
+		if err := ledger.Add(ChallengeRecord{ZoneID: "z1", ID: id, Value: fmt.Sprintf("stale-%d", i)}); err != nil {
+			t.Fatal(err)
+		}
 	}
+	for _, r := range []ChallengeRecord{{ZoneID: "z1", ID: "gone"}, {ZoneID: "z2", ID: "foreign1"}} {
+		if err := ledger.Add(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A record of another ACME client, and records of other names: all
+	// stay.
 	f.records = append(f.records,
+		platform.Record{ID: "foreign1", Name: challengeName, Type: "TXT", Value: "cert-manager"},
 		platform.Record{ID: "keep1", Name: "_acme-challenge.www.example.com", Type: "TXT", Value: "other"},
 		platform.Record{ID: "keep2", Name: "example.com", Type: "TXT", Value: "v=spf1 -all"})
 	sl := &sleeps{}
 	p := newProvider(f, sl)
+	p.Ledger = ledger
+	var warned []string
+	p.Warnf = func(format string, args ...any) { warned = append(warned, fmt.Sprintf(format, args...)) }
 	if err := p.Present("example.com", "t1", "ka1"); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.Present("example.com", "t2", "ka2"); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.values(challengeName); len(got) != 2 {
+	if got := f.values(challengeName); !slices.Equal(got, []string{"cert-manager", ChallengeValue("ka1"), ChallengeValue("ka2")}) {
 		t.Fatalf("records = %v", got)
 	}
-	if len(f.records) != 4 {
+	if len(f.records) != 5 {
 		t.Errorf("other records touched: %v", f.records)
 	}
 	if !slices.Equal(sl.got, []time.Duration{20 * time.Second}) {
 		t.Errorf("sleeps = %v", sl.got)
+	}
+	if len(warned) != 1 || !strings.Contains(warned[0], "kept 1 _acme-challenge.example.com TXT record(s) polyctl has no record of writing") {
+		t.Errorf("warnings = %v", warned)
+	}
+	// The ledger holds this run's records (and the other zone's entry);
+	// cleaning up empties it for this zone.
+	recs, err := ledger.Records()
+	if err != nil || len(recs) != 3 || recs[0].ID != "foreign1" || recs[1].Value != ChallengeValue("ka1") {
+		t.Fatalf("ledger = %+v, %v", recs, err)
+	}
+	for _, ka := range []string{"ka1", "ka2"} {
+		if err := p.CleanUp("example.com", "t", ka); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if recs, err := ledger.Records(); err != nil || len(recs) != 1 || recs[0].ZoneID != "z2" {
+		t.Errorf("ledger after cleanup = %+v, %v", recs, err)
+	}
+	// Without a ledger nothing stale is deleted.
+	f2 := &fakeDNS{records: []platform.Record{{ID: "x", Name: challengeName, Type: "TXT", Value: "old"}}}
+	if err := newProvider(f2, &sleeps{}).Present("example.com", "t1", "ka1"); err != nil || len(f2.values(challengeName)) != 2 {
+		t.Errorf("no ledger: %v %v", err, f2.records)
 	}
 }
 

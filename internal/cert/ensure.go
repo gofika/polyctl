@@ -496,7 +496,7 @@ func obtain(ctx context.Context, env *Env, o EnsureOptions, route *Route, acct *
 	provider := &DNSProvider{
 		Ctx: ctx, DNS: route.DNS, ZoneID: route.ZoneID, Zone: route.Zone, TTL: ChallengeTTL(route.Platform),
 		PropagationTimeout: env.DNS.PropagationTimeout, PollInterval: env.DNS.PollInterval, SettleDelay: env.DNS.SettleDelay,
-		Sleep: env.Sleep, Warnf: env.Infof, Verbosef: env.Verbosef,
+		Sleep: env.Sleep, Warnf: env.Infof, Verbosef: env.Verbosef, Ledger: st.Challenges(root),
 	}
 	prop := &Propagation{
 		Ctx: ctx, Resolvers: env.DNS.Resolvers, Min: env.DNS.MinResolvers, QueryTimeout: env.DNS.QueryTimeout,

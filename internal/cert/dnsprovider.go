@@ -64,6 +64,10 @@ type DNSProvider struct {
 	// SettleDelay is waited after stale challenge records were deleted, so
 	// that resolvers drop the old values before the new ones are checked.
 	SettleDelay time.Duration
+	// Ledger keeps the records written and not deleted yet; the first
+	// Present deletes the stale records it lists, and only those (nil:
+	// none is deleted).
+	Ledger ChallengeLedger
 	// Sleep waits (tests replace it); nil sleeps for real.
 	Sleep func(ctx context.Context, d time.Duration) error
 	// Warnf and Verbosef report progress (nil: silent).
@@ -81,9 +85,11 @@ type DNSProvider struct {
 }
 
 // Present creates the challenge record of one authorization. The first
-// call first deletes every _acme-challenge TXT record of the domain left
-// by an earlier run that did not clean up, and waits SettleDelay when
-// there was any. A record that already exists with this value counts as
+// call first deletes the _acme-challenge TXT records of the domain an
+// earlier run wrote and did not clean up (those of the Ledger), and waits
+// SettleDelay when there was any. Other records of the name (another ACME
+// client validating the same domain) are kept: the CA needs one matching
+// value only. A record that already exists with this value counts as
 // created.
 func (p *DNSProvider) Present(domain, token, keyAuth string) error {
 	p.mu.Lock()
@@ -99,19 +105,42 @@ func (p *DNSProvider) Present(domain, token, keyAuth string) error {
 		if err != nil {
 			return fmt.Errorf("list the records of zone %s: %w", p.Zone, err)
 		}
-		deleted := 0
+		owned := map[string]bool{}
+		if p.Ledger != nil {
+			mine, err := p.Ledger.Records()
+			if err != nil {
+				p.warnf("warning: the challenge records of earlier runs are unknown (%v); none is deleted", err)
+			}
+			for _, r := range mine {
+				if r.ZoneID == p.ZoneID {
+					owned[r.ID] = true
+				}
+			}
+		}
+		deleted, foreign := 0, 0
 		for _, r := range recs {
 			if !p.isChallenge(r, fqdn) || r.ID == "" {
 				continue
 			}
+			if !owned[r.ID] {
+				foreign++
+				continue
+			}
+			delete(owned, r.ID)
 			p.verbosef("deleting a stale challenge record %s TXT %q", fqdn, r.Value)
 			if err := p.DNS.DeleteRecord(ctx, p.ZoneID, r.ID); err != nil && !isNotFound(err) {
 				return fmt.Errorf("delete the stale challenge record %s (%s): %w", fqdn, r.ID, err)
 			}
-			if p.Removed != nil {
-				p.Removed(ctx, r.ID)
-			}
+			p.forget(ctx, r.ID)
 			deleted++
+		}
+		// What the ledger lists and the zone no longer holds was deleted
+		// by someone else.
+		for id := range owned {
+			p.forget(ctx, id)
+		}
+		if foreign > 0 {
+			p.warnf("note: kept %d %s TXT record(s) polyctl has no record of writing (another ACME client may be validating the domain)", foreign, fqdn)
 		}
 		p.cleaned = true
 		if deleted > 0 && p.SettleDelay > 0 {
@@ -136,8 +165,15 @@ func (p *DNSProvider) Present(domain, token, keyAuth string) error {
 	}
 	if rec != nil {
 		p.added[value] = rec.ID
-		if p.Written != nil && rec.ID != "" {
-			p.Written(ctx, *rec)
+		if rec.ID != "" {
+			if p.Ledger != nil {
+				if err := p.Ledger.Add(ChallengeRecord{ZoneID: p.ZoneID, ID: rec.ID, Value: value}); err != nil {
+					p.warnf("warning: the challenge record %s TXT %q is not in the ledger (%v); delete it by hand if this run does not", fqdn, value, err)
+				}
+			}
+			if p.Written != nil {
+				p.Written(ctx, *rec)
+			}
 		}
 	} else {
 		p.added[value] = ""
@@ -172,11 +208,21 @@ func (p *DNSProvider) CleanUp(domain, token, keyAuth string) error {
 		p.warnf("warning: could not clean up the challenge record %s TXT %q: %v", fqdn, value, err)
 		return nil
 	}
+	p.forget(ctx, id)
+	delete(p.added, value)
+	return nil
+}
+
+// forget drops a deleted record from the ledger and the inventory.
+func (p *DNSProvider) forget(ctx context.Context, id string) {
+	if p.Ledger != nil {
+		if err := p.Ledger.Remove(p.ZoneID, id); err != nil {
+			p.warnf("warning: challenge ledger: %v", err)
+		}
+	}
 	if p.Removed != nil {
 		p.Removed(ctx, id)
 	}
-	delete(p.added, value)
-	return nil
 }
 
 // Timeout tells the ACME client how long to wait for propagation.

@@ -43,6 +43,7 @@ const archiveKeep = 3
 //	  archive/<root>/<time>/    the bundles live/<root> held before (the last 3)
 //	  pending/<root>/           privkey.pem of an issuance in progress
 //	  locks/<root>.lock         serializes the issuance of one root domain
+//	  challenges/<root>.json    challenge records written and not deleted yet
 //	  history.log               one JSON line per certificate created or updated
 //	  ca/<host>/...             accounts, live, archive and pending of any
 //	                            other ACME directory (staging included)
@@ -341,6 +342,96 @@ func (s *Store) SavePendingKey(root string, key crypto.Signer) error {
 		return err
 	}
 	return writeFileSync(path, data, 0o600)
+}
+
+// ChallengeRecord is a DNS-01 challenge record polyctl wrote.
+type ChallengeRecord struct {
+	ZoneID string `json:"zone_id"`
+	ID     string `json:"id"`
+	Value  string `json:"value"`
+}
+
+// ChallengeLedger keeps the challenge records polyctl wrote for a root
+// domain and has not deleted yet, so that a later run deletes what an
+// interrupted one left, and nothing else.
+type ChallengeLedger interface {
+	Records() ([]ChallengeRecord, error)
+	Add(r ChallengeRecord) error
+	Remove(zoneID, id string) error
+}
+
+// ChallengesPath is the ledger of the challenge records of root. It is
+// shared by every ACME directory: the records live in the same zone.
+func (s *Store) ChallengesPath(root string) string {
+	return filepath.Join(s.Dir, "challenges", root+".json")
+}
+
+// Challenges returns the challenge ledger of root.
+func (s *Store) Challenges(root string) ChallengeLedger {
+	return &fileLedger{dir: s.Dir, path: s.ChallengesPath(root)}
+}
+
+// fileLedger is a ChallengeLedger in a JSON file. It is used under the lock
+// of the root domain.
+type fileLedger struct{ dir, path string }
+
+func (l *fileLedger) Records() ([]ChallengeRecord, error) {
+	data, err := os.ReadFile(l.path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []ChallengeRecord
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, fmt.Errorf("%s: %w", l.path, err)
+	}
+	return out, nil
+}
+
+func (l *fileLedger) Add(r ChallengeRecord) error {
+	recs, err := l.Records()
+	if err != nil {
+		return err
+	}
+	for _, x := range recs {
+		if x.ZoneID == r.ZoneID && x.ID == r.ID {
+			return nil
+		}
+	}
+	return l.save(append(recs, r))
+}
+
+func (l *fileLedger) Remove(zoneID, id string) error {
+	recs, err := l.Records()
+	if err != nil {
+		return err
+	}
+	kept := recs[:0]
+	for _, x := range recs {
+		if x.ZoneID != zoneID || x.ID != id {
+			kept = append(kept, x)
+		}
+	}
+	return l.save(kept)
+}
+
+func (l *fileLedger) save(recs []ChallengeRecord) error {
+	if len(recs) == 0 {
+		if err := os.Remove(l.path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	data, err := json.MarshalIndent(recs, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := mkdirs(l.dir, filepath.Dir(l.path)); err != nil {
+		return err
+	}
+	return writeFileSync(l.path, append(data, '\n'), 0o600)
 }
 
 // HistoryEntry is one line of history.log.
