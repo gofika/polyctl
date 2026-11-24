@@ -41,12 +41,13 @@ meanwhile is read again and retried once). list also shows the
 project-wide keys (project metadata, read-only: they reach every instance
 of the project), marked ignored when the instance blocks them
 (block-project-ssh-keys=TRUE); a key whose google-ssh expireOn has passed
-is listed ignored, and add puts it in again without an expiry. When OS Login is enabled (enable-oslogin=TRUE
-in the instance metadata, else in the project metadata), the guest ignores
-the ssh-keys metadata: list says so, and add and remove are refused with
-exit code 7 (OS Login keys belong to the Google account: gcloud compute
-os-login ssh-keys add). The user of a key is --user, else the user of the
-user@host that ends the key's comment; on a terminal it is asked.`,
+is listed ignored, and add puts it in again without an expiry. When OS
+Login is enabled (enable-oslogin=TRUE in the instance metadata, else in
+the project metadata), the guest ignores the ssh-keys metadata: list says
+so, and add and remove are refused with exit code 7 (OS Login keys belong
+to the Google account: gcloud compute os-login ssh-keys add). The user of
+a key is --user, else the user of the user@host that ends the key's
+comment; on a terminal it is asked.`,
 		Flags: func(cmd *cobra.Command) {
 			cmd.Flags().StringVar(&zone, "zone", "", "zone of the instance (narrows several matches, finds an instance not in the inventory yet)")
 		},

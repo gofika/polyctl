@@ -1513,7 +1513,7 @@ gcp compute instance delete <name|id> [--zone <z>] [--release-ips] [--yes] [--wa
 gcp compute instance resize <name|id> --machine-type <type|size> [--zone <z>] [--start[=false]] [--yes] [--wait-port <n>] [--timeout 10m]
 gcp compute instance reboot <name|id|ip> [--zone <z>] [--yes] [--wait [--timeout 3m]]
 gcp compute instance update <name|id> --ip-forward[=false] [--zone <z>]
-gcp compute instance ssh-key list <name|id> [--zone <z>] [--user <name>]                    # instance and project metadata keys
+gcp compute instance ssh-key list <name|id> [--user <name>] [--zone <z>]                    # instance and project metadata keys
 gcp compute instance ssh-key add <name|id> (--ssh-key <public key> | --ssh-key-file <path>) [--user <name>] [--zone <z>]
 gcp compute instance ssh-key remove <name|id> (--fingerprint SHA256:... | --ssh-key <key> | --ssh-key-file <path>) [--user <name>] [--zone <z>] [--yes]
 gcp compute firewall list [--network <n>]          gcp compute firewall get <name>
