@@ -216,3 +216,12 @@ func (rt *Runtime) Disambiguate(err error) (string, error) {
 	}
 	return rt.Pick().Select("Ambiguous "+amb.What+"; use which one?", amb.Options, "")
 }
+
+// Arg returns args[i], or "" when the argument was left out (the
+// interactive flow then asks for it).
+func Arg(args []string, i int) string {
+	if i < len(args) {
+		return args[i]
+	}
+	return ""
+}

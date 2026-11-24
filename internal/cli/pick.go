@@ -1,9 +1,7 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -36,34 +34,6 @@ var (
 	zoneKinds   = []platform.ResourceType{platform.ResZone}
 	domainKinds = []platform.ResourceType{platform.ResDomain}
 )
-
-// pickRecordType asks for a record type the target platform can write.
-func pickRecordType(rt *app.Runtime, id platform.ID) (string, error) {
-	types := platform.WritableRecordTypes(id)
-	if types == nil {
-		types = platform.RecordSpecTypes
-	}
-	var opts []prompt.Option
-	for _, t := range types {
-		opts = append(opts, prompt.Option{Label: t, Value: t})
-	}
-	return rt.Choose(app.Choice{Title: "Record type", Options: opts, Default: "A", Arg: "--type", Required: true, What: "record type"})
-}
-
-// askRecordValue asks for the value of a record of type typ, checked as it
-// is typed (an IPv4 address for A, IPv6 for AAAA, a host name for CNAME,
-// ...); def is the current value of the record, if any.
-func askRecordValue(rt *app.Runtime, typ, def string) (string, error) {
-	return rt.AskInput("--value", "Value of the "+typ+" record", def, func(s string) error {
-		if strings.TrimSpace(s) == "" {
-			return fmt.Errorf("a value is required")
-		}
-		if err := (platform.RecordSpec{Name: "@", Type: typ, Value: s}).Validate(); err != nil {
-			return errors.New(strings.TrimPrefix(err.Error(), platform.ErrInvalidInput.Error()+": record @: "))
-		}
-		return nil
-	})
-}
 
 // certStoreOptions lists the certificates of a store in domain order, each
 // labelled with key type, expiry and days left.

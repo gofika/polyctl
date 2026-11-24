@@ -283,7 +283,7 @@ func (p refusingPicker) Input(title, _ string, _ func(string) error) (string, er
 // from a terminal, so scripts never block. No other code looks at the
 // streams to choose a behaviour; it asks here, or is handed the answer.
 func (rt *Runtime) Interactive() bool {
-	if rt.Flags.NonInteractive || rt.NoPrompt {
+	if rt == nil || rt.Flags.NonInteractive || rt.NoPrompt {
 		return false
 	}
 	// The flag wins over the variable: --non-interactive=false leaves the

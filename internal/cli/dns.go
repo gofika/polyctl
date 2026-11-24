@@ -174,7 +174,7 @@ func newDNSWriteCmd(rt *app.Runtime, add bool, cmd *cobra.Command) *cobra.Comman
 			return err
 		}
 		if typ == "" {
-			if typ, err = pickRecordType(rt, t.Platform); err != nil {
+			if typ, err = rt.PickRecordType(t.Platform); err != nil {
 				return err
 			}
 		}
@@ -200,7 +200,7 @@ func newDNSWriteCmd(rt *app.Runtime, add bool, cmd *cobra.Command) *cobra.Comman
 			if !add && len(matches) == 1 {
 				def = matches[0].Value
 			}
-			if value, err = askRecordValue(rt, typ, def); err != nil {
+			if value, err = rt.AskRecordValue(typ, def); err != nil {
 				return err
 			}
 		}
