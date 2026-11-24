@@ -264,7 +264,7 @@ ACM certificates belong to one region of one account. CloudFront uses `us-east-1
 
 ## RDS database instances
 
-`create` supports MySQL only (other engines: exit code 7). The other commands work for any engine except Aurora (exit code 7). Instances are named by identifier or endpoint DNS name and found across accounts and regions.
+`create` supports MySQL only (`--engine mysql`, the default; other engines: exit code 7). The other commands work for any engine except Aurora (exit code 7). Instances are named by identifier or endpoint DNS name and found across accounts and regions.
 
 - `list` reads the inventory of the profile's region (`--region <r>` or `all`); filters `--state`, `--class`, `--name` (glob).
 - `get` reads the instance live.
