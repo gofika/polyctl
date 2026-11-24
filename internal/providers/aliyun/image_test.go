@@ -217,6 +217,9 @@ func TestImageLatestErrors(t *testing.T) {
 	if err := h.run("ecs", "image", "latest", "--arch", "i386"); !errors.Is(err, app.ErrUsage) {
 		t.Errorf("--arch i386 = %v", err)
 	}
+	if err := h.run("ecs", "image", "latest", "--os", "windows", "--arch", "arm64"); !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "--arch x86_64") {
+		t.Errorf("--os windows --arch arm64 = %v", err)
+	}
 	if len(h.api.calls) != calls {
 		t.Error("usage errors sent requests")
 	}

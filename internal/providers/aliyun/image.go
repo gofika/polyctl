@@ -72,7 +72,7 @@ func checkImageOS(osName, arch string) error {
 		return app.UsageErrf("unsupported architecture %q: --arch takes %s or %s", arch, archX86, archARM)
 	}
 	if rule.Families[arch] == nil {
-		return app.UsageErrf("--os %s has no %s image: use an %s instance type (or pass --image <id>)", osName, arch, archX86)
+		return app.UsageErrf("--os %s has no %s image (%s only): with create and ensure use an %s instance type or pass --image <id>; with image latest use --arch %s", osName, arch, archX86, archX86, archX86)
 	}
 	return nil
 }
