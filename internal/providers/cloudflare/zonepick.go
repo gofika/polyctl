@@ -226,7 +226,7 @@ func askDomainUpdate(rt *app.Runtime, cur r2CustomDomain) (*bool, string, error)
 	if !cur.Enabled {
 		toggle = "Enable the domain"
 	}
-	what, err := rt.Choose(app.Choice{Title: "Change what of " + cur.Domain + "?", Arg: "--enabled / --min-tls", Options: []prompt.Option{
+	what, err := rt.Choose(app.Choice{Title: "What to change on " + cur.Domain, Arg: "--enabled / --min-tls", Options: []prompt.Option{
 		{Label: toggle, Value: "toggle"},
 		{Label: "Minimum TLS version (now " + nonEmpty(cur.MinTLS, "default") + ")...", Value: "tls"},
 	}})

@@ -105,7 +105,7 @@ func TestR2DomainUpdatePicks(t *testing.T) {
 	if a := p.Find("Custom domain of assets"); len(a.Options) != 1 || !strings.Contains(a.Options[0].Label, "cdn.example.com  enabled") {
 		t.Errorf("domain options %+v", a.Options)
 	}
-	if a := p.Find("Change what of cdn.example.com?"); a.Options[0].Label != "Disable the domain" {
+	if a := p.Find("What to change on cdn.example.com"); a.Options[0].Label != "Disable the domain" {
 		t.Errorf("change options %+v", a.Options)
 	}
 	p.Done()

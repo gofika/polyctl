@@ -808,7 +808,7 @@ bounded by --timeout; --no-wait returns at once.`,
 			}
 			if !setName && !setProtection {
 				// The interactive flow asks what to change.
-				what, err := rt.Choose(app.Choice{Title: "Change what of " + orID(lb.Name, lb.ID) + "?", Arg: "--name or --deletion-protection",
+				what, err := rt.Choose(app.Choice{Title: "What to change on " + orID(lb.Name, lb.ID), Arg: "--name or --deletion-protection",
 					Options: []prompt.Option{{Label: "Name (now " + orDash(lb.Name) + ")", Value: "name"}, {Label: "Deletion protection (now " + strconv.FormatBool(lb.DeletionProtection) + ")", Value: "protection"}}})
 				if err != nil {
 					return err
@@ -1278,7 +1278,7 @@ Running again.`,
 				if carriesCertificates(l.Protocol) {
 					opts = append(opts, prompt.Option{Label: "Certificate (now " + orDash(firstOr(l.Certificates, "")) + ")", Value: "cert"})
 				}
-				what, err := rt.Choose(app.Choice{Title: "Change what of listener " + l.ID + "?", Options: opts, Arg: "--server-group or --cert"})
+				what, err := rt.Choose(app.Choice{Title: "What to change on listener " + l.ID, Options: opts, Arg: "--server-group or --cert"})
 				if err != nil {
 					return err
 				}
@@ -1888,7 +1888,7 @@ func askServerGroupChange(rt *app.Runtime, g *albServerGroup, changed map[string
 	if g.HealthCheck && g.HealthCheckPath != "" {
 		hc += ", " + g.HealthCheckPath
 	}
-	what, err := rt.Choose(app.Choice{Title: "Change what of server group " + orID(g.Name, g.ID) + "?", Arg: "--name, --scheduler, --health-check, --health-check-path or --sticky-session",
+	what, err := rt.Choose(app.Choice{Title: "What to change on server group " + orID(g.Name, g.ID), Arg: "--name, --scheduler, --health-check, --health-check-path or --sticky-session",
 		Options: []prompt.Option{
 			{Label: "Name (now " + orDash(g.Name) + ")", Value: "name"},
 			{Label: "Scheduler (now " + orDash(g.Scheduler) + ")", Value: "scheduler"},
