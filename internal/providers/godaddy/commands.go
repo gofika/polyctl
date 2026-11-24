@@ -745,32 +745,32 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 		Short: "Delete every record of a name and type (or one record by --id)",
 		Long: `Delete every record of --name and --type, or the one record given with --id.
 GoDaddy addresses records by name and type, so the id is an optional second
-way to pick a single record here, not a required argument.`,
-		Example: "  polyctl godaddy dns delete example.com --type A --name www",
+way to pick a single record here, not a required argument.
+
+The records to delete are listed, then one yes/no question is asked (default
+no; --yes skips it). The non-interactive flow asks nothing: --yes is required
+(exit code 2 without it, before anything is read). Declining changes nothing.
+--dry-run reports what would be deleted and asks nothing.`,
+		Example: "  polyctl godaddy dns delete example.com --type A --name www\n  polyctl godaddy dns delete example.com --type A --name www --yes",
 		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			args, err := rt.DomainArg(cmd.Context(), args, platform.GoDaddy, platform.ResZone, nil)
 			if err != nil {
 				return err
 			}
-			if id == "" && typ == "" {
-				// The interactive flow lists the records to pick one.
-				if !rt.Interactive() {
-					return app.UsageErrf("--type (with --name) or --id is required")
+			zone := platform.NormalizeDomain(args[0])
+			if id == "" && typ == "" && !rt.Interactive() {
+				return app.UsageErrf("--type (with --name) or --id is required")
+			}
+			if !rt.Flags.DryRun {
+				what := "delete the picked record of zone " + zone
+				switch {
+				case id != "":
+					what = "delete record " + id + " of zone " + zone
+				case typ != "":
+					what = fmt.Sprintf("delete every %s record of %s", strings.ToUpper(typ), platform.FQDN(name, zone))
 				}
-				if rt.Flags.Offline {
-					return app.ErrOffline
-				}
-				c, _, err := openClient(cmd.Context(), rt)
-				if err != nil {
-					return err
-				}
-				zone := platform.NormalizeDomain(args[0])
-				recs, err := c.ListRecords(cmd.Context(), zone)
-				if err != nil {
-					return err
-				}
-				if id, err = rt.PickRecordID("Delete which record of "+zone+"?", recs, nil); err != nil {
+				if err := rt.CanConfirm(what); err != nil {
 					return err
 				}
 			}
@@ -781,14 +781,40 @@ way to pick a single record here, not a required argument.`,
 			if err != nil {
 				return err
 			}
-			zone := platform.NormalizeDomain(args[0])
+			if id == "" && typ == "" {
+				// The interactive flow lists the records to pick one.
+				recs, err := c.ListRecords(cmd.Context(), zone)
+				if err != nil {
+					return err
+				}
+				if id, err = rt.PickRecordID("Delete which record of "+zone+"?", recs, nil); err != nil {
+					return err
+				}
+			}
+			target := platform.Target{Platform: platform.GoDaddy, Profile: p.Name, Domain: zone}
 			if id != "" {
 				t, n, d, err := DecodeRecordID(id)
 				if err != nil {
 					return err
 				}
-				if done, err := rt.WouldWrite(platform.Target{Platform: platform.GoDaddy, Profile: p.Name, Domain: zone}, platform.Change{Resource: app.RecordResource(platform.FQDN(n, zone), t), Action: platform.Deleted, ID: id, Detail: d}); done || err != nil {
+				// A dry run neither asks nor needs --yes: nothing is deleted.
+				if done, err := rt.WouldWrite(target, platform.Change{Resource: app.RecordResource(platform.FQDN(n, zone), t), Action: platform.Deleted, ID: id, Detail: d}); done || err != nil {
 					return err
+				}
+				if !rt.Flags.Yes {
+					set, err := c.api.recordSet(cmd.Context(), zone, t, n)
+					if err != nil {
+						return err
+					}
+					i := indexOfData(set, d)
+					if i < 0 {
+						return fmt.Errorf("%w: %s %s %q in zone %s", platform.ErrNotFound, t, n, d, zone)
+					}
+					ok, err := confirmDelete(cmd.Context(), rt, []platform.Record{recordFromAPI(zone, set[i])},
+						fmt.Sprintf("Delete the %s record %s of %s?", t, d, platform.FQDN(n, zone)))
+					if err != nil || !ok {
+						return err
+					}
 				}
 				if err := c.DeleteRecord(cmd.Context(), zone, id); err != nil {
 					return err
@@ -798,19 +824,53 @@ way to pick a single record here, not a required argument.`,
 				return rt.Render(map[string]any{"profile": p.Name, "zone": zone, "deleted": []string{id}}, func() output.Grid { return output.Grid{} })
 			}
 			rel := platform.RelativeName(platform.FQDN(name, zone), zone)
-			if done, err := rt.WouldWrite(platform.Target{Platform: platform.GoDaddy, Profile: p.Name, Domain: zone}, platform.Change{Resource: app.RecordResource(platform.FQDN(rel, zone), typ), Action: platform.Deleted, Detail: "every record of the set"}); done || err != nil {
+			upper := strings.ToUpper(typ)
+			if done, err := rt.WouldWrite(target, platform.Change{Resource: app.RecordResource(platform.FQDN(rel, zone), typ), Action: platform.Deleted, Detail: "every record of the set"}); done || err != nil {
 				return err
+			}
+			if !rt.Flags.Yes {
+				set, err := c.api.recordSet(cmd.Context(), zone, upper, rel)
+				if err != nil {
+					return err
+				}
+				if len(set) == 0 {
+					return fmt.Errorf("%w: no %s records of %s in zone %s", platform.ErrNotFound, upper, platform.FQDN(rel, zone), zone)
+				}
+				recs := make([]platform.Record, 0, len(set))
+				for _, r := range set {
+					recs = append(recs, recordFromAPI(zone, r))
+				}
+				ok, err := confirmDelete(cmd.Context(), rt, recs,
+					fmt.Sprintf("Delete %d %s record(s) of %s?", len(recs), upper, platform.FQDN(rel, zone)))
+				if err != nil || !ok {
+					return err
+				}
 			}
 			if err := c.DeleteRecordSet(cmd.Context(), zone, typ, rel); err != nil {
 				return err
 			}
 			refreshZoneCache(cmd.Context(), rt, c, p.Name, zone)
-			rt.Infof("deleted all %s records of %s via godaddy/%s", strings.ToUpper(typ), platform.FQDN(rel, zone), p.Name)
-			return rt.Render(map[string]any{"profile": p.Name, "zone": zone, "type": strings.ToUpper(typ), "name": platform.FQDN(rel, zone)}, func() output.Grid { return output.Grid{} })
+			rt.Infof("deleted all %s records of %s via godaddy/%s", upper, platform.FQDN(rel, zone), p.Name)
+			return rt.Render(map[string]any{"profile": p.Name, "zone": zone, "type": upper, "name": platform.FQDN(rel, zone)}, func() output.Grid { return output.Grid{} })
 		},
 	}
 	cmd.Flags().StringVar(&typ, "type", "", "record type")
 	cmd.Flags().StringVar(&name, "name", "@", "record name relative to the domain (www, @)")
 	cmd.Flags().StringVar(&id, "id", "", "delete the single record with this id (TYPE|name|value)")
 	return cmd
+}
+
+// confirmDelete lists recs on stderr and asks question (default no). A no,
+// or leaving the question, is the note that nothing was deleted (exit code
+// 0); ok is true only for a yes.
+func confirmDelete(ctx context.Context, rt *app.Runtime, recs []platform.Record, question string) (bool, error) {
+	_ = output.RenderGrid(rt.Stderr, recordGrid(recs))
+	ok, err := rt.Confirm(ctx, question, false)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, app.NothingToDof("cancelled, no record was deleted")
+	}
+	return true, nil
 }

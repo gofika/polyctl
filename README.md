@@ -662,6 +662,7 @@ These commands ask one yes/no question (default no) before they delete, stop or 
 - GCP: `compute instance stop` (not asked for an instance stopped already; refused before any lookup), `delete` (alias `terminate`), `reboot` (a hard reset), `resize` of a running instance and `password --reset` (refused before any lookup), `compute firewall delete`, `compute ssl-certificate delete`, `compute load-balancer delete`, and the `delete` of `compute backend-service`, `forwarding-rule`, `health-check` and `instance-group`.
 - Alibaba Cloud: `ecs instance stop` (refused before the account is opened), `delete` (alias `terminate`), `reboot --force` (a forced stop; a plain reboot asks nothing) and `resize` of a running instance, `ecs security-group delete` and `rule remove` (nothing to remove asks nothing), `alb load-balancer delete`, `listener delete`, `server-group delete` and `acl delete`, and `cas certificate delete`.
 - Cloudflare: `r2 domain detach`, `zone delete`, and `cache rule set --replace` / `redirect rule set --replace` when they would delete rules.
+- GoDaddy: `dns delete`, of a whole record set (`--type` / `--name`) or of one record (`--id`, or picked from the zone's records): the records are listed first; refused before anything is read. `dns add` and `dns upsert` ask nothing.
 
 ## Accounts
 
@@ -1239,10 +1240,10 @@ godaddy domain check <name>...  # availability and price
 godaddy dns list <domain> [--type] [--name]
 godaddy dns add <domain> --type A --name www --value 203.0.113.10 [--ttl 600] [--priority]             # one more record; the others stay
 godaddy dns upsert <domain> --type A --name www --value <v> [--value <v>...] [--ttl] [--priority]   # sets the whole name+type set
-godaddy dns delete <domain> (--type A --name www | --id <TYPE|name|value>)
+godaddy dns delete <domain> (--type A --name www | --id <TYPE|name|value>) [--yes]
 ```
 
-Inventory types: `domain`, `zone`, `dns_record`. GoDaddy has no per-record ids; records are addressed by type + name. `upsert` creates the record set or replaces all of it (the API's "replace all records of this type and name"), like `record upsert` on Route 53 and Cloud DNS; `add` appends one record to the set. polyctl derives a stable synthetic id of the form `TYPE|name|value` (each part percent-encoded, e.g. `TXT|@|v=spf1%20include:_spf.example.com%20~all`) so the neutral `dns` commands and `godaddy dns delete --id` can target single records.
+Inventory types: `domain`, `zone`, `dns_record`. GoDaddy has no per-record ids; records are addressed by type + name. `upsert` creates the record set or replaces all of it (the API's "replace all records of this type and name"), like `record upsert` on Route 53 and Cloud DNS; `add` appends one record to the set. polyctl derives a stable synthetic id of the form `TYPE|name|value` (each part percent-encoded, e.g. `TXT|@|v=spf1%20include:_spf.example.com%20~all`) so the neutral `dns` commands and `godaddy dns delete --id` can target single records. `godaddy dns delete` lists the records it would delete and asks for a confirmation (see [Confirmations](#confirmations)); a record set or record that does not exist is exit code 4 and asks nothing.
 
 ### AWS (`polyctl aws`)
 

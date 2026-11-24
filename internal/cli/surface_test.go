@@ -657,6 +657,7 @@ func TestReadmeListsConfirmingCommands(t *testing.T) {
 		{"cloudflare zone delete", "Cloudflare", "`zone delete`"},
 		{"cloudflare cache rule set", "Cloudflare", "`cache rule set --replace`"},
 		{"cloudflare redirect rule set", "Cloudflare", "`redirect rule set --replace`"},
+		{"godaddy dns delete", "GoDaddy", "`dns delete`"},
 	} {
 		if find(root, c.path) == nil {
 			t.Errorf("confirming command %q does not exist", c.path)
