@@ -161,6 +161,21 @@ type InstanceLogin struct {
 	UpdatedAt time.Time   `json:"updated_at" yaml:"updated_at"`
 }
 
+// RenderLogin prints the login of an instance as the password command
+// does: a table INSTANCE, USER, PASSWORD, or an InstanceLogin in json and
+// yaml. Only the password command calls it: it prints the password in
+// both flows.
+func (rt *Runtime) RenderLogin(c secrets.Credentials) error {
+	v := InstanceLogin{Instance: c.Name, ID: c.InstanceID, User: c.User, Password: c.Password,
+		Platform: c.Platform, Profile: c.Profile, Location: c.Location, UpdatedAt: c.UpdatedAt}
+	if v.Instance == "" {
+		v.Instance = v.ID
+	}
+	return rt.Render(v, func() output.Grid {
+		return output.Grid{Headers: []string{"INSTANCE", "USER", "PASSWORD"}, Rows: [][]string{{label(c), v.User, v.Password}}}
+	})
+}
+
 // PasswordCommand describes the `instance password` command of a platform.
 type PasswordCommand struct {
 	Platform platform.ID
@@ -179,6 +194,12 @@ type PasswordCommand struct {
 	// then the command's error (exit code 4). It is never called with
 	// --offline. A password it returns is stored before it is shown.
 	Retrieve func(ctx context.Context, profile, location, instance string, stored *secrets.Credentials) (*secrets.Credentials, error)
+	// Hint, when set, replaces the advice of the "nothing stored" error
+	// (reset the password in the platform's console) for instance ref.
+	Hint func(ref string) string
+	// Reset says the platform adds a --reset flag that sets a new password
+	// through the platform (the help then says so).
+	Reset bool
 }
 
 // InstancePasswordCommand builds `<tree> password <name|id>`: it shows the
@@ -194,8 +215,11 @@ func InstancePasswordCommand(rt *Runtime, pc PasswordCommand) *cobra.Command {
 		"credentials.json); this command decrypts and prints them. It is the only\n" +
 		"command besides an interactive create that prints a password: treat its\n" +
 		"output as a secret. It reads nothing but the local database"
-	if pc.Retrieve != nil {
+	switch {
+	case pc.Retrieve != nil:
 		long += ",\nunless the platform has to be asked (see below)"
+	case pc.Reset:
+		long += ",\nunless --reset sets a new password (see below)"
 	}
 	long += ".\n\nThe instance is given by its id or its name; a name stored for several\n" +
 		"instances is exit code 5 (pass the id"
@@ -273,21 +297,18 @@ func InstancePasswordCommand(rt *Runtime, pc PasswordCommand) *cobra.Command {
 				return notFound
 			}
 			if cur == nil {
-				return fmt.Errorf("%w: no Windows credentials stored for instance %q in profile %s: polyctl stores them when it creates an instance with --os windows; for another instance reset the password in the platform's console",
-					platform.ErrNotFound, ref, profile)
+				hint := "for another instance reset the password in the platform's console"
+				if pc.Hint != nil {
+					hint = pc.Hint(ref)
+				}
+				return fmt.Errorf("%w: no Windows credentials stored for instance %q in profile %s: polyctl stores them when it creates an instance with --os windows; %s",
+					platform.ErrNotFound, ref, profile, hint)
 			}
 			if cur.Password == "" {
 				return fmt.Errorf("%w: the Windows password of instance %s is not available yet (the instance generates it a few minutes after launch); run the command again later",
 					platform.ErrNotFound, label(*cur))
 			}
-			v := InstanceLogin{Instance: cur.Name, ID: cur.InstanceID, User: cur.User, Password: cur.Password,
-				Platform: cur.Platform, Profile: cur.Profile, Location: cur.Location, UpdatedAt: cur.UpdatedAt}
-			if v.Instance == "" {
-				v.Instance = v.ID
-			}
-			return rt.Render(v, func() output.Grid {
-				return output.Grid{Headers: []string{"INSTANCE", "USER", "PASSWORD"}, Rows: [][]string{{label(*cur), v.User, v.Password}}}
-			})
+			return rt.RenderLogin(*cur)
 		},
 	}
 	if pc.LocationFlag != "" {
