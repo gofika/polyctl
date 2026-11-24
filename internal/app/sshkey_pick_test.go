@@ -181,3 +181,51 @@ func TestKeyPairPickerTypedKey(t *testing.T) {
 		}
 	}
 }
+
+// A key read from a file, a ~/.ssh/*.pub or another one, that a key pair
+// already holds is pointed out like a typed one: the existing key pair is
+// preselected, and importing it again asks for a new name.
+func TestKeyPairPickerRegisteredFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv(app.EnvNonInteractive, "")
+	sshDir := filepath.Join(home, ".ssh")
+	_ = os.MkdirAll(sshDir, 0o700)
+	mine := writeSSHKey(t, sshDir, "id_ed25519.pub")
+	elsewhere := filepath.Join(home, "keys")
+	_ = os.MkdirAll(elsewhere, 0o700)
+	theirs := writeSSHKey(t, elsewhere, "friend.pub")
+	pairs := kpLister{{Name: "laptop", PublicKey: mine}, {Name: "friend", PublicKey: theirs}}
+
+	run := func(answers ...any) (platform.KeyPairPlan, *prompttest.Picker, error) {
+		rt := app.New(app.Flags{}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+		p := prompttest.New(t, answers...)
+		rt.Picker = p
+		in, err := rt.KeyInput(&app.KeyFlags{}, platform.KeyInput{Match: platform.MatchByPublicKey, AllowedTypes: platform.AWSKeyTypes})
+		if err != nil {
+			t.Fatal(err)
+		}
+		plan, err := platform.ResolveKeyPair(t.Context(), pairs, in)
+		p.Done()
+		return plan, p, err
+	}
+
+	// A registered ~/.ssh/*.pub: the existing key pair is used.
+	plan, p, err := run(prompttest.Label("from a public key file"), filepath.Join(sshDir, "id_ed25519.pub"), prompttest.Label("Use the existing key pair laptop"))
+	if err != nil || plan.Create || plan.Name != "laptop" {
+		t.Fatalf("local file = %+v, %v", plan, err)
+	}
+	if r := p.Find(`This public key is already registered as key pair "laptop"`); r.Default != "laptop" {
+		t.Errorf("registered question default = %q", r.Default)
+	}
+
+	// Another file holding a registered key: imported again under a new
+	// name, the holder's name refused.
+	plan, p, err = run(prompttest.Label("from a public key file"), prompttest.Label("Another file"), filepath.Join(elsewhere, "friend.pub"),
+		prompttest.Label("Import it again"), "friend", "friend-2")
+	if err != nil || !plan.Create || plan.Name != "friend-2" || !plan.Key.Equal(theirs) {
+		t.Fatalf("other file = %+v, %v", plan, err)
+	}
+	p.Find(`This public key is already registered as key pair "friend"`)
+}
