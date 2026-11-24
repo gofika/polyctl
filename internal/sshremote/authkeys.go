@@ -151,8 +151,12 @@ func (c *Client) command(user string, args ...string) (cmd, stdin string) {
 	for _, a := range args {
 		b.WriteString(" " + shellQuote(a))
 	}
-	prog := strings.NewReplacer("@HEADER@", shellQuote(header), "@SSHD_CONFIG@", shellQuote(SSHDConfig)).Replace(script)
-	return b.String(), prog
+	return b.String(), keyScript()
+}
+
+// keyScript is the script with its placeholders filled in.
+func keyScript() string {
+	return strings.NewReplacer("@HEADER@", shellQuote(header), "@SSHD_CONFIG@", shellQuote(SSHDConfig)).Replace(script)
 }
 
 // runScript runs the script for user with args.
@@ -223,14 +227,21 @@ func SameKey(a, b ssh.PublicKey) bool {
 // ErrChanged is a file that changed between the read and the write.
 var ErrChanged = errors.New("authorized_keys changed while polyctl was editing it")
 
-// scriptError turns a failed run of the script into an error.
-func (c *Client) scriptError(user string, stdout, stderr []byte, code int) error {
+// scriptMessage is the last "polyctl-error: " message of the script's
+// standard error, "" when there is none.
+func scriptMessage(stderr []byte) string {
 	msg := ""
 	for _, l := range strings.Split(string(stderr), "\n") {
 		if m, ok := strings.CutPrefix(strings.TrimSpace(l), "polyctl-error: "); ok {
 			msg = m
 		}
 	}
+	return msg
+}
+
+// scriptError turns a failed run of the script into an error.
+func (c *Client) scriptError(user string, stdout, stderr []byte, code int) error {
+	msg := scriptMessage(stderr)
 	sudoFailed := msg == "" && c.NeedsSudo(user) && bytes.Contains(stderr, []byte("sudo"))
 	switch {
 	case sudoFailed && bytes.Contains(stderr, []byte("unknown user")):
@@ -258,14 +269,54 @@ func (c *Client) scriptError(user string, stdout, stderr []byte, code int) error
 	return fmt.Errorf("%s: the key script failed as %s: %s", c.Addr, c.User, detail)
 }
 
+// KeyEditor lists and edits the authorized_keys files of an instance: over
+// SSH (*Client) or through a command run as root by the platform
+// (*RootEditor).
+type KeyEditor interface {
+	// ListKeys reads the authorized_keys file of user.
+	ListKeys(ctx context.Context, user string) (*AuthorizedKeys, error)
+	// AddKey ensures user's authorized_keys holds key: false when it
+	// already did and nothing was written.
+	AddKey(ctx context.Context, user string, key ssh.PublicKey, comment string) (bool, error)
+	// RemoveKeys ensures user's authorized_keys holds none of keys and
+	// returns how many lines were deleted; guard sees the file right before
+	// the write and may refuse it.
+	RemoveKeys(ctx context.Context, user string, keys []ssh.PublicKey, guard func(*AuthorizedKeys, []Entry) error) (int, error)
+}
+
+// keyRunner runs the key script on an instance as user.
+type keyRunner interface {
+	runScript(ctx context.Context, user string, args ...string) (stdout, stderr []byte, code int, err error)
+	scriptError(user string, stdout, stderr []byte, code int) error
+}
+
 // ListKeys reads the authorized_keys file of user.
 func (c *Client) ListKeys(ctx context.Context, user string) (*AuthorizedKeys, error) {
-	out, errb, code, err := c.runScript(ctx, user, "list", user)
+	return listKeys(ctx, c, user)
+}
+
+// AddKey ensures user's authorized_keys holds key: it returns false when it
+// already did (under any comment or options) and nothing was written. A
+// file that changed while it was edited is read again, once.
+func (c *Client) AddKey(ctx context.Context, user string, key ssh.PublicKey, comment string) (bool, error) {
+	return addKey(ctx, c, user, key, comment)
+}
+
+// RemoveKeys ensures user's authorized_keys holds none of keys: every line
+// holding one of them is deleted, the others are kept as they are. It
+// returns how many lines were deleted (0: nothing was written). guard, when
+// set, sees the file before the write and may refuse it.
+func (c *Client) RemoveKeys(ctx context.Context, user string, keys []ssh.PublicKey, guard func(*AuthorizedKeys, []Entry) error) (int, error) {
+	return removeKeys(ctx, c, user, keys, guard)
+}
+
+func listKeys(ctx context.Context, r keyRunner, user string) (*AuthorizedKeys, error) {
+	out, errb, code, err := r.runScript(ctx, user, "list", user)
 	if err != nil {
 		return nil, err
 	}
 	if code != 0 || !bytes.HasPrefix(out, []byte(header+"\n")) {
-		return nil, c.scriptError(user, out, errb, code)
+		return nil, r.scriptError(user, out, errb, code)
 	}
 	return parseList(user, out)
 }
@@ -324,17 +375,17 @@ func parseEntries(content string) []Entry {
 }
 
 // apply runs the write of the script: delete lines, append line.
-func (c *Client) apply(ctx context.Context, ak *AuthorizedKeys, del []int, line string) error {
+func apply(ctx context.Context, r keyRunner, ak *AuthorizedKeys, del []int, line string) error {
 	nums := make([]string, 0, len(del))
 	for _, n := range del {
 		nums = append(nums, strconv.Itoa(n))
 	}
-	out, errb, code, err := c.runScript(ctx, ak.User, "apply", ak.User, ak.Sum, strings.Join(nums, " "), line)
+	out, errb, code, err := r.runScript(ctx, ak.User, "apply", ak.User, ak.Sum, strings.Join(nums, " "), line)
 	if err != nil {
 		return err
 	}
 	if code != 0 || !bytes.HasPrefix(out, []byte(header+"\n")) {
-		return c.scriptError(ak.User, out, errb, code)
+		return r.scriptError(ak.User, out, errb, code)
 	}
 	return nil
 }
@@ -348,12 +399,9 @@ func KeyLine(key ssh.PublicKey, comment string) string {
 	return line
 }
 
-// AddKey ensures user's authorized_keys holds key: it returns false when it
-// already did (under any comment or options) and nothing was written. A
-// file that changed while it was edited is read again, once.
-func (c *Client) AddKey(ctx context.Context, user string, key ssh.PublicKey, comment string) (bool, error) {
+func addKey(ctx context.Context, r keyRunner, user string, key ssh.PublicKey, comment string) (bool, error) {
 	for attempt := 0; ; attempt++ {
-		ak, err := c.ListKeys(ctx, user)
+		ak, err := listKeys(ctx, r, user)
 		if err != nil {
 			return false, err
 		}
@@ -363,7 +411,7 @@ func (c *Client) AddKey(ctx context.Context, user string, key ssh.PublicKey, com
 		if ak.Symlink {
 			return false, fmt.Errorf("%s is a symbolic link; polyctl does not replace it", ak.Path)
 		}
-		err = c.apply(ctx, ak, nil, KeyLine(key, comment))
+		err = apply(ctx, r, ak, nil, KeyLine(key, comment))
 		if errors.Is(err, ErrChanged) && attempt == 0 {
 			continue
 		}
@@ -371,13 +419,9 @@ func (c *Client) AddKey(ctx context.Context, user string, key ssh.PublicKey, com
 	}
 }
 
-// RemoveKeys ensures user's authorized_keys holds none of keys: every line
-// holding one of them is deleted, the others are kept as they are. It
-// returns how many lines were deleted (0: nothing was written). guard, when
-// set, sees the file before the write and may refuse it.
-func (c *Client) RemoveKeys(ctx context.Context, user string, keys []ssh.PublicKey, guard func(*AuthorizedKeys, []Entry) error) (int, error) {
+func removeKeys(ctx context.Context, r keyRunner, user string, keys []ssh.PublicKey, guard func(*AuthorizedKeys, []Entry) error) (int, error) {
 	for attempt := 0; ; attempt++ {
-		ak, err := c.ListKeys(ctx, user)
+		ak, err := listKeys(ctx, r, user)
 		if err != nil {
 			return 0, err
 		}
@@ -400,7 +444,7 @@ func (c *Client) RemoveKeys(ctx context.Context, user string, keys []ssh.PublicK
 		for _, e := range del {
 			lines = append(lines, e.Line)
 		}
-		err = c.apply(ctx, ak, lines, "")
+		err = apply(ctx, r, ak, lines, "")
 		if errors.Is(err, ErrChanged) && attempt == 0 {
 			continue
 		}

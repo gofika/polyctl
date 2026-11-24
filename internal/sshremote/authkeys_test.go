@@ -318,7 +318,7 @@ func TestChangedFileIsReadAgain(t *testing.T) {
 	fh, _ := os.OpenFile(f, os.O_APPEND|os.O_WRONLY, 0)
 	_, _ = fh.WriteString(line(other.pub, "other") + "\n")
 	_ = fh.Close()
-	if err := c.apply(t.Context(), ak, nil, line(newKey(t).pub, "late")); !errors.Is(err, ErrChanged) {
+	if err := apply(t.Context(), c, ak, nil, line(newKey(t).pub, "late")); !errors.Is(err, ErrChanged) {
 		t.Fatalf("stale write: %v", err)
 	}
 	data, _ := os.ReadFile(f)
@@ -391,3 +391,4 @@ func TestCshLoginShell(t *testing.T) {
 		t.Errorf("file %q", data)
 	}
 }
+
