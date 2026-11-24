@@ -506,3 +506,21 @@ func TestWindowsPendingCancelled(t *testing.T) {
 		t.Errorf("stored = %+v\n%s", got, h.stderr.String())
 	}
 }
+
+// A create of the name that succeeds after an uncertain one drops the
+// password stored for the uncertain one: it created nothing that lasted.
+func TestWindowsPendingDroppedByCreate(t *testing.T) {
+	h, f := winHarness(t, app.Flags{})
+	f.runLost = 100
+	if err := h.run(winCreate...); err == nil {
+		t.Fatal("unknown result succeeded")
+	}
+	f.runLost = 0
+	f.instances = nil // nothing lasted
+	if err := h.run(winCreate...); err != nil {
+		t.Fatalf("%v\n%s", err, h.stderr.String())
+	}
+	if got := storedLogin(t, h, "win-a"); len(got) != 1 || strings.HasPrefix(got[0].InstanceID, pendingInstancePrefix) {
+		t.Errorf("stored = %+v", got)
+	}
+}

@@ -982,3 +982,25 @@ func TestWindowsPendingOtherInstance(t *testing.T) {
 		t.Errorf("stored = %+v", got)
 	}
 }
+
+// A create of the name that succeeds after an uncertain one drops the
+// login stored for the uncertain one: it launched nothing that lasted.
+func TestWindowsPendingDroppedByCreate(t *testing.T) {
+	h := winHarness(t, app.Flags{})
+	h.ec2.inst.runLost = 100
+	if err := h.run(winCreate...); err == nil {
+		t.Fatal("unknown result succeeded")
+	}
+	// Nothing lasted; the user deleted the kept key pair in AWS.
+	h.ec2.mu.Lock()
+	h.ec2.inst.byRegion["ap-east-1"] = nil
+	h.ec2.regions["ap-east-1"] = nil
+	h.ec2.mu.Unlock()
+	h.ec2.inst.runLost = 0
+	if err := h.run(winCreate...); err != nil {
+		t.Fatalf("%v\n%s", err, h.stderr.String())
+	}
+	if got := storedWin(t, h, "win-a"); len(got) != 1 || !strings.HasPrefix(got[0].InstanceID, "i-") {
+		t.Errorf("stored = %+v", got)
+	}
+}

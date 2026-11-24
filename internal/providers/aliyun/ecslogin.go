@@ -2,6 +2,7 @@ package aliyun
 
 import (
 	"context"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -68,6 +69,26 @@ func (w *windowsLogin) created(ctx context.Context, id string) {
 		err = st.Put(ctx, w.credentials())
 	}
 	w.stored = err == nil
+	if st != nil {
+		w.dropPending(ctx, st)
+	}
+}
+
+// dropPending removes the logins stored under the name while an earlier
+// create of it was uncertain (see pending): this create found no instance
+// of the name, so that one created nothing that lasted.
+func (w *windowsLogin) dropPending(ctx context.Context, st *secrets.Store) {
+	found, err := st.Find(ctx, platform.Aliyun, w.s.profile, w.s.region, w.name)
+	if err != nil {
+		return
+	}
+	for _, c := range found {
+		if strings.HasPrefix(c.InstanceID, pendingInstancePrefix) {
+			if err := st.Delete(ctx, c.Ref); err != nil {
+				w.rt.Verbosef("remove the stale login of %s: %v", c.InstanceID, err)
+			}
+		}
+	}
 }
 
 // pendingInstancePrefix starts the instance id under which the login of an
