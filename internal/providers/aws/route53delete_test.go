@@ -95,6 +95,18 @@ func TestRoute53RecordSetIdentifiers(t *testing.T) {
 	}
 	reset()
 
+	// The interactive upsert proposes the value of the set it replaces.
+	up := prompttest.New(t, "A", prompttest.KeepDefault{})
+	h.rt.Picker = up
+	if err := h.run("route53", "record", "upsert", "other.org", "--name", "www", "--set-identifier", "us"); err != nil {
+		t.Fatalf("interactive upsert us: %v", err)
+	}
+	up.Done()
+	if d := up.Asked[1].Default; d != "198.51.100.2" {
+		t.Errorf("upsert of us proposed %q, want its own value", d)
+	}
+	reset()
+
 	p := prompttest.New(t, prompttest.Label("set us"))
 	h.rt.Picker = p
 	h.rt.Stdin = strings.NewReader("y\n")
@@ -137,5 +149,11 @@ func TestRoute53RecordSetIdentifiers(t *testing.T) {
 	}
 	if err := h.run("route53", "record", "delete", "other.org", "--name", "www", "--type", "A", "--set-identifier", "nope"); !errors.Is(err, platform.ErrNotFound) {
 		t.Errorf("unknown identifier = %v", err)
+	}
+	// upsert cannot create a routing-policy set (it sets no policy): an
+	// unknown identifier is not found, and nothing is sent.
+	r53.changes = nil
+	if err := h.run("route53", "record", "upsert", "other.org", "--name", "www", "--type", "A", "--set-identifier", "nope", "--value", "203.0.113.7"); !errors.Is(err, platform.ErrNotFound) || len(r53.changes) != 0 {
+		t.Errorf("upsert unknown identifier = %v, changes %v", err, r53.changes)
 	}
 }

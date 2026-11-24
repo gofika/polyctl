@@ -807,11 +807,16 @@ func (c *client) LookupSet(ctx context.Context, zone, fqdn, typ, setID string) (
 // ReplaceSet replaces the whole value set of (name, type) and set
 // identifier setID ("" for a simple set) with values (used by the native
 // `route53 record upsert` command). An existing set keeps its routing
-// policy.
+// policy. A routing-policy set that does not exist is not found: this
+// command sets no routing policy, which Route 53 requires of a set with a
+// set identifier.
 func (c *client) ReplaceSet(ctx context.Context, zone, fqdn, typ, setID string, values []string, ttl int) ([]platform.Record, error) {
 	zone = zoneID(zone)
 	existing, err := c.LookupSet(ctx, zone, fqdn, typ, setID)
 	if errors.Is(err, platform.ErrNotFound) {
+		if setID != "" {
+			return nil, fmt.Errorf("%w (record upsert updates an existing routing-policy set; create a new one, with its policy, in the AWS console or CLI)", err)
+		}
 		existing, err = nil, nil
 	}
 	if err != nil {

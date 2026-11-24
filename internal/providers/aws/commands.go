@@ -410,8 +410,10 @@ are removed. MX and SRV values take their priority from --priority, or as a
 leading number inside the value ("10 mail.example.com").
 
 A routing-policy set (weighted, latency, failover, geolocation...) is
-chosen with --set-identifier and keeps its policy. Without it, a name and
-type that hold only routing-policy sets are ambiguous (exit code 5).`,
+chosen with --set-identifier and keeps its policy; a set identifier that
+does not exist is not found (exit code 4), since this command sets no
+routing policy. Without it, a name and type that hold only routing-policy
+sets are ambiguous (exit code 5).`,
 		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if (typ == "" || len(values) == 0) && !rt.Interactive() {
@@ -447,8 +449,13 @@ type that hold only routing-policy sets are ambiguous (exit code 5).`,
 				// The value of the set as it is, when it exists, is proposed.
 				cur := ""
 				if recs, err := c.ListRecords(cmd.Context(), z.ID); err == nil {
-					if m := app.MatchRecords(recs, fqdn, typ, ""); len(m) > 0 {
-						cur = m[0].Value
+					for _, r := range app.MatchRecords(recs, fqdn, typ, "") {
+						// The value of the set being replaced, not of
+						// another routing-policy set of the name and type.
+						if extraString(r.Extra, "set_identifier") == setID {
+							cur = r.Value
+							break
+						}
 					}
 				}
 				v, err := rt.AskRecordValue(typ, cur)
