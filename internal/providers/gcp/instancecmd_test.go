@@ -335,6 +335,9 @@ func TestInstanceCreateValidation(t *testing.T) {
 		{[]string{"web-1", "--machine-type", "e2-small", "--zone", "us-central1-a", "--image", "projects/debian-cloud/global/images/nope"}, "notfound", "nope"},
 		{[]string{"web-1", "--machine-type", "e2-small", "--zone", "us-central1-a", "--subnet", "missing"}, "notfound", "subnetwork missing"},
 		{[]string{"web-1", "--machine-type", "e2-small", "--zone", "us-central1-a", "--network", "nonet"}, "notfound", "network nonet"},
+		// Valid instance names too long for the names derived from them.
+		{[]string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--machine-type", "e2-small", "--zone", "us-central1-a"}, "usage", "external address name"},
+		{[]string{"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "--machine-type", "e2-small", "--zone", "us-central1-a", "--static-ip=false"}, "usage", "boot disk name"},
 	} {
 		err := h.run(append([]string{"compute", "instance", "create"}, tc.args...)...)
 		if exitClass(err) != tc.want || err == nil || !strings.Contains(err.Error(), tc.msg) {

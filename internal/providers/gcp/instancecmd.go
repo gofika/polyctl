@@ -555,6 +555,41 @@ func checkInstanceName(name string) error {
 	return app.UsageErrf("invalid instance name %q: a GCE instance name must start with a lower-case letter (%s)", name, hint)
 }
 
+// createDerivedNames renders the static address names of create and
+// checks them, and the disk names, against the Compute Engine name rule:
+// a valid instance name can still be too long for them.
+func createDerivedNames(rt *app.Runtime, o *createOptions, name, zone, region string) (ext, internal string, err error) {
+	vars := map[string]string{"name": name, "zone": zone, "region": region}
+	if ext, err = rt.ResourceName("gcp_instance_external_ip", "", vars); err != nil {
+		return "", "", err
+	}
+	if internal, err = rt.ResourceName("gcp_instance_internal_ip", "", vars); err != nil {
+		return "", "", err
+	}
+	type derived struct{ what, name, fix string }
+	var check []derived
+	if o.staticIP {
+		check = append(check,
+			derived{"external address", ext, "change naming.gcp_instance_external_ip, or pass --static-ip=false"},
+			derived{"internal address", internal, "change naming.gcp_instance_internal_ip, or pass --static-ip=false"})
+	}
+	check = append(check, derived{"boot disk", name + "-boot", ""})
+	if o.disk > 0 {
+		check = append(check, derived{"data disk", name + "-data", ""})
+	}
+	for _, d := range check {
+		if instanceNameRe.MatchString(d.name) {
+			continue
+		}
+		hint := "use a shorter instance name"
+		if d.fix != "" {
+			hint += ", " + d.fix
+		}
+		return "", "", app.UsageErrf("the %s name %q derived from instance name %q is not a valid Compute Engine name (lower-case letters, digits and hyphens, at most 63 characters): %s", d.what, d.name, name, hint)
+	}
+	return ext, internal, nil
+}
+
 // mergeTags returns the --tag values followed by the configured ones,
 // without repeats, each validated.
 func mergeTags(flags, defaults []string) ([]string, error) {
@@ -945,6 +980,9 @@ func runCreate(cmd *cobra.Command, rt *app.Runtime, o *createOptions, name strin
 			if err := checkInstanceName(s); err != nil {
 				return err
 			}
+			if _, _, err := createDerivedNames(rt, o, s, zone, region); err != nil {
+				return err
+			}
 			in, err := c.findInstance(ctx, zone, s)
 			if err != nil {
 				return err
@@ -957,20 +995,18 @@ func runCreate(cmd *cobra.Command, rt *app.Runtime, o *createOptions, name strin
 			return err
 		}
 	}
+	// The names derived from the instance name are checked before any
+	// call: a name too long for them would fail with a raw API error.
+	extName, intName, err := createDerivedNames(rt, o, name, zone, region)
+	if err != nil {
+		return err
+	}
 	existing, err := c.findInstance(ctx, zone, name)
 	if err != nil {
 		return err
 	}
 	if existing != nil {
 		return fmt.Errorf("instance %s already exists in zone %s of project %s (%s): use `polyctl gcp compute instance get %s`, or choose another name", name, zone, c.project, existing.Status, name)
-	}
-	extName, err := rt.ResourceName("gcp_instance_external_ip", "", map[string]string{"name": name, "zone": zone, "region": region})
-	if err != nil {
-		return err
-	}
-	intName, err := rt.ResourceName("gcp_instance_internal_ip", "", map[string]string{"name": name, "zone": zone, "region": region})
-	if err != nil {
-		return err
 	}
 	o.size = nil
 	// A size resolves to an E2 type, which is x86_64; a machine type has
