@@ -398,11 +398,14 @@ func sgGetCmd(rt *app.Runtime) *cobra.Command {
 		Short: "Show a security group and its ingress rules",
 		Example: `  polyctl aliyun ecs security-group get web
   polyctl aliyun ecs security-group get sg-0123456789abcdef -o json`,
-		Args: cobra.ExactArgs(1),
+		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			s, err := openECSScope(ctx, rt, region)
 			if err != nil {
+				return err
+			}
+			if args, err = sgArg(ctx, rt, s, args, vpc); err != nil {
 				return err
 			}
 			sg, err := resolveSG(ctx, s, args[0], vpc)
@@ -452,25 +455,57 @@ func sgCreateCmd(rt *app.Runtime) *cobra.Command {
 security group is never created without a VPC, since Alibaba Cloud would
 then create a default VPC on its own). A group of that name in the VPC is an
 error (exit code 1): use ensure to reuse it. Add rules with rule add or
-ensure.`,
+ensure. On a terminal, without --vpc the Available VPCs of the region are
+offered (the naming.aliyun_vpc one preselected), and without <name> a name
+is asked, checked as it is typed against the groups of the VPC.`,
 		Example: `  polyctl aliyun ecs security-group create web --vpc cn-hongkong-vpc --description "web servers"`,
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			name := args[0]
-			if err := checkSGName(name); err != nil {
-				return err
+			name := app.Arg(args, 0)
+			if name != "" {
+				if err := checkSGName(name); err != nil {
+					return err
+				}
 			}
-			if vpc == "" {
+			if vpc == "" && !rt.Interactive() {
 				return app.UsageErrf("--vpc is required: a security group belongs to a VPC (pass its id or name)")
 			}
 			s, err := openECSScope(ctx, rt, region)
 			if err != nil {
 				return err
 			}
-			v, err := resolveVPC(ctx, s, vpc)
+			var v vpcInfo
+			if vpc == "" {
+				prefer, _ := rt.ResourceName("aliyun_vpc", "", map[string]string{"region": s.region})
+				v, err = pickVPC(ctx, rt, s, "--vpc", prefer, nil)
+			} else {
+				v, err = resolveVPC(ctx, s, vpc)
+			}
 			if err != nil {
 				return err
+			}
+			if name == "" {
+				// A new name, checked as it is typed against the rules and
+				// the groups of the VPC.
+				groups, err := s.c.listSecurityGroups(ctx, s.region, v.ID, "", "")
+				if err != nil {
+					return err
+				}
+				if name, err = rt.AskInput("<name>", "Name of the new security group (VPC "+v.ID+")", "", func(n string) error {
+					n = strings.TrimSpace(n)
+					if err := checkSGName(n); err != nil {
+						return inline(err)
+					}
+					for _, g := range groups {
+						if g.Name == n {
+							return fmt.Errorf("VPC %s already has a security group %q (%s)", v.ID, n, g.ID)
+						}
+					}
+					return nil
+				}); err != nil {
+					return err
+				}
 			}
 			if found, err := s.c.findSecurityGroups(ctx, s.region, name, v.ID); err != nil {
 				return err
@@ -519,10 +554,22 @@ nothing.
 		Example: `  polyctl aliyun ecs security-group ensure web --vpc cn-hongkong-vpc \
     --rule icmp:all:0.0.0.0/0 --rule tcp:http:0.0.0.0/0 --rule tcp:https:0.0.0.0/0 --dry-run
   polyctl aliyun ecs security-group ensure web --instance site-1 --rule tcp:ssh:203.0.113.7`,
-		Args: cobra.ExactArgs(1),
+		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			name := args[0]
+			name := app.Arg(args, 0)
+			if name == "" {
+				if rt.Flags.Offline {
+					return app.ErrOffline
+				}
+				s, err := openECSScope(ctx, rt, region)
+				if err != nil {
+					return err
+				}
+				if name, err = sgEnsureArg(ctx, rt, s); err != nil {
+					return err
+				}
+			}
 			byID := looksLikeGroupID(name)
 			if !byID {
 				if err := checkSGName(name); err != nil {
@@ -595,7 +642,12 @@ nothing.
 				}
 				v, err := resolveVPC(ctx, s, ref)
 				if vpcFlag == "" && errors.Is(err, platform.ErrNotFound) {
-					return app.UsageErrf("no VPC for security group %q: the default VPC %q (naming.aliyun_vpc) does not exist in %s; pass --vpc <id|name> or --instance <name|id>", name, ref, s.region)
+					missing := app.UsageErrf("no VPC for security group %q: the default VPC %q (naming.aliyun_vpc) does not exist in %s; pass --vpc <id|name> or --instance <name|id>", name, ref, s.region)
+					if !rt.Interactive() {
+						return missing
+					}
+					// The interactive flow offers the VPCs of the region.
+					v, err = pickVPC(ctx, rt, s, "--vpc", "", missing)
 				}
 				if err != nil {
 					return err
@@ -705,10 +757,10 @@ that another group's rule references, is not deleted (exit code 1): remove
 the instances or the reference first; polyctl never does it for you. A
 group that is gone by the time it is deleted is reported unchanged.`,
 		Example: "  polyctl aliyun ecs security-group delete web --vpc cn-hongkong-vpc --yes",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			action := "delete security group " + args[0]
+			action := "delete security group " + app.Arg(args, 0)
 			// The non-interactive flow without --yes is refused before the
 			// account is opened. A dry run deletes nothing.
 			if !rt.DryRun() {
@@ -718,6 +770,9 @@ group that is gone by the time it is deleted is reported unchanged.`,
 			}
 			s, err := openECSScope(ctx, rt, region)
 			if err != nil {
+				return err
+			}
+			if args, err = sgArg(ctx, rt, s, args, vpc); err != nil {
 				return err
 			}
 			sg, err := resolveSG(ctx, s, args[0], vpc)
@@ -793,12 +848,15 @@ func sgRuleAddCmd(rt *app.Runtime) *cobra.Command {
 		Long: `Add the --rule ingress rules to an existing security group (name or id; a
 missing group is exit code 4). Rules already present (same protocol, ports,
 source and policy, whatever their priority or description) are unchanged;
-the others are added in one call with --priority and --description.`,
+the others are added in one call with --priority and --description. On a
+terminal, without <sg> the groups of the region are offered, and without
+--rule the common rules the group lacks (ssh, http, https, icmp from
+anywhere) and typed ones, each checked as it is typed.`,
 		Example: `  polyctl aliyun ecs security-group rule add web --rule tcp:8000-8999:10.0.0.0/8 --description "internal"`,
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			rules, err := parseRules(specs, true)
+			rules, err := parseRules(specs, !rt.Interactive())
 			if err != nil {
 				return err
 			}
@@ -809,6 +867,9 @@ the others are added in one call with --priority and --description.`,
 			if err != nil {
 				return err
 			}
+			if args, err = sgArg(ctx, rt, s, args, vpc); err != nil {
+				return err
+			}
 			sg, err := resolveSG(ctx, s, args[0], vpc)
 			if err != nil {
 				return err
@@ -816,6 +877,16 @@ the others are added in one call with --priority and --description.`,
 			have, err := s.c.securityGroupRules(ctx, s.region, sg.ID)
 			if err != nil {
 				return err
+			}
+			if len(rules) == 0 {
+				// The interactive flow asks for the rules.
+				typed, err := askRules(rt, have)
+				if err != nil {
+					return err
+				}
+				if rules, err = parseRules(typed, true); err != nil {
+					return err
+				}
 			}
 			missing, present := splitRules(have, rules)
 			var plan platform.Plan
@@ -842,16 +913,18 @@ protocol, ports, source and policy; every stored rule equal to it is
 removed) or as --rule-id (the sgr-... ids get shows), not both. A rule that
 is not there is unchanged. The rules to remove are shown and a confirmation
 is asked (default no; --yes skips it, and the non-interactive flow needs
---yes, exit code 2); nothing to remove asks nothing.`,
+--yes, exit code 2); nothing to remove asks nothing. On a terminal, without
+<sg> the groups of the region are offered, and without --rule / --rule-id
+the rules of the group (multiple choice; none is nothing to do).`,
 		Example: `  polyctl aliyun ecs security-group rule remove web --rule tcp:8000-8999:10.0.0.0/8 --yes
   polyctl aliyun ecs security-group rule remove sg-0123456789abcdef --rule-id sgr-0123456789abcdef --yes`,
-		Args: cobra.ExactArgs(1),
+		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			if len(specs) > 0 && len(ids) > 0 {
 				return app.UsageErrf("--rule and --rule-id are mutually exclusive")
 			}
-			if len(specs) == 0 && len(ids) == 0 {
+			if len(specs) == 0 && len(ids) == 0 && !rt.Interactive() {
 				return app.UsageErrf("pass the rules to remove with --rule <rule> (format %s) or --rule-id <sgr-id>", platform.RuleFormat)
 			}
 			rules, err := parseRules(specs, false)
@@ -867,6 +940,9 @@ is asked (default no; --yes skips it, and the non-interactive flow needs
 			if err != nil {
 				return err
 			}
+			if args, err = sgArg(ctx, rt, s, args, vpc); err != nil {
+				return err
+			}
 			sg, err := resolveSG(ctx, s, args[0], vpc)
 			if err != nil {
 				return err
@@ -874,6 +950,12 @@ is asked (default no; --yes skips it, and the non-interactive flow needs
 			have, err := s.c.securityGroupRules(ctx, s.region, sg.ID)
 			if err != nil {
 				return err
+			}
+			if len(specs) == 0 && len(ids) == 0 {
+				// The interactive flow offers the rules of the group.
+				if ids, err = pickRuleIDs(rt, sg, have); err != nil {
+					return err
+				}
 			}
 			resource := "security-group/" + orID(sg.Name, sg.ID) + "/rule"
 

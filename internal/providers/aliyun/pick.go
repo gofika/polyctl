@@ -271,7 +271,8 @@ func inline(err error) error {
 	if err == nil {
 		return nil
 	}
-	return errors.New(strings.TrimPrefix(err.Error(), app.ErrUsage.Error()+": "))
+	msg := strings.TrimPrefix(err.Error(), app.ErrUsage.Error()+": ")
+	return errors.New(strings.TrimPrefix(msg, platform.ErrInvalidInput.Error()+": "))
 }
 
 // askInstanceName asks for the name of a new instance, checked as it is
