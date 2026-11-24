@@ -22,6 +22,8 @@ import (
 	"github.com/gofika/polyctl/internal/creds"
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt"
+	"github.com/gofika/polyctl/internal/prompt/prompttest"
 	"github.com/gofika/polyctl/internal/secrets"
 )
 
@@ -816,5 +818,41 @@ func TestParseWindowsKeyAndDecrypt(t *testing.T) {
 	k, _ := parseWindowsKey(string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(rk)})))
 	if _, err := decryptWindowsPassword(k.key, "%%%"); err == nil {
 		t.Error("bad base64 decrypted")
+	}
+}
+
+// On a terminal, --key-pair without --key-file asks for the private key
+// file (a bad path keeps the question open); leaving the question creates
+// nothing, and the non-interactive flow keeps the usage error.
+func TestWindowsCreateAsksKeyFile(t *testing.T) {
+	h := winHarness(t, app.Flags{NonInteractive: false, NonInteractiveSet: true})
+	path, rk := writeRSAKey(t, t.TempDir())
+	pub, err := ssh.NewPublicKey(&rk.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.add("ap-east-1", newFakeKeyPair("ops-rsa", pub))
+	p := prompttest.New(t, filepath.Join(h.dir, "nosuch.pem"), path)
+	h.rt.Picker = p
+	if err := h.run(append(winCreate, "--key-pair", "ops-rsa", "--no-wait")...); err != nil {
+		t.Fatalf("%v\n%s", err, h.stderr.String())
+	}
+	p.Done()
+	if got := h.runs(); len(got) != 1 || got[0] != "ami-0win2025 key=ops-rsa" {
+		t.Fatalf("runs = %v", got)
+	}
+
+	h.rt.Picker = prompttest.New(t, prompttest.Abort{})
+	if err := h.run("ec2", "instance", "create", "win-b", "--os", "windows", "--type", "t3.large", "--key-pair", "ops-rsa"); !errors.Is(err, prompt.ErrAborted) {
+		t.Errorf("abort = %v", err)
+	}
+	if got := h.runs(); len(got) != 1 {
+		t.Errorf("an aborted create ran an instance: %v", got)
+	}
+
+	h.rt.Picker = nil
+	h.rt.Flags.NonInteractive = true
+	if err := h.run("ec2", "instance", "create", "win-b", "--os", "windows", "--type", "t3.large", "--key-pair", "ops-rsa"); !exit2(err) || !strings.Contains(err.Error(), "needs --key-file") {
+		t.Errorf("non-interactive = %v", err)
 	}
 }

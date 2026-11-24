@@ -710,9 +710,10 @@ Without --key-file polyctl creates the RSA key pair itself
 code 2) and stores its private key encrypted in polyctl's database, never
 printed; --key-file <path> (an unencrypted RSA private key) uses the key
 pair that holds its public key instead, importing it under --key-pair when
-none does, and is never stored. --key-pair without --key-file, --ssh-key
-and --ssh-key-file are exit code 2 with Windows, and defaults.aws.key_name
-is not used. Once the instance runs, create waits for the password
+none does, and is never stored. --key-pair without --key-file asks a
+terminal for the path of that key pair's private key and is exit code 2
+in the non-interactive flow; --ssh-key and --ssh-key-file are exit code 2
+with Windows, and defaults.aws.key_name is not used. Once the instance runs, create waits for the password
 (GetPasswordData every 15 seconds, up to --password-timeout, 20 minutes by
 default), decrypts it and stores user and password encrypted: an
 interactive create prints them at the end, a non-interactive one prints a
@@ -758,6 +759,9 @@ running and prints its addresses.`,
 				return app.UsageErrf("--key-file applies to Windows instances only (--os windows): Linux instances log in with their key pair, whose private key polyctl never needs")
 			}
 			if windowsOS {
+				if keyFile, err = askWindowsKeyFile(rt, keys, keyFile); err != nil {
+					return err
+				}
 				if err := windowsKeyFlags(keys, keyFile); err != nil {
 					return err
 				}
@@ -957,6 +961,16 @@ running and prints its addresses.`,
 			windows := windowsOS || img.Windows
 			switch {
 			case windows && ami != "":
+				if keyFile == "" {
+					if keyFile, err = askWindowsKeyFile(rt, keys, keyFile); err != nil {
+						return err
+					}
+					if keyFile != "" {
+						if winKey, err = loadWindowsKey(keyFile); err != nil {
+							return err
+						}
+					}
+				}
 				if err := windowsKeyFlags(keys, keyFile); err != nil {
 					return err
 				}

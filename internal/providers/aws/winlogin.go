@@ -553,6 +553,25 @@ func errLinuxKeyRequired() error {
 	return app.UsageErrf("a key pair is required (Linux instances log in with a key only, never a password): pass --key-pair <name> (an existing key pair), --ssh-key-file <path> / --ssh-key <public key> with --key-pair <name> to import one, or set defaults.aws.key_name")
 }
 
+// askWindowsKeyFile asks, in the interactive flow, for the RSA private key
+// file of --key-pair when a Windows instance gets --key-pair without
+// --key-file (checked as typed; read only to decrypt the password, never
+// stored). Otherwise keyFile is returned as it is, and windowsKeyFlags
+// keeps the usage error of the non-interactive flow.
+func askWindowsKeyFile(rt *app.Runtime, keys app.KeyFlags, keyFile string) (string, error) {
+	if keys.KeyPair == "" || keyFile != "" || keys.SSHKey != "" || keys.SSHKeyFile != "" || !rt.Interactive() {
+		return keyFile, nil
+	}
+	return rt.AskInput("--key-file", fmt.Sprintf("Path of the RSA private key of key pair %s (decrypts the Windows password)", keys.KeyPair), "", func(s string) error {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return errors.New("the path of the private key file is required")
+		}
+		_, err := loadWindowsKey(s)
+		return inline(err)
+	})
+}
+
 // windowsKeyFlags refuses the key flags that cannot serve a Windows
 // instance: a public key decrypts nothing, and a key pair of the user's
 // is of no use without its private key.
