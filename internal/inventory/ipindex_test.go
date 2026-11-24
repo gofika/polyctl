@@ -169,6 +169,16 @@ func TestReplaceKeepingFailedRegions(t *testing.T) {
 	}, time.Hour, []string{"us-west-2"}); err != nil {
 		t.Fatal(err)
 	}
+	// The set holds old rows of us-west-2: it is not fresh, so the next
+	// read syncs again; the parents that worked are.
+	if st, err := db.GetState(ctx, set); err != nil || st == nil || st.Fresh(time.Now()) {
+		t.Errorf("state after a partial sync = %+v, %v; want stale", st, err)
+	}
+	east := set
+	east.Scope = "us-east-1"
+	if st, err := db.GetState(ctx, east); err != nil || !st.Fresh(time.Now()) {
+		t.Errorf("state of us-east-1 = %+v, %v; want fresh", st, err)
+	}
 	rows, err := db.List(ctx, inventory.Query{Platform: platform.AWS, Profile: "a", Type: platform.ResInstance})
 	if err != nil {
 		t.Fatal(err)

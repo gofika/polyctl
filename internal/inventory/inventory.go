@@ -225,7 +225,8 @@ func (d *DB) Replace(ctx context.Context, s Set, resources []platform.Resource, 
 // ReplaceKeeping is Replace for a sync that could not read some parents of
 // an unscoped set (the regions of a multi-region sync that failed): the
 // stored rows whose ParentID is in keep stay, with their index entries,
-// unless resources holds a row of the same id. A scoped set ignores keep.
+// unless resources holds a row of the same id, and the set expires at once
+// so the next read retries the failed parents. A scoped set ignores keep.
 func (d *DB) ReplaceKeeping(ctx context.Context, s Set, resources []platform.Resource, ttl time.Duration, keep []string) error {
 	if s.Scope != "" || len(keep) == 0 {
 		return d.replace(ctx, s, resources, ttl, nil)
@@ -327,8 +328,15 @@ func (d *DB) replace(ctx context.Context, s Set, resources []platform.Resource, 
 			return err
 		}
 	}
+	// A set with kept parents holds old rows of the parents that failed:
+	// it expires now, so the next read syncs again (and find reports it
+	// stale) instead of serving them as fresh for a whole TTL.
+	setExp := exp
+	if s.Scope == "" && len(keep) > 0 {
+		setExp = now
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO sync_state (platform, profile, resource_type, scope, synced_at, expires_at) VALUES (?,?,?,?,?,?)`,
-		string(s.Platform), s.Profile, string(s.Type), s.Scope, now.Unix(), exp.Unix()); err != nil {
+		string(s.Platform), s.Profile, string(s.Type), s.Scope, now.Unix(), setExp.Unix()); err != nil {
 		return err
 	}
 	// An unscoped sync also refreshes every per-parent scope it covered, so a
