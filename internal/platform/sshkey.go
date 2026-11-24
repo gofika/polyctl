@@ -60,24 +60,39 @@ func invalid(format string, args ...any) error {
 // to an existing file is refused with a hint to use --ssh-key-file, and a
 // private key is refused outright.
 func ParsePublicKey(text string) (*PublicKey, error) {
+	return parsePublicKeyText(text, "--ssh-key", "pass it with --ssh-key-file", "--ssh-key")
+}
+
+// TypedKeySource is the Source of a public key typed in the interactive
+// flow.
+const TypedKeySource = "typed public key"
+
+// ParseTypedPublicKey parses a public key typed (or pasted) in the
+// interactive flow, with the checks of ParsePublicKey: one OpenSSH
+// authorized_keys line, no private key, no file path.
+func ParseTypedPublicKey(text string) (*PublicKey, error) {
+	return parsePublicKeyText(text, "the public key", "choose the file instead of typing the key", TypedKeySource)
+}
+
+func parsePublicKeyText(text, what, fileHint, source string) (*PublicKey, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
-		return nil, invalid("--ssh-key is empty")
+		return nil, invalid("%s is empty", what)
 	}
 	if strings.Contains(text, "PRIVATE KEY") {
-		return nil, invalid("--ssh-key holds a private key; pass the public key (the .pub file) instead")
+		return nil, invalid("%s holds a private key; pass the public key (the .pub file) instead", what)
 	}
 	key, comment, _, rest, err := ssh.ParseAuthorizedKey([]byte(text))
 	if err != nil {
 		if fi, serr := os.Stat(ExpandHome(text)); serr == nil && fi.Mode().IsRegular() {
-			return nil, invalid("--ssh-key takes the public key itself, and %q is a file path: pass it with --ssh-key-file", text)
+			return nil, invalid("%s takes the public key itself, and %q is a file path: %s", what, text, fileHint)
 		}
-		return nil, invalid("--ssh-key is not an SSH public key (expected one line such as \"ssh-ed25519 AAAA... comment\")")
+		return nil, invalid("%s is not an SSH public key (expected one line such as \"ssh-ed25519 AAAA... comment\")", what)
 	}
 	if len(bytes.TrimSpace(rest)) > 0 {
-		return nil, invalid("--ssh-key holds more than one key; pass exactly one")
+		return nil, invalid("%s holds more than one key; pass exactly one", what)
 	}
-	return &PublicKey{Key: key, Comment: comment, Source: "--ssh-key"}, nil
+	return &PublicKey{Key: key, Comment: comment, Source: source}, nil
 }
 
 // ExpandHome replaces a leading ~ with the home directory.
@@ -299,17 +314,36 @@ var MatchAWS = KeyMatcher{Label: "matched by public key", Match: func(local *Pub
 	return false
 }}
 
+// KeySource is how the interactive flow asks for a public key to import.
+type KeySource int
+
+const (
+	// KeyFromFile offers the usable ~/.ssh/*.pub files, another file (a
+	// path) and typing the key itself.
+	KeyFromFile KeySource = iota
+	// KeyTyped asks for the key itself, typed or pasted.
+	KeyTyped
+)
+
 // KeyPrompter asks the questions of the interactive flow of key pair
 // resolution. It is never used in the non-interactive flow.
 type KeyPrompter interface {
 	// ChooseKeyPairOrCreate asks which existing key pair to use, or to
-	// import a new one (the answer ""). pairs are the key pairs of the
-	// target region, sorted by name; local maps the name of each key pair
-	// that holds one of the ~/.ssh/*.pub keys to that file.
-	ChooseKeyPairOrCreate(pairs []KeyPair, local map[string]string) (string, error)
-	// KeyFile asks for the public key file to import; candidates are the
-	// usable ~/.ssh/*.pub files (parsable, of an accepted type).
-	KeyFile(candidates []KeyFileCandidate) (string, error)
+	// import a new one (the answer "", with how its key is asked for).
+	// pairs are the key pairs of the target region, sorted by name; local
+	// maps the name of each key pair that holds one of the ~/.ssh/*.pub
+	// keys to that file.
+	ChooseKeyPairOrCreate(pairs []KeyPair, local map[string]string) (string, KeySource, error)
+	// NewKey asks for the public key to import: from candidates (the
+	// usable ~/.ssh/*.pub files: parsable, of an accepted type), another
+	// file or typed (KeyFromFile), or typed only (KeyTyped). check refuses
+	// a key the platform does not accept; the question stays open until
+	// the answer passes.
+	NewKey(src KeySource, candidates []KeyFileCandidate, check func(*PublicKey) error) (*PublicKey, error)
+	// UseRegistered says that the key pairs names already hold the key
+	// and asks whether to use one of them (its name), or to import the
+	// key again (""), under importAs when the name is known.
+	UseRegistered(names []string, importAs string) (string, error)
 	// KeyPairName asks for the name of the key pair to create; validate
 	// rejects an empty, malformed or taken name, and the question stays
 	// open until the answer passes. There is no default name.
@@ -324,6 +358,9 @@ type KeyFileCandidate struct {
 	Key  *PublicKey
 	// Registered names the key pairs that already hold the key.
 	Registered []string
+	// Note, when set, is shown instead of Registered: a remark of a
+	// platform without key pairs ("in project metadata").
+	Note string
 }
 
 // KeyInput is what a command knows about the key pair it needs.
@@ -386,8 +423,12 @@ type KeyPairPlan struct {
 //   - With neither: the configured default key pair when it exists; else the
 //     interactive flow offers the existing key pairs (those holding a
 //     ~/.ssh/*.pub key marked) and "import a new one", which asks for a key
-//     file and then a name (no default name); the non-interactive flow is a
-//     usage error naming the flags.
+//     (a file, or the key typed in) and then a name (no default name); the
+//     non-interactive flow is a usage error naming the flags.
+//
+// A key asked for in the interactive flow that key pairs already hold is
+// pointed out (AskNewKey): the user uses one of them, or imports the key
+// again under a new name; a new key pair is never forced on it.
 //
 // It writes nothing: creating the key pair is the caller's Step.
 func ResolveKeyPair(ctx context.Context, lister KeyPairLister, in KeyInput) (KeyPairPlan, error) {
@@ -413,6 +454,10 @@ func ResolveKeyPair(ctx context.Context, lister KeyPairLister, in KeyInput) (Key
 		kp := byName[name]
 		return KeyPairPlan{Name: name, Change: Change{Resource: "key-pair/" + name, Action: Unchanged, ID: kp.ID, Detail: detail}}
 	}
+	// importAgain: the key was asked for, and the user chose to import it
+	// even though key pairs may already hold it (AskNewKey asked).
+	importAgain := false
+	src := KeyFromFile
 	if in.Key == nil {
 		switch {
 		case in.Name != "":
@@ -434,7 +479,7 @@ func ResolveKeyPair(ctx context.Context, lister KeyPairLister, in KeyInput) (Key
 			// Neither a key nor a name: offer the existing key pairs
 			// first, then importing a new one.
 			if len(pairs) > 0 && in.Prompter != nil {
-				name, err := in.Prompter.ChooseKeyPairOrCreate(sortedPairs(pairs), localMatches(in, pairs))
+				name, how, err := in.Prompter.ChooseKeyPairOrCreate(sortedPairs(pairs), localMatches(in, pairs))
 				if err != nil {
 					return KeyPairPlan{}, err
 				}
@@ -444,13 +489,17 @@ func ResolveKeyPair(ctx context.Context, lister KeyPairLister, in KeyInput) (Key
 					}
 					return existing(name, "chosen key pair"), nil
 				}
+				src = how
 			}
 		}
-		key, err := askKey(in, pairs)
+		key, reuse, err := AskNewKey(in, pairs, src, in.Name)
 		if err != nil {
 			return KeyPairPlan{}, err
 		}
-		in.Key = key
+		if reuse != "" {
+			return existing(reuse, "chosen key pair (holds the key)"), nil
+		}
+		in.Key, importAgain = key, true
 	}
 	// Without a matcher of its own, a listing that carries the public key
 	// is compared by key, any other by the MD5 fingerprint: never "no
@@ -463,6 +512,10 @@ func ResolveKeyPair(ctx context.Context, lister KeyPairLister, in KeyInput) (Key
 		}
 	}
 	sort.Strings(matched)
+	holders := matched
+	if importAgain {
+		matched = nil
+	}
 	label := in.Match.Label
 	if label == "" {
 		label = "matched by public key"
@@ -504,6 +557,9 @@ func ResolveKeyPair(ctx context.Context, lister KeyPairLister, in KeyInput) (Key
 				if err := in.CheckName(s); err != nil {
 					return err
 				}
+			}
+			if slices.Contains(holders, s) {
+				return fmt.Errorf("key pair %q already holds this key; choose a new name", s)
 			}
 			if _, ok := byName[s]; ok {
 				return fmt.Errorf("key pair %q already exists with another key", s)
@@ -560,23 +616,45 @@ func checkKeyPairName(name string, min int) error {
 	return nil
 }
 
-// askKey asks for a public key file in the interactive flow.
-func askKey(in KeyInput, pairs []KeyPair) (*PublicKey, error) {
+// AskNewKey asks, in the interactive flow, for a public key to import
+// (src: see KeySource), of a type the platform accepts. When key pairs of
+// pairs already hold it (compared as ResolveKeyPair compares), it says so
+// and asks whether to use one of them, whose name is then reuse, or to
+// import the key again (under importAs when that name is already known): a
+// new key pair is never forced on a key that is already registered.
+func AskNewKey(in KeyInput, pairs []KeyPair, src KeySource, importAs string) (key *PublicKey, reuse string, err error) {
 	if in.Prompter == nil {
-		return nil, invalid("a public key is required: pass --ssh-key-file <path> or --ssh-key <public key>")
+		return nil, "", invalid("a public key is required: pass --ssh-key-file <path> or --ssh-key <public key>")
 	}
-	path, err := in.Prompter.KeyFile(KeyFileCandidates(in, pairs))
+	allowed := allowedTypes(in)
+	key, err = in.Prompter.NewKey(src, KeyFileCandidates(in, pairs), func(k *PublicKey) error { return k.CheckType(allowed) })
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	key, err := LoadPublicKeyFile(path)
+	if key == nil {
+		return nil, "", fmt.Errorf("%w: no public key given, no key pair was created", ErrNothingToDo)
+	}
+	if err := key.CheckType(allowed); err != nil {
+		return nil, "", err
+	}
+	match := matcher(in)
+	var holders []string
+	for _, kp := range sortedPairs(pairs) {
+		if match(key, kp) {
+			holders = append(holders, kp.Name)
+		}
+	}
+	if len(holders) == 0 {
+		return key, "", nil
+	}
+	reuse, err = in.Prompter.UseRegistered(holders, importAs)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	if err := key.CheckType(allowedTypes(in)); err != nil {
-		return nil, err
+	if reuse != "" && !slices.Contains(holders, reuse) {
+		return nil, "", invalid("key pair %q does not hold the key", reuse)
 	}
-	return key, nil
+	return key, reuse, nil
 }
 
 // matcher is in.Match.Match, or the default comparison of ResolveKeyPair.

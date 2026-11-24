@@ -144,8 +144,12 @@ accepts almost any text): a malformed key or a private key is a usage error
 AWS), whatever key it holds: the existing key pair is never replaced;
 key-pair ensure reuses the key pair that already holds the key. On a
 terminal a missing key is picked from ~/.ssh/*.pub (type, fingerprint and
-comment shown, keys already registered marked) or typed as a path, and a
-missing <name> is asked, checked as it is typed (no default).`,
+comment shown, keys already registered marked), given as a path, or typed
+in itself ("Enter a public key...", one line, for a machine created for
+someone else). A key that a key pair already holds is pointed out: using
+that key pair imports nothing (unchanged, exit code 0), or the key is
+imported again when asked to. A missing <name> is asked, checked as it is
+typed (no default).`,
 		Example: "  polyctl aliyun ecs key-pair import ops --ssh-key-file ~/.ssh/id_ed25519.pub",
 		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -174,11 +178,19 @@ missing <name> is asked, checked as it is typed (no default).`,
 			}
 			if key == nil || name == "" {
 				// The interactive flow: the public key from ~/.ssh/*.pub
-				// (those already registered marked) or a path, then the
-				// name, checked as it is typed against the key pairs of
-				// the region; no name is ever chosen for you.
-				if key, name, err = askImport(ctx, rt, s, &keys, key, name); err != nil {
+				// (those already registered marked), a path or typed in,
+				// then the name, checked as it is typed against the key
+				// pairs of the region; no name is ever chosen for you.
+				var reuse *platform.KeyPair
+				if key, name, reuse, err = askImport(ctx, rt, s, &keys, key, name); err != nil {
 					return err
+				}
+				if reuse != nil {
+					// The key is registered already and the user chose that
+					// key pair: nothing is imported.
+					rt.Infof("key pair %s already holds the key in %s; nothing imported", reuse.Name, s.where())
+					return rt.RenderReport(platform.Report{Target: s.target(), Changes: []platform.Change{{Resource: "key-pair/" + reuse.Name,
+						Action: platform.Unchanged, ID: reuse.Name, Detail: "existing key pair holding the key"}}})
 				}
 			}
 			existing, err := s.c.listKeyPairs(ctx, s.region, name, "")
@@ -290,7 +302,13 @@ func resolveKeyPairStep(ctx context.Context, rt *app.Runtime, s *ecsScope, in pl
 			}
 		}
 	}
-	kp, err := platform.ResolveKeyPair(ctx, &keyPairLister{c: s.c, region: s.region, key: in.Key, name: in.Name}, in)
+	lister := &keyPairLister{c: s.c, region: s.region, key: in.Key, name: in.Name}
+	if in.Key == nil && in.Interactive {
+		// A key may be asked for: it is compared with every key pair of
+		// the region, which the whole listing holds (the named one too).
+		lister.name = ""
+	}
+	kp, err := platform.ResolveKeyPair(ctx, lister, in)
 	if err != nil {
 		return platform.KeyPairPlan{}, platform.Step{}, err
 	}
@@ -323,27 +341,33 @@ func resolveKeyPairStep(ctx context.Context, rt *app.Runtime, s *ecsScope, in pl
 }
 
 // askImport asks for what key-pair import misses in the interactive flow:
-// the public key (key nil) and the name (name "").
-func askImport(ctx context.Context, rt *app.Runtime, s *ecsScope, keys *app.KeyFlags, key *platform.PublicKey, name string) (*platform.PublicKey, string, error) {
+// the public key (key nil: a ~/.ssh/*.pub file, another file or the key
+// typed) and the name (name ""). A key that a key pair of the region
+// already holds is pointed out; choosing to use that key pair returns it
+// as reuse, and nothing is to be imported.
+func askImport(ctx context.Context, rt *app.Runtime, s *ecsScope, keys *app.KeyFlags, key *platform.PublicKey, name string) (_ *platform.PublicKey, _ string, reuse *platform.KeyPair, err error) {
 	in, err := rt.KeyInput(keys, platform.KeyInput{NameFlag: "<name>", Match: platform.MatchByFingerprintMD5,
 		AllowedTypes: platform.AliyunKeyTypes, MinNameLength: keyPairNameMin, CheckName: checkKeyPairName})
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	pairs, err := (&keyPairLister{c: s.c, region: s.region}).ListKeyPairs(ctx)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	if key == nil {
-		path, err := in.Prompter.KeyFile(platform.KeyFileCandidates(in, pairs))
-		if err != nil {
-			return nil, "", err
+		// A key already registered is pointed out, with the choice of
+		// using that key pair instead of importing the key again.
+		var reuse string
+		if key, reuse, err = platform.AskNewKey(in, pairs, platform.KeyFromFile, name); err != nil {
+			return nil, "", nil, err
 		}
-		if key, err = platform.LoadPublicKeyFile(strings.TrimSpace(path)); err != nil {
-			return nil, "", err
-		}
-		if err := key.CheckType(platform.AliyunKeyTypes); err != nil {
-			return nil, "", err
+		if reuse != "" {
+			for _, kp := range pairs {
+				if kp.Name == reuse {
+					return key, reuse, &kp, nil
+				}
+			}
 		}
 	}
 	if name == "" {
@@ -361,8 +385,8 @@ func askImport(ctx context.Context, rt *app.Runtime, s *ecsScope, keys *app.KeyF
 			}
 			return nil
 		}); err != nil {
-			return nil, "", err
+			return nil, "", nil, err
 		}
 	}
-	return key, name, nil
+	return key, name, nil, nil
 }

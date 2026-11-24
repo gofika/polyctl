@@ -694,8 +694,10 @@ vSwitches and the security group as well.
   used when it exists in the region. A key pair is required: Linux
   instances log in with a key only and polyctl never sets a password;
   without any key flag or default a terminal lists the key pairs of the
-  region (the one holding a ~/.ssh/*.pub key marked and preselected) and
-  "Import a new key pair from a public key file...", and the
+  region (the one holding a ~/.ssh/*.pub key marked and preselected),
+  "Import a new key pair from a public key file..." and "... by entering
+  its public key..." (a key already registered is pointed out, with the
+  choice of using its key pair or importing it again), and the
   non-interactive flow is exit code 2 before anything is read (with
   --image, once the image is read: only then is it known to be Linux or
   Windows; still before anything is written).

@@ -265,7 +265,13 @@ type keyPicker struct {
 
 func (p *keyPicker) Select(title string, opts []prompt.Option, _ string) (string, error) {
 	p.titles = append(p.titles, title)
-	return opts[len(opts)-1].Value, nil // "Another file..."
+	for _, o := range opts {
+		if o.Label == "Another file..." || o.Label == "A public key file..." {
+			return o.Value, nil
+		}
+	}
+	p.t.Errorf("select %q offers no file entry: %v", title, opts)
+	return "", prompt.ErrAborted
 }
 func (p *keyPicker) MultiSelect(title string, _ []prompt.Option) ([]string, error) {
 	p.t.Errorf("unexpected multi-select %q", title)
@@ -283,7 +289,8 @@ func (p *keyPicker) Input(title, _ string, _ func(string) error) (string, error)
 	return p.name, nil
 }
 
-// On a terminal, ensure without a key asks for the key file and the name.
+// On a terminal, ensure without a key asks for the key (a file, here: no
+// ~/.ssh/*.pub to offer) and the name.
 func TestKeyPairEnsureInteractive(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -299,7 +306,7 @@ func TestKeyPairEnsureInteractive(t *testing.T) {
 	if len(c) != 1 || c[0].Get("KeyPairName") != "laptop" || md5Hex(t, c[0].Get("PublicKeyBody")) != md5Hex(t, line) {
 		t.Errorf("import = %v", c)
 	}
-	if len(p.titles) != 2 || !strings.Contains(p.titles[0], "public key file") || !strings.Contains(p.titles[1], "Name of the new key pair") {
+	if len(p.titles) != 3 || p.titles[0] != "Public key to import" || !strings.Contains(p.titles[1], "public key file") || !strings.Contains(p.titles[2], "Name of the new key pair") {
 		t.Errorf("questions = %q", p.titles)
 	}
 }
@@ -332,7 +339,7 @@ func TestKeyPairEnsureOffersExistingKeyPairs(t *testing.T) {
 	p.Done()
 	a := p.Find("Key pair")
 	labels := prompttest.Labels(a.Options)
-	if a.Default != "laptop" || !strings.Contains(labels, "[matches ~/.ssh/id_ed25519.pub]") || !strings.HasSuffix(labels, "Import a new key pair from a public key file...") {
+	if a.Default != "laptop" || !strings.Contains(labels, "[matches ~/.ssh/id_ed25519.pub]") || !strings.HasSuffix(labels, "Import a new key pair from a public key file...\nImport a new key pair by entering its public key...") {
 		t.Errorf("options (default %q):\n%s", a.Default, labels)
 	}
 	if c := h.api.callsFor("ImportKeyPair"); len(c) != 0 {
@@ -347,5 +354,105 @@ func TestKeyPairEnsureOffersExistingKeyPairs(t *testing.T) {
 	}
 	if c := h.api.callsFor("ImportKeyPair"); len(c) != 0 {
 		t.Errorf("ImportKeyPair ran after a cancel: %v", c)
+	}
+}
+
+// A public key typed on a terminal (a machine for someone else) that a key
+// pair of the region already holds is pointed out: ensure uses that key
+// pair, or imports the key again under a new name when asked to.
+func TestKeyPairEnsureTypedKeyAlreadyRegistered(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	line := testKey(t, "ed25519")
+	h, f := sgHarness(t, app.Flags{})
+	f.addKeyPair("friend", md5Hex(t, line), "2026-11-17T13:54Z")
+
+	p := prompttest.New(t, prompttest.Label("by entering its public key"), "-----BEGIN OPENSSH PRIVATE KEY-----", line, "friend")
+	h.rt.Picker = p
+	if err := h.run("ecs", "key-pair", "ensure"); err != nil {
+		t.Fatal(err)
+	}
+	p.Done()
+	r := p.Find(`This public key is already registered as key pair "friend"`)
+	if r.Default != "friend" || prompttest.Labels(r.Options) != "Use the existing key pair friend\nImport it again under a new name" {
+		t.Errorf("registered question (default %q):\n%s", r.Default, prompttest.Labels(r.Options))
+	}
+	if c := h.api.callsFor("ImportKeyPair"); len(c) != 0 {
+		t.Errorf("the existing key pair was chosen, but ImportKeyPair ran: %v", c)
+	}
+
+	p = prompttest.New(t, prompttest.Label("by entering its public key"), line, prompttest.Label("Import it again"), "friend", "friend-2")
+	h.rt.Picker = p
+	if err := h.run("ecs", "key-pair", "ensure"); err != nil {
+		t.Fatal(err)
+	}
+	p.Done()
+	if c := h.api.callsFor("ImportKeyPair"); len(c) != 1 || c[0].Get("KeyPairName") != "friend-2" || md5Hex(t, c[0].Get("PublicKeyBody")) != md5Hex(t, line) {
+		t.Errorf("import again = %v", c)
+	}
+
+	// With the name of a missing key pair, the key is still compared with
+	// every key pair of the region.
+	p = prompttest.New(t, prompttest.Label("Enter a public key"), line, "friend")
+	h.rt.Picker = p
+	if err := h.run("ecs", "key-pair", "ensure", "laptop"); err != nil {
+		t.Fatal(err)
+	}
+	p.Done()
+	if l := prompttest.Labels(p.Find(`This public key is already registered as key pairs "friend", "friend-2"`).Options); !strings.HasSuffix(l, `Import it again as "laptop"`) {
+		t.Errorf("registered options:\n%s", l)
+	}
+	if c := h.api.callsFor("ImportKeyPair"); len(c) != 1 {
+		t.Errorf("ImportKeyPair ran again: %v", c)
+	}
+}
+
+// key-pair import on a terminal: a typed key that a key pair already holds
+// is pointed out, and using that key pair imports nothing (unchanged, exit
+// code 0); leaving a new question imports nothing either.
+func TestKeyPairImportTypedKeyAlreadyRegistered(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	line := testKey(t, "ed25519")
+	h, f := sgHarness(t, app.Flags{})
+	f.addKeyPair("friend", md5Hex(t, line), "2026-11-17T13:54Z")
+
+	p := prompttest.New(t, prompttest.Label("Enter a public key"), line, "friend")
+	h.rt.Picker = p
+	if err := h.run("ecs", "key-pair", "import"); err != nil {
+		t.Fatal(err)
+	}
+	p.Done()
+	if c := h.api.callsFor("ImportKeyPair"); len(c) != 0 {
+		t.Errorf("ImportKeyPair ran for a registered key: %v", c)
+	}
+	if out := h.stdout.String(); !strings.Contains(out, "key-pair/friend") || !strings.Contains(out, "unchanged") {
+		t.Errorf("report:\n%s", out)
+	}
+
+	for _, answers := range [][]any{
+		{prompttest.Label("Enter a public key"), prompttest.Abort{}},
+		{prompttest.Label("Enter a public key"), line, prompttest.Abort{}},
+	} {
+		h.rt.Picker = prompttest.New(t, answers...)
+		if err := h.run("ecs", "key-pair", "import", "new-name"); !errors.Is(err, prompt.ErrAborted) {
+			t.Errorf("abort = %v", err)
+		}
+		if c := h.api.callsFor("ImportKeyPair"); len(c) != 0 {
+			t.Errorf("ImportKeyPair ran after a cancel: %v", c)
+		}
+	}
+
+	// Import it again under the given name.
+	p = prompttest.New(t, prompttest.Label("Enter a public key"), line, prompttest.Label(`Import it again as "friend-2"`))
+	h.rt.Picker = p
+	if err := h.run("ecs", "key-pair", "import", "friend-2"); err != nil {
+		t.Fatal(err)
+	}
+	p.Done()
+	if c := h.api.callsFor("ImportKeyPair"); len(c) != 1 || c[0].Get("KeyPairName") != "friend-2" {
+		t.Errorf("import again = %v", c)
 	}
 }

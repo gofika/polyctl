@@ -69,6 +69,29 @@ func TestParsePublicKey(t *testing.T) {
 	}
 }
 
+// A key typed in the interactive flow gets the checks of --ssh-key, with
+// messages that do not name a flag.
+func TestParseTypedPublicKey(t *testing.T) {
+	line, k := ed25519Line(t, "friend@example.com")
+	pk, err := ParseTypedPublicKey("  " + line + "  ")
+	if err != nil || !pk.Equal(k) || pk.Source != TypedKeySource || pk.Comment != "friend@example.com" {
+		t.Fatalf("ParseTypedPublicKey = %+v, %v", pk, err)
+	}
+	f := filepath.Join(t.TempDir(), "id.pub")
+	_ = os.WriteFile(f, []byte(line+"\n"), 0o600)
+	for in, want := range map[string]string{
+		f:                                     "is a file path: choose the file",
+		"":                                    "the public key is empty",
+		"-----BEGIN OPENSSH PRIVATE KEY-----": "private key",
+		"not a key":                           "the public key is not an SSH public key",
+	} {
+		_, err := ParseTypedPublicKey(in)
+		if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "--ssh-key") {
+			t.Errorf("ParseTypedPublicKey(%.20q) = %v, want %q", in, err, want)
+		}
+	}
+}
+
 func TestLoadPublicKeyFile(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -124,22 +147,33 @@ func (f fakeLister) ListKeyPairs(context.Context) ([]KeyPair, error) { return f.
 
 type fakeKeyPrompter struct {
 	file, name, choice, pair string
+	reuse                    string   // answer to UseRegistered ("": import again)
 	names                    []string // name answers tried in turn
 	asked                    []string
 	pairs                    []KeyPair
 	local                    map[string]string
 	files                    []KeyFileCandidate
+	importAs                 string
 }
 
-func (p *fakeKeyPrompter) ChooseKeyPairOrCreate(pairs []KeyPair, local map[string]string) (string, error) {
+func (p *fakeKeyPrompter) ChooseKeyPairOrCreate(pairs []KeyPair, local map[string]string) (string, KeySource, error) {
 	p.asked = append(p.asked, "pair")
 	p.pairs, p.local = pairs, local
-	return p.pair, nil
+	return p.pair, KeyFromFile, nil
 }
-func (p *fakeKeyPrompter) KeyFile(c []KeyFileCandidate) (string, error) {
+func (p *fakeKeyPrompter) NewKey(_ KeySource, c []KeyFileCandidate, check func(*PublicKey) error) (*PublicKey, error) {
 	p.asked = append(p.asked, "file")
 	p.files = c
-	return p.file, nil
+	k, err := LoadPublicKeyFile(p.file)
+	if err != nil {
+		return nil, err
+	}
+	return k, check(k)
+}
+func (p *fakeKeyPrompter) UseRegistered(names []string, importAs string) (string, error) {
+	p.asked = append(p.asked, "registered:"+strings.Join(names, ","))
+	p.importAs = importAs
+	return p.reuse, nil
 }
 
 // KeyPairName answers with names until one passes validate, like the
@@ -431,12 +465,30 @@ func TestResolveKeyPairOffersExistingKeyPairs(t *testing.T) {
 		t.Errorf("file candidates = %v", files)
 	}
 
-	// Picking a file that is already registered uses that key pair.
-	p = &fakeKeyPrompter{file: filepath.Join(sshDir, "id_ed25519.pub")}
+	// Picking a file that is already registered says so: using that key
+	// pair imports nothing.
+	p = &fakeKeyPrompter{file: filepath.Join(sshDir, "id_ed25519.pub"), reuse: "mine"}
 	in.Prompter = p
-	if plan, err = ResolveKeyPair(t.Context(), lister, in); err != nil || plan.Create || plan.Name != "mine" {
-		t.Errorf("registered file = %+v, %v", plan, err)
+	if plan, err = ResolveKeyPair(t.Context(), lister, in); err != nil || plan.Create || plan.Name != "mine" ||
+		strings.Join(p.asked, ",") != "pair,file,registered:mine" {
+		t.Errorf("registered file = %+v, %v (asked %v)", plan, err, p.asked)
 	}
+	// ... or it is imported again under a new name, which may not be the
+	// name of the key pair holding it.
+	p = &fakeKeyPrompter{file: filepath.Join(sshDir, "id_ed25519.pub"), names: []string{"mine"}, name: "copy"}
+	in.Prompter = p
+	if plan, err = ResolveKeyPair(t.Context(), lister, in); err != nil || !plan.Create || plan.Name != "copy" ||
+		strings.Join(p.asked, ",") != "pair,file,registered:mine,name,rejected:mine" {
+		t.Errorf("import again = %+v, %v (asked %v)", plan, err, p.asked)
+	}
+	// With the name of a missing key pair given, importing again offers
+	// that name.
+	p = &fakeKeyPrompter{file: filepath.Join(sshDir, "id_ed25519.pub")}
+	in.Prompter, in.Name = p, "given"
+	if plan, err = ResolveKeyPair(t.Context(), lister, in); err != nil || !plan.Create || plan.Name != "given" || p.importAs != "given" {
+		t.Errorf("import again as the given name = %+v, %v (asked %v)", plan, err, p.asked)
+	}
+	in.Name = ""
 
 	// No key pair yet: straight to the import.
 	p = &fakeKeyPrompter{file: filepath.Join(sshDir, "new.pub"), name: "work"}
