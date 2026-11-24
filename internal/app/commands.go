@@ -97,6 +97,30 @@ func NameserverArgs(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// NameserverArgsOrInteractive is NameserverArgs, except in the interactive
+// flow, where the domain and the nameservers may be left out: the command
+// asks for them.
+func NameserverArgsOrInteractive(rt *Runtime) cobra.PositionalArgs {
+	return func(cmd *cobra.Command, args []string) error {
+		if len(args) < 2 && rt.Interactive() {
+			return nil
+		}
+		return NameserverArgs(cmd, args)
+	}
+}
+
+// RecordIDArgsOrInteractive is RecordIDArgs, except in the interactive
+// flow, where the domain and the record id may be left out: the command
+// asks for them.
+func RecordIDArgsOrInteractive(rt *Runtime) cobra.PositionalArgs {
+	return func(cmd *cobra.Command, args []string) error {
+		if len(args) < 2 && rt.Interactive() {
+			return nil
+		}
+		return RecordIDArgs(cmd, args)
+	}
+}
+
 // Nameservers reads the <nameserver>... arguments of an `ns set` command
 // (see platform.Nameservers); a malformed list is a usage error.
 func Nameservers(args []string) ([]string, error) {

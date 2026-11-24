@@ -66,9 +66,13 @@ func newDNSListCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:               "list <domain>",
 		Short:             "List DNS records of the zone that serves <domain>",
-		Args:              cobra.ExactArgs(1),
+		Args:              app.ArgsOrInteractive(rt, 1, nil),
 		ValidArgsFunction: completeDomains(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			args, err := domainArgs(cmd, rt, args, app.DomainPick{Title: "Zone", Kinds: zoneKinds})
+			if err != nil {
+				return err
+			}
 			t, err := rt.ResolveDomain(cmd.Context(), args[0], platform.ResZone)
 			if err != nil {
 				return err
@@ -153,17 +157,28 @@ func newDNSWriteCmd(rt *app.Runtime, add bool, cmd *cobra.Command) *cobra.Comman
 	var typ, name, value string
 	var ttl, priority int
 	var proxied bool
-	cmd.Args = app.ProxiedArgs(cobra.ExactArgs(1))
+	cmd.Args = app.ProxiedArgs(app.ArgsOrInteractive(rt, 1, nil))
 	cmd.ValidArgsFunction = completeDomains(rt)
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
-		if typ == "" || value == "" {
+		// The interactive flow asks for what is missing: the zone, then
+		// the type, then (once the zone is read) the value.
+		if (typ == "" || value == "") && !rt.Interactive() {
 			return usageErr("--type and --value are required")
 		}
-		typ = strings.ToUpper(typ)
+		args, err := domainArgs(cmd, rt, args, app.DomainPick{Title: "Zone", Kinds: zoneKinds, Required: true})
+		if err != nil {
+			return err
+		}
 		t, err := rt.ResolveDomain(cmd.Context(), args[0], platform.ResZone)
 		if err != nil {
 			return err
 		}
+		if typ == "" {
+			if typ, err = pickRecordType(rt, t.Platform); err != nil {
+				return err
+			}
+		}
+		typ = strings.ToUpper(typ)
 		if rt.Flags.Offline {
 			return app.ErrOffline
 		}
@@ -180,6 +195,15 @@ func newDNSWriteCmd(rt *app.Runtime, add bool, cmd *cobra.Command) *cobra.Comman
 			return err
 		}
 		matches := app.MatchRecords(existing, fqdn, typ, "")
+		if value == "" {
+			def := ""
+			if !add && len(matches) == 1 {
+				def = matches[0].Value
+			}
+			if value, err = askRecordValue(rt, typ, def); err != nil {
+				return err
+			}
+		}
 		rec := platform.Record{ZoneID: t.ResourceID, Name: fqdn, Type: typ, Value: value, TTL: ttl}
 		if cmd.Flags().Changed("priority") {
 			p := priority
@@ -287,9 +311,13 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 			"A record that cannot be deleted does not stop the others: it is reported as\n" +
 			"failed and the command exits with code 1 at the end. The zone is read live:\n" +
 			"--offline is refused (exit code 6).",
-		Args:              cobra.ExactArgs(1),
+		Args:              app.ArgsOrInteractive(rt, 1, nil),
 		ValidArgsFunction: completeDomains(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			args, err := domainArgs(cmd, rt, args, app.DomainPick{Title: "Zone", Kinds: zoneKinds, Required: true})
+			if err != nil {
+				return err
+			}
 			if all {
 				if name != "" || value != "" || id != "" {
 					return usageErr("--all deletes every record of the zone; it cannot be combined with --name, --value or --id")
@@ -306,7 +334,10 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 			if len(types) == 1 {
 				typ = types[0]
 			}
-			if id == "" && typ == "" {
+			// Without a selection the interactive flow lists the records
+			// of the zone to tick.
+			pick := id == "" && typ == ""
+			if pick && !rt.Interactive() {
 				return usageErr("--type (with --name), --id or --all is required")
 			}
 			t, err := rt.ResolveDomain(cmd.Context(), args[0], platform.ResZone)
@@ -325,7 +356,11 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 				return err
 			}
 			var matches []platform.Record
-			if id != "" {
+			if pick {
+				if matches, err = pickRecords(rt, dns, platform.Zone{ID: t.ResourceID, Name: t.Domain}, existing); err != nil {
+					return err
+				}
+			} else if id != "" {
 				for _, r := range existing {
 					if r.ID == id {
 						matches = append(matches, r)
@@ -606,12 +641,17 @@ code 5), unless --prune-duplicates is given: it keeps one record (updating the
 oldest when none is as desired) and deletes the others, after the creates and
 updates. proxied=true on a platform other than Cloudflare reports the record as
 skipped. The zone is always read live: --offline is refused (exit code 6).`,
-		Args:              cobra.ExactArgs(1),
+		Args:              app.ArgsOrInteractive(rt, 1, nil),
 		ValidArgsFunction: completeDomains(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			if len(records) == 0 && file == "" {
+				// The desired records cannot be listed: not asked.
 				return usageErr("at least one --record or --file is required")
+			}
+			args, err := domainArgs(cmd, rt, args, app.DomainPick{Title: "Zone", Kinds: zoneKinds, Required: true})
+			if err != nil {
+				return err
 			}
 			var specs []platform.RecordSpec
 			for _, r := range records {
