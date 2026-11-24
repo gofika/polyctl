@@ -593,7 +593,8 @@ func TestReadmeListsConfirmingCommands(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	readme := string(data)
+	// A Windows checkout (core.autocrlf) has CRLF line endings.
+	readme := strings.ReplaceAll(string(data), "\r\n", "\n")
 	start := strings.Index(readme, "### Confirmations\n")
 	if start < 0 {
 		t.Fatal("README has no Confirmations section")
