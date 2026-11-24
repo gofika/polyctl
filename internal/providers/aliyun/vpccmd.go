@@ -56,7 +56,8 @@ func newVPCCmd(rt *app.Runtime) *cobra.Command {
 		Short: "Virtual Private Cloud: VPCs and vSwitches",
 		Long: `VPCs and vSwitches. Both belong to one region (--region, the profile's region
 by default). Alibaba Cloud keeps the names of neither unique: a name held by
-several is ambiguous (exit code 5); pass the id.`,
+several is a pick on a terminal and ambiguous (exit code 5) in the
+non-interactive flow; pass the id.`,
 	}
 	v := &cobra.Command{Use: "vpc", Short: "VPCs"}
 	v.AddCommand(vpcListCmd(rt), vpcGetCmd(rt), vpcCreateCmd(rt), vpcEnsureCmd(rt))
@@ -287,8 +288,16 @@ func (p vswPlan) add(plan *platform.Plan, wants []vswWant) error {
 				for _, v := range named {
 					ids = append(ids, v.ID+" ("+v.Zone+")")
 				}
-				return &app.AmbiguousError{What: fmt.Sprintf("vSwitch %q in %s", w.Name, p.vpcID()), Candidates: ids,
+				amb := &app.AmbiguousError{What: fmt.Sprintf("vSwitch %q in %s", w.Name, p.vpcID()), Candidates: ids,
 					Hint: "Alibaba Cloud lets several vSwitches of a VPC share a name; rename one, or pass --prefix"}
+				if len(inZone) == 0 {
+					return amb
+				}
+				pick, err := pickAmong(p.s, amb, inZone, func(v vSwitch) string { return v.ID }, func(v vSwitch) string { return vswLabel(v, nil) })
+				if err != nil {
+					return err
+				}
+				inZone = []vSwitch{*pick}
 			}
 			have = &inZone[0]
 		}
@@ -542,7 +551,7 @@ nothing.
   for until it is Available (bounded by --timeout): a Pending VPC refuses
   vSwitches. An existing one is used as it is: its status and CIDR block are
   not compared, but a Pending one is waited for. Several VPCs of the name are
-  ambiguous (exit code 5).
+  a pick on a terminal and ambiguous (exit code 5) otherwise.
 - vSwitches are named by naming.aliyun_vswitch ({region}-switch-{zone}, zone
   being the suffix) and looked up by name in the VPC only. The missing ones
   get the first free /--netmask blocks of the VPC's CIDR block.
@@ -600,6 +609,9 @@ nothing.
 			}
 			found, err := s.c.findVPCs(ctx, s.region, name)
 			if err != nil {
+				return err
+			}
+			if found, err = narrowVPCs(s, name, found, "Alibaba Cloud lets several VPCs share a name; rename one, or ensure another name"); err != nil {
 				return err
 			}
 			var plan platform.Plan
@@ -748,7 +760,8 @@ func resolveVSwitch(ctx context.Context, s *ecsScope, ref, vpcRef string) (*vSwi
 	if vpcID == "" {
 		hint += " or --vpc <vpc>"
 	}
-	return nil, &app.AmbiguousError{What: fmt.Sprintf("vSwitch %q in %s", ref, s.where()), Candidates: ids, Hint: hint}
+	amb := &app.AmbiguousError{What: fmt.Sprintf("vSwitch %q in %s", ref, s.where()), Candidates: ids, Hint: hint}
+	return pickAmong(s, amb, found, func(v vSwitch) string { return v.ID }, func(v vSwitch) string { return vswLabel(v, nil) })
 }
 
 // vswDetail is the output of `vswitch get`.

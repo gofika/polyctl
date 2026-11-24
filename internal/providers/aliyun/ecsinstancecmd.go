@@ -62,7 +62,7 @@ func resolveECSInstance(ctx context.Context, rt *app.Runtime, ref, region string
 	if err != nil {
 		return nil, nil, err
 	}
-	s := &ecsScope{c: c, profile: res.Profile, region: c.regionOr(instRegion)}
+	s := &ecsScope{c: c, profile: res.Profile, region: c.regionOr(instRegion), rt: rt}
 	in, err := c.describeInstance(ctx, s.region, res.ID)
 	if errors.Is(err, platform.ErrNotFound) {
 		dropInstance(ctx, rt, res.Profile, res.ID)
@@ -90,16 +90,19 @@ func findInstanceIn(ctx context.Context, s *ecsScope, ref string) (*Instance, er
 	case 1:
 		return &found[0], nil
 	}
-	return nil, ambiguousInstances(ref, s, found)
+	return pickInstanceAmong(ref, s, found)
 }
 
-func ambiguousInstances(ref string, s *ecsScope, found []Instance) error {
+// pickInstanceAmong resolves a name several instances share: a pick in the
+// interactive flow, exit code 5 otherwise.
+func pickInstanceAmong(ref string, s *ecsScope, found []Instance) (*Instance, error) {
 	var ids []string
 	for _, in := range found {
 		ids = append(ids, in.ID+" ("+in.Status+")")
 	}
-	return &app.AmbiguousError{What: fmt.Sprintf("instance %q in %s", ref, s.where()), Candidates: ids,
+	amb := &app.AmbiguousError{What: fmt.Sprintf("instance %q in %s", ref, s.where()), Candidates: ids,
 		Hint: "Alibaba Cloud lets several instances share a name; pass the instance id"}
+	return pickAmong(s, amb, found, func(in Instance) string { return in.ID }, instanceOptionLabel)
 }
 
 // ---------------------------------------------------------------- get
@@ -163,8 +166,9 @@ func ecsGetCmd(rt *app.Runtime) *cobra.Command {
 		Long: `Show an ECS instance: its type, status, public and private address and EIP.
 <name|id> is an instance id (i-...) or a name. Without --region the local
 inventory tells which account and region hold it (synced once when it does
-not know the instance; several instances of the name are ambiguous, exit
-code 5, pass the id), and the instance is then read live. With --region the
+not know the instance; several instances of the name are a pick on a
+terminal and ambiguous otherwise, exit code 5, pass the id), and the
+instance is then read live. With --region the
 selected profile is asked in that region. The public address is the
 instance's own one, else its EIP's; the private address is the primary
 address of its network interface. With --offline the local inventory is
@@ -904,8 +908,9 @@ func findInstanceSG(ctx context.Context, s *ecsScope, ref, vpc string) (*securit
 	for _, g := range named {
 		ids = append(ids, g.ID)
 	}
-	return nil, &app.AmbiguousError{What: fmt.Sprintf("security group %q in %s (%s)", ref, s.where(), vpc), Candidates: ids,
+	amb := &app.AmbiguousError{What: fmt.Sprintf("security group %q in %s (%s)", ref, s.where(), vpc), Candidates: ids,
 		Hint: "Alibaba Cloud lets several groups share a name; pass the security group id"}
+	return pickAmong(s, amb, named, func(g securityGroup) string { return g.ID }, sgLabel)
 }
 
 // checkInstanceSGName refuses a security group name Alibaba Cloud refuses.

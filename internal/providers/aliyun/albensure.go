@@ -373,6 +373,19 @@ func (e *albEnsure) observe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if len(found) > 1 {
+		var ids []string
+		for _, f := range found {
+			ids = append(ids, f.ID)
+		}
+		amb := &app.AmbiguousError{What: fmt.Sprintf("load balancer %q in %s", name, sc.where()), Candidates: ids,
+			Hint: "Alibaba Cloud lets several load balancers share a name; delete or rename the extra ones"}
+		pick, err := pickAmong(sc.ecsScope, amb, found, func(x albRef) string { return x.ID }, lbOptionLabel)
+		if err != nil {
+			return err
+		}
+		found = []albRef{*pick}
+	}
 	switch len(found) {
 	case 0:
 	case 1:
@@ -747,8 +760,18 @@ func (e *albEnsure) buildServerGroup(ctx context.Context, g groupWant) error {
 			for _, x := range inVPC {
 				ids = append(ids, x.ID+" ("+x.Protocol+")")
 			}
-			return &app.AmbiguousError{What: fmt.Sprintf("server group %q in %s", g.Name, e.vpc.ID), Candidates: ids,
+			amb := &app.AmbiguousError{What: fmt.Sprintf("server group %q in %s", g.Name, e.vpc.ID), Candidates: ids,
 				Hint: "Alibaba Cloud lets several server groups share a name; delete the extra ones or pass --server-group"}
+			// Only a group of the protocol can be reused: the pick offers
+			// those, and none of them stays ambiguous.
+			if len(same) == 0 {
+				return amb
+			}
+			pick, err := pickAmong(sc.ecsScope, amb, same, func(x albServerGroup) string { return x.ID }, serverGroupLabel)
+			if err != nil {
+				return err
+			}
+			same = []albServerGroup{*pick}
 		}
 		inVPC = same
 	}

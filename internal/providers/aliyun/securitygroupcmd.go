@@ -14,6 +14,7 @@ import (
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/output"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt"
 )
 
 // newSecurityGroupCmd is `aliyun ecs security-group`: list, get, create,
@@ -28,7 +29,8 @@ creates VPC security groups, and never without a VPC.
 
 A security group is named by its id (sg-...) or by its name. Alibaba Cloud
 does not keep names unique, not even within a VPC: a name held by several
-groups is ambiguous (exit code 5); pass the id, or --vpc.
+groups is a pick on a terminal and ambiguous (exit code 5) in the
+non-interactive flow; pass the id, or --vpc.
 
 Rules are written <protocol>:<port|from-to|alias|all>:<source>:
   protocol  tcp, udp, icmp or all
@@ -54,6 +56,33 @@ type ecsScope struct {
 	c       *client
 	profile string
 	region  string
+	// rt turns an ambiguous name into a pick in the interactive flow (see
+	// pickAmong); nil never asks.
+	rt *app.Runtime
+}
+
+// pickAmong resolves an ambiguous name: in the interactive flow the user
+// picks one of found (labelled by label, chosen by id); otherwise, and
+// when the user's answer is not among them, amb is returned (exit code 5).
+func pickAmong[T any](s *ecsScope, amb *app.AmbiguousError, found []T, id, label func(T) string) (*T, error) {
+	if s == nil || s.rt == nil {
+		return nil, amb
+	}
+	if len(amb.Options) == 0 {
+		for _, x := range found {
+			amb.Options = append(amb.Options, prompt.Option{Label: label(x), Value: id(x)})
+		}
+	}
+	v, err := s.rt.Disambiguate(amb)
+	if err != nil {
+		return nil, err
+	}
+	for i := range found {
+		if id(found[i]) == v {
+			return &found[i], nil
+		}
+	}
+	return nil, amb
 }
 
 func (s *ecsScope) target() platform.Target {
@@ -68,7 +97,7 @@ func openECSScope(ctx context.Context, rt *app.Runtime, region string) (*ecsScop
 	if err != nil {
 		return nil, err
 	}
-	return &ecsScope{c: c, profile: p.Name, region: c.regionOr(region)}, nil
+	return &ecsScope{c: c, profile: p.Name, region: c.regionOr(region), rt: rt}, nil
 }
 
 // resolveVPC returns the VPC ref names (an id or a name) in the scope's
@@ -89,7 +118,12 @@ func resolveVPC(ctx context.Context, s *ecsScope, ref string) (vpcInfo, error) {
 	for _, v := range found {
 		ids = append(ids, v.ID)
 	}
-	return vpcInfo{}, &app.AmbiguousError{What: fmt.Sprintf("VPC %q in %s", ref, s.where()), Candidates: ids, Hint: "pass the VPC id (vpc-...)"}
+	amb := &app.AmbiguousError{What: fmt.Sprintf("VPC %q in %s", ref, s.where()), Candidates: ids, Hint: "pass the VPC id (vpc-...)"}
+	v, err := pickAmong(s, amb, found, func(v vpcInfo) string { return v.ID }, vpcLabel)
+	if err != nil {
+		return vpcInfo{}, err
+	}
+	return *v, nil
 }
 
 // lookupVPCFilter resolves the --vpc of a lookup ("" = every VPC).
@@ -127,7 +161,8 @@ func findSG(ctx context.Context, s *ecsScope, ref, vpc string) (*securityGroup, 
 	if vpc == "" {
 		hint += " or --vpc <vpc>"
 	}
-	return nil, &app.AmbiguousError{What: fmt.Sprintf("security group %q in %s", ref, s.where()), Candidates: names, Hint: hint}
+	amb := &app.AmbiguousError{What: fmt.Sprintf("security group %q in %s", ref, s.where()), Candidates: names, Hint: hint}
+	return pickAmong(s, amb, found, func(g securityGroup) string { return g.ID }, sgLabel)
 }
 
 // resolveSG returns the group ref names; a missing one is not found.
@@ -437,10 +472,10 @@ ensure.`,
 			if err != nil {
 				return err
 			}
-			if sg, err := findSG(ctx, s, name, v.ID); err != nil {
+			if found, err := s.c.findSecurityGroups(ctx, s.region, name, v.ID); err != nil {
 				return err
-			} else if sg != nil {
-				return fmt.Errorf("security group %q already exists in %s (%s, %s): use `polyctl aliyun ecs security-group ensure %s` to reuse it", name, v.ID, sg.ID, s.where(), name)
+			} else if len(found) > 0 {
+				return fmt.Errorf("security group %q already exists in %s (%s, %s): use `polyctl aliyun ecs security-group ensure %s` to reuse it", name, v.ID, found[0].ID, s.where(), name)
 			}
 			var groupID string
 			var created bool
@@ -471,7 +506,8 @@ nothing.
   ({region}-vpc), which must exist (otherwise exit code 2: pass --vpc). A
   group given by id without --vpc or --instance keeps its own VPC.
 - The group is looked up by name in that VPC: none is created (with
-  --description), one is used as it is, several are ambiguous (exit code 5).
+  --description), one is used as it is, several are a pick on a terminal
+  and ambiguous (exit code 5) otherwise.
   A group given by id that is in another VPC is an error (exit code 1): a
   group cannot change VPCs.
 - Rules present (compared by protocol, ports, source and policy) are
@@ -524,7 +560,7 @@ nothing.
 				if err != nil {
 					return err
 				}
-				s = &ecsScope{c: c, profile: res.Profile, region: c.regionOr(instRegion)}
+				s = &ecsScope{c: c, profile: res.Profile, region: c.regionOr(instRegion), rt: rt}
 				if inst, err = c.describeInstance(ctx, s.region, res.ID); err != nil {
 					return err
 				}

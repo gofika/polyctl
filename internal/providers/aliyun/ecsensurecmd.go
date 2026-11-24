@@ -163,7 +163,13 @@ profile's), Running, with an EIP. Running it again changes nothing.
 					return err
 				}
 			default:
-				return ambiguousInstances(name, s, found)
+				in, err := pickInstanceAmong(name, s, found)
+				if err != nil {
+					return err
+				}
+				if err := e.planExisting(ctx, cmd, in); err != nil {
+					return err
+				}
 			}
 			return e.run(ctx)
 		},
@@ -377,6 +383,9 @@ func (e *instanceEnsure) planNew(ctx context.Context, cmd *cobra.Command, host s
 		}
 		vpcs, err := s.c.findVPCs(ctx, s.region, vpcName)
 		if err != nil {
+			return err
+		}
+		if vpcs, err = narrowVPCs(s, vpcName, vpcs, "Alibaba Cloud lets several VPCs share a name; rename one, set naming.aliyun_vpc, or pass --vswitch"); err != nil {
 			return err
 		}
 		vp := vswPlan{rt: rt, s: s, vpcID: func() string { return vpcID }, mask: defaultVSwitchMask, wait: true,

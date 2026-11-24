@@ -38,7 +38,8 @@ func newALBCmd(rt *app.Runtime) *cobra.Command {
 		Long: `Application Load Balancer (ALB). Load balancers, listeners, server groups and
 access control lists (ACLs) belong to one region (--region, the profile's
 region by default). Alibaba Cloud keeps none of their names unique: a name
-held by several is ambiguous (exit code 5); pass the id.`,
+held by several is a pick on a terminal and ambiguous (exit code 5) in the
+non-interactive flow; pass the id.`,
 	}
 	lb := &cobra.Command{Use: "load-balancer", Short: "ALB load balancers"}
 	lb.AddCommand(albLBListCmd(rt), albLBGetCmd(rt), albLBCreateCmd(rt), albLBUpdateCmd(rt), albLBDeleteCmd(rt), albLBEnsureCmd(rt))
@@ -269,8 +270,13 @@ func resolveLB(ctx context.Context, sc *albScope, ref string) (*albLB, error) {
 			for _, f := range found {
 				ids = append(ids, f.ID)
 			}
-			return nil, &app.AmbiguousError{What: fmt.Sprintf("load balancer %q in %s", ref, sc.where()), Candidates: ids,
+			amb := &app.AmbiguousError{What: fmt.Sprintf("load balancer %q in %s", ref, sc.where()), Candidates: ids,
 				Hint: "Alibaba Cloud lets several load balancers share a name; pass the id"}
+			pick, err := pickAmong(sc.ecsScope, amb, found, func(x albRef) string { return x.ID }, lbOptionLabel)
+			if err != nil {
+				return nil, err
+			}
+			id = pick.ID
 		}
 	}
 	lb, err := sc.a.getLoadBalancer(ctx, id)
@@ -316,7 +322,7 @@ func lbScope(ctx context.Context, rt *app.Runtime, ref, region string) (*albScop
 	if err != nil {
 		return nil, nil, err
 	}
-	sc, err := albScopeOf(ctx, &ecsScope{c: c, profile: res.Profile, region: c.regionOr(lbRegion)})
+	sc, err := albScopeOf(ctx, &ecsScope{c: c, profile: res.Profile, region: c.regionOr(lbRegion), rt: rt})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -354,8 +360,9 @@ func resolveServerGroup(ctx context.Context, sc *albScope, ref string) (*albServ
 	for _, g := range found {
 		ids = append(ids, g.ID+" ("+g.Protocol+", "+g.VpcID+")")
 	}
-	return nil, &app.AmbiguousError{What: fmt.Sprintf("server group %q in %s", ref, sc.where()), Candidates: ids,
+	amb := &app.AmbiguousError{What: fmt.Sprintf("server group %q in %s", ref, sc.where()), Candidates: ids,
 		Hint: "Alibaba Cloud lets several server groups share a name; pass the id"}
+	return pickAmong(sc.ecsScope, amb, found, func(g albServerGroup) string { return g.ID }, serverGroupLabel)
 }
 
 // resolveACL finds an ACL of the scope's region by id or name.
@@ -380,8 +387,9 @@ func resolveACL(ctx context.Context, sc *albScope, ref string) (*albACL, error) 
 	for _, x := range found {
 		ids = append(ids, x.ID)
 	}
-	return nil, &app.AmbiguousError{What: fmt.Sprintf("ACL %q in %s", ref, sc.where()), Candidates: ids,
+	amb := &app.AmbiguousError{What: fmt.Sprintf("ACL %q in %s", ref, sc.where()), Candidates: ids,
 		Hint: "Alibaba Cloud lets several ACLs share a name; pass the id"}
+	return pickAmong(sc.ecsScope, amb, found, func(x albACL) string { return x.ID }, aclLabel)
 }
 
 // resolveInstanceIn finds an ECS instance of the scope's account and
@@ -412,8 +420,9 @@ func resolveInstanceIn(ctx context.Context, s *ecsScope, ref string) (*Instance,
 	for _, in := range found {
 		ids = append(ids, in.ID)
 	}
-	return nil, &app.AmbiguousError{What: fmt.Sprintf("instance %q in %s", ref, s.where()), Candidates: ids,
+	amb := &app.AmbiguousError{What: fmt.Sprintf("instance %q in %s", ref, s.where()), Candidates: ids,
 		Hint: "several instances share the name; pass the instance id"}
+	return pickAmong(s, amb, found, func(in Instance) string { return in.ID }, instanceOptionLabel)
 }
 
 // ------------------------------------------------------------ inventory
@@ -536,7 +545,8 @@ func albLBGetCmd(rt *app.Runtime) *cobra.Command {
 		Long: `Show a load balancer (name or alb- id): its status, VPC, DNS name, the EIP of
 each zone and its listeners with the certificate of the HTTPS ones. Without
 --region it is found through the inventory of every selected account (synced
-once when it does not know the name); several of the name are exit code 5.`,
+once when it does not know the name); several of the name are a pick on a
+terminal, exit code 5 otherwise.`,
 		Example: "  polyctl aliyun alb load-balancer get lb-example-com -o json",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

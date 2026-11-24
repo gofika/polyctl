@@ -176,7 +176,7 @@ func instanceScope(ctx context.Context, rt *app.Runtime, ref, region string) (*e
 	if err != nil {
 		return nil, nil, err
 	}
-	s := &ecsScope{c: c, profile: res.Profile, region: c.regionOr(instRegion)}
+	s := &ecsScope{c: c, profile: res.Profile, region: c.regionOr(instRegion), rt: rt}
 	inst, err := c.describeInstance(ctx, s.region, res.ID)
 	if err != nil {
 		return nil, nil, err
