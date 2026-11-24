@@ -1099,15 +1099,19 @@ for the listener to be Running.`,
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			if lbRef == "" || spec == "" || groupRef == "" {
+			if (lbRef == "" || spec == "" || groupRef == "") && !rt.Interactive() {
 				return app.UsageErrf("--lb, --listener and --server-group are required")
 			}
-			proto, port, err := parseListenerSpec("listener", spec)
-			if err != nil {
-				return err
+			var proto string
+			var port int
+			var err error
+			if spec != "" {
+				if proto, port, err = parseListenerSpec("listener", spec); err != nil {
+					return err
+				}
 			}
 			switch {
-			case proto == "HTTPS" && cert == "":
+			case spec != "" && proto == "HTTPS" && cert == "" && !rt.Interactive():
 				return app.UsageErrf("an HTTPS listener needs --cert <cas-cert-id>")
 			case proto == "HTTP" && cert != "":
 				return app.UsageErrf("an HTTP listener takes no --cert")
@@ -1121,13 +1125,40 @@ for the listener to be Running.`,
 			if err != nil {
 				return err
 			}
+			if lbRef == "" {
+				if lbRef, err = pickLB(ctx, rt, sc, "--lb"); err != nil {
+					return app.RequiredPick(err, "--lb")
+				}
+			}
 			lb, err := resolveLB(ctx, sc, lbRef)
 			if err != nil {
 				return err
 			}
+			if spec == "" {
+				// The interactive flow: http:80 or https:443 when the load
+				// balancer does not use the port yet, or another one.
+				if proto, port, err = askListenerSpec(ctx, rt, sc, lb.ID); err != nil {
+					return err
+				}
+				if proto == "HTTP" && cert != "" {
+					return app.UsageErrf("an HTTP listener takes no --cert")
+				}
+			}
+			if groupRef == "" {
+				picked, err := serverGroupArg(ctx, rt, sc, nil, "--server-group")
+				if err != nil {
+					return app.RequiredPick(err, "--server-group")
+				}
+				groupRef = picked[0]
+			}
 			g, err := resolveServerGroup(ctx, sc, groupRef)
 			if err != nil {
 				return err
+			}
+			if proto == "HTTPS" && cert == "" {
+				if cert, err = askCASCert(ctx, rt, sc.c, sc.region, "", "--cert"); err != nil {
+					return err
+				}
 			}
 			certID := ""
 			if cert != "" {
@@ -1533,27 +1564,70 @@ for --protocol HTTP or HTTPS (required), with the health check and session
 persistence off. Alibaba Cloud allows several server groups of one name;
 polyctl refuses to create a second one in the same VPC (exit code 1).`,
 		Example: "  polyctl aliyun alb server-group create site-a-http --vpc cn-hongkong-vpc --protocol HTTP",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			name := args[0]
-			if strings.TrimSpace(name) == "" || looksLikeServerGroupID(name) {
-				return app.UsageErrf("server group name %q is empty or starts with sgp- (that is how ids are written)", name)
+			name := app.Arg(args, 0)
+			checkName := func(n string) error {
+				if strings.TrimSpace(n) == "" || looksLikeServerGroupID(n) {
+					return app.UsageErrf("server group name %q is empty or starts with sgp- (that is how ids are written)", n)
+				}
+				return nil
 			}
-			if vpcRef == "" {
+			if len(args) > 0 {
+				if err := checkName(name); err != nil {
+					return err
+				}
+			}
+			if vpcRef == "" && !rt.Interactive() {
 				return app.UsageErrf("--vpc is required: a server group belongs to one VPC")
 			}
-			p, err := parseGroupProtocol(protocol)
-			if err != nil {
-				return err
+			var p string
+			var err error
+			if protocol != "" || !rt.Interactive() {
+				if p, err = parseGroupProtocol(protocol); err != nil {
+					return err
+				}
 			}
 			sc, err := openALBScope(ctx, rt, region)
 			if err != nil {
 				return err
 			}
-			v, err := resolveVPC(ctx, sc.ecsScope, vpcRef)
+			var v vpcInfo
+			if vpcRef == "" {
+				prefer, _ := rt.ResourceName("aliyun_vpc", "", map[string]string{"region": sc.region})
+				v, err = pickVPC(ctx, rt, sc.ecsScope, "--vpc", prefer, nil)
+			} else {
+				v, err = resolveVPC(ctx, sc.ecsScope, vpcRef)
+			}
 			if err != nil {
 				return err
+			}
+			if p == "" {
+				if p, err = rt.Choose(app.Choice{Title: "Backend protocol", Arg: "--protocol", Default: "HTTP",
+					Options: []prompt.Option{{Label: "HTTP", Value: "HTTP"}, {Label: "HTTPS", Value: "HTTPS"}}}); err != nil {
+					return err
+				}
+			}
+			if name == "" {
+				groups, err := sc.a.listServerGroups(ctx, nil, nil)
+				if err != nil {
+					return err
+				}
+				if name, err = rt.AskInput("<name>", "Name of the new server group ("+v.ID+")", "", func(n string) error {
+					n = strings.TrimSpace(n)
+					if err := checkName(n); err != nil {
+						return inline(err)
+					}
+					for _, g := range groups {
+						if g.Name == n && g.VpcID == v.ID {
+							return fmt.Errorf("server group %q already exists in %s (%s)", n, v.ID, g.ID)
+						}
+					}
+					return nil
+				}); err != nil {
+					return err
+				}
 			}
 			found, err := sc.a.listServerGroups(ctx, []string{name}, nil)
 			if err != nil {
@@ -1983,16 +2057,44 @@ defaults.aliyun.resource_group, else "default"). Alibaba Cloud allows several
 ACLs of one name; polyctl refuses to create a second one (exit code 1). An
 ACL takes effect once it is bound to a listener, which polyctl does not do.`,
 		Example: "  polyctl aliyun alb acl create office-allow",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			name := args[0]
-			if strings.TrimSpace(name) == "" || looksLikeACLID(name) {
-				return app.UsageErrf("ACL name %q is empty or starts with acl- (that is how ids are written)", name)
+			name := app.Arg(args, 0)
+			checkName := func(n string) error {
+				if strings.TrimSpace(n) == "" || looksLikeACLID(n) {
+					return app.UsageErrf("ACL name %q is empty or starts with acl- (that is how ids are written)", n)
+				}
+				return nil
+			}
+			if len(args) > 0 {
+				if err := checkName(name); err != nil {
+					return err
+				}
 			}
 			sc, err := openALBScope(ctx, rt, region)
 			if err != nil {
 				return err
+			}
+			if name == "" {
+				acls, err := sc.a.listACLs(ctx, nil, nil)
+				if err != nil {
+					return err
+				}
+				if name, err = rt.AskInput("<name>", "Name of the new ACL", "", func(n string) error {
+					n = strings.TrimSpace(n)
+					if err := checkName(n); err != nil {
+						return inline(err)
+					}
+					for _, x := range acls {
+						if x.Name == n {
+							return fmt.Errorf("ACL %q already exists (%s)", n, x.ID)
+						}
+					}
+					return nil
+				}); err != nil {
+					return err
+				}
 			}
 			found, err := sc.a.listACLs(ctx, []string{name}, nil)
 			if err != nil {

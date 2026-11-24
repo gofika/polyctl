@@ -270,3 +270,49 @@ func pickGroupInstance(ctx context.Context, rt *app.Runtime, sc *albScope, g *al
 	return rt.Choose(app.Choice{Title: "Instance to add to " + orID(g.Name, g.ID), Options: opts, Arg: "--instance", Required: true,
 		Empty: app.UsageErrf("--instance is required, and no instance of %s in %s is outside the group", g.VpcID, sc.where())})
 }
+
+// otherPortValue is the value of "Other port...".
+const otherPortValue = "\x00other-port"
+
+// askListenerSpec asks for the --listener of listener create: http:80 and
+// https:443 when the load balancer has no listener on the port, or "Other
+// port..." for a <protocol>:<port> checked as it is typed.
+func askListenerSpec(ctx context.Context, rt *app.Runtime, sc *albScope, lbID string) (string, int, error) {
+	ls, err := sc.a.listListeners(ctx, lbID)
+	if err != nil {
+		return "", 0, err
+	}
+	used := map[int]bool{}
+	for _, l := range ls {
+		used[l.Port] = true
+	}
+	var opts []prompt.Option
+	for _, o := range []struct {
+		spec string
+		port int
+	}{{"https:443", 443}, {"http:80", 80}} {
+		if !used[o.port] {
+			opts = append(opts, prompt.Option{Label: o.spec, Value: o.spec})
+		}
+	}
+	opts = append(opts, prompt.Option{Label: "Other port...", Value: otherPortValue})
+	v, err := rt.Choose(app.Choice{Title: "Listener of " + lbID, Options: opts, Arg: "--listener"})
+	if err != nil {
+		return "", 0, err
+	}
+	if v == otherPortValue {
+		if v, err = rt.AskInput("--listener", "Listener <protocol>:<port> (http or https)", "", func(s string) error {
+			_, port, err := parseListenerSpec("listener", strings.TrimSpace(s))
+			if err != nil {
+				return inline(err)
+			}
+			if used[port] {
+				return fmt.Errorf("%s has a listener on port %d already", lbID, port)
+			}
+			return nil
+		}); err != nil {
+			return "", 0, err
+		}
+	}
+	return parseListenerSpec("listener", v)
+}

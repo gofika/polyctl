@@ -78,3 +78,52 @@ func TestCASDeletePick(t *testing.T) {
 		t.Errorf("stdout = %s", h.stdout.String())
 	}
 }
+
+// listener create without flags asks for the load balancer, the listener
+// (ports in use left out), the server group and, for HTTPS, the
+// certificate.
+func TestALBListenerCreatePicks(t *testing.T) {
+	t.Setenv(app.EnvNonInteractive, "")
+	h, _, alb, _, _ := albHarness(t, app.Flags{DryRun: true})
+	alb.addLB("alb-1", "lb-1", "vpc-site", "Active")
+	alb.addGroup("sgp-1", "g", "HTTP", "vpc-site")
+	alb.addListener("lsn-1", "alb-1", "HTTP", 80, "sgp-1")
+	p := prompttest.New(t, "alb-1", "https:443", "sgp-1", "1234567")
+	h.rt.Picker = p
+	if err := h.run("alb", "listener", "create"); err != nil {
+		t.Fatalf("create: %v\n%s", err, h.stderr.String())
+	}
+	p.Done()
+	if v := prompttest.Values(p.Asked[1].Options); strings.Contains(v, "http:80") {
+		t.Errorf("listeners offered %q: port 80 is in use", v)
+	}
+	if !strings.Contains(h.stdout.String(), "listener/https:443") {
+		t.Errorf("stdout = %s", h.stdout.String())
+	}
+}
+
+// server-group create and acl create ask for what is missing.
+func TestALBGroupAndACLCreatePicks(t *testing.T) {
+	t.Setenv(app.EnvNonInteractive, "")
+	h, _, alb, _, _ := albHarness(t, app.Flags{DryRun: true})
+	alb.addGroup("sgp-1", "web", "HTTP", "vpc-site")
+	p := prompttest.New(t, "vpc-site", "HTTPS", "web", "api")
+	h.rt.Picker = p
+	if err := h.run("alb", "server-group", "create"); err != nil {
+		t.Fatalf("server-group create: %v\n%s", err, h.stderr.String())
+	}
+	p.Done()
+	if !strings.Contains(h.stdout.String(), "server-group/api") {
+		t.Errorf("stdout = %s", h.stdout.String())
+	}
+	alb.addACL("acl-1", "office")
+	p = prompttest.New(t, "office", "home")
+	h.rt.Picker = p
+	if err := h.run("alb", "acl", "create"); err != nil {
+		t.Fatalf("acl create: %v\n%s", err, h.stderr.String())
+	}
+	p.Done()
+	if !strings.Contains(h.stdout.String(), "acl/home") {
+		t.Errorf("stdout = %s", h.stdout.String())
+	}
+}
