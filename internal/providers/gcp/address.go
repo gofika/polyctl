@@ -22,6 +22,10 @@ const (
 
 	addrExternal = "EXTERNAL"
 	addrInternal = "INTERNAL"
+	// purposeSharedVIP is the purpose of an internal address that several
+	// internal forwarding rules (the :80 and :443 rules of a load
+	// balancer) share.
+	purposeSharedVIP = "SHARED_LOADBALANCER_VIP"
 )
 
 // getAddress reads a regional address, nil when it does not exist.

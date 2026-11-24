@@ -294,8 +294,10 @@ A regional load balancer with only an HTTP proxy is upgraded: an HTTPS proxy
 (the HTTP proxy name with gcp_proxy_prefix followed by https-, proxy-web-1 ->
 proxy-https-web-1) on the same URL map, and a :443 forwarding rule (fr-web-1
 -> fr-https-web-1) on the IP of the :80 rule, whose ephemeral IP is reserved
-as the static address <lb>-ip first, so that both ports keep one IP;
---new-ip gives the :443 rule a new ephemeral IP instead (DNS then has to
+as the static address <lb>-ip first, so that both ports keep one IP (for
+an internal load balancer an internal SHARED_LOADBALANCER_VIP address in the
+:80 rule's subnetwork; an internal address of another purpose already
+holding the IP is exit code 1 before anything is written); --new-ip gives the :443 rule a new ephemeral IP instead (DNS then has to
 change). The :80 rule's labels are copied. A global load balancer without an
 HTTPS proxy is exit code 1. A regional load balancer whose HTTPS proxy has no
 :443 rule gets one the same way.
@@ -664,12 +666,24 @@ func ensureHTTPSRule(ctx context.Context, rt *app.Runtime, s certScope, lb *lbRe
 	}
 	var steps []platform.Step
 	ip := rule80.IPAddress
+	// An internal load balancer's :80 IP is an internal address of its
+	// subnetwork; two rules share it only through an address whose
+	// purpose is SHARED_LOADBALANCER_VIP.
+	internal := internalScheme(rule80.LoadBalancingScheme)
 	if !o.newIP {
 		addrs, err := s.c.listAddresses(ctx, s.region)
 		if err != nil {
 			return nil, err
 		}
-		if a := addressByIP(addrs, ip, addrExternal); a != nil {
+		addrType := addrExternal
+		if internal {
+			addrType = addrInternal
+		}
+		if a := addressByIP(addrs, ip, addrType); a != nil {
+			if internal && a.Purpose != purposeSharedVIP {
+				return nil, fmt.Errorf("internal address %s holds %s, the IP of forwarding rule %s, with purpose %s: a :443 rule can share it only when its purpose is %s; pass --new-ip to give the :443 rule an IP of its own",
+					a.Name, ip, rule80.Name, orNone(a.Purpose), purposeSharedVIP)
+			}
 			steps = append(steps, platform.Step{Resource: "address/" + a.Name, Action: platform.Unchanged, Desc: "reserved " + ip})
 		} else {
 			addrName := fitName(o.lbName + "-ip")
@@ -681,15 +695,17 @@ func ensureHTTPSRule(ctx context.Context, rt *app.Runtime, s certScope, lb *lbRe
 			} else if a != nil {
 				return nil, fmt.Errorf("address %s already holds %s, not %s, the IP of forwarding rule %s", addrName, a.Address, ip, rule80.Name)
 			}
-			tier := rule80.NetworkTier
-			if tier == "" {
-				tier = "PREMIUM"
+			body := &compute.Address{Name: addrName, Address: ip, AddressType: addrExternal, NetworkTier: tierOr(rule80.NetworkTier)}
+			desc := "promote ephemeral " + ip
+			if internal {
+				body = &compute.Address{Name: addrName, Address: ip, AddressType: addrInternal, Subnetwork: rule80.Subnetwork, Purpose: purposeSharedVIP}
+				desc += " (internal, " + purposeSharedVIP + ")"
 			}
-			steps = append(steps, platform.Step{Resource: "address/" + addrName, Action: platform.Created, Desc: "promote ephemeral " + ip,
+			steps = append(steps, platform.Step{Resource: "address/" + addrName, Action: platform.Created, Desc: desc,
 				Apply: func(ctx context.Context) (platform.Change, error) {
 					wctx, cancel, conv := deadline(ctx, s.timeout, "address/"+addrName, "RESERVED")
 					defer cancel()
-					_, err := s.c.insertAddress(wctx, s.region, &compute.Address{Name: addrName, Address: ip, AddressType: addrExternal, NetworkTier: tier})
+					_, err := s.c.insertAddress(wctx, s.region, body)
 					return platform.Change{Detail: "promoted from ephemeral " + ip}, conv(err)
 				}})
 		}

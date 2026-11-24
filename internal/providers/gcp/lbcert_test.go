@@ -440,3 +440,53 @@ func TestLBCertSetProfileWithoutGCPAccount(t *testing.T) {
 		t.Errorf("unknown profile = %v", err)
 	}
 }
+
+// An internal managed load balancer: the :80 IP is an internal address, so
+// the :443 rule shares it through an internal SHARED_LOADBALANCER_VIP
+// address in the :80 rule's subnetwork, on the upgrade path and on the path
+// of an HTTPS proxy without a :443 rule. An internal address with another
+// purpose is refused before anything is written.
+func TestLBCertSetInternalManaged(t *testing.T) {
+	const subnet = apiBase + "projects/proj/regions/us-central1/subnetworks/default"
+	internalLB := func(h *gcpHarness) {
+		h.gce.addURLMap("us-central1", "lb-web-1")
+		h.gce.addHTTPProxy("us-central1", "proxy-web-1", "lb-web-1")
+		h.gce.addRule("us-central1", "fr-web-1", "targetHttpProxies/proxy-web-1", "10.128.0.50", "80-80", nil)
+		fr := h.gce.rule("us-central1", "fr-web-1")
+		h.gce.mu.Lock()
+		fr.LoadBalancingScheme, fr.NetworkTier, fr.Subnetwork = "INTERNAL_MANAGED", "", subnet
+		h.gce.mu.Unlock()
+	}
+	for _, tc := range []struct {
+		name  string
+		proxy bool
+	}{{"upgrade", false}, {"proxy without :443 rule", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newGCPHarness(t, app.Flags{}, nil)
+			internalLB(h)
+			if tc.proxy {
+				h.gce.addHTTPSProxy("us-central1", "proxy-https-web-1", "lb-web-1")
+			}
+			p := newPair(t, []string{"example.com"}, 90)
+			if err := h.run("compute", "load-balancer", "cert", "set", "lb-web-1", "--domain", "example.com", "--cert-file", p.certFile, "--key-file", p.keyFile); err != nil {
+				t.Fatalf("%v\n%s", err, h.stderr.String())
+			}
+			a := h.gce.address("us-central1", "lb-web-1-ip")
+			if a == nil || a.Address != "10.128.0.50" || a.AddressType != addrInternal || a.Purpose != purposeSharedVIP || a.Subnetwork != subnet || a.NetworkTier != "" {
+				t.Errorf("address = %+v", a)
+			}
+			fr := h.gce.rule("us-central1", "fr-https-web-1")
+			if fr == nil || fr.IPAddress != "10.128.0.50" || fr.LoadBalancingScheme != "INTERNAL_MANAGED" || fr.Subnetwork != subnet {
+				t.Errorf("rule = %+v", fr)
+			}
+		})
+	}
+	h := newGCPHarness(t, app.Flags{}, nil)
+	internalLB(h)
+	h.gce.addAddress("us-central1", &compute.Address{Name: "web-vip", Address: "10.128.0.50", AddressType: addrInternal, Purpose: "GCE_ENDPOINT", Subnetwork: subnet})
+	p := newPair(t, []string{"example.com"}, 90)
+	err := h.run("compute", "load-balancer", "cert", "set", "lb-web-1", "--domain", "example.com", "--cert-file", p.certFile, "--key-file", p.keyFile)
+	if exitClass(err) != "general" || !strings.Contains(err.Error(), "--new-ip") || len(h.gce.lbWrites()) != 0 {
+		t.Errorf("other purpose = %v, writes %v", err, h.gce.lbWrites())
+	}
+}
