@@ -71,7 +71,7 @@ func Open(path string) (*DB, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(schema + ipIndexSchema); err != nil {
+	if _, err := db.Exec(schema + ipIndexSchema + secretSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate inventory db: %w", err)
 	}
@@ -515,7 +515,8 @@ func (d *DB) IndexEntries(ctx context.Context) ([]IndexEntry, error) {
 	return out, rows.Err()
 }
 
-// Purge removes everything stored for a profile (used by logout).
+// Purge removes everything cached for a profile (used by logout). The
+// instance secrets stay: they cannot be fetched again.
 func (d *DB) Purge(ctx context.Context, p platform.ID, profile string) error {
 	for _, t := range []string{"resources", "domain_index", "ip_index", "sync_state"} {
 		if _, err := d.sql.ExecContext(ctx, `DELETE FROM `+t+` WHERE platform=? AND profile=?`, string(p), profile); err != nil {
@@ -526,7 +527,7 @@ func (d *DB) Purge(ctx context.Context, p platform.ID, profile string) error {
 }
 
 // RenameProfile moves everything stored for an account from one profile name
-// to another, in one transaction. Rows already stored under the new name for
+// to another, instance secrets included, in one transaction. Rows already stored under the new name for
 // that platform are stale leftovers and are removed first.
 func (d *DB) RenameProfile(ctx context.Context, p platform.ID, oldName, newName string) error {
 	if oldName == newName {
@@ -544,6 +545,12 @@ func (d *DB) RenameProfile(ctx context.Context, p platform.ID, oldName, newName 
 		if _, err := tx.ExecContext(ctx, `UPDATE `+t+` SET profile=? WHERE platform=? AND profile=?`, newName, string(p), oldName); err != nil {
 			return err
 		}
+	}
+	// Instance secrets cannot be fetched again, so rows already under the
+	// new name are kept, except a row of the same instance, which the moved
+	// one replaces.
+	if _, err := tx.ExecContext(ctx, `UPDATE OR REPLACE instance_secrets SET profile=? WHERE platform=? AND profile=?`, newName, string(p), oldName); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
