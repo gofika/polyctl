@@ -59,7 +59,7 @@ otherwise root, then ecs-user. Pass --login-user for a user added by hand.
 The key pair bound to the instance (the console allows one) stays as it
 is; these commands only edit authorized_keys, which needs no restart.`,
 		Flags: func(cmd *cobra.Command) {
-			cmd.Flags().StringVar(&region, "region", "", "region of the instance (asks the selected profile in that region)")
+			cmd.Flags().StringVar(&region, "region", "", "region of the instance (default: look it up in the inventory of every account)")
 		},
 		Resolve: func(ctx context.Context, arg string) (*app.SSHKeyInstance, error) {
 			if arg == "" {

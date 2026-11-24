@@ -215,7 +215,7 @@ on images with EC2 Instance Connect installed (standard Amazon Linux 2023,
 Amazon Linux 2 since 2019-06-18 and Ubuntu 20.04 or later ship it); a
 terminal offers it (default no) for those images only.`,
 		Flags: func(cmd *cobra.Command) {
-			cmd.Flags().StringVar(&region, "region", "", "region of the instance (looks in that region of the profile's account)")
+			cmd.Flags().StringVar(&region, "region", "", "region of the instance (default: look it up in the inventory of every account)")
 		},
 		Resolve: func(ctx context.Context, arg string) (*app.SSHKeyInstance, error) {
 			if arg == "" {
