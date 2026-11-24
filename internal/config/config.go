@@ -11,6 +11,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/gofrs/flock"
 	"gopkg.in/yaml.v3"
 
 	"github.com/gofika/polyctl/internal/platform"
@@ -316,13 +317,26 @@ func Load(path string) (*Config, error) {
 // Path returns where the config is saved.
 func (c *Config) Path() string { return c.path }
 
+// LockName is the lock file next to config.yaml that serialises saves
+// between polyctl processes.
+const LockName = "config.lock"
+
 // Save writes the config atomically with mode 0600. It refuses with
 // ErrChanged when the file no longer is what this copy was loaded from: the
 // copy lacks whatever was written in between, and saving it would drop that.
+// The check and the write run under an exclusive lock on config.lock, so
+// that of two processes saving at once the later one sees the earlier one's
+// file and is refused, instead of both succeeding and one save being lost.
 func (c *Config) Save() error {
-	if err := os.MkdirAll(filepath.Dir(c.path), 0o700); err != nil {
+	dir := filepath.Dir(c.path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
+	fl := flock.New(filepath.Join(dir, LockName))
+	if err := fl.Lock(); err != nil {
+		return fmt.Errorf("lock %s: %w", fl.Path(), err)
+	}
+	defer func() { _ = fl.Unlock() }()
 	if err := c.Unchanged(); err != nil {
 		if errors.Is(err, ErrChanged) {
 			return fmt.Errorf("%w; nothing was saved, run the command again", err)

@@ -23,6 +23,7 @@ All state lives in one directory, `~/.config/polyctl/` by default (created with 
 | `inventory.db` | SQLite cache of platform resources and the domain index, plus the encrypted login credentials of Windows instances polyctl creates (see [Instances](instances.md)). Schema: [Development](development.md). |
 | `credentials.json` | Secrets, **only** when the OS keyring is unavailable or `credential_store: file` is set. Mode `0600`. |
 | `credentials.lock` | Lock file used while stored secrets change. Safe to delete when no polyctl is running. |
+| `config.lock` | Lock file used while `config.yaml` is saved: of two processes saving at once, the later one sees the other's change and is refused ("run the command again") instead of overwriting it. Safe to delete when no polyctl is running. |
 | `keyring-service` | Only in a config directory other than the default one: records that its keyring entries were copied from the shared service (see [Credential storage](#credential-storage)). |
 
 ## Environment variables and global flags

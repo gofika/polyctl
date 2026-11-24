@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -99,8 +100,10 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 1 || entries[0].Name() != "config.yaml" {
-		t.Errorf("temporary file left behind: %v", entries)
+	for _, e := range entries {
+		if e.Name() != "config.yaml" && e.Name() != config.LockName {
+			t.Errorf("temporary file left behind: %v", entries)
+		}
 	}
 
 	got, err := config.Load(path)
@@ -674,8 +677,10 @@ func TestSaveRefusesToOverwriteLaterChanges(t *testing.T) {
 		t.Errorf("a refused save changed the file:\n%s", got)
 	}
 	entries, _ := os.ReadDir(filepath.Dir(path))
-	if len(entries) != 1 {
-		t.Errorf("a refused save left files behind: %v", entries)
+	for _, e := range entries {
+		if e.Name() != "config.yaml" && e.Name() != config.LockName {
+			t.Errorf("a refused save left files behind: %v", entries)
+		}
 	}
 
 	// A fresh load can be saved, and a file removed meanwhile counts as a
@@ -751,5 +756,54 @@ func TestLoadLegacyProfileThroughMergeKey(t *testing.T) {
 	}
 	if !a.LegacySecret || a.CredentialBackend != "file" {
 		t.Errorf("account = %+v, want the merged legacy account", a)
+	}
+}
+
+// Two copies saved at the same time (two processes): exactly one save
+// succeeds and the other is refused with ErrChanged, never both succeeding
+// with one update lost.
+func TestConcurrentSavesNeverLoseAnUpdate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("current_profile: x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for round := 0; round < 30; round++ {
+		var cfgs [2]*config.Config
+		for i := range cfgs {
+			c, err := config.Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.Profiles[[]string{"a", "b"}[i]] = &config.Profile{Platforms: map[platform.ID]*config.Account{}}
+			cfgs[i] = c
+		}
+		var wg sync.WaitGroup
+		var errs [2]error
+		for i := range cfgs {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				errs[i] = cfgs[i].Save()
+			}(i)
+		}
+		wg.Wait()
+		ok, changed := 0, 0
+		for _, err := range errs {
+			switch {
+			case err == nil:
+				ok++
+			case errors.Is(err, config.ErrChanged):
+				changed++
+			default:
+				t.Fatalf("round %d: Save = %v", round, err)
+			}
+		}
+		if ok != 1 || changed != 1 {
+			t.Fatalf("round %d: %d saves succeeded and %d were refused, want 1 and 1", round, ok, changed)
+		}
+		// Reset for the next round.
+		if err := os.WriteFile(path, []byte("current_profile: x\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
