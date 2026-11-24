@@ -2,6 +2,7 @@ package aws
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -321,4 +322,14 @@ func pickSubnet(ctx context.Context, rt *app.Runtime, c *client, region, vpc str
 		}
 	}
 	return ec2types.Subnet{}, fmt.Errorf("unexpected subnet %q", v)
+}
+
+// inline turns a usage error into the message of an inline validation
+// (no "usage:" prefix): the question stays open for a correction.
+func inline(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := strings.TrimPrefix(err.Error(), app.ErrUsage.Error()+": ")
+	return errors.New(strings.TrimPrefix(msg, platform.ErrInvalidInput.Error()+": "))
 }

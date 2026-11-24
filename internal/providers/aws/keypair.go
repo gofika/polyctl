@@ -160,7 +160,7 @@ func (l *keyPairLister) ListKeyPairs(ctx context.Context) ([]platform.KeyPair, e
 // their public key (fingerprints as a fallback), and only RSA and ED25519
 // keys can be imported.
 func keyInputBase() platform.KeyInput {
-	return platform.KeyInput{Match: platform.MatchAWS, AllowedTypes: platform.AWSKeyTypes, CheckName: checkKeyPairName}
+	return platform.KeyInput{Match: platform.MatchAWS, AllowedTypes: platform.AWSKeyTypes, CheckName: func(s string) error { return inline(checkKeyPairName(s)) }}
 }
 
 // Errors of ImportKeyPair that are the caller's to correct.

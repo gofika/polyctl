@@ -159,23 +159,30 @@ func keyPairImportCmd(rt *app.Runtime) *cobra.Command {
 		Long: `Import the public key of --ssh-key (the key itself) or --ssh-key-file (a .pub
 file) as the key pair <name>. A name that is taken is a usage error (exit
 code 2), whatever key it holds: the existing key pair is never replaced. Use
-key-pair ensure to reuse the key pair that already holds the key.`,
+key-pair ensure to reuse the key pair that already holds the key. On a
+terminal a missing key is picked from ~/.ssh/*.pub (type, fingerprint and
+comment shown, keys already registered marked) or typed as a path, and a
+missing <name> is asked, checked as it is typed (no default).`,
 		Example: "  polyctl aws ec2 key-pair import ops --ssh-key-file ~/.ssh/id_ed25519.pub",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			name := args[0]
-			if err := checkKeyPairName(name); err != nil {
-				return err
+			name := app.Arg(args, 0)
+			if name != "" {
+				if err := checkKeyPairName(name); err != nil {
+					return err
+				}
 			}
 			key, err := keys.PublicKey()
 			if err != nil {
 				return err
 			}
-			if key == nil {
+			if key == nil && !rt.Interactive() {
 				return app.UsageErrf("a public key is required: pass --ssh-key-file <path> or --ssh-key <public key>")
 			}
-			if err := key.CheckType(platform.AWSKeyTypes); err != nil {
-				return err
+			if key != nil {
+				if err := key.CheckType(platform.AWSKeyTypes); err != nil {
+					return err
+				}
 			}
 			if rt.Flags.Offline {
 				return app.ErrOffline
@@ -186,6 +193,11 @@ key-pair ensure to reuse the key pair that already holds the key.`,
 			}
 			if region == "" {
 				region = c.region
+			}
+			if key == nil || name == "" {
+				if key, name, err = askImport(cmd.Context(), rt, c, region, &keys, key, name); err != nil {
+					return err
+				}
 			}
 			target := platform.Target{Platform: platform.AWS, Profile: prof.Name, Region: region}
 			change := platform.Change{Resource: "key-pair/" + name, Action: platform.Created, Detail: "import from " + key.Source + " (" + key.Summary() + ")"}
@@ -319,4 +331,53 @@ A key pair <name> that holds another key is never replaced: exit code 2.`,
 	app.AddPublicKeyFlags(cmd, &keys)
 	cmd.Flags().StringVar(&region, "region", "", "region of the key pair (default: the profile's region)")
 	return cmd
+}
+
+// askImport asks for what key-pair import misses in the interactive flow:
+// the public key (key nil), from the usable ~/.ssh/*.pub files (those
+// already registered marked) or a path, and the name (name ""), checked as
+// it is typed against the key pairs of the region; no name is ever chosen
+// for you.
+func askImport(ctx context.Context, rt *app.Runtime, c *client, region string, keys *app.KeyFlags, key *platform.PublicKey, name string) (*platform.PublicKey, string, error) {
+	base := keyInputBase()
+	base.NameFlag = "<name>"
+	in, err := rt.KeyInput(keys, base)
+	if err != nil {
+		return nil, "", err
+	}
+	pairs, err := (&keyPairLister{c: c, region: region}).ListKeyPairs(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	if key == nil {
+		path, err := in.Prompter.KeyFile(platform.KeyFileCandidates(in, pairs))
+		if err != nil {
+			return nil, "", err
+		}
+		if key, err = platform.LoadPublicKeyFile(strings.TrimSpace(path)); err != nil {
+			return nil, "", err
+		}
+		if err := key.CheckType(platform.AWSKeyTypes); err != nil {
+			return nil, "", err
+		}
+	}
+	if name == "" {
+		taken := map[string]bool{}
+		for _, kp := range pairs {
+			taken[kp.Name] = true
+		}
+		if name, err = rt.AskInput("<name>", "Name of the new key pair", "", func(v string) error {
+			v = strings.TrimSpace(v)
+			if err := checkKeyPairName(v); err != nil {
+				return inline(err)
+			}
+			if taken[v] {
+				return fmt.Errorf("key pair %q already exists in %s", v, region)
+			}
+			return nil
+		}); err != nil {
+			return nil, "", err
+		}
+	}
+	return key, name, nil
 }
