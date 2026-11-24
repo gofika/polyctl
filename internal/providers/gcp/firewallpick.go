@@ -350,3 +350,85 @@ func pickEnsureRule(ctx context.Context, rt *app.Runtime) (preset, name string, 
 	}
 	return "", v, nil
 }
+
+// askFirewallUpdate asks, in the interactive flow, what firewall update
+// changes when no field flag was given, and its new value: the allowed
+// protocols (not for a deny rule; the ticked ones replace the current
+// ones), ranges to add (source ranges of an ingress rule, destination
+// ranges of an egress rule, the current ones left out), the target tags,
+// the description or the priority, each shown with its current value. It
+// fills in rf (and adds) and returns the flag answered.
+func askFirewallUpdate(ctx context.Context, rt *app.Runtime, c *client, fw *compute.Firewall, rf *ruleFlags, adds *[]string) (string, error) {
+	have := allowValues(fw.Allowed)
+	ranges, rangeFlag, rangeWord := fw.SourceRanges, "add-source-range", "Source ranges"
+	if fw.Direction == dirEgress {
+		ranges, rangeFlag, rangeWord = fw.DestinationRanges, "destination-range", "Destination ranges"
+	}
+	var opts []prompt.Option
+	if len(fw.Denied) == 0 {
+		opts = append(opts, prompt.Option{Label: "Allowed protocols and ports (now " + joinOrNone(have, " ") + ")", Value: "allow"})
+	}
+	opts = append(opts,
+		prompt.Option{Label: "Add " + strings.ToLower(rangeWord) + " (now " + joinOrNone(ranges, ", ") + ")", Value: rangeFlag},
+		prompt.Option{Label: "Target tags (now " + joinOrNone(fw.TargetTags, ", ") + ")", Value: "target-tag"},
+		prompt.Option{Label: "Description (now " + orNone(fw.Description) + ")", Value: "description"},
+		prompt.Option{Label: "Priority (now " + strconv.FormatInt(fw.Priority, 10) + ")", Value: "priority"},
+	)
+	key, err := rt.Pick().Select("What to change on rule "+fw.Name, opts, "")
+	if err != nil {
+		return "", err
+	}
+	network := lastSegment(fw.Network)
+	switch key {
+	case "allow":
+		rf.allow, err = askAllow(rt, "Allowed protocols and ports of rule "+fw.Name+" (they replace "+joinOrNone(have, " ")+")", nil)
+	case "add-source-range", "destination-range":
+		var added []string
+		added, err = askRanges(ctx, rt, c, rangeWord+" to add to rule "+fw.Name+" (now "+joinOrNone(ranges, ", ")+")", network, fw.Direction, have, ranges)
+		if err == nil && len(added) == 0 {
+			err = app.NothingToDof("no range was selected")
+		}
+		if key == "add-source-range" {
+			*adds = added
+		} else {
+			rf.destRanges = append(append([]string(nil), ranges...), added...)
+		}
+	case "target-tag":
+		var v string
+		v, err = rt.AskInput("--target-tag", "Target tags of rule "+fw.Name+", separated by commas", strings.Join(fw.TargetTags, ","), func(s string) error {
+			if len(splitTags(s)) == 0 {
+				return fmt.Errorf("type at least one tag (--target-tag \"\" makes the rule apply to every instance)")
+			}
+			return nil
+		})
+		rf.targetTags = splitTags(v)
+	case "description":
+		rf.description, err = rt.AskInput("--description", "Description of rule "+fw.Name, fw.Description, nil)
+	case "priority":
+		var v string
+		v, err = rt.AskInput("--priority", "Priority of rule "+fw.Name+" (0-65535, lower numbers win)", strconv.FormatInt(fw.Priority, 10), func(s string) error {
+			p, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+			if err != nil || p < 0 || p > 65535 {
+				return fmt.Errorf("a whole number from 0 to 65535 is required")
+			}
+			return nil
+		})
+		if err == nil {
+			rf.priority, _ = strconv.ParseInt(v, 10, 64)
+		}
+	}
+	return key, err
+}
+
+// splitTags splits typed target tags at commas and spaces.
+func splitTags(s string) []string {
+	return dedupe(strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' }))
+}
+
+// joinOrNone joins values with sep, or says "none".
+func joinOrNone(values []string, sep string) string {
+	if len(values) == 0 {
+		return "none"
+	}
+	return strings.Join(values, sep)
+}

@@ -144,3 +144,76 @@ func TestFirewallEnsureRefusesBeforeAsking(t *testing.T) {
 		t.Errorf("asked %d questions", len(p.Asked))
 	}
 }
+
+// update without a field flag asks what to change (current values shown;
+// no protocols for a deny rule), then its new value; leaving the question
+// changes nothing; the non-interactive flow still needs a field flag.
+func TestFirewallUpdateAsksWhatToChange(t *testing.T) {
+	h, _ := interactiveGCP(t, nil)
+	h.gce.addFirewall(&compute.Firewall{Name: "allow-ssh", Network: "default", SourceRanges: []string{"10.0.0.0/8"}, TargetTags: []string{"ssh"},
+		Priority: 1000, Allowed: []*compute.FirewallAllowed{{IPProtocol: "tcp", Ports: []string{"22"}}}})
+
+	p := h.answer(prompttest.Label("Add source ranges"), []string{"10.128.0.0/20"})
+	if err := h.run("compute", "firewall", "update", "allow-ssh"); err != nil {
+		t.Fatalf("add ranges: %v\n%s", err, h.stderr.String())
+	}
+	p.Done()
+	if l := prompttest.Labels(p.Find("What to change on rule allow-ssh").Options); !strings.Contains(l, "Allowed protocols and ports (now tcp:22)") ||
+		!strings.Contains(l, "Add source ranges (now 10.0.0.0/8)") || !strings.Contains(l, "Target tags (now ssh)") || !strings.Contains(l, "Priority (now 1000)") {
+		t.Errorf("options:\n%s", l)
+	}
+	if fw := h.gce.firewall("allow-ssh"); strings.Join(fw.SourceRanges, ",") != "10.0.0.0/8,10.128.0.0/20" {
+		t.Errorf("ranges = %v", fw.SourceRanges)
+	}
+
+	h.answer(prompttest.Label("Allowed protocols"), []string{"tcp:22", "tcp:443"})
+	if err := h.run("compute", "firewall", "update", "allow-ssh"); err != nil {
+		t.Fatalf("allow: %v", err)
+	}
+	if fw := h.gce.firewall("allow-ssh"); allowedLabel(fw.Allowed) != "tcp:22,443" {
+		t.Errorf("allowed = %s", allowedLabel(fw.Allowed))
+	}
+
+	h.answer(prompttest.Label("Priority"), "x", "900")
+	if err := h.run("compute", "firewall", "update", "allow-ssh"); err != nil {
+		t.Fatalf("priority: %v", err)
+	}
+	if fw := h.gce.firewall("allow-ssh"); fw.Priority != 900 {
+		t.Errorf("priority = %d", fw.Priority)
+	}
+
+	h.answer(prompttest.Label("Target tags"), "web, ssh")
+	if err := h.run("compute", "firewall", "update", "allow-ssh"); err != nil {
+		t.Fatalf("tags: %v", err)
+	}
+	if fw := h.gce.firewall("allow-ssh"); strings.Join(fw.TargetTags, ",") != "web,ssh" {
+		t.Errorf("tags = %v", fw.TargetTags)
+	}
+
+	// Leaving a question changes nothing; --dry-run asks but writes nothing.
+	h.answer(prompttest.Abort{})
+	if err := h.run("compute", "firewall", "update", "allow-ssh"); !errors.Is(err, prompt.ErrAborted) {
+		t.Errorf("abort = %v", err)
+	}
+	h.answer(prompttest.Label("Description"), "ssh from the office")
+	h.rt.Flags.DryRun = true
+	err := h.run("compute", "firewall", "update", "allow-ssh")
+	h.rt.Flags.DryRun = false
+	if err != nil || h.gce.firewall("allow-ssh").Description != "" {
+		t.Errorf("dry run = %v, description %q", err, h.gce.firewall("allow-ssh").Description)
+	}
+
+	// A deny rule is not offered its protocols.
+	h.gce.addFirewall(&compute.Firewall{Name: "deny-all", Network: "default", SourceRanges: []string{"0.0.0.0/0"}, Priority: 1000,
+		Denied: []*compute.FirewallDenied{{IPProtocol: "all"}}})
+	p = h.answer(prompttest.Abort{})
+	_ = h.run("compute", "firewall", "update", "deny-all")
+	if l := prompttest.Labels(p.Find("What to change on rule deny-all").Options); strings.Contains(l, "Allowed protocols") {
+		t.Errorf("deny rule options:\n%s", l)
+	}
+
+	h.nonInteractive()
+	if err := h.run("compute", "firewall", "update", "allow-ssh"); exitClass(err) != "usage" || !strings.Contains(err.Error(), "nothing to update") {
+		t.Errorf("non-interactive = %v", err)
+	}
+}

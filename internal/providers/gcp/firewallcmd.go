@@ -390,7 +390,9 @@ func firewallUpdateCmd(rt *app.Runtime) *cobra.Command {
 a whole; --add-source-range adds ranges to the existing ones (a union, never
 a removal). --description and --priority set those fields. Values that are
 already set are unchanged, and nothing is sent. Without any field to change
-it is exit code 2.
+it is exit code 2; on a terminal, what to change is asked instead (the
+allowed protocols, ranges to add, the target tags, the description or the
+priority, each with its current value), then its new value.
 
 The network and the direction of a rule are never changed (exit code 2):
 delete the rule and create it again. --target-tag "" makes the rule apply to
@@ -419,9 +421,13 @@ the change was accepted.`,
 			for _, f := range []string{"allow", "source-range", "add-source-range", "destination-range", "target-tag", "description", "priority"} {
 				changed = changed || fl.Changed(f)
 			}
-			if !changed {
+			if !changed && !rt.Interactive() {
 				return app.UsageErrf("nothing to update: pass --allow, --source-range, --add-source-range, --destination-range, --target-tag, --description or --priority")
 			}
+			// asked is the field the interactive flow asked for when no field
+			// flag was given.
+			asked := ""
+			set := func(f string) bool { return fl.Changed(f) || f == asked }
 			if fl.Changed("source-range") && fl.Changed("add-source-range") {
 				return app.UsageErrf("--source-range replaces the source ranges and --add-source-range adds to them: pass one of them")
 			}
@@ -485,13 +491,31 @@ the change was accepted.`,
 			case len(fw.Denied) > 0 && allowed != nil:
 				return fmt.Errorf("firewall rule %s is a deny rule: polyctl manages the allowed protocols of allow rules only", name)
 			}
+			if !changed {
+				if asked, err = askFirewallUpdate(ctx, rt, c, fw, &rf, &addSources); err != nil {
+					return err
+				}
+				switch asked {
+				case "allow":
+					allowed, err = parseAllow(rf.allow)
+				case "add-source-range":
+					adds, err = parseCIDRs("add-source-range", addSources)
+				case "destination-range":
+					dests, err = parseCIDRs("destination-range", rf.destRanges)
+				case "target-tag":
+					tags = dedupe(rf.targetTags)
+				}
+				if err != nil {
+					return err
+				}
+			}
 			patch := &compute.Firewall{}
 			var details []string
 			if allowed != nil && allowedKey(allowed) != allowedKey(fw.Allowed) {
 				patch.Allowed = allowed
 				details = append(details, fmt.Sprintf("allow %s -> %s", allowedLabel(fw.Allowed), allowedLabel(allowed)))
 			}
-			if fl.Changed("source-range") && !sameSet(sources, fw.SourceRanges) {
+			if set("source-range") && !sameSet(sources, fw.SourceRanges) {
 				patch.SourceRanges = sources
 				details = append(details, fmt.Sprintf("source ranges %s -> %s", strings.Join(fw.SourceRanges, ","), strings.Join(sources, ",")))
 			}
@@ -502,11 +526,11 @@ the change was accepted.`,
 					details = append(details, fmt.Sprintf("+%s (now %s)", strings.Join(added, ", +"), plural(len(union), "range")))
 				}
 			}
-			if fl.Changed("destination-range") && !sameSet(dests, fw.DestinationRanges) {
+			if set("destination-range") && !sameSet(dests, fw.DestinationRanges) {
 				patch.DestinationRanges = dests
 				details = append(details, fmt.Sprintf("destination ranges %s -> %s", strings.Join(fw.DestinationRanges, ","), strings.Join(dests, ",")))
 			}
-			if fl.Changed("target-tag") && !(clearTags && len(fw.TargetTags) == 0) && (clearTags || !sameSet(tags, fw.TargetTags)) {
+			if set("target-tag") && !(clearTags && len(fw.TargetTags) == 0) && (clearTags || !sameSet(tags, fw.TargetTags)) {
 				patch.TargetTags = tags
 				to := strings.Join(tags, ",")
 				if clearTags {
@@ -516,12 +540,12 @@ the change was accepted.`,
 			} else {
 				clearTags = false
 			}
-			if fl.Changed("description") && rf.description != fw.Description {
+			if set("description") && rf.description != fw.Description {
 				patch.Description = rf.description
 				patch.ForceSendFields = append(patch.ForceSendFields, "Description")
 				details = append(details, "description")
 			}
-			if fl.Changed("priority") && rf.priority != fw.Priority {
+			if set("priority") && rf.priority != fw.Priority {
 				patch.Priority = rf.priority
 				patch.ForceSendFields = append(patch.ForceSendFields, "Priority")
 				details = append(details, fmt.Sprintf("priority %d -> %d", fw.Priority, rf.priority))
