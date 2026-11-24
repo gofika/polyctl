@@ -70,6 +70,31 @@ func (w *windowsLogin) created(ctx context.Context, id string) {
 	w.stored = err == nil
 }
 
+// pendingInstancePrefix starts the instance id under which the login of an
+// instance whose RunInstances result is unknown is stored: the password
+// command finds it by the instance name.
+const pendingInstancePrefix = "pending-"
+
+// pending stores the password of an instance whose RunInstances result is
+// unknown, under the client token of the request and the instance name, so
+// that it survives the run. Nothing is shown: finish has no instance id.
+func (w *windowsLogin) pending(ctx context.Context, token string) {
+	if w.password == "" {
+		return
+	}
+	w.id = pendingInstancePrefix + token
+	st, err := w.rt.Secrets()
+	if err == nil {
+		err = st.Put(ctx, w.credentials())
+	}
+	w.id = ""
+	if err != nil {
+		w.rt.Infof("warning: the generated password could not be stored: if instance %s exists, reset its password in the ECS console", w.name)
+		return
+	}
+	w.rt.Infof("note: the generated password is stored: if instance %s exists, `%s` shows it", w.name, app.PasswordCommandLine(ecsInstanceTree, w.name))
+}
+
 // finish shows the login once the plan has run, whether or not a later
 // step failed: the instance exists from RunInstances on. Nothing happens
 // when no instance was created (a dry run, an earlier failure, a Linux

@@ -107,6 +107,15 @@ func (f *fakeECS) describeInstanceStatus(q url.Values) (int, any) {
 }
 
 func (f *fakeECS) runInstances(q url.Values) (int, any) {
+	code, body := f.runInstancesAnswer(q)
+	if code == 200 && f.runLost > 0 {
+		f.runLost--
+		return 503, apiErr("ServiceUnavailable", "The request has failed due to a temporary failure of the server.")
+	}
+	return code, body
+}
+
+func (f *fakeECS) runInstancesAnswer(q url.Values) (int, any) {
 	token := q.Get("ClientToken")
 	if id, ok := f.tokens[token]; ok && token != "" {
 		return 200, map[string]any{"InstanceIdSets": map[string]any{"InstanceIdSet": []string{id}}, "RequestId": "r"}

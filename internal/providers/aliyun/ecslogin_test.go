@@ -445,3 +445,48 @@ func TestWindowsImageEnsure(t *testing.T) {
 		t.Errorf("ensure --key-pair = %v", err)
 	}
 }
+
+// A RunInstances whose answer is lost is asked again with the same client
+// token: ECS answers the instance it created, and the login is stored.
+func TestWindowsRunAnswersLost(t *testing.T) {
+	h, f := winHarness(t, app.Flags{})
+	f.runLost = 3 // more than the SDK retries itself
+	if err := h.run(winCreate...); err != nil {
+		t.Fatalf("%v\n%s", err, h.stderr.String())
+	}
+	runs := h.api.callsFor("RunInstances")
+	if len(f.instances) != 1 || len(runs) < 2 || runs[1].Get("ClientToken") != runs[0].Get("ClientToken") {
+		t.Fatalf("instances %d, runs %d", len(f.instances), len(runs))
+	}
+	got := storedLogin(t, h, "win-a")
+	if len(got) != 1 || got[0].InstanceID != f.instances[0]["InstanceId"] || got[0].Password != runs[0].Get("Password") {
+		t.Errorf("stored = %+v", got)
+	}
+}
+
+// When the result stays unknown, the generated password is stored under
+// the instance name and the password command shows it.
+func TestWindowsRunResultUnknown(t *testing.T) {
+	h, f := winHarness(t, app.Flags{})
+	f.runLost = 100
+	err := h.run(winCreate...)
+	if err == nil || !strings.Contains(err.Error(), "result is unknown, the instance may already exist") {
+		t.Fatalf("unknown = %v", err)
+	}
+	pw := h.api.callsFor("RunInstances")[0].Get("Password")
+	got := storedLogin(t, h, "win-a")
+	if len(got) != 1 || got[0].Password != pw || !strings.HasPrefix(got[0].InstanceID, pendingInstancePrefix) {
+		t.Fatalf("stored = %+v", got)
+	}
+	if strings.Contains(h.stderr.String(), pw) {
+		t.Errorf("the password was printed: %s", h.stderr.String())
+	}
+	if err := h.run("ecs", "instance", "password", "win-a"); err != nil {
+		t.Fatal(err)
+	}
+	var login map[string]any
+	h.jsonOut(&login)
+	if login["password"] != pw {
+		t.Errorf("login = %v", login)
+	}
+}

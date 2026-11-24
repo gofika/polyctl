@@ -66,6 +66,9 @@ type fakeECS struct {
 	initializing   map[string]int
 	disks          map[string]int
 	associateFails int
+	// runLost is the number of RunInstances calls that create the
+	// instance but answer a server-side failure.
+	runLost int
 	// typeArch is the CpuArchitecture of instance types (X86, ARM).
 	typeArch map[string]string
 }
