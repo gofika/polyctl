@@ -220,7 +220,7 @@ func loginProfile(ctx context.Context, in platform.LoginInput, io *prompt.IO, re
 	if _, set := in.Options[metaAWSProfile]; !set {
 		if in.Interactive {
 			var err error
-			name, err = io.Line("AWS profile name (from ~/.aws/config)", name)
+			name, err = askSharedProfile(in, io, name)
 			if err != nil {
 				return nil, err
 			}

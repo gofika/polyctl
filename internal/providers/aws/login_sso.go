@@ -48,7 +48,7 @@ func loginSSO(ctx context.Context, in platform.LoginInput, io *prompt.IO, region
 	if _, set := in.Options[metaSSORegion]; !set {
 		if in.Interactive {
 			var err error
-			if ssoRegion, err = io.Line("Identity Center region", ssoRegion); err != nil {
+			if ssoRegion, err = askSSORegion(in, io, ssoRegion); err != nil {
 				return nil, err
 			}
 		} else {

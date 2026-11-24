@@ -188,9 +188,15 @@ func TestLoginProfileNonInteractive(t *testing.T) {
 	if res, stderr, _, err = login(t, false, refusingReader{t}, map[string]string{"method": "profile", "aws_profile": "work"}, nil); err != nil || res.Metadata[metaAWSProfile] != "work" || stderr != "" {
 		t.Errorf("--set aws_profile: %v %+v (stderr %q)", err, res, stderr)
 	}
-	// Interactive: asked, with the default.
-	if res, stderr, _, err = login(t, true, strings.NewReader("work\n"), map[string]string{"method": "profile"}, nil); err != nil || res.Metadata[metaAWSProfile] != "work" || !strings.Contains(stderr, "AWS profile name (from ~/.aws/config) [default]: ") {
+	// Interactive: the profiles of the shared files are offered (region and
+	// credentials shown, the default preselected), or another one typed.
+	if res, stderr, _, err = login(t, true, strings.NewReader("2\n"), map[string]string{"method": "profile"}, nil); err != nil || res.Metadata[metaAWSProfile] != "work" ||
+		!strings.Contains(stderr, "work  eu-central-1  keys") || !strings.Contains(stderr, "Another profile...") || !strings.Contains(stderr, "[default  eu-west-1  keys]") {
 		t.Errorf("interactive profile: %v %+v (stderr %q)", err, res, stderr)
+	}
+	// Another profile is typed; one the shared files lack fails to load.
+	if _, stderr, _, err = login(t, true, strings.NewReader("3\nother\n"), map[string]string{"method": "profile"}, nil); err == nil || !strings.Contains(stderr, "AWS profile name") {
+		t.Errorf("another profile: %v (stderr %q)", err, stderr)
 	}
 }
 
