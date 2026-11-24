@@ -548,6 +548,7 @@ What each command asks, and what it needs instead:
 | `namecom` / `godaddy domain get` / `ns get` / `ns set` / `lock` / `unlock` / `autorenew`, `dns list` / `create` / `add` / `upsert` / `update` / `delete` without `<domain>` | the domain or zone, from those of the profile (`lock`: unlocked ones, `unlock`: locked ones; none is nothing to do) | `<domain>` |
 | `namecom` / `godaddy domain autorenew <domain>` without `on\|off` | on or off, the opposite of the current setting preselected | `on` or `off` |
 | `namecom` / `godaddy domain check` without names | the names, typed and checked | `<name>...` |
+| `aliyun dns record list` / `create` / `update` / `delete`, `aliyun domain get` / `ns get` / `ns set` without `<domain>` | the alidns zone (`dns record`) or the registered domain (`domain`), from those of the profile; `create` without `--type` / `--value`: the record type, then the value, checked as typed; `update` / `delete` without `<record-id>`: the record, from the records of the zone; `ns set` without nameservers: the nameserver set of an indexed DNS zone of the domain, or "Enter nameservers..." | `<domain>`; `create`: `--type` and `--value`; `update` / `delete`: `<record-id>`; `ns set`: `<nameserver>...` |
 
 A re-authentication (`auth login` for an account the profile already has) reuses what the previous login recorded (username, start URL, account, role, project, region, method), so in the non-interactive flow usually only the secret has to be passed again.
 

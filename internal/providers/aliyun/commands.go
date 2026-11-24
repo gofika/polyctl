@@ -160,8 +160,12 @@ func newDNSRecordListCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list <domain>",
 		Short: "List the records of an alidns domain",
-		Args:  cobra.ExactArgs(1),
+		Args:  app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			args, err := rt.DomainArg(cmd.Context(), args, platform.Aliyun, platform.ResZone, nil)
+			if err != nil {
+				return err
+			}
 			zone := platform.NormalizeDomain(args[0])
 			prof, err := rt.ProfileFor(platform.Aliyun)
 			if err != nil {
@@ -235,10 +239,24 @@ func newDNSRecordCreateCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create <domain>",
 		Short: "Create a record in an alidns domain",
-		Args:  cobra.ExactArgs(1),
+		Args:  app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if typ == "" || value == "" {
+			if (typ == "" || value == "") && !rt.Interactive() {
 				return app.UsageErrf("--type and --value are required")
+			}
+			args, err := rt.DomainArg(cmd.Context(), args, platform.Aliyun, platform.ResZone, nil)
+			if err != nil {
+				return app.RequiredPick(err, "<domain>")
+			}
+			if typ == "" {
+				if typ, err = rt.PickRecordType(platform.Aliyun); err != nil {
+					return err
+				}
+			}
+			if value == "" {
+				if value, err = rt.AskRecordValue(strings.ToUpper(typ), ""); err != nil {
+					return err
+				}
 			}
 			if err := mustPositive("ttl", ttl); err != nil {
 				return err
@@ -287,8 +305,12 @@ func newDNSRecordUpdateCmd(rt *app.Runtime) *cobra.Command {
 		Short: "Update one record (fields that are not given keep their value)",
 		Long: "Update the record <record-id> of <domain>; the ids are shown by\n" +
 			"`polyctl aliyun dns record list`. Only the fields given are changed.",
-		Args: app.RecordIDArgs,
+		Args: app.RecordIDArgsOrInteractive(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			args, err := recordArgs(cmd.Context(), rt, args, "Record to update")
+			if err != nil {
+				return err
+			}
 			id := args[1]
 			if err := mustPositive("ttl", ttl); err != nil {
 				return err
@@ -362,8 +384,12 @@ func newDNSRecordDeleteCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "delete <domain> <record-id>",
 		Short: "Delete one record (ids are shown by `polyctl aliyun dns record list`)",
-		Args:  app.RecordIDArgs,
+		Args:  app.RecordIDArgsOrInteractive(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			args, err := recordArgs(cmd.Context(), rt, args, "Record to delete")
+			if err != nil {
+				return err
+			}
 			id := args[1]
 			zone := platform.NormalizeDomain(args[0])
 			c, p, err := openClient(rt, cmd.Context())
@@ -384,6 +410,29 @@ func newDNSRecordDeleteCmd(rt *app.Runtime) *cobra.Command {
 		},
 	}
 	return cmd
+}
+
+// recordArgs fills in a missing <domain> and <record-id> of record update
+// and delete in the interactive flow: the zone from the indexed alidns
+// zones, then the record from the records of the zone, read live.
+func recordArgs(ctx context.Context, rt *app.Runtime, args []string, title string) ([]string, error) {
+	args, err := rt.DomainArg(ctx, args, platform.Aliyun, platform.ResZone, nil)
+	if err != nil || len(args) >= 2 {
+		return args, err
+	}
+	c, _, err := openClient(rt, ctx)
+	if err != nil {
+		return nil, err
+	}
+	recs, err := c.ListRecords(ctx, platform.NormalizeDomain(args[0]))
+	if err != nil {
+		return nil, err
+	}
+	id, err := rt.PickRecordID(title, recs, nil)
+	if err != nil {
+		return nil, err
+	}
+	return append(args, id), nil
 }
 
 // ---- domain (registrar) ----------------------------------------------------
@@ -414,8 +463,12 @@ func newDomainNSGetCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "get <domain>",
 		Short: "Show the nameservers of a registered domain (local inventory when fresh or --offline)",
-		Args:  cobra.ExactArgs(1),
+		Args:  app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			args, err := rt.DomainArg(cmd.Context(), args, platform.Aliyun, platform.ResDomain, nil)
+			if err != nil {
+				return err
+			}
 			prof, err := rt.ProfileFor(platform.Aliyun)
 			if err != nil {
 				return err
@@ -555,8 +608,12 @@ func newDomainGetCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "get <domain>",
 		Short: "Show a registered domain (QueryDomainByDomainName, or the local inventory when fresh)",
-		Args:  cobra.ExactArgs(1),
+		Args:  app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			args, err := rt.DomainArg(cmd.Context(), args, platform.Aliyun, platform.ResDomain, nil)
+			if err != nil {
+				return err
+			}
 			prof, err := rt.ProfileFor(platform.Aliyun)
 			if err != nil {
 				return err
@@ -577,8 +634,19 @@ func newDomainNSSetCmd(rt *app.Runtime) *cobra.Command {
 		Short:   "Replace the nameservers of a registered domain",
 		Long:    "Replace the nameservers of <domain> with the ones given.\n" + app.NameserverHelp,
 		Example: "  polyctl aliyun domain ns set example.com ns1.example.net ns2.example.net",
-		Args:    app.NameserverArgs,
+		Args:    app.NameserverArgsOrInteractive(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			args, err := rt.DomainArg(cmd.Context(), args, platform.Aliyun, platform.ResDomain, nil)
+			if err != nil {
+				return err
+			}
+			if len(args) < 2 {
+				more, err := rt.PickNameservers(cmd.Context(), args[0])
+				if err != nil {
+					return err
+				}
+				args = append(args, more...)
+			}
 			ns, err := app.Nameservers(args[1:])
 			if err != nil {
 				return err
