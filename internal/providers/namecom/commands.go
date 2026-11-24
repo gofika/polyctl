@@ -424,7 +424,7 @@ func newDomainAutorenewCmd(rt *app.Runtime) *cobra.Command {
 				enabled = true
 			case "off", "disable", "false":
 			default:
-				return fmt.Errorf("expected on or off, got %q", args[1])
+				return app.UsageErrf("expected on or off, got %q", args[1])
 			}
 			c, p, err := open(cmd.Context(), rt)
 			if err != nil {

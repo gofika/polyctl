@@ -600,7 +600,7 @@ func newCacheCmd(rt *app.Runtime) *cobra.Command {
 			req := purgeRequest{PurgeEverything: everything, Files: urls, Hosts: hosts, Tags: tags, Prefixes: prefixes}
 			selective := len(urls)+len(hosts)+len(tags)+len(prefixes) > 0
 			if everything == selective {
-				return errors.New("pass exactly one of --everything or a selection (--url, --host, --tag, --prefix)")
+				return app.UsageErrf("pass exactly one of --everything or a selection (--url, --host, --tag, --prefix)")
 			}
 			if rt.Flags.Offline {
 				return app.ErrOffline
@@ -683,7 +683,7 @@ func settingCmd(rt *app.Runtime, use, short, setting string, allowed []string) *
 					ok = ok || a == value
 				}
 				if !ok {
-					return fmt.Errorf("value must be one of: %s", strings.Join(allowed, ", "))
+					return app.UsageErrf("value must be one of: %s", strings.Join(allowed, ", "))
 				}
 			}
 			z, profile, err := resolveZone(cmd.Context(), rt, args[0])

@@ -303,3 +303,21 @@ func TestNonInteractiveFlagBeatsEnv(t *testing.T) {
 		t.Errorf("--non-interactive with the variable off: exit %d (%v), prompts %v", r.code, r.err, p.Titles())
 	}
 }
+
+// Invalid values of platform commands are usage errors (exit code 2), not
+// general failures.
+func TestPlatformValueErrorsAreUsageErrors(t *testing.T) {
+	_, cfgPath := setup(t, true)
+	for _, args := range [][]string{
+		{"cloudflare", "dev-mode", "example.com", "maybe"},
+		{"cloudflare", "ssl-mode", "example.com", "bogus"},
+		{"cloudflare", "cache", "purge", "example.com"},
+		{"namecom", "domain", "autorenew", "example.com", "maybe"},
+		{"godaddy", "domain", "autorenew", "example.com", "maybe"},
+	} {
+		r := runFlow(t, t.Context(), cfgPath, nil, strings.NewReader(""), args...)
+		if r.code != ExitUsage {
+			t.Errorf("%v: exit %d, %v", args, r.code, r.err)
+		}
+	}
+}
