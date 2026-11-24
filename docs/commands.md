@@ -38,7 +38,7 @@ Every `dns` command also takes `--profile` and `--platform`.
 **Names and values**
 
 - `<domain>` may be the zone apex or any name under it: `www.example.com` resolves to the `example.com` zone.
-- `--name` is relative to the zone (`www`, `@`). Without it, the record name is `<domain>` itself. `dns list --name` also accepts a full name.
+- `--name` is read as `dns ensure` reads it: relative to the zone (`www`, `@`), a full name in the zone (`www.example.com`), or an absolute name ending with a dot (`www.example.com.`). A name outside the zone (`www.other.org`, `www.other.org.`) is exit code 2, never put inside the zone. Without `--name`, the record name is `<domain>` itself.
 - A record's data is its **value** everywhere: the `--value` flag, the `VALUE` column and the `value` field of `-o json` / `-o yaml`. What one command prints can be passed to another.
 - `--ttl` is in seconds; `0` or no flag means the platform default (`dns set` keeps the existing TTL).
 - In tables, special TTLs are shown by name: `auto` (Cloudflare automatic, `1` in the API), `alias` (Route 53 alias records) and `default` (a GoDaddy record written without `--ttl`). JSON and YAML keep the raw value.

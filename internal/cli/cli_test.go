@@ -384,6 +384,37 @@ func TestDNSDeleteRecord(t *testing.T) {
 	}
 }
 
+// --name of dns set/add/delete/list is read as dns ensure reads it: a name
+// outside the zone is a usage error, not a name put inside the zone; an
+// absolute name in the zone is accepted.
+func TestDNSNameOutsideZoneIsUsageError(t *testing.T) {
+	dir, cfgPath := setup(t, true)
+	rec := platform.Record{ID: "r1", ZoneID: "z1", Name: "www.example.com", Type: "A", Value: "1.2.3.4"}
+	seed(t, dir, []platform.Zone{{ID: "z1", Name: "example.com"}}, map[string][]platform.Record{"z1": {rec}})
+	fc := client("a")
+	fc.zones = []platform.Zone{{ID: "z1", Name: "example.com"}}
+	fc.records["z1"] = []platform.Record{rec}
+
+	for _, args := range [][]string{
+		{"dns", "set", "example.com", "--type", "A", "--name", "www.other.org", "--value", "1.1.1.1"},
+		{"dns", "set", "example.com", "--type", "A", "--name", "www.other.org.", "--value", "1.1.1.1"},
+		{"dns", "add", "example.com", "--type", "A", "--name", "www.other.org", "--value", "1.1.1.1"},
+		{"dns", "delete", "example.com", "--type", "A", "--name", "www.other.org."},
+		{"dns", "list", "example.com", "--name", "www.other.org"},
+	} {
+		_, _, err := run(t, cfgPath, args...)
+		if ExitCodeFor(err) != ExitUsage || !strings.Contains(fmt.Sprint(err), "--name") {
+			t.Errorf("%v = %v (exit %d), want a usage error naming --name", args, err, ExitCodeFor(err))
+		}
+	}
+	if fc.count("CreateRecord") != 0 || fc.count("UpdateRecord") != 0 || fc.count("DeleteRecord") != 0 {
+		t.Errorf("a refused name reached the platform: %v", fc.calls)
+	}
+	if _, stderr, err := run(t, cfgPath, "dns", "delete", "example.com", "--type", "A", "--name", "www.example.com."); err != nil || fc.count("DeleteRecord:r1") != 1 {
+		t.Errorf("absolute name in the zone = %v (%q), calls %v", err, stderr, fc.calls)
+	}
+}
+
 // A record that fails to delete does not stop the others: the command goes
 // on and fails at the end with a partial error (exit code 1), as unbind
 // failures and `dns delete --all` do.

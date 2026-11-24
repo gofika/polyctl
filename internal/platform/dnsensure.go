@@ -169,6 +169,12 @@ func normalizeSpec(zone string, p ID, idx int, s RecordSpec, types []string, war
 	return d, nil
 }
 
+// ZoneName is zoneName for the --name flag of the neutral dns commands, so
+// that they read a name as dns ensure does. zone is normalized first.
+func ZoneName(zone, name string) (string, error) {
+	return zoneName(NormalizeDomain(zone), name)
+}
+
 // zoneName turns the name of a desired record into a FQDN in zone. "@" is
 // the apex; a name ending with a dot is absolute; a name ending with the
 // zone is taken as it is; any other name is relative to the zone, except

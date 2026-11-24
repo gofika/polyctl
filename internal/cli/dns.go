@@ -37,6 +37,17 @@ type dnsResult struct {
 	Records []platform.Record `json:"records" yaml:"records"`
 }
 
+// dnsName reads the --name flag in the zone of t as dns ensure does: "@"
+// is the apex, a name ending with a dot is absolute, other names are
+// relative to the zone. A name outside the zone is a usage error.
+func dnsName(t *app.Target, name string) (string, error) {
+	fqdn, err := platform.ZoneName(t.Domain, name)
+	if err != nil {
+		return "", usageErr("--name: %v", err)
+	}
+	return fqdn, nil
+}
+
 // recordGrid renders records of platform p; Cloudflare gets a PROXIED column.
 func recordGrid(recs []platform.Record, p platform.ID) output.Grid {
 	showProxied := p == platform.Cloudflare
@@ -82,7 +93,11 @@ func newDNSListCmd(rt *app.Runtime) *cobra.Command {
 				return err
 			}
 			if name != "" {
-				recs = app.MatchRecords(recs, platform.FQDN(name, t.Domain), typ, "")
+				fqdn, err := dnsName(t, name)
+				if err != nil {
+					return err
+				}
+				recs = app.MatchRecords(recs, fqdn, typ, "")
 			} else if typ != "" {
 				var f []platform.Record
 				for _, r := range recs {
@@ -182,9 +197,11 @@ func newDNSWriteCmd(rt *app.Runtime, add bool, cmd *cobra.Command) *cobra.Comman
 		if rt.Flags.Offline {
 			return app.ErrOffline
 		}
-		fqdn := platform.FQDN(name, t.Domain)
-		if name == "" {
-			fqdn = platform.NormalizeDomain(args[0])
+		fqdn := platform.NormalizeDomain(args[0])
+		if name != "" {
+			if fqdn, err = dnsName(t, name); err != nil {
+				return err
+			}
 		}
 		dns, err := rt.OpenDNS(cmd.Context(), t)
 		if err != nil {
@@ -361,7 +378,11 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 				// records offered.
 				cands := existing
 				if name != "" {
-					cands = app.MatchRecords(cands, platform.FQDN(name, t.Domain), "", value)
+					fqdn, err := dnsName(t, name)
+					if err != nil {
+						return err
+					}
+					cands = app.MatchRecords(cands, fqdn, "", value)
 				} else if value != "" {
 					var kept []platform.Record
 					for _, r := range cands {
@@ -390,9 +411,11 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 						platform.ErrAmbiguous, id, len(matches), t.Domain, strings.Join(ids, ", "), t.Domain)
 				}
 			} else {
-				fqdn := platform.FQDN(name, t.Domain)
-				if name == "" {
-					fqdn = platform.NormalizeDomain(args[0])
+				fqdn := platform.NormalizeDomain(args[0])
+				if name != "" {
+					if fqdn, err = dnsName(t, name); err != nil {
+						return err
+					}
 				}
 				matches = app.MatchRecords(existing, fqdn, typ, value)
 			}
