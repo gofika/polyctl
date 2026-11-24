@@ -64,7 +64,7 @@ profile's), Running, with an EIP. Running it again changes nothing.
 - The instance is --type (defaults.aliyun.ecs_instance_type, else
   ecs.u1-c1m1.large; a type id, or a size <cores>H<memory>G such as 2H4G,
   see Instance sizes below), --image or the newest image of --os for the
-  type's architecture (as for create), a --disk GiB
+  type's architecture (as for create, --os windows included), a --disk GiB
   --disk-category system disk, pay as you go, without a public address of
   its own. It is waited for until Running (every 2 seconds, --timeout 10m);
   --no-wait returns at once and skips the EIP.
@@ -89,6 +89,9 @@ profile's), Running, with an EIP. Running it again changes nothing.
 				return err
 			}
 			if err := f.check(cmd); err != nil {
+				return err
+			}
+			if host, renamed, err = f.hostName(name, host, renamed); err != nil {
 				return err
 			}
 			wait, timeout, err := f.wait.Resolve(cmd)
@@ -132,7 +135,7 @@ profile's), Running, with an EIP. Running it again changes nothing.
 			switch len(found) {
 			case 0:
 				if renamed {
-					rt.Infof("note: the host name of %s is %s (host names hold letters, digits, hyphens and dots only)", name, host)
+					rt.Infof("note: the host name of %s is %s (%s)", name, host, f.hostNameRule())
 				}
 				if err := e.planNew(ctx, cmd, host, specs); err != nil {
 					return err
@@ -281,15 +284,20 @@ func (e *instanceEnsure) planExisting(ctx context.Context, cmd *cobra.Command, i
 // group, rules, the instance, the wait and the EIP.
 func (e *instanceEnsure) planNew(ctx context.Context, cmd *cobra.Command, host string, specs []string) error {
 	rt, s := e.rt, e.s
-	in, err := e.f.keyInput(rt)
-	if err != nil {
-		return err
+	var kp platform.KeyPairPlan
+	if e.f.windows() {
+		rt.Infof("note: a Windows instance has no key pair and no password: set its password in the ECS console (reset the instance password) before you log in")
+	} else {
+		in, err := e.f.keyInput(rt)
+		if err != nil {
+			return err
+		}
+		var kpStep platform.Step
+		if kp, kpStep, err = resolveKeyPairStep(ctx, rt, s, in); err != nil {
+			return err
+		}
+		e.plan.Add(kpStep)
 	}
-	kp, kpStep, err := resolveKeyPairStep(ctx, rt, s, in)
-	if err != nil {
-		return err
-	}
-	e.plan.Add(kpStep)
 
 	image, err := e.f.resolveImage(ctx, rt, s)
 	if err != nil {

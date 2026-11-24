@@ -43,6 +43,7 @@ const (
 	instanceNameMax        = 128
 	hostNameMin            = 2
 	hostNameMax            = 64
+	windowsHostNameMax     = 15
 	instancePageSize       = 100
 	describeDisksPageSize  = 100
 	instanceTypeSystemDisk = "system"

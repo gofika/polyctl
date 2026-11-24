@@ -224,8 +224,8 @@ type instanceFlags struct {
 func (f *instanceFlags) add(cmd *cobra.Command, eipDefault, waitDefault bool, typeHelp, sgHelp string) {
 	cmd.Flags().StringVar(&f.typ, "type", "", typeHelp)
 	cmd.Flags().StringVar(&f.image, "image", "", "image id (default: the newest image of --os)")
-	cmd.Flags().StringVar(&f.osName, "os", osAlibabaCloudLinux, "operating system of the image when --image is not given: "+osAlibabaCloudLinux)
-	cmd.Flags().IntVar(&f.disk, "disk", defaultSystemDiskGiB, "system disk size in GiB (at least the image's size)")
+	cmd.Flags().StringVar(&f.osName, "os", osAlibabaCloudLinux, "operating system of the newest public image used when --image is not given: "+supportedOSes)
+	cmd.Flags().IntVar(&f.disk, "disk", defaultSystemDiskGiB, "system disk size in GiB (at least the image's size; with --os windows the default is 40, the least it takes)")
 	cmd.Flags().StringVar(&f.diskCategory, "disk-category", defaultSystemDiskCat, "system disk category (cloud_essd_entry, cloud_essd, cloud_auto, ...)")
 	cmd.Flags().StringVar(&f.vswitch, "vswitch", "", "vSwitch of the instance, id or name (it decides the zone)")
 	cmd.Flags().StringVar(&f.securityGroup, "security-group", "", sgHelp)
@@ -247,16 +247,58 @@ func (f *instanceFlags) check(cmd *cobra.Command) error {
 	if strings.TrimSpace(f.diskCategory) == "" {
 		return app.UsageErrf("--disk-category is empty")
 	}
-	if f.image == "" && f.osName != osAlibabaCloudLinux {
-		return app.UsageErrf("unsupported os %q: --os takes %s (or pass --image <id>)", f.osName, osAlibabaCloudLinux)
-	}
 	if f.image != "" && cmd.Flags().Changed("os") {
 		return app.UsageErrf("--image and --os are mutually exclusive")
+	}
+	if f.image == "" {
+		if _, ok := osImageFamilyPatterns[f.osName]; !ok {
+			return app.UsageErrf("unsupported os %q: --os takes %s (pass --image <id> for any other system)", f.osName, supportedOSes)
+		}
+	}
+	if f.windows() {
+		if f.keys.Given() {
+			return app.UsageErrf("--os windows takes no --key-pair, --ssh-key or --ssh-key-file: Windows instances log in with a password, not a key pair (set it in the ECS console after the instance is created)")
+		}
+		if !cmd.Flags().Changed("disk") {
+			f.disk = windowsMinDiskGiB
+		} else if f.disk < windowsMinDiskGiB {
+			return app.UsageErrf("--os windows needs --disk %d or more (the Windows Server images are %d GiB), got %d", windowsMinDiskGiB, windowsMinDiskGiB, f.disk)
+		}
 	}
 	if _, _, err := platform.ParseTypeShorthand(f.typ); err != nil {
 		return err
 	}
 	return nil
+}
+
+// windows reports an instance of the newest Windows Server image: it
+// takes no key pair, a system disk of windowsMinDiskGiB or more and a
+// Windows host name.
+func (f *instanceFlags) windows() bool { return f.image == "" && f.osName == osWindows }
+
+// hostName fits the host name of an instance to its OS: a Windows host
+// name holds no dots, at most 15 characters, and not only digits.
+func (f *instanceFlags) hostName(name, host string, renamed bool) (string, bool, error) {
+	if !f.windows() {
+		return host, renamed, nil
+	}
+	h := strings.ReplaceAll(host, ".", "-")
+	if len(h) > windowsHostNameMax {
+		h = h[:windowsHostNameMax]
+	}
+	h = strings.Trim(h, "-")
+	if len(h) < hostNameMin || strings.Trim(h, "0123456789") == "" {
+		return "", false, app.UsageErrf("instance name %q gives no usable Windows host name (%d to %d letters, digits and hyphens, not only digits)", name, hostNameMin, windowsHostNameMax)
+	}
+	return h, h != name, nil
+}
+
+// hostNameRule says what the host names of the instance's OS hold.
+func (f *instanceFlags) hostNameRule() string {
+	if f.windows() {
+		return "Windows host names hold letters, digits and hyphens only, at most 15 characters"
+	}
+	return "host names hold letters, digits, hyphens and dots only"
 }
 
 // parseSize reads --type as a <cores>H<memory>G size: f.size stays nil
@@ -556,9 +598,14 @@ vSwitches and the security group as well.
   is imported under --key-pair (asked for on a terminal; no name is ever
   chosen for you).
 - The image is --image (any image id: the way to use another system), else
-  the newest public image of --os (alibaba-cloud-linux; see image latest)
-  for the architecture of the type (a size resolves to an x86 type). The
-  system disk is --disk GiB of --disk-category.
+  the newest public image of --os (alibaba-cloud-linux, or windows; see
+  image latest) for the architecture of the type (a size resolves to an
+  x86 type). The system disk is --disk GiB of --disk-category.
+- --os windows takes no key pair flags and imports no key pair: the
+  instance has no password either (set it in the ECS console before
+  logging in); --disk defaults to 40 (smaller is exit code 2), the host
+  name holds no dots and at most 15 characters, and an arm64 type is
+  exit code 2.
 - The host name is the name with every character other than letters,
   digits, hyphens and dots replaced by a hyphen, cut to 64 characters.
 - An instance of the name in the region is exit code 1: use ensure.
@@ -581,6 +628,9 @@ vSwitches and the security group as well.
 			if err := f.check(cmd); err != nil {
 				return err
 			}
+			if host, renamed, err = f.hostName(name, host, renamed); err != nil {
+				return err
+			}
 			if f.securityGroup == "" {
 				return app.UsageErrf("--security-group is required: pass the name or id of a security group of the vSwitch's VPC (or use ensure)")
 			}
@@ -588,9 +638,11 @@ vSwitches and the security group as well.
 			if err != nil {
 				return err
 			}
-			in, err := f.keyInput(rt)
-			if err != nil {
-				return err
+			var in platform.KeyInput
+			if !f.windows() {
+				if in, err = f.keyInput(rt); err != nil {
+					return err
+				}
 			}
 			if rt.Flags.Offline {
 				return app.ErrOffline
@@ -646,12 +698,15 @@ vSwitches and the security group as well.
 					}
 				}
 			}
-			kp, kpStep, err := resolveKeyPairStep(ctx, rt, s, in)
-			if err != nil {
-				return err
+			var kp platform.KeyPairPlan
+			var kpStep platform.Step
+			if !f.windows() {
+				if kp, kpStep, err = resolveKeyPairStep(ctx, rt, s, in); err != nil {
+					return err
+				}
 			}
 			if renamed {
-				rt.Infof("note: the host name of %s is %s (host names hold letters, digits, hyphens and dots only)", name, host)
+				rt.Infof("note: the host name of %s is %s (%s)", name, host, f.hostNameRule())
 			}
 			var ep eipPlan
 			if f.eip {
@@ -665,7 +720,12 @@ vSwitches and the security group as well.
 			var plan platform.Plan
 			var instID string
 			id := func() string { return instID }
-			plan.Add(kpStep)
+			if kpStep.Resource != "" {
+				plan.Add(kpStep)
+			}
+			if f.windows() {
+				rt.Infof("note: a Windows instance has no key pair and no password: set its password in the ECS console (reset the instance password) before you log in")
+			}
 			plan.Add(runStep(rt, s, name, host, &f, image, func() string { return sg.ID }, func() string { return vsw.ID }, func() string { return kp.Name }, nil, &instID))
 			if wait || f.eip {
 				plan.Add(waitStep(rt, s, name, id, timeout))
