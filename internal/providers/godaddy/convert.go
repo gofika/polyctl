@@ -85,7 +85,7 @@ func recordFromAPI(zone string, r apiRecord) platform.Record {
 		name = "@"
 	}
 	out := platform.Record{
-		ID:     recordID(r),
+		ID:     recordID(zone, r),
 		ZoneID: zone,
 		Name:   platform.FQDN(name, zone),
 		Type:   typ,

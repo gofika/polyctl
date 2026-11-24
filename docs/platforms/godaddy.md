@@ -16,7 +16,7 @@ godaddy domain check <name>...    # availability and price
 godaddy dns list <domain> [--type] [--name]
 godaddy dns add <domain> --type A --name www --value 203.0.113.10 [--ttl 600] [--priority]          # one more record; the others stay
 godaddy dns upsert <domain> --type A --name www --value <v> [--value <v>...] [--ttl] [--priority]   # sets the whole name+type set
-godaddy dns delete <domain> (--type A --name www | --id <TYPE|name|value>) [--yes]
+godaddy dns delete <domain> (--type A --name www | --id <zone|TYPE|name|value>) [--yes]
 ```
 
 - `whoami` needs the network (exit code 6 with `--offline`); credentials that no longer work exit with code 3.
@@ -33,11 +33,13 @@ GoDaddy has no record ids: records are addressed by type and name.
 - `--ttl` in seconds, minimum 600; `0` (default) uses GoDaddy's default.
 - `--priority` for MX/SRV records.
 
-The record id is synthetic, `TYPE|name|value` with each part percent-encoded, so the neutral `dns` commands and `godaddy dns delete --id` can target one record. MX ids add the priority (`MX|@|mail.example.com|10`) and SRV ids add service, protocol, port, weight and priority (`SRV|@|sip.example.com|_sip|_udp|5060|0|0`): GoDaddy keeps every SRV record of an owner in one set, and these fields tell apart records with the same target. An id without them (the only form older polyctl versions printed) still works while it names one record; when it matches several it is exit code 5 and the error lists the ids to use instead.
+The record id is synthetic, `zone|TYPE|name|value` with each part percent-encoded, so the neutral `dns` commands and `godaddy dns delete --id` can target one record. The zone keeps the ids of the same record in two domains apart (GoDaddy gives every domain the same apex NS records); an id of another domain than the one named is exit code 2. MX ids add the priority (`example.com|MX|@|mail.example.com|10`) and SRV ids add service, protocol, port, weight and priority (`example.com|SRV|@|sip.example.com|_sip|_udp|5060|0|0`): GoDaddy keeps every SRV record of an owner in one set, and these fields tell apart records with the same target.
+
+An id without the MX or SRV fields, and the `TYPE|name|value` id older polyctl versions printed, still work while they name one record; when one matches several it is exit code 5 and the error lists the ids to use instead. The first run of this version drops the GoDaddy records cached under the older ids; they are fetched again on their next use.
 
 ```sh
 polyctl godaddy dns upsert example.com --type A --name www --value 203.0.113.10 --value 203.0.113.11
-polyctl godaddy dns delete example.com --id 'TXT|@|v=spf1%20include:_spf.example.com%20~all' --yes
+polyctl godaddy dns delete example.com --id 'example.com|TXT|@|v=spf1%20include:_spf.example.com%20~all' --yes
 ```
 
 ## Login and permissions

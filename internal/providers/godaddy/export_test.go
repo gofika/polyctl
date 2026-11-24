@@ -57,3 +57,12 @@ func (x *Fake) Writes() []string {
 	}
 	return out
 }
+
+// SetSRV adds an SRV record of the apex (service and protocol such as
+// "_sip" and "_tcp").
+func (x *Fake) SetSRV(domain, service, protocol, target string, port int) {
+	x.f.mu.Lock()
+	defer x.f.mu.Unlock()
+	zero := 0
+	x.f.records[domain] = append(x.f.records[domain], apiRecord{Type: "SRV", Name: "@", Data: target, TTL: 600, Service: service, Protocol: protocol, Port: &port, Weight: &zero, Priority: &zero})
+}

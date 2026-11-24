@@ -375,10 +375,19 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 					return err
 				}
 			} else if id != "" {
+				matcher, _ := dns.(platform.RecordIDMatcher)
 				for _, r := range existing {
-					if r.ID == id {
+					if r.ID == id || (matcher != nil && matcher.RecordIDMatches(id, r)) {
 						matches = append(matches, r)
 					}
+				}
+				if len(matches) > 1 {
+					ids := make([]string, len(matches))
+					for i, r := range matches {
+						ids[i] = r.ID
+					}
+					return fmt.Errorf("%w: record id %q matches %d records in zone %s (%s); pass the id of one, as `polyctl dns list %s` shows it",
+						platform.ErrAmbiguous, id, len(matches), t.Domain, strings.Join(ids, ", "), t.Domain)
 				}
 			} else {
 				fqdn := platform.FQDN(name, t.Domain)

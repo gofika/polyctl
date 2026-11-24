@@ -348,6 +348,14 @@ type DNSService interface {
 	DeleteRecord(ctx context.Context, zoneID, recordID string) error
 }
 
+// RecordIDMatcher is implemented by DNS services whose record ids have more
+// than one accepted spelling (GoDaddy's synthesized ids, whose older form
+// lacks the zone): RecordIDMatches reports whether id names r. Such an id
+// can name several records, which callers treat as ambiguous.
+type RecordIDMatcher interface {
+	RecordIDMatches(id string, r Record) bool
+}
+
 // RegistrarService is implemented by clients that manage registered domains.
 type RegistrarService interface {
 	ListDomains(ctx context.Context) ([]Domain, error)

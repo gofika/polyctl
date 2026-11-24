@@ -751,3 +751,44 @@ func TestOpenRenamesLegacyRecordContent(t *testing.T) {
 		t.Errorf("r3 not listed: %+v", rows)
 	}
 }
+
+// GoDaddy record ids did not carry the zone before data version 2, so the
+// same record in two domains shared one row. Opening an older database
+// drops the cached GoDaddy records and their sync state, and nothing else.
+func TestOpenForgetsGoDaddyRecordsOfVersion1(t *testing.T) {
+	db, path := openDB(t)
+	gd := inventory.Set{Platform: platform.GoDaddy, Profile: "p", Type: platform.ResDNSRecord, Scope: "a.com"}
+	mustReplace(t, db, gd, time.Hour, recRes("A|@|1.2.3.4", "a.com", "a.com", "a.com", "1.2.3.4"))
+	gdZones := inventory.Set{Platform: platform.GoDaddy, Profile: "p", Type: platform.ResZone}
+	mustReplace(t, db, gdZones, time.Hour, zoneRes("a.com", "a.com"))
+	mustReplace(t, db, scoped("p", platform.ResDNSRecord, "z1"), time.Hour, recRes("r1", "z1", "example.com", "www.example.com", "5.6.7.8"))
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`PRAGMA user_version = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if db, err = inventory.Open(path); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if rows, err := db.List(ctx, inventory.Query{Platform: platform.GoDaddy, Type: platform.ResDNSRecord}); err != nil || len(rows) != 0 {
+		t.Errorf("GoDaddy records after the upgrade: %+v, %v", rows, err)
+	}
+	if st, err := db.GetState(ctx, gd); err != nil || st != nil {
+		t.Errorf("GoDaddy record sync state after the upgrade: %+v, %v", st, err)
+	}
+	if rows, err := db.List(ctx, inventory.Query{Platform: platform.GoDaddy, Type: platform.ResZone}); err != nil || len(rows) != 1 {
+		t.Errorf("GoDaddy zones must stay: %+v, %v", rows, err)
+	}
+	if rows, err := db.List(ctx, inventory.Query{Platform: platform.NameCom, Type: platform.ResDNSRecord}); err != nil || len(rows) != 1 {
+		t.Errorf("records of other platforms must stay: %+v, %v", rows, err)
+	}
+}

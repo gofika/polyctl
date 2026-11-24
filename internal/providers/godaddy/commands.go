@@ -490,7 +490,7 @@ func newDNSCmd(rt *app.Runtime) *cobra.Command {
 		Long: `Manage the DNS records GoDaddy hosts for a domain.
 
 GoDaddy addresses records by type + name rather than by id; polyctl shows a
-synthesized id of the form TYPE|name|value that works with the generic
+synthesized id of the form zone|TYPE|name|value that works with the generic
 "polyctl dns" commands as well.`,
 	}
 	cmd.AddCommand(newDNSListCmd(rt), newDNSAddCmd(rt), newDNSUpsertCmd(rt), newDNSDeleteCmd(rt))
@@ -793,7 +793,7 @@ no; --yes skips it). The non-interactive flow asks nothing: --yes is required
 			}
 			target := platform.Target{Platform: platform.GoDaddy, Profile: p.Name, Domain: zone}
 			if id != "" {
-				k, err := decodeRecordID(id)
+				k, err := decodeRecordID(id, zone)
 				if err != nil {
 					return err
 				}
@@ -860,7 +860,7 @@ no; --yes skips it). The non-interactive flow asks nothing: --yes is required
 	}
 	cmd.Flags().StringVar(&typ, "type", "", "record type")
 	cmd.Flags().StringVar(&name, "name", "@", "record name relative to the domain (www, @)")
-	cmd.Flags().StringVar(&id, "id", "", "delete the single record with this id (TYPE|name|value)")
+	cmd.Flags().StringVar(&id, "id", "", "delete the single record with this id (zone|TYPE|name|value, as dns list shows it)")
 	return cmd
 }
 

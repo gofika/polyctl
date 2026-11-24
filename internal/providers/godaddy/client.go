@@ -25,6 +25,7 @@ var (
 	_ platform.Client           = (*client)(nil)
 	_ platform.DNSService       = (*client)(nil)
 	_ platform.RegistrarService = (*client)(nil)
+	_ platform.RecordIDMatcher  = (*client)(nil)
 )
 
 func newClient(baseURL, env string, cred credentials) *client {
@@ -227,7 +228,7 @@ func (c *client) CreateRecord(ctx context.Context, zoneID string, r platform.Rec
 // returned record has a new ID whenever the content changes.
 func (c *client) UpdateRecord(ctx context.Context, zoneID string, r platform.Record) (*platform.Record, error) {
 	zone := platform.NormalizeDomain(zoneID)
-	old, err := decodeRecordID(r.ID)
+	old, err := decodeRecordID(r.ID, zone)
 	if err != nil {
 		return nil, err
 	}
@@ -267,7 +268,7 @@ func (c *client) UpdateRecord(ctx context.Context, zoneID string, r platform.Rec
 // DeleteRecord removes one record. The rest of its type+name set is kept.
 func (c *client) DeleteRecord(ctx context.Context, zoneID, recordID string) error {
 	zone := platform.NormalizeDomain(zoneID)
-	k, err := decodeRecordID(recordID)
+	k, err := decodeRecordID(recordID, zone)
 	if err != nil {
 		return err
 	}
@@ -331,4 +332,11 @@ func (c *client) DeleteRecordSet(ctx context.Context, zoneID, typ, relName strin
 		relName = "@"
 	}
 	return c.api.deleteRecordSet(ctx, platform.NormalizeDomain(zoneID), strings.ToUpper(typ), relName)
+}
+
+// RecordIDMatches reports whether id names r: besides r.ID itself, the
+// older TYPE|name|value id and an id without the MX or SRV fields name
+// every record they match.
+func (c *client) RecordIDMatches(id string, r platform.Record) bool {
+	return sameRecord(id, r)
 }

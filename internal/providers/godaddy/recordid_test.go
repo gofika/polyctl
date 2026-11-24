@@ -21,43 +21,66 @@ func TestRecordIDRoundTrip(t *testing.T) {
 		{"TXT", "pct", "100% sure"},
 	}
 	for _, c := range cases {
-		id := recordID(apiRecord{Type: c.typ, Name: c.name, Data: c.data})
-		if strings.Count(id, "|") != 2 {
-			t.Errorf("%q: id %q must contain exactly two separators", c.data, id)
+		id := recordID("Example.com", apiRecord{Type: c.typ, Name: c.name, Data: c.data})
+		if strings.Count(id, "|") != 3 {
+			t.Errorf("%q: id %q must contain exactly three separators", c.data, id)
 		}
 		if strings.ContainsAny(id, " \t\n\"'") {
 			t.Errorf("id %q contains unsafe characters", id)
 		}
-		k, err := decodeRecordID(id)
+		k, err := decodeRecordID(id, "example.com")
 		if err != nil {
 			t.Fatalf("decode %q: %v", id, err)
 		}
-		if k.Type != strings.ToUpper(c.typ) || k.Name != c.name || k.Data != c.data || k.Ext != nil {
+		if k.Zone != "example.com" || k.Type != strings.ToUpper(c.typ) || k.Name != c.name || k.Data != c.data || k.Ext != nil {
 			t.Errorf("round trip of %+v gave %+v (id %q)", c, k, id)
 		}
 	}
-	if got := recordID(apiRecord{Type: "A", Data: "1.1.1.1"}); got != "A|@|1.1.1.1" {
+	if got := recordID("example.com", apiRecord{Type: "A", Data: "1.1.1.1"}); got != "example.com|A|@|1.1.1.1" {
 		t.Errorf("empty name should become @, got %q", got)
 	}
-	mx := recordID(apiRecord{Type: "MX", Name: "@", Data: "mail.example.com", Priority: intp(10)})
-	if mx != "MX|@|mail.example.com|10" {
+	mx := recordID("example.com", apiRecord{Type: "MX", Name: "@", Data: "mail.example.com", Priority: intp(10)})
+	if mx != "example.com|MX|@|mail.example.com|10" {
 		t.Errorf("MX id: %q", mx)
 	}
 	srv := apiRecord{Type: "SRV", Name: "@", Data: "sip.example.com", Service: "_sip", Protocol: "_udp", Port: intp(5060), Weight: intp(20), Priority: intp(5)}
-	id := recordID(srv)
-	if id != "SRV|@|sip.example.com|_sip|_udp|5060|20|5" {
+	id := recordID("example.com", srv)
+	if id != "example.com|SRV|@|sip.example.com|_sip|_udp|5060|20|5" {
 		t.Errorf("SRV id: %q", id)
 	}
-	k, err := decodeRecordID(id)
+	k, err := decodeRecordID(id, "")
 	if err != nil || !slices.Equal(k.Ext, []string{"_sip", "_udp", "5060", "20", "5"}) || !k.matches(srv) {
 		t.Errorf("SRV decode: %+v %v", k, err)
 	}
 }
 
+func TestDecodeRecordIDZone(t *testing.T) {
+	if _, err := decodeRecordID("b.com|A|@|1.1.1.1", "a.com"); !errors.Is(err, platform.ErrInvalidInput) || !strings.Contains(err.Error(), "belongs to zone b.com") {
+		t.Errorf("id of another zone: %v", err)
+	}
+	// An older id carries no zone and fits any.
+	if k, err := decodeRecordID("A|@|1.1.1.1", "a.com"); err != nil || k.Zone != "" || k.Data != "1.1.1.1" {
+		t.Errorf("older id: %+v %v", k, err)
+	}
+	r := platform.Record{ID: "a.com|SRV|@|sip|_sip|_udp|5060|0|0", ZoneID: "a.com"}
+	for id, want := range map[string]bool{
+		r.ID:                                 true,
+		"SRV|@|sip":                          true,
+		"a.com|SRV|@|sip":                    true,
+		"a.com|SRV|@|sip|_sip|_tcp|5060|0|0": false,
+		"b.com|SRV|@|sip|_sip|_udp|5060|0|0": false,
+		"A|@|sip":                            false,
+	} {
+		if got := sameRecord(id, r); got != want {
+			t.Errorf("sameRecord(%q) = %v, want %v", id, got, want)
+		}
+	}
+}
+
 func TestDecodeRecordIDErrors(t *testing.T) {
-	for _, bad := range []string{"", "A", "A|www", "|www|data", "A||data", "A|%zz|data",
-		"A|www|data|extra", "MX|@|mail|1|2", "MX|@|mail|ten", "SRV|@|sip|_sip|_tcp|5060", "SRV|@|sip|_sip|_tcp|port|0|0"} {
-		if _, err := decodeRecordID(bad); !errors.Is(err, ErrBadRecordID) {
+	for _, bad := range []string{"", "A", "A|www", "|www|data", "A||data", "A|%zz|data", "|A|www|data",
+		"x.com|A|www|data|extra", "x.com|MX|@|mail|1|2", "x.com|MX|@|mail|ten", "x.com|SRV|@|sip|_sip|_tcp|5060", "x.com|SRV|@|sip|_sip|_tcp|port|0|0"} {
+		if _, err := decodeRecordID(bad, ""); !errors.Is(err, ErrBadRecordID) {
 			t.Errorf("%q: expected ErrBadRecordID, got %v", bad, err)
 		}
 	}
@@ -120,7 +143,7 @@ func TestOldRecordIDMatchingSeveralRecordsIsAmbiguous(t *testing.T) {
 	f.setRecords("example.com", sipRecords()...)
 	ctx := context.Background()
 	err := c.DeleteRecord(ctx, "example.com", "SRV|@|sip.example.com")
-	if !errors.Is(err, platform.ErrAmbiguous) || !strings.Contains(err.Error(), "SRV|@|sip.example.com|_sip|_udp|5060|0|0") {
+	if !errors.Is(err, platform.ErrAmbiguous) || !strings.Contains(err.Error(), "example.com|SRV|@|sip.example.com|_sip|_udp|5060|0|0") {
 		t.Fatalf("old SRV id: %v", err)
 	}
 	if _, err := c.UpdateRecord(ctx, "example.com", platform.Record{ID: "SRV|@|sip.example.com", Name: "_sip._udp.example.com", Type: "SRV", Value: "x.example.com", Extra: map[string]any{"port": 1}}); !errors.Is(err, platform.ErrAmbiguous) {

@@ -94,7 +94,7 @@ polyctl dns delete example.com --id 372e67954025e0ba6aaa6d586b9e0b59
 polyctl dns delete example.com --all --type TXT --dry-run
 ```
 
-- `--value` narrows the match; `--id` deletes exactly one record by platform id.
+- `--value` narrows the match; `--id` deletes exactly one record by platform id. An id that names several records (an older GoDaddy id, see [GoDaddy](platforms/godaddy.md#dns-records)) is exit code 5 and deletes nothing.
 - A selector that matches several records shows them and asks first (`-y` skips the question). Answering no deletes nothing and exits with code 0 (`nothing to do: no record was deleted`).
 - Non-interactive: nothing is asked or deleted without `-y`; the command exits with code 2 (`confirmation required: pass --yes to proceed ...`).
 - No matching record is exit code 4.

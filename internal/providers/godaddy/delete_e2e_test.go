@@ -75,7 +75,7 @@ func (e *deleteEnv) records() string {
 }
 
 const (
-	recordID   = "A|www|203.0.113.1"
+	recordID   = "example.com|A|www|203.0.113.1"
 	allRecords = "A www 203.0.113.1,A www 203.0.113.2,TXT www hello"
 )
 
@@ -88,6 +88,9 @@ var deleteForms = []struct {
 	{"set", []string{"godaddy", "dns", "delete", "example.com", "--type", "A", "--name", "www"},
 		"Delete 2 A record(s) of www.example.com? (y/N)", "TXT www hello"},
 	{"id", []string{"godaddy", "dns", "delete", "example.com", "--id", recordID},
+		"Delete the A record 203.0.113.1 of www.example.com? (y/N)", "A www 203.0.113.2,TXT www hello"},
+	// The id older versions printed, without the zone, still works.
+	{"old id", []string{"godaddy", "dns", "delete", "example.com", "--id", "A|www|203.0.113.1"},
 		"Delete the A record 203.0.113.1 of www.example.com? (y/N)", "A www 203.0.113.2,TXT www hello"},
 }
 
@@ -120,12 +123,21 @@ func TestDNSDeleteMissing(t *testing.T) {
 	e := newDeleteEnv(t)
 	for _, args := range [][]string{
 		{"godaddy", "dns", "delete", "example.com", "--type", "MX", "--name", "www"},
-		{"godaddy", "dns", "delete", "example.com", "--id", "A|www|198.51.100.9"},
+		{"godaddy", "dns", "delete", "example.com", "--id", "example.com|A|www|198.51.100.9"},
 	} {
 		code, _, stderr := e.run(prompttest.New(t), "y\n", args...)
 		if code != cli.ExitNotFound || strings.Contains(stderr, "(y/N)") || len(e.f.Writes()) != 0 {
 			t.Errorf("%v: exit %d, writes %v, %s", args, code, e.f.Writes(), stderr)
 		}
+	}
+}
+
+// An id of another domain is a usage error, and nothing is asked.
+func TestDNSDeleteIDOfAnotherZone(t *testing.T) {
+	e := newDeleteEnv(t)
+	code, _, stderr := e.run(prompttest.New(t), "y\n", "godaddy", "dns", "delete", "example.com", "--id", "other.com|A|www|203.0.113.1")
+	if code != cli.ExitUsage || strings.Contains(stderr, "(y/N)") || len(e.f.Writes()) != 0 || !strings.Contains(stderr, "belongs to zone other.com") {
+		t.Errorf("exit %d, writes %v, %s", code, e.f.Writes(), stderr)
 	}
 }
 
@@ -185,5 +197,28 @@ func TestDNSUpsertAsksNothing(t *testing.T) {
 	code, _, stderr := e.run(prompttest.New(t), "", "godaddy", "dns", "upsert", "example.com", "--type", "A", "--name", "www", "--value", "198.51.100.7")
 	if code != cli.ExitOK || strings.Contains(stderr, "(y/N)") || e.records() != "A www 198.51.100.7,TXT www hello" {
 		t.Errorf("upsert: exit %d, records %s, %s", code, e.records(), stderr)
+	}
+}
+
+// The neutral dns delete takes the id older versions printed, without the
+// zone, as long as it names one record.
+func TestNeutralDNSDeleteOldID(t *testing.T) {
+	e := newDeleteEnv(t)
+	code, _, stderr := e.run(nil, "", "dns", "delete", "example.com", "--id", "A|www|203.0.113.1", "--yes")
+	if code != cli.ExitOK || e.records() != "A www 203.0.113.2,TXT www hello" {
+		t.Fatalf("exit %d, records %s, %s", code, e.records(), stderr)
+	}
+
+	// An older SRV id names both records that differ only in protocol.
+	e.f.Reset()
+	e.f.SetSRV("example.com", "_sip", "_tcp", "sip.example.com", 5060)
+	e.f.SetSRV("example.com", "_sip", "_udp", "sip.example.com", 5060)
+	code, _, stderr = e.run(nil, "", "dns", "delete", "example.com", "--id", "SRV|@|sip.example.com", "--yes", "--refresh")
+	if code != cli.ExitAmbiguous || len(e.f.Writes()) != 0 || !strings.Contains(stderr, "example.com|SRV|@|sip.example.com|_sip|_udp|5060|0|0") {
+		t.Fatalf("ambiguous old id: exit %d, writes %v, %s", code, e.f.Writes(), stderr)
+	}
+	code, _, stderr = e.run(nil, "", "dns", "delete", "example.com", "--id", "example.com|SRV|@|sip.example.com|_sip|_udp|5060|0|0", "--yes")
+	if code != cli.ExitOK || len(e.f.Records("example.com")) != 1 || !strings.Contains(e.f.Records("example.com")[0], "SRV @ sip.example.com") {
+		t.Fatalf("current id: exit %d, records %v, %s", code, e.f.Records("example.com"), stderr)
 	}
 }

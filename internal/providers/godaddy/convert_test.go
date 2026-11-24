@@ -13,11 +13,11 @@ func intp(i int) *int { return &i }
 func TestRecordFromAPI(t *testing.T) {
 	zone := "Example.COM"
 	a := recordFromAPI(zone, apiRecord{Type: "A", Name: "@", Data: "1.2.3.4", TTL: 600})
-	if a.Name != "example.com" || a.ZoneID != "example.com" || a.ID != "A|@|1.2.3.4" || a.Priority != nil {
+	if a.Name != "example.com" || a.ZoneID != "example.com" || a.ID != "example.com|A|@|1.2.3.4" || a.Priority != nil {
 		t.Errorf("apex A: %+v", a)
 	}
 	c := recordFromAPI(zone, apiRecord{Type: "cname", Name: "www", Data: "example.com", TTL: 3600})
-	if c.Name != "www.example.com" || c.Type != "CNAME" || c.Value != "example.com" || c.ID != "CNAME|www|example.com" {
+	if c.Name != "www.example.com" || c.Type != "CNAME" || c.Value != "example.com" || c.ID != "example.com|CNAME|www|example.com" {
 		t.Errorf("www CNAME: %+v", c)
 	}
 	mx := recordFromAPI(zone, apiRecord{Type: "MX", Name: "@", Data: "mail.example.com", TTL: 3600, Priority: intp(10)})
@@ -30,7 +30,7 @@ func TestRecordFromAPI(t *testing.T) {
 		t.Errorf("A record must not expose a priority: %+v", a2)
 	}
 	srv := recordFromAPI(zone, apiRecord{Type: "SRV", Name: "@", Data: "sip.example.com", TTL: 600, Priority: intp(5), Port: intp(5060), Weight: intp(20), Service: "_sip", Protocol: "_tcp"})
-	if srv.Name != "_sip._tcp.example.com" || srv.Value != "sip.example.com" || srv.ID != "SRV|@|sip.example.com|_sip|_tcp|5060|20|5" {
+	if srv.Name != "_sip._tcp.example.com" || srv.Value != "sip.example.com" || srv.ID != "example.com|SRV|@|sip.example.com|_sip|_tcp|5060|20|5" {
 		t.Errorf("SRV: %+v", srv)
 	}
 	if srv.Extra["port"] != 5060 || srv.Extra["weight"] != 20 || srv.Extra["service"] != "_sip" {

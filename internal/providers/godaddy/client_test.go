@@ -126,7 +126,7 @@ func TestListRecordsPaginationAndNames(t *testing.T) {
 	if len(got) != 6 {
 		t.Fatalf("expected 6 records, got %d", len(got))
 	}
-	if got[0].Name != "h0.example.com" || got[0].ID != "A|h0|10.0.0.0" {
+	if got[0].Name != "h0.example.com" || got[0].ID != "example.com|A|h0|10.0.0.0" {
 		t.Errorf("record 0: %+v", got[0])
 	}
 	mx := got[5]
@@ -285,7 +285,7 @@ func TestUpdateRecordRenameFailures(t *testing.T) {
 	f.setRecords("example.com", apiRecord{Type: "A", Name: "www", Data: "1.1.1.1", TTL: 600}, apiRecord{Type: "A", Name: "www", Data: "1.1.1.2", TTL: 600})
 	f.failPut = true
 	_, err = c.UpdateRecord(ctx, "example.com", platform.Record{ID: "A|www|1.1.1.1", Name: "api.example.com", Type: "A", Value: "1.1.1.1", TTL: 600})
-	if err == nil || !strings.Contains(err.Error(), "A|api|1.1.1.1") || !strings.Contains(err.Error(), `--id "A|www|1.1.1.1"`) {
+	if err == nil || !strings.Contains(err.Error(), "example.com|A|api|1.1.1.1") || !strings.Contains(err.Error(), `--id "A|www|1.1.1.1"`) {
 		t.Fatalf("removal failure must name both records: %v", err)
 	}
 	if got := f.getRecords("example.com"); len(got) != 3 {
@@ -304,7 +304,7 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.ID != "A|www|2.2.2.2" || created.Name != "www.example.com" {
+	if created.ID != "example.com|A|www|2.2.2.2" || created.Name != "www.example.com" {
 		t.Errorf("created: %+v", created)
 	}
 	if got := f.getRecords("example.com"); len(got) != 2 {
@@ -316,7 +316,7 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.ID != "A|www|3.3.3.3" || updated.TTL != 900 {
+	if updated.ID != "example.com|A|www|3.3.3.3" || updated.TTL != 900 {
 		t.Errorf("updated: %+v", updated)
 	}
 	got := f.getRecords("example.com")
@@ -332,7 +332,7 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if moved.ID != "A|api|3.3.3.3" {
+	if moved.ID != "example.com|A|api|3.3.3.3" {
 		t.Errorf("moved: %+v", moved)
 	}
 	got = f.getRecords("example.com")
@@ -387,7 +387,7 @@ func TestReplaceAndDeleteSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out) != 2 || out[0].Name != "www.example.com" || out[1].ID != "A|www|3.3.3.3" {
+	if len(out) != 2 || out[0].Name != "www.example.com" || out[1].ID != "example.com|A|www|3.3.3.3" {
 		t.Errorf("replace result: %+v", out)
 	}
 	got := f.getRecords("example.com")

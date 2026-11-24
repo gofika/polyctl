@@ -82,10 +82,22 @@ func Open(path string) (*DB, error) {
 	return &DB{sql: db, now: time.Now}, nil
 }
 
-// dataVersion is the version of the JSON stored in resources.data, kept in
-// PRAGMA user_version. Version 1 names a DNS record's data "value"; polyctl
-// 0.1.x wrote it as "content".
-const dataVersion = 1
+// dataVersion is the version of the stored data, kept in PRAGMA
+// user_version. Version 1 names a DNS record's data "value"; polyctl 0.1.x
+// wrote it as "content". Version 2 drops the cached GoDaddy DNS records,
+// whose ids did not carry the zone before (see forgetGoDaddyRecords).
+const dataVersion = 2
+
+// forgetGoDaddyRecords drops the GoDaddy DNS records cached before their
+// ids carried the zone: the same record in two domains of one account
+// shared one row, so the cache of one of them missed it. The sets are
+// synced again on their next use.
+var forgetGoDaddyRecords = []string{
+	`DELETE FROM resources WHERE platform = 'godaddy' AND resource_type = 'dns_record'`,
+	`DELETE FROM domain_index WHERE platform = 'godaddy' AND resource_type = 'dns_record'`,
+	`DELETE FROM ip_index WHERE platform = 'godaddy' AND resource_type = 'dns_record'`,
+	`DELETE FROM sync_state WHERE platform = 'godaddy' AND resource_type = 'dns_record'`,
+}
 
 // renameRecordContent rewrites the DNS records cached by polyctl 0.1.x,
 // whose data was stored under "content", to the "value" field read today.
@@ -135,6 +147,13 @@ func migrateData(db *sql.DB) error {
 	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.Exec(renameRecordContent); err != nil {
 		return err
+	}
+	if v < 2 {
+		for _, q := range forgetGoDaddyRecords {
+			if _, err := tx.Exec(q); err != nil {
+				return err
+			}
+		}
 	}
 	if v < dataVersion {
 		if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, dataVersion)); err != nil {
