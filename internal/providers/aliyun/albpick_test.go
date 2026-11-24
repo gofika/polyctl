@@ -293,3 +293,39 @@ func TestALBLoadBalancerCreateAsks(t *testing.T) {
 		t.Errorf("non-interactive without --zone-mapping = %v", err)
 	}
 }
+
+// The server groups a listener is offered are the Available ones of its
+// load balancer's VPC; update leaves out the group it forwards to, and
+// create without any is a usage error naming --server-group.
+func TestALBListenerGroupPickVPC(t *testing.T) {
+	t.Setenv(app.EnvNonInteractive, "")
+	h, _, alb, _, _ := albHarness(t, app.Flags{DryRun: true})
+	alb.addLB("alb-1", "lb-1", "vpc-site", "Active")
+	alb.addGroup("sgp-1", "g1", "HTTP", "vpc-site")
+	alb.addGroup("sgp-2", "g2", "HTTP", "vpc-site")
+	alb.addGroup("sgp-9", "other", "HTTP", "vpc-other")
+	alb.addListener("lsn-1", "alb-1", "HTTP", 80, "sgp-1")
+	p := prompttest.New(t, "alb-1", "lsn-1", "group", "sgp-2")
+	h.rt.Picker = p
+	if err := h.run("alb", "listener", "update"); err != nil {
+		t.Fatalf("update: %v\n%s", err, h.stderr.String())
+	}
+	p.Done()
+	if v := prompttest.Values(p.Asked[3].Options); v != "sgp-2" {
+		t.Errorf("update offered %q, want sgp-2 only", v)
+	}
+	p = prompttest.New(t, "alb-1", "https:443", "sgp-1", "1234567")
+	h.rt.Picker = p
+	if err := h.run("alb", "listener", "create"); err != nil {
+		t.Fatalf("create: %v\n%s", err, h.stderr.String())
+	}
+	p.Done()
+	if v := prompttest.Values(p.Asked[2].Options); strings.Contains(v, "sgp-9") {
+		t.Errorf("create offered %q: sgp-9 is in another VPC", v)
+	}
+	alb.addLB("alb-2", "lb-2", "vpc-empty", "Active")
+	h.rt.Picker = prompttest.New(t, "alb-2", "http:80")
+	if err := h.run("alb", "listener", "create"); !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "--server-group") {
+		t.Errorf("no group in the VPC = %v", err)
+	}
+}

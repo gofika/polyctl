@@ -120,6 +120,33 @@ func serverGroupArg(ctx context.Context, rt *app.Runtime, sc *albScope, args []s
 	return []string{id}, nil
 }
 
+// pickListenerGroup asks for the server group a listener of a load
+// balancer in vpc forwards to: the Available groups of that VPC (a listener
+// cannot forward to another VPC), without those in skip (the groups it
+// forwards to now). It returns the id. required says a create needs it:
+// none is then a usage error naming arg, otherwise nothing to do.
+func pickListenerGroup(ctx context.Context, rt *app.Runtime, sc *albScope, vpc string, skip []string, arg string, required bool) (string, error) {
+	if !rt.Interactive() {
+		return "", app.UsageErrf("%s is required", arg)
+	}
+	groups, err := sc.a.listServerGroups(ctx, nil, nil)
+	if err != nil {
+		return "", err
+	}
+	var opts []prompt.Option
+	for _, g := range groups {
+		if (vpc != "" && g.VpcID != vpc) || (g.Status != "" && g.Status != statusAvailable) || slices.Contains(skip, g.ID) {
+			continue
+		}
+		opts = append(opts, prompt.Option{Label: serverGroupLabel(g), Value: g.ID})
+	}
+	c := app.Choice{Title: "Server group (VPC " + vpc + ")", Options: opts, Arg: arg, Required: required, What: "other Available server group in VPC " + vpc}
+	if required {
+		c.Empty = app.UsageErrf("%s is required, and VPC %s has no Available server group; create one with `polyctl aliyun alb server-group create`", arg, vpc)
+	}
+	return rt.Choose(c)
+}
+
 // aclArg fills in a missing ACL argument: the ACLs of the scope's region.
 // None is nothing to do.
 func aclArg(ctx context.Context, rt *app.Runtime, sc *albScope, args []string, arg string) ([]string, error) {

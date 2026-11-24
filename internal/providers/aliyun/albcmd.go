@@ -1173,11 +1173,9 @@ for the listener to be Running.`,
 				}
 			}
 			if groupRef == "" {
-				picked, err := serverGroupArg(ctx, rt, sc, nil, "--server-group")
-				if err != nil {
-					return app.RequiredPick(err, "--server-group")
+				if groupRef, err = pickListenerGroup(ctx, rt, sc, lb.VpcID, nil, "--server-group", true); err != nil {
+					return err
 				}
-				groupRef = picked[0]
 			}
 			g, err := resolveServerGroup(ctx, sc, groupRef)
 			if err != nil {
@@ -1289,11 +1287,13 @@ Running again.`,
 						return err
 					}
 				} else {
-					picked, err := serverGroupArg(ctx, rt, sc, nil, "--server-group")
-					if err != nil {
+					vpc := ""
+					if lb, err := sc.a.getLoadBalancer(ctx, l.LoadBalancerID); err == nil && lb != nil {
+						vpc = lb.VpcID
+					}
+					if groupRef, err = pickListenerGroup(ctx, rt, sc, vpc, l.ServerGroups, "--server-group", false); err != nil {
 						return err
 					}
-					groupRef = picked[0]
 				}
 			}
 			var changes []string
