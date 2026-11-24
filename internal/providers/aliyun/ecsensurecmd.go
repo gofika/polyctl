@@ -71,8 +71,8 @@ profile's), Running, with an EIP. Running it again changes nothing.
   Administrator password, stored encrypted and shown as create shows it
   (printed at the end when interactive; otherwise a note names
   ` + "`polyctl aliyun ecs instance password <name|id>`" + `); an existing
-  instance keeps its password. It is waited for until Running (every 2 seconds, --timeout 10m);
-  --no-wait returns at once and skips the EIP.
+  instance keeps its password. It is waited for until Running (every 2
+  seconds, --timeout 10m); --no-wait returns at once and skips the EIP.
 - --eip (default; --eip=false skips it) binds an idle EIP of the region,
   else a new one (see aliyun eip address), unless the instance holds one.
 - Another account or region of the inventory holding an instance of the
