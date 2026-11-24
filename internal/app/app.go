@@ -93,6 +93,9 @@ type Runtime struct {
 	// value. Help and shell completion set it: they ask nothing, and a
 	// mistyped variable must not take them down.
 	SkipNonInteractiveEnvCheck bool
+	// NoPrompt marks a command that must never ask (help, shell
+	// completion): Interactive reports false for it whatever the streams.
+	NoPrompt bool
 
 	cfg       *config.Config
 	store     *creds.Multi
@@ -278,7 +281,7 @@ func (p refusingPicker) Input(title, _ string, _ func(string) error) (string, er
 // from a terminal, so scripts never block. No other code looks at the
 // streams to choose a behaviour; it asks here, or is handed the answer.
 func (rt *Runtime) Interactive() bool {
-	if rt.Flags.NonInteractive {
+	if rt.Flags.NonInteractive || rt.NoPrompt {
 		return false
 	}
 	// The flag wins over the variable: --non-interactive=false leaves the
@@ -683,6 +686,9 @@ type AmbiguousError struct {
 	What       string
 	Candidates []string
 	Hint       string
+	// Options are the candidates as picker options (value: what resolves
+	// the request, label: Candidates' text), for Runtime.Disambiguate.
+	Options []prompt.Option
 }
 
 func (e *AmbiguousError) Error() string {

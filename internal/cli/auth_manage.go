@@ -23,36 +23,13 @@ import (
 // for. missing is the usage error of the non-interactive flow: it names the
 // argument to pass.
 func oneArgOrInteractive(rt *app.Runtime, missing func() error) cobra.PositionalArgs {
-	return func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			if rt.Interactive() {
-				return nil
-			}
-			// cobra validates arguments before Init runs. An invalid
-			// POLYCTL_NON_INTERACTIVE is why nothing can be asked here: report
-			// that, not the missing argument it leads to.
-			if err := app.CheckNonInteractiveEnv(); err != nil {
-				return usageErr("%v", err)
-			}
-			return missing()
-		}
-		return cobra.ExactArgs(1)(cmd, args)
-	}
+	return app.ArgsOrInteractive(rt, 1, func(*cobra.Command, []string) error { return missing() })
 }
 
-// quietAbort wraps a command so that leaving one of its prompts with Esc or
-// Ctrl-C ends it with a short note instead of an error. The non-interactive
-// flow has no prompt to leave: there the error is returned as it is, so an
-// interrupted script never ends "cancelled" with exit code 0.
+// quietAbort is app.QuietAbort; the command tree applies it to every
+// command, and the auth commands name it where their prompts are.
 func quietAbort(rt *app.Runtime, run func(*cobra.Command, []string) error) func(*cobra.Command, []string) error {
-	return func(cmd *cobra.Command, args []string) error {
-		err := run(cmd, args)
-		if errors.Is(err, prompt.ErrAborted) && rt.Interactive() {
-			rt.Infof("cancelled")
-			return nil
-		}
-		return err
-	}
+	return app.QuietAbort(rt, run)
 }
 
 // errPlatformRequired is the usage error of `auth login` without a platform

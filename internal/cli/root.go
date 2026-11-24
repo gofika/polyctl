@@ -317,6 +317,7 @@ POLYCTL_NON_INTERACTIVE is set.`,
 				return usageErr("%s does not support --dry-run: it changes local configuration only, which a dry run does not cover", cmd.CommandPath())
 			}
 			rt.SkipNonInteractiveEnvCheck = asksNothing(cmd)
+			rt.NoPrompt = asksNothing(cmd)
 			if err := rt.Init(); err != nil {
 				return usageErr("%v", err)
 			}
@@ -375,7 +376,20 @@ POLYCTL_NON_INTERACTIVE is set.`,
 		return usageErr("%v", err)
 	})
 	wrapArgs(root)
+	wrapAbort(rt, root)
 	return root
+}
+
+// wrapAbort applies app.QuietAbort to every command of the tree, so that
+// leaving a prompt ends any command (core or platform-specific) with
+// "cancelled" and exit code 0.
+func wrapAbort(rt *app.Runtime, cmd *cobra.Command) {
+	if cmd.RunE != nil {
+		cmd.RunE = app.QuietAbort(rt, cmd.RunE)
+	}
+	for _, c := range cmd.Commands() {
+		wrapAbort(rt, c)
+	}
 }
 
 func completeProfiles(rt *app.Runtime) func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {

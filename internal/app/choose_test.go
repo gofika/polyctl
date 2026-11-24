@@ -1,0 +1,129 @@
+package app_test
+
+import (
+	"bytes"
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/spf13/cobra"
+
+	"github.com/gofika/polyctl/internal/app"
+	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt"
+	"github.com/gofika/polyctl/internal/prompt/prompttest"
+)
+
+func interactiveRT(t *testing.T, answers ...any) (*app.Runtime, *prompttest.Picker) {
+	t.Helper()
+	t.Setenv(app.EnvNonInteractive, "")
+	rt := app.New(app.Flags{}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	p := prompttest.New(t, answers...)
+	rt.Picker = p
+	return rt, p
+}
+
+func TestChoose(t *testing.T) {
+	opts := []prompt.Option{{Label: "web-1  i-1", Value: "i-1"}, {Label: "web-2  i-2", Value: "i-2"}}
+
+	rt, p := interactiveRT(t, "i-2")
+	got, err := rt.Choose(app.Choice{Title: "Instance", Options: opts, Default: "i-1", Arg: "<instance>"})
+	if err != nil || got != "i-2" {
+		t.Errorf("pick = %q, %v", got, err)
+	}
+	if a := p.Find("Instance"); a.Default != "i-1" || prompttest.Values(a.Options) != "i-1 i-2" {
+		t.Errorf("offered %+v", a)
+	}
+	p.Done()
+
+	// The create option comes last and runs Create.
+	rt, p = interactiveRT(t, prompttest.Label("Create a new key pair"))
+	got, err = rt.Choose(app.Choice{Title: "Key pair", Options: opts, Arg: "--key-pair", CreateLabel: "Create a new key pair...",
+		Create: func() (string, error) { return "new", nil }})
+	if err != nil || got != "new" {
+		t.Errorf("create = %q, %v", got, err)
+	}
+	if a := p.Find("Key pair"); len(a.Options) != 3 || a.Options[2].Label != "Create a new key pair..." {
+		t.Errorf("create option missing: %+v", a.Options)
+	}
+
+	// Nothing listed but creatable: Create runs without a question.
+	rt, _ = interactiveRT(t)
+	if got, err = rt.Choose(app.Choice{Title: "Key pair", Arg: "--key-pair", Create: func() (string, error) { return "new", nil }}); err != nil || got != "new" {
+		t.Errorf("empty with create = %q, %v", got, err)
+	}
+
+	// Nothing to choose from: a note for a target, a usage error for a
+	// required input of a create.
+	if _, err = rt.Choose(app.Choice{Title: "Domain", Arg: "<domain>", What: "indexed domain"}); !errors.Is(err, platform.ErrNothingToDo) || !strings.Contains(err.Error(), "no indexed domain") {
+		t.Errorf("empty target = %v", err)
+	}
+	if _, err = rt.Choose(app.Choice{Title: "VPC", Arg: "--vpc", Required: true}); !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "--vpc") {
+		t.Errorf("empty required = %v", err)
+	}
+
+	// Leaving the picker is ErrAborted, which QuietAbort turns into
+	// "cancelled".
+	rt, _ = interactiveRT(t, prompttest.Abort{})
+	if _, err = rt.Choose(app.Choice{Title: "Instance", Options: opts}); !errors.Is(err, prompt.ErrAborted) {
+		t.Errorf("abort = %v", err)
+	}
+
+	// The non-interactive flow asks nothing and names the input.
+	t.Setenv(app.EnvNonInteractive, "1")
+	rt = app.New(app.Flags{}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	if _, err = rt.Choose(app.Choice{Title: "Instance", Options: opts, Arg: "<instance>"}); !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "<instance> is required") {
+		t.Errorf("non-interactive = %v", err)
+	}
+	if _, err = rt.AskInput("--name", "Name", "", nil); !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "--name is required") {
+		t.Errorf("non-interactive input = %v", err)
+	}
+}
+
+func TestChooseMany(t *testing.T) {
+	opts := []prompt.Option{{Label: "a", Value: "a"}, {Label: "b", Value: "b"}}
+	rt, _ := interactiveRT(t, []string{"b"}, []string{})
+	if got, err := rt.ChooseMany(app.Choice{Title: "Records", Options: opts}); err != nil || strings.Join(got, ",") != "b" {
+		t.Errorf("pick = %v, %v", got, err)
+	}
+	if _, err := rt.ChooseMany(app.Choice{Title: "Records", Options: opts}); !errors.Is(err, platform.ErrNothingToDo) {
+		t.Errorf("nothing ticked = %v", err)
+	}
+}
+
+func TestQuietAbort(t *testing.T) {
+	var errb bytes.Buffer
+	t.Setenv(app.EnvNonInteractive, "")
+	rt := app.New(app.Flags{}, strings.NewReader(""), &bytes.Buffer{}, &errb)
+	rt.Picker = prompttest.New(t)
+	run := app.QuietAbort(rt, func(*cobra.Command, []string) error { return prompt.ErrAborted })
+	if err := run(nil, nil); err != nil || errb.String() != "cancelled\n" {
+		t.Errorf("interactive abort = %v, stderr %q", err, errb.String())
+	}
+	rt.Flags.NonInteractive = true
+	if err := run(nil, nil); !errors.Is(err, prompt.ErrAborted) {
+		t.Errorf("non-interactive abort = %v, want the error itself", err)
+	}
+}
+
+func TestArgsOrInteractive(t *testing.T) {
+	rt, _ := interactiveRT(t)
+	missing := func(*cobra.Command, []string) error { return app.UsageErrf("<domain> is required") }
+	v := app.ArgsOrInteractive(rt, 1, missing)
+	cmd := &cobra.Command{Use: "x <domain>"}
+	if err := v(cmd, nil); err != nil {
+		t.Errorf("interactive without the argument = %v", err)
+	}
+	if err := v(cmd, []string{"a", "b"}); err == nil {
+		t.Error("two arguments accepted")
+	}
+	rt.Flags.NonInteractive = true
+	if err := v(cmd, nil); !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "<domain>") {
+		t.Errorf("non-interactive without the argument = %v", err)
+	}
+	r := app.RangeArgsOrInteractive(rt, 2, 3, missing)
+	if err := r(cmd, []string{"a", "b", "c"}); err != nil {
+		t.Errorf("range = %v", err)
+	}
+}
+
