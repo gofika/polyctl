@@ -27,6 +27,8 @@ func TestSelectImage(t *testing.T) {
 		img("debian-14-forky-v20260101", "X86_64", "DEPRECATED", t3),
 		img("debian-13-backports-v20261117", "X86_64", "", t3),
 		img("debian-11-bullseye-v20200101", "", "OBSOLETE", t1),
+		{Name: "debian-13-trixie-v20261118", Architecture: "X86_64", Status: "PENDING", Created: t3},
+		{Name: "debian-13-trixie-v20261119", Architecture: "X86_64", Status: "FAILED", Created: t3},
 	}
 	ubuntu := []imageCandidate{
 		img("ubuntu-2204-jammy-v20261101", "X86_64", "", t1),
@@ -37,6 +39,7 @@ func TestSelectImage(t *testing.T) {
 		img("ubuntu-2504-plucky-amd64-v20261110", "X86_64", "", t3),
 		img("ubuntu-minimal-2804-x-amd64-v20261110", "X86_64", "", t3),
 		img("ubuntu-pro-2804-x-amd64-v20261110", "X86_64", "", t3),
+		{Name: "ubuntu-2604-resolute-amd64-v20261120", Architecture: "X86_64", Status: "DELETING", Created: t3},
 	}
 	rocky := []imageCandidate{
 		img("rocky-linux-9-v20261101", "X86_64", "", t3),

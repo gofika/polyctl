@@ -78,6 +78,7 @@ type imageCandidate struct {
 	Name         string
 	Architecture string // "X86_64", "ARM64" or "" (old images)
 	Deprecated   string // Deprecated.State: "", "ACTIVE", "DEPRECATED", "OBSOLETE", "DELETED"
+	Status       string // Status: "READY", "PENDING", "FAILED", "DELETING" or "" (not reported)
 	Created      string // CreationTimestamp, RFC 3339
 	DiskSizeGB   int64
 }
@@ -130,6 +131,12 @@ func (c imageCandidate) unusable() bool {
 		return true
 	}
 	return false
+}
+
+// notReady reports an image that cannot be booted from yet or any more
+// (a status other than READY; an image without a status counts as ready).
+func (c imageCandidate) notReady() bool {
+	return c.Status != "" && !strings.EqualFold(c.Status, "READY")
 }
 
 var ubuntuVerRe = regexp.MustCompile(`ubuntu-(\d{2})(\d{2})`)
@@ -200,8 +207,8 @@ type ranked struct {
 
 // selectImage picks the image of osName (and version, "" for the latest)
 // for arch (X86_64 or ARM64) among the images of its project: deprecated,
-// obsolete and deleted images and those of another architecture are left
-// out, the OS's name rules are applied, and the newest is chosen: by
+// obsolete and deleted images, images that are not READY and those of
+// another architecture are left out, the OS's name rules are applied, and the newest is chosen: by
 // version number for debian, for ubuntu without a version and for the
 // standard images of rocky, almalinux and rhel (a patch image of an old
 // major version can be newer than the newest major version), by creation
@@ -212,7 +219,7 @@ func selectImage(osName, version, arch string, images []imageCandidate) (imageCa
 	version = strings.TrimSpace(version)
 	var cands []ranked
 	for _, img := range images {
-		if img.unusable() {
+		if img.unusable() || img.notReady() {
 			continue
 		}
 		if img.arch() != arch {
@@ -304,7 +311,7 @@ func selectImage(osName, version, arch string, images []imageCandidate) (imageCa
 }
 
 func candidateFrom(img *compute.Image) imageCandidate {
-	c := imageCandidate{Name: img.Name, Architecture: img.Architecture, Created: img.CreationTimestamp, DiskSizeGB: img.DiskSizeGb}
+	c := imageCandidate{Name: img.Name, Architecture: img.Architecture, Status: img.Status, Created: img.CreationTimestamp, DiskSizeGB: img.DiskSizeGb}
 	if img.Deprecated != nil {
 		c.Deprecated = img.Deprecated.State
 	}

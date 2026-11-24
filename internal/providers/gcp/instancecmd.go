@@ -654,7 +654,8 @@ the newest LTS) and --os-version for the architecture of the machine type:
 the one the API reports, else arm64 for the Arm families (t2a, c4a, n4a,
 a4x) and x86_64 for the others; a size is always x86_64. The highest
 release is found in the image list on every run, never written into
-polyctl. Nothing found (windows has no arm64 image) is exit code 4. The
+polyctl; deprecated, obsolete, deleted and not READY images are never
+picked. Nothing found (windows has no arm64 image) is exit code 4. The
 boot disk ({name}-boot, --disk-type, pd-balanced by default) has the
 image's minimum size unless --boot-disk-size; --disk adds
 an empty data disk ({name}-data). Both disks are deleted with the instance.
