@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
@@ -146,9 +147,15 @@ func (c *client) runShellCommand(ctx context.Context, region, id, command string
 	}
 	so, se := awssdk.ToString(res.StandardOutputContent), awssdk.ToString(res.StandardErrorContent)
 	// Output near the limit may have been cut (with or without a marker
-	// of the agent's): it is not trusted.
-	if len(so) >= ssmStdoutLimit-ssmCutMargin || len(se) >= ssmStderrLimit-ssmCutMargin {
-		return nil, nil, 0, fmt.Errorf("the output of Run Command %s on instance %s reaches the %d characters Systems Manager returns: it may be cut, so it is not used", cmdID, id, ssmStdoutLimit)
+	// of the agent's): it is not trusted. The limits count characters.
+	for _, o := range []struct {
+		name, text string
+		limit      int
+	}{{"standard output", so, ssmStdoutLimit}, {"standard error", se, ssmStderrLimit}} {
+		if utf8.RuneCountInString(o.text) >= o.limit-ssmCutMargin {
+			return nil, nil, 0, fmt.Errorf("%w: the %s of Run Command %s on instance %s reaches the %d characters Systems Manager returns: it may be cut, so it is not used",
+				platform.ErrNotSupported, o.name, cmdID, id, o.limit)
+		}
 	}
 	return []byte(so), []byte(se), int(res.ResponseCode), nil
 }
