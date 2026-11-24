@@ -553,6 +553,12 @@ func retrieveWindowsLogin(ctx context.Context, rt *app.Runtime, profile, locatio
 			if err != nil {
 				return nil, fmt.Errorf("the login of instance %s was stored while its creation was uncertain: %w", cred.Name, err)
 			}
+			// Only the instance that uncertain RunInstances launched runs
+			// with the key pair: another instance of the name does not.
+			if tok := strings.TrimPrefix(pendingID, pendingInstancePrefix); awssdk.ToString(l.inst.ClientToken) != tok {
+				return nil, fmt.Errorf("%w: the login of instance %s was stored while its creation was uncertain, and instance %s was not launched by that create (its client token differs): that create launched no instance, or one that is gone; if no instance of it exists, delete key pair %s in AWS",
+					platform.ErrNotFound, cred.Name, instanceLabel(l.inst), cred.KeyPair)
+			}
 			c = l.c
 			cred.Ref = secrets.Ref{Platform: platform.AWS, Profile: l.profile, Location: l.region, InstanceID: l.id()}
 			label = instanceLabel(l.inst)

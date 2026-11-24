@@ -167,6 +167,9 @@ func (in *fakeInstance) ec2() ec2types.Instance {
 		VpcId: awssdk.String(in.vpcID()), SubnetId: awssdk.String("subnet-0def"),
 		LaunchTime: awssdk.Time(time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)),
 	}
+	if in.clientToken != "" {
+		out.ClientToken = awssdk.String(in.clientToken)
+	}
 	for _, g := range in.groupIDs() {
 		out.SecurityGroups = append(out.SecurityGroups, ec2types.GroupIdentifier{GroupId: awssdk.String(g)})
 	}

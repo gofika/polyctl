@@ -959,3 +959,26 @@ func TestWindowsPendingCancelled(t *testing.T) {
 		t.Errorf("stored = %+v\n%s", got, h.stderr.String())
 	}
 }
+
+// A login stored while the create was uncertain is not taken for another
+// instance of the same name: that one does not run with the key pair.
+func TestWindowsPendingOtherInstance(t *testing.T) {
+	h := winHarness(t, app.Flags{})
+	h.ec2.inst.runLost = 100
+	if err := h.run(winCreate...); err == nil {
+		t.Fatal("unknown result succeeded")
+	}
+	// The uncertain create launched nothing that lasted; another instance
+	// of the name was launched since, with another client token.
+	h.ec2.mu.Lock()
+	h.ec2.inst.byRegion["ap-east-1"] = []*fakeInstance{{id: "i-0aaaaaaaaaaaaaaa9", name: "win-a", typ: "t3.medium", state: stateRunning, platform: "windows", clientToken: "someone-else"}}
+	h.ec2.mu.Unlock()
+	h.ec2.inst.runLost, h.ec2.inst.pwDelay = 0, 0
+	err := h.run("ec2", "instance", "password", "win-a")
+	if !errors.Is(err, platform.ErrNotFound) || !strings.Contains(err.Error(), "client token differs") {
+		t.Fatalf("other instance = %v", err)
+	}
+	if got := storedWin(t, h, "win-a"); len(got) != 1 || !strings.HasPrefix(got[0].InstanceID, pendingInstancePrefix) {
+		t.Errorf("stored = %+v", got)
+	}
+}
