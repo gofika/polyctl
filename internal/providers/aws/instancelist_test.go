@@ -95,3 +95,33 @@ func TestInstanceStartStopWait(t *testing.T) {
 		t.Errorf("state after stop = %s", st)
 	}
 }
+
+func TestInstanceStopPending(t *testing.T) {
+	h := newInstanceHarness(t, app.Flags{Yes: true})
+	h.addInstance("ap-east-1", &fakeInstance{id: "i-0aaaaaaaaaaaaaaa3", name: "booting", typ: "t3.nano", state: statePending, next: []string{statePending, statePending, stateRunning}})
+	if err := h.run("ec2", "instance", "stop", "booting", "--wait", "--timeout", "1m"); err != nil {
+		t.Fatalf("%v\n%s", err, h.stderr.String())
+	}
+	if st, _ := h.instState("ap-east-1", "i-0aaaaaaaaaaaaaaa3"); st != stateStopped {
+		t.Errorf("state after stop of a pending instance = %s", st)
+	}
+	if rep := h.report(); len(rep.Changes) != 1 || rep.Changes[0].Detail != "stop; stopped" {
+		t.Errorf("report = %+v", rep)
+	}
+}
+
+func TestInstanceStopError(t *testing.T) {
+	h := newInstanceHarness(t, app.Flags{Yes: true})
+	h.addInstance("ap-east-1", running("i-0aaaaaaaaaaaaaaa1", "web"))
+	h.ec2.inst.errs["StopInstances"] = &fakeAPIError{"UnauthorizedOperation", "not authorized"}
+	err := h.run("ec2", "instance", "stop", "web", "--wait", "--timeout", "1m")
+	if !errors.Is(err, platform.ErrUnauthorized) {
+		t.Fatalf("refused stop = %v", err)
+	}
+	if strings.Contains(h.stderr.String(), "requested") || strings.Contains(h.stdout.String(), "updated") {
+		t.Errorf("a refused stop was reported: %s / %s", h.stderr.String(), h.stdout.String())
+	}
+	if st, _ := h.instState("ap-east-1", "i-0aaaaaaaaaaaaaaa1"); st != stateRunning {
+		t.Errorf("state = %s", st)
+	}
+}

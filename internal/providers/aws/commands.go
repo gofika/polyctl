@@ -970,7 +970,8 @@ are printed.`
 A confirmation is asked first (default no; --yes skips it, and the
 non-interactive flow needs --yes: exit code 2 without it). A declined
 confirmation is exit code 0. --force stops the instance without a clean
-shutdown of the operating system.`
+shutdown of the operating system. A pending instance cannot be stopped
+yet: the command first waits (at most --timeout) until it is running.`
 	}
 	cmd := &cobra.Command{
 		Use:   action + " <name|id>",
@@ -1016,12 +1017,20 @@ shutdown of the operating system.`
 				return err
 			}
 			if action == "stop" {
-				ok, err := rt.Confirm(ctx, fmt.Sprintf("Stop instance %s (%s)? It is unavailable until it is started again.", label, cur), false)
-				if err != nil {
-					return err
+				ok, cerr := rt.Confirm(ctx, fmt.Sprintf("Stop instance %s (%s)? It is unavailable until it is started again.", label, cur), false)
+				if cerr != nil {
+					return cerr
 				}
 				if !ok {
 					return fmt.Errorf("%w: cancelled; instance %s was not stopped", platform.ErrNothingToDo, label)
+				}
+				if cur == statePending {
+					// StopInstances refuses an instance that never ran:
+					// wait (at most --timeout) until it is running.
+					rt.Infof("instance %s is pending; waiting until it is running before it is stopped", label)
+					if _, werr := l.c.waitInstanceState(ctx, l.region, l.id(), l.name(), stateRunning, timeout); werr != nil {
+						return fmt.Errorf("instance %s was not stopped: %w", label, werr)
+					}
 				}
 				err = l.c.stopInstanceChecked(ctx, l.region, l.id(), force)
 			} else {
