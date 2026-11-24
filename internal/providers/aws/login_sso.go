@@ -318,24 +318,21 @@ func chooseAccount(ctx context.Context, c *sso.Client, token string, in platform
 		}
 		return "", "", app.UsageErrf("several accounts are accessible: pass --set account_id=<id> to choose one of: %s", accountList(accounts))
 	}
-	labels := make([]string, len(accounts))
-	defLabel := ""
+	opts := make([]prompt.Option, len(accounts))
+	defID := accounts[0].ID
 	for i, a := range accounts {
-		labels[i] = a.label()
+		opts[i] = prompt.Option{Label: a.label(), Value: a.ID}
 		if a.ID == def {
-			defLabel = labels[i]
+			defID = a.ID
 		}
 	}
-	if defLabel == "" {
-		defLabel = labels[0]
-	}
-	chosen, err := io.Choose("Account", labels, defLabel)
+	chosen, err := in.Select(io, "Account", opts, defID)
 	if err != nil {
 		return "", "", err
 	}
-	for i, l := range labels {
-		if l == chosen {
-			return accounts[i].ID, l, nil
+	for _, a := range accounts {
+		if a.ID == chosen {
+			return a.ID, a.label(), nil
 		}
 	}
 	return "", "", errors.New("no account selected")
@@ -383,5 +380,9 @@ func chooseRole(ctx context.Context, c *sso.Client, token, accountID string, in 
 	if !found {
 		def = roles[0]
 	}
-	return io.Choose("Role", roles, def)
+	opts := make([]prompt.Option, len(roles))
+	for i, r := range roles {
+		opts[i] = prompt.Option{Label: r, Value: r}
+	}
+	return in.Select(io, "Role", opts, def)
 }

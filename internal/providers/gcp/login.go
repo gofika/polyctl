@@ -380,7 +380,11 @@ func chooseProject(ctx context.Context, in platform.LoginInput, pio *prompt.IO, 
 				ids = append(ids, def)
 			}
 		}
-		return pio.Choose("Google Cloud project", ids, def)
+		opts := make([]prompt.Option, len(ids))
+		for i, id := range ids {
+			opts[i] = prompt.Option{Label: id, Value: id}
+		}
+		return in.Select(pio, "Google Cloud project", opts, def)
 	}
 	if def != "" {
 		return pio.Line("Google Cloud project id", def)

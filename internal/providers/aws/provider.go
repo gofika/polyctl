@@ -123,7 +123,7 @@ func (p *provider) Login(ctx context.Context, in platform.LoginInput) (*platform
 		fmt.Fprintln(io.Err, "  keys    - static access key id + secret access key")
 		fmt.Fprintln(io.Err, "  profile - a named profile from ~/.aws/config and ~/.aws/credentials")
 		var err error
-		method, err = io.Choose("Method", []string{methodSSO, methodKeys, methodProfile}, methodSSO)
+		method, err = in.Select(io, "Method", []prompt.Option{{Label: methodSSO, Value: methodSSO}, {Label: methodKeys, Value: methodKeys}, {Label: methodProfile, Value: methodProfile}}, methodSSO)
 		if err != nil {
 			return nil, err
 		}

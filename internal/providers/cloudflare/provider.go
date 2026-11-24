@@ -421,16 +421,16 @@ func chooseAccount(in platform.LoginInput, pio *prompt.IO, accounts []account, l
 		if !in.Interactive {
 			return nil, app.UsageErrf("the %s sees %d accounts; pass --set account_id=<id> to choose one of: %s", what, len(accounts), accountNames(accounts))
 		}
-		opts := make([]string, len(accounts))
+		opts := make([]prompt.Option, len(accounts))
 		for i, acc := range accounts {
-			opts[i] = fmt.Sprintf("%s (%s)", acc.Name, acc.ID)
+			opts[i] = prompt.Option{Label: fmt.Sprintf("%s (%s)", acc.Name, acc.ID), Value: acc.ID}
 		}
-		pick, err := pio.Choose("Account", opts, opts[0])
+		pick, err := in.Select(pio, "Account", opts, accounts[0].ID)
 		if err != nil {
 			return nil, err
 		}
-		for i, o := range opts {
-			if o == pick {
+		for i := range accounts {
+			if accounts[i].ID == pick {
 				return &accounts[i], nil
 			}
 		}

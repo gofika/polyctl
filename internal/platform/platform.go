@@ -197,6 +197,34 @@ func (in LoginInput) IO(ctx context.Context) *prompt.IO {
 	return p.WithInteractive(in.Interactive).WithContext(ctx)
 }
 
+// Select asks for one of opts in the interactive flow and returns its
+// value: with the arrow-key Picker when there is one (filterable, def
+// preselected), else as a numbered list on io (tests without a picker),
+// where the labels are the choices.
+func (in LoginInput) Select(io *prompt.IO, title string, opts []prompt.Option, def string) (string, error) {
+	if in.Picker != nil {
+		return in.Picker.Select(title, opts, def)
+	}
+	labels := make([]string, len(opts))
+	defLabel := ""
+	for i, o := range opts {
+		labels[i] = o.Label
+		if o.Value == def {
+			defLabel = o.Label
+		}
+	}
+	chosen, err := io.Choose(title, labels, defLabel)
+	if err != nil {
+		return "", err
+	}
+	for _, o := range opts {
+		if o.Label == chosen {
+			return o.Value, nil
+		}
+	}
+	return "", fmt.Errorf("%w: %q is not one of the choices", ErrInvalidInput, chosen)
+}
+
 // MayOpenBrowser reports whether the login may launch a browser: only in
 // the interactive flow, and not with --no-browser. Otherwise the URL is
 // printed and that is all.
