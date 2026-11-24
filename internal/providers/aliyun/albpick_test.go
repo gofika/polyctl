@@ -7,6 +7,7 @@ import (
 
 	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt"
 	"github.com/gofika/polyctl/internal/prompt/prompttest"
 )
 
@@ -164,5 +165,32 @@ func TestALBListenerUpdatePicks(t *testing.T) {
 	p.Done()
 	if !strings.Contains(h.stdout.String(), `server group sgp-1 -\u003e sgp-2`) {
 		t.Errorf("stdout = %s", h.stdout.String())
+	}
+}
+
+// load-balancer get and delete without <name|id> offer the load balancers
+// of the inventory (synced first); leaving the pick deletes nothing, and
+// the non-interactive flow still requires the argument.
+func TestALBLoadBalancerArgPick(t *testing.T) {
+	t.Setenv(app.EnvNonInteractive, "")
+	h, _, alb, _, _ := albHarness(t, app.Flags{DryRun: true})
+	alb.addLB("alb-1", "lb-1", "vpc-site", "Active")
+	p := prompttest.New(t, "alb-1")
+	h.rt.Picker = p
+	if err := h.run("alb", "load-balancer", "delete"); err != nil {
+		t.Fatalf("delete: %v\n%s", err, h.stderr.String())
+	}
+	p.Done()
+	if !strings.Contains(prompttest.Labels(p.Find("Load balancer").Options), "lb-1  alb-1") || !strings.Contains(h.stdout.String(), "load-balancer/lb-1") {
+		t.Errorf("pick %+v, stdout = %s", p.Asked, h.stdout.String())
+	}
+	h.rt.Picker = prompttest.New(t, prompttest.Abort{})
+	if err := h.run("alb", "load-balancer", "delete"); !errors.Is(err, prompt.ErrAborted) || len(h.api.callsFor("DeleteLoadBalancer")) != 0 {
+		t.Errorf("abort = %v", err)
+	}
+	h.rt.Picker = nil
+	h.rt.Flags.NonInteractive = true
+	if err := h.run("alb", "load-balancer", "delete"); err == nil || len(h.api.callsFor("DeleteLoadBalancer")) != 0 {
+		t.Errorf("non-interactive delete without <name|id> = %v", err)
 	}
 }

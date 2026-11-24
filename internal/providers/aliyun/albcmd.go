@@ -875,7 +875,7 @@ update --deletion-protection=false (delete never does). Server groups are kept, 
 unbound but not released (they stay billed; a note names them). --wait
 waits until the load balancer is gone, bounded by --timeout.`,
 		Example: "  polyctl aliyun alb load-balancer delete lb-example-com --force --yes",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			wait, timeout, err := w.Resolve(cmd)
