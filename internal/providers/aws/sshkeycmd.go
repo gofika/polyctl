@@ -145,15 +145,18 @@ func instanceLoginUsers(ctx context.Context, l *locatedInstance) (users []string
 		}
 	} else {
 		fam = familyOf("", "", pd)
-		from = "the platform details " + strconv.Quote(pd) + " of the instance"
-		why := "it is not visible to this account (deregistered or private)"
-		if readErr != nil {
-			why = readErr.Error()
+		from = "instance " + instanceLabel(l.inst)
+		if pd != "" {
+			from = "the platform details " + strconv.Quote(pd) + " of the instance"
 		}
-		if id == "" {
-			why = "the instance names none"
+		switch {
+		case id == "":
+			note = fmt.Sprintf("note: instance %s names no image", instanceLabel(l.inst))
+		case readErr != nil:
+			note = fmt.Sprintf("note: cannot read image %s of instance %s: %v", id, instanceLabel(l.inst), readErr)
+		default:
+			note = fmt.Sprintf("note: cannot read image %s of instance %s: it is not visible to this account (deregistered or private)", id, instanceLabel(l.inst))
 		}
-		note = fmt.Sprintf("note: cannot read image %s of instance %s: %s", id, instanceLabel(l.inst), why)
 	}
 	if fam.Name == "" {
 		u := "note: polyctl does not know the default user of " + from + "; trying " + strings.Join(unknownImageUsers, ", ") + " (pass --login-user to name it)"

@@ -218,6 +218,14 @@ func TestEC2SSHKeyLoginUsers(t *testing.T) {
 		!strings.Contains(err.Error(), "ec2-user") || !strings.Contains(err.Error(), "root") || strings.Contains(err.Error(), "ubuntu") {
 		t.Fatalf("gone image: %v\n%s", err, errOut)
 	}
+
+	// No image and no platform details: the notes name the instance.
+	r.inst.image, r.inst.platformDetails = "", ""
+	_ = r.run("list", "web-1")
+	errOut = r.h.stderr.String()
+	if !strings.Contains(errOut, "names no image") || !strings.Contains(errOut, "does not know the default user of instance ") || strings.Contains(errOut, `""`) {
+		t.Errorf("no image:\n%s", errOut)
+	}
 }
 
 // Windows instances are refused with exit code 7, stopped ones with the
