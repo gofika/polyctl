@@ -14,6 +14,7 @@ import (
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/output"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt"
 )
 
 // Command returns the `polyctl aws` command tree.
@@ -80,7 +81,7 @@ func matchZones(zones []platform.Zone, arg string) (exact *platform.Zone, byName
 	return nil, byName
 }
 
-func pickZone(zones []platform.Zone, arg string) (*platform.Zone, bool, error) {
+func pickZone(rt *app.Runtime, zones []platform.Zone, arg string) (*platform.Zone, bool, error) {
 	exact, byName := matchZones(zones, arg)
 	switch {
 	case exact != nil:
@@ -92,7 +93,20 @@ func pickZone(zones []platform.Zone, arg string) (*platform.Zone, bool, error) {
 		for _, z := range byName {
 			ids = append(ids, fmt.Sprintf("%s (%s)", z.ID, z.Status))
 		}
-		return nil, true, &app.AmbiguousError{What: fmt.Sprintf("hosted zone %q", platform.NormalizeDomain(arg)), Candidates: ids}
+		amb := &app.AmbiguousError{What: fmt.Sprintf("hosted zone %q", platform.NormalizeDomain(arg)), Candidates: ids, Hint: "pass the hosted zone id"}
+		// The interactive flow asks which one (a public and a private
+		// zone of one name, say).
+		z, err := disambiguate(rt, amb, byName, func(z platform.Zone) string {
+			count := ""
+			if n, ok := z.Extra["record_count"]; ok {
+				count = fmt.Sprintf("%v records", n)
+			}
+			return joinLabel(z.Name, z.ID, z.Status, count)
+		})
+		if err != nil {
+			return nil, true, err
+		}
+		return &z, true, nil
 	}
 	return nil, false, nil
 }
@@ -121,7 +135,7 @@ func resolveZone(ctx context.Context, rt *app.Runtime, arg string) (*platform.Zo
 		}
 	}
 	if !rt.Flags.Refresh {
-		if z, found, err := pickZone(cached, arg); found {
+		if z, found, err := pickZone(rt, cached, arg); found {
 			return z, err
 		}
 	}
@@ -141,7 +155,7 @@ func resolveZone(ctx context.Context, rt *app.Runtime, arg string) (*platform.Zo
 	}
 	cfg, _ := rt.Config()
 	_ = db.Replace(ctx, inventory.Set{Platform: platform.AWS, Profile: prof.Name, Type: platform.ResZone}, zoneResources(zones), cfg.TTLFor(platform.ResZone))
-	if z, found, err := pickZone(zones, arg); found {
+	if z, found, err := pickZone(rt, zones, arg); found {
 		return z, err
 	}
 	if looksLikeZoneID(arg) {
@@ -258,8 +272,12 @@ func zoneGetCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "get <zone>",
 		Short: "Show one hosted zone (by name or id)",
-		Args:  cobra.ExactArgs(1),
+		Args:  app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			args, err := rt.DomainArg(cmd.Context(), args, platform.AWS, platform.ResZone, nil)
+			if err != nil {
+				return err
+			}
 			z, err := resolveZone(cmd.Context(), rt, args[0])
 			if err != nil {
 				return err
@@ -289,8 +307,12 @@ func recordListCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list <zone>",
 		Short: "List the records of a hosted zone (one row per value)",
-		Args:  cobra.ExactArgs(1),
+		Args:  app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			args, err := rt.DomainArg(cmd.Context(), args, platform.AWS, platform.ResZone, nil)
+			if err != nil {
+				return err
+			}
 			z, err := resolveZone(cmd.Context(), rt, args[0])
 			if err != nil {
 				return err
@@ -386,13 +408,19 @@ func recordUpsertCmd(rt *app.Runtime) *cobra.Command {
 --value becomes one value of the set; existing values that are not repeated
 are removed. MX and SRV values take their priority from --priority, or as a
 leading number inside the value ("10 mail.example.com").`,
-		Args: cobra.ExactArgs(1),
+		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if typ == "" || len(values) == 0 {
+			if (typ == "" || len(values) == 0) && !rt.Interactive() {
 				return app.UsageErrf("--type and at least one --value are required")
 			}
 			if rt.Flags.Offline {
 				return app.ErrOffline
+			}
+			// A record is created in the zone: an empty list is a usage
+			// error naming <zone>.
+			args, err := rt.DomainArg(cmd.Context(), args, platform.AWS, platform.ResZone, nil)
+			if err != nil {
+				return app.RequiredPick(err, "<zone>")
 			}
 			z, err := resolveZone(cmd.Context(), rt, args[0])
 			if err != nil {
@@ -406,6 +434,25 @@ leading number inside the value ("10 mail.example.com").`,
 				return err
 			}
 			fqdn := platform.FQDN(name, z.Name)
+			if typ == "" {
+				if typ, err = rt.PickRecordType(platform.AWS); err != nil {
+					return err
+				}
+			}
+			if len(values) == 0 {
+				// The value of the set as it is, when it exists, is proposed.
+				cur := ""
+				if recs, err := c.ListRecords(cmd.Context(), z.ID); err == nil {
+					if m := app.MatchRecords(recs, fqdn, typ, ""); len(m) > 0 {
+						cur = m[0].Value
+					}
+				}
+				v, err := rt.AskRecordValue(typ, cur)
+				if err != nil {
+					return err
+				}
+				values = []string{v}
+			}
 			if cmd.Flags().Changed("priority") && hasPriority(typ) {
 				// Prepend --priority to values that do not carry one already.
 				for i, v := range values {
@@ -439,13 +486,17 @@ func recordDeleteCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "delete <zone>",
 		Short: "Delete a whole record set (name + type)",
-		Args:  cobra.ExactArgs(1),
+		Args:  app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if typ == "" {
+			if typ == "" && !rt.Interactive() {
 				return app.UsageErrf("--type is required")
 			}
 			if rt.Flags.Offline {
 				return app.ErrOffline
+			}
+			args, err := rt.DomainArg(cmd.Context(), args, platform.AWS, platform.ResZone, nil)
+			if err != nil {
+				return err
 			}
 			z, err := resolveZone(cmd.Context(), rt, args[0])
 			if err != nil {
@@ -459,6 +510,13 @@ func recordDeleteCmd(rt *app.Runtime) *cobra.Command {
 				return err
 			}
 			fqdn := platform.FQDN(name, z.Name)
+			if typ == "" {
+				// The interactive flow: the record set, from those of the
+				// zone (of --name when given; the apex NS and SOA left out).
+				if fqdn, typ, err = pickRecordSet(cmd.Context(), rt, c, z, name); err != nil {
+					return err
+				}
+			}
 			if done, err := rt.WouldWrite(platform.Target{Platform: platform.AWS, Profile: prof.Name, Domain: z.Name}, platform.Change{Resource: app.RecordResource(fqdn, typ), Action: platform.Deleted, Detail: "the whole record set"}); done || err != nil {
 				return err
 			}
@@ -521,8 +579,12 @@ func nsGetCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "get <domain>",
 		Short: "Show the nameservers of a registered domain (local inventory with --offline)",
-		Args:  cobra.ExactArgs(1),
+		Args:  app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			args, err := rt.DomainArg(cmd.Context(), args, platform.AWS, platform.ResDomain, nil)
+			if err != nil {
+				return err
+			}
 			profName, err := rt.ProfileFor(platform.AWS)
 			if err != nil {
 				return err
@@ -624,8 +686,12 @@ func domainGetCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "get <domain>",
 		Short: "Show one registered domain",
-		Args:  cobra.ExactArgs(1),
+		Args:  app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			args, err := rt.DomainArg(cmd.Context(), args, platform.AWS, platform.ResDomain, nil)
+			if err != nil {
+				return err
+			}
 			profName, err := rt.ProfileFor(platform.AWS)
 			if err != nil {
 				return err
@@ -656,8 +722,19 @@ func nsSetCmd(rt *app.Runtime) *cobra.Command {
 		Short:   "Replace the nameservers of a registered domain",
 		Long:    "Replace the nameservers of <domain> with the ones given.\n" + app.NameserverHelp,
 		Example: "  polyctl aws route53domains ns set example.com ns1.example.net ns2.example.net",
-		Args:    app.NameserverArgs,
+		Args:    app.NameserverArgsOrInteractive(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			args, err := rt.DomainArg(cmd.Context(), args, platform.AWS, platform.ResDomain, nil)
+			if err != nil {
+				return err
+			}
+			if len(args) < 2 {
+				more, err := rt.PickNameservers(cmd.Context(), args[0])
+				if err != nil {
+					return err
+				}
+				args = append(args, more...)
+			}
 			ns, err := app.Nameservers(args[1:])
 			if err != nil {
 				return err
@@ -920,4 +997,56 @@ shutdown of the operating system.`
 	}
 	app.AddWaitFlags(cmd, &wf, false, defaultInstanceTimeout)
 	return cmd
+}
+
+// pickRecordSet asks for the record set record delete deletes, from the
+// sets of the zone (one option per name and type, with its values and TTL;
+// those of name only when it is given; the apex NS and SOA, which the zone
+// cannot do without, left out). None is nothing to do.
+func pickRecordSet(ctx context.Context, rt *app.Runtime, c *client, z *platform.Zone, name string) (string, string, error) {
+	recs, err := c.ListRecords(ctx, z.ID)
+	if err != nil {
+		return "", "", err
+	}
+	apex := platform.NormalizeDomain(z.Name)
+	want := ""
+	if name != "" {
+		want = platform.NormalizeDomain(platform.FQDN(name, z.Name))
+	}
+	type set struct {
+		name, typ string
+		values    []string
+		ttl       int
+	}
+	var sets []*set
+	byKey := map[string]*set{}
+	for _, r := range recs {
+		n := platform.NormalizeDomain(r.Name)
+		if (n == apex && (r.Type == "NS" || r.Type == "SOA")) || (want != "" && n != want) {
+			continue
+		}
+		key := n + "|" + r.Type
+		s := byKey[key]
+		if s == nil {
+			s = &set{name: r.Name, typ: r.Type, ttl: r.TTL}
+			byKey[key] = s
+			sets = append(sets, s)
+		}
+		s.values = append(s.values, r.Value)
+	}
+	var opts []prompt.Option
+	for _, s := range sets {
+		ttl := ""
+		if s.ttl > 0 {
+			ttl = fmt.Sprintf("ttl %d", s.ttl)
+		}
+		opts = append(opts, prompt.Option{Label: joinLabel(s.name, s.typ, strings.Join(s.values, ", "), ttl), Value: s.name + "\x00" + s.typ})
+	}
+	v, err := rt.Choose(app.Choice{Title: "Record set to delete from " + z.Name, Options: opts, Arg: "--type",
+		Empty: app.NothingToDof("zone %s has no record set to delete", z.Name)})
+	if err != nil {
+		return "", "", err
+	}
+	n, t, _ := strings.Cut(v, "\x00")
+	return platform.FQDN(n, z.Name), t, nil
 }

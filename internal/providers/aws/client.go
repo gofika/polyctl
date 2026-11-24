@@ -84,6 +84,13 @@ type ssmAPI interface {
 // newEC2 creates the EC2 client of a region; tests replace it with a fake.
 var newEC2 = func(cfg awssdk.Config) ec2API { return ec2.NewFromConfig(cfg) }
 
+// newRoute53 and newRoute53Domains create the Route 53 clients; tests
+// replace them with fakes.
+var (
+	newRoute53        = func(cfg awssdk.Config) route53API { return route53.NewFromConfig(cfg) }
+	newRoute53Domains = func(cfg awssdk.Config) route53domainsAPI { return route53domains.NewFromConfig(cfg) }
+)
+
 // newSSM creates the SSM client of a region; tests replace it with a fake.
 var newSSM = func(cfg awssdk.Config) ssmAPI { return ssm.NewFromConfig(cfg) }
 
@@ -115,8 +122,8 @@ func newClient(cfg awssdk.Config, region string) *client {
 	return &client{
 		region: region,
 		sts:    sts.NewFromConfig(regional(region)),
-		r53:    route53.NewFromConfig(regional(region)),
-		r53d:   route53domains.NewFromConfig(regional(route53domainsRegion)),
+		r53:    newRoute53(regional(region)),
+		r53d:   newRoute53Domains(regional(route53domainsRegion)),
 		ec2For: func(r string) ec2API { return newEC2(regional(r)) },
 		ssmFor: func(r string) ssmAPI { return newSSM(regional(r)) },
 		elbFor: func(r string) elbAPI { return newELB(regional(r)) },

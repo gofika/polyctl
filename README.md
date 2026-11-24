@@ -602,6 +602,10 @@ What each command asks, and what it needs instead:
 | `aws rds instance resize` without `--class` | the class, from the x86 classes the instance's engine and version offer with its storage type in its zone (Graviton `db.*g*` classes never listed; its own class left out; none is exit code 2 naming `--class`) | `--class` |
 | `aws rds instance create` without `<id>` / `--size` / `--az` | the identifier, checked as typed (not taken in the region); the storage in GB, checked against the storage type and `--max-size`; the zone, from the zones of the subnet group (or of the region) where the class is offered with the storage type (none is exit code 2 naming `--az`) | `<id>`, `--size` and `--az` |
 | `aws rds instance ensure` without `--state` / instances | the state (stopped preselected), then the instances (multiple choice; Aurora instances and instances being created or broken left out) | `--state` and `<id\|endpoint-dns>...` |
+| `aws route53 zone get`, `aws route53 record list` / `upsert` / `delete` without `<zone>` | the hosted zone, from those of the profile (none is nothing to do; `upsert`: exit code 2 naming `<zone>`); a name held by several zones (a public and a private one): which one | `<zone>` (exit code 5 for a name several zones hold) |
+| `aws route53 record upsert` without `--type` / `--value` | the record type, then the value, checked as typed (the current value of the set proposed) | `--type` and `--value` |
+| `aws route53 record delete` without `--type` | the record set, from the sets of the zone (of `--name` when given; the apex NS and SOA left out; none is nothing to do) | `--type` |
+| `aws route53domains get` / `ns get` / `ns set` without `<domain>`, `ns set` without nameservers | the registered domain, from those of the profile; the nameserver set of an indexed DNS zone of the domain, or "Enter nameservers..." | `<domain>`; `ns set`: `<nameserver>...` |
 
 A re-authentication (`auth login` for an account the profile already has) reuses what the previous login recorded (username, start URL, account, role, project, region, method), so in the non-interactive flow usually only the secret has to be passed again.
 
