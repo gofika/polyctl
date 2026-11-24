@@ -497,3 +497,31 @@ func TestResolveKeyPairOffersExistingKeyPairs(t *testing.T) {
 		t.Errorf("no key pairs = %+v, %v (asked %v)", plan, err, p.asked)
 	}
 }
+
+func TestMatchAliyun(t *testing.T) {
+	_, ek := ed25519Line(t, "c")
+	_, other := ed25519Line(t, "d")
+	ed := &PublicKey{Key: ek}
+	md5 := ed.FingerprintMD5Hex()
+	colons := make([]string, 0, 16)
+	for i := 0; i < len(md5); i += 2 {
+		colons = append(colons, md5[i:i+2])
+	}
+	cases := []struct {
+		name string
+		kp   KeyPair
+		want bool
+	}{
+		{"same public key", KeyPair{PublicKey: ek, Fingerprint: "unrelated"}, true},
+		{"other public key wins over a matching fingerprint", KeyPair{PublicKey: other, Fingerprint: md5}, false},
+		{"md5 hex", KeyPair{Fingerprint: md5}, true},
+		{"md5 upper-case with colons", KeyPair{Fingerprint: strings.ToUpper(strings.Join(colons, ":"))}, true},
+		{"20-byte fingerprint", KeyPair{Fingerprint: "89:f0:ba:62:ac:b8:aa:e1:61:5e:fd:81:69:86:6d:6b:f0:c0:5a:01"}, false},
+		{"nothing to compare", KeyPair{}, false},
+	}
+	for _, c := range cases {
+		if got := MatchAliyun.Match(ed, c.kp); got != c.want {
+			t.Errorf("%s: MatchAliyun = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

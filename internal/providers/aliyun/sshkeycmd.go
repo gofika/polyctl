@@ -57,7 +57,7 @@ with (DescribeInstances ImageOptions.LoginAsNonRoot): ecs-user for an
 instance created to log in as ecs-user, which cannot log in as root;
 otherwise root, then ecs-user. Pass --login-user for a user added by hand.
 The key pair is the one bound to the instance (ecs:DescribeKeyPairs,
-matched by fingerprint); it stays as it is: these commands only edit
+matched by public key); it stays as it is: these commands only edit
 authorized_keys, which needs no restart.`,
 		Flags: func(cmd *cobra.Command) {
 			cmd.Flags().StringVar(&region, "region", "", "region of the instance (default: look it up in the inventory of every account)")
@@ -84,17 +84,9 @@ authorized_keys, which needs no restart.`,
 			}
 			inst.LoginUsers, inst.LoginUsersFrom = ecsLoginUsers(in)
 			inst.KeyPairName = in.KeyPair
-			inst.KeyPairMatch = platform.MatchByFingerprintMD5
+			inst.KeyPairMatch = platform.MatchAliyun
 			if in.KeyPair != "" {
-				kps, err := s.c.listKeyPairs(ctx, s.region, in.KeyPair, "")
-				switch {
-				case err != nil:
-					inst.KeyPairError = err.Error()
-				case len(kps) == 0:
-					inst.KeyPairError = "no key pair of that name in " + s.region
-				default:
-					inst.KeyPair = &platform.KeyPair{Name: kps[0].Name, Fingerprint: kps[0].Fingerprint}
-				}
+				inst.KeyPair, inst.KeyPairError = s.c.boundKeyPair(ctx, s.region, in.KeyPair)
 			}
 			return inst, nil
 		},

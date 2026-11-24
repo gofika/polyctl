@@ -24,9 +24,11 @@ const (
 	errKeyPairMalformed = "InvalidKeyPairName.Malformed"
 )
 
-// keyPairInfo is the inventory and output form of an ECS key pair. ECS
-// never returns the public key: only its fingerprint, the MD5 of the key in
-// lower-case hexadecimal without colons.
+// keyPairInfo is the inventory and output form of an ECS key pair: its
+// fingerprint, the MD5 of the key in lower-case hexadecimal without colons
+// (the form polyctl has seen). DescribeKeyPairs returns the public key
+// itself only when asked (IncludePublicKey, see boundKeyPair); the listing
+// leaves it out.
 type keyPairInfo struct {
 	Name        string `json:"name" yaml:"name"`
 	Fingerprint string `json:"fingerprint" yaml:"fingerprint"`
@@ -102,6 +104,40 @@ func (c *client) listKeyPairs(ctx context.Context, region, name, fingerprint str
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+// boundKeyPair reads the key pair name of a region with its public key
+// (DescribeKeyPairs with IncludePublicKey=true), to match the local keys
+// of an instance bound to it: nil and why when it cannot be read. A public
+// key that is missing or cannot be parsed leaves the fingerprint to match.
+func (c *client) boundKeyPair(ctx context.Context, region, name string) (*platform.KeyPair, string) {
+	region = c.regionOr(region)
+	cl, err := c.ecsClient(ctx, region)
+	if err != nil {
+		return nil, err.Error()
+	}
+	req := ecs.CreateDescribeKeyPairsRequest()
+	c.route(req, endpointECS)
+	req.RegionId = region
+	req.KeyPairName = name
+	req.IncludePublicKey = requests.NewBoolean(true)
+	req.PageSize = requests.NewInteger(keyPairPageSize)
+	resp, err := cl.DescribeKeyPairs(req)
+	if err != nil {
+		return nil, wrapErr("ecs DescribeKeyPairs "+region, err).Error()
+	}
+	for _, kp := range resp.KeyPairs.KeyPair {
+		// KeyPairName filters with wildcards: keep the exact name.
+		if kp.KeyPairName != name {
+			continue
+		}
+		out := &platform.KeyPair{Name: kp.KeyPairName, ID: kp.KeyPairName, Fingerprint: strings.ToLower(kp.KeyPairFingerPrint)}
+		if pk, _, _, _, err := ssh.ParseAuthorizedKey([]byte(kp.PublicKey)); err == nil {
+			out.PublicKey = pk
+		}
+		return out, ""
+	}
+	return nil, "no key pair of that name in " + region
 }
 
 // importKeyPair imports a public key as the key pair name. Only the key

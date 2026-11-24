@@ -398,14 +398,35 @@ func (f *fakeECS) describeKeyPairs(q url.Values) (int, any) {
 		if fp := q.Get("KeyPairFingerPrint"); fp != "" && !strings.EqualFold(kp["KeyPairFingerPrint"].(string), fp) {
 			continue
 		}
-		out = append(out, kp)
+		// The public key comes back only with IncludePublicKey=true.
+		row := map[string]any{}
+		for k, v := range kp {
+			if k == "PublicKey" && q.Get("IncludePublicKey") != "true" {
+				v = ""
+			}
+			row[k] = v
+		}
+		out = append(out, row)
 	}
 	s, e := page(q, len(out))
 	return 200, map[string]any{"TotalCount": len(out), "PageNumber": q.Get("PageNumber"), "KeyPairs": map[string]any{"KeyPair": out[s:e]}}
 }
 
+// addKeyPair adds a key pair known by its fingerprint only (DescribeKeyPairs
+// returns no public key for it).
 func (f *fakeECS) addKeyPair(name, fp, created string) {
 	f.keyPairs = append(f.keyPairs, map[string]any{"KeyPairName": name, "KeyPairFingerPrint": fp, "CreationTime": created, "PublicKey": ""})
+}
+
+// addKeyPairKey adds a key pair holding key, whose public key
+// DescribeKeyPairs returns with IncludePublicKey=true; fp is its
+// fingerprint as ECS reports it ("" for the MD5 hex of the key).
+func (f *fakeECS) addKeyPairKey(name string, key ssh.PublicKey, fp string) {
+	line := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key)))
+	if fp == "" {
+		fp = md5Hex(f.t, line)
+	}
+	f.keyPairs = append(f.keyPairs, map[string]any{"KeyPairName": name, "KeyPairFingerPrint": fp, "CreationTime": "2026-11-17T13:54Z", "PublicKey": line})
 }
 
 func (f *fakeECS) importKeyPair(q url.Values) (int, any) {
@@ -424,6 +445,9 @@ func (f *fakeECS) importKeyPair(q url.Values) (int, any) {
 	}
 	fp := md5Hex(f.t, q.Get("PublicKeyBody"))
 	f.addKeyPair(name, fp, time.Now().UTC().Format("2006-01-02T15:04Z"))
+	if len(key) >= 2 {
+		f.keyPairs[len(f.keyPairs)-1]["PublicKey"] = strings.Join(key[:2], " ")
+	}
 	return 200, map[string]any{"KeyPairName": name, "KeyPairFingerPrint": fp, "RequestId": "r"}
 }
 

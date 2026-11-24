@@ -284,6 +284,18 @@ var MatchByFingerprintMD5 = KeyMatcher{Label: "matched by fingerprint", Match: f
 	return kp.Fingerprint != "" && strings.EqualFold(strings.ReplaceAll(kp.Fingerprint, ":", ""), local.FingerprintMD5Hex())
 }}
 
+// MatchAliyun matches the key pair bound to an Alibaba Cloud instance: by
+// the public key when the listing carries it (DescribeKeyPairs with
+// IncludePublicKey=true), else by the MD5 fingerprint. A fingerprint of
+// another length (the documentation shows 20-byte examples) matches no
+// local key.
+var MatchAliyun = KeyMatcher{Label: "matched by public key", Match: func(local *PublicKey, kp KeyPair) bool {
+	if kp.PublicKey != nil {
+		return local.Equal(kp.PublicKey)
+	}
+	return MatchByFingerprintMD5.Match(local, kp)
+}}
+
 // MatchByPublicKey matches key pairs whose listing carries the public key
 // (AWS DescribeKeyPairs with IncludePublicKey=true), byte for byte.
 var MatchByPublicKey = KeyMatcher{Label: "matched by public key", Match: func(local *PublicKey, kp KeyPair) bool {

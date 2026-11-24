@@ -31,6 +31,8 @@ type ecsKeyRig struct {
 	srv *sshtest.Server
 	sys *sshtest.System
 	vm  map[string]any
+	// login is the public key of ~/.ssh/id_ed25519.
+	login ssh.PublicKey
 }
 
 func newECSKeyRig(t *testing.T, users []string, loginUsers ...string) *ecsKeyRig {
@@ -56,6 +58,7 @@ func newECSKeyRig(t *testing.T, users []string, loginUsers ...string) *ecsKeyRig
 	if err != nil {
 		t.Fatal(err)
 	}
+	r.login = signer.PublicKey()
 	for _, u := range loginUsers {
 		r.srv.Authorize(u, signer.PublicKey())
 	}
@@ -259,5 +262,29 @@ func TestECSSSHKeyForeignKeyPair(t *testing.T) {
 	}
 	if n := len(r.srv.Commands()); n != 0 {
 		t.Errorf("logged in with a key that is not the key pair's (%d commands)", n)
+	}
+}
+
+// The bound key pair is matched by the public key DescribeKeyPairs returns
+// with IncludePublicKey=true, whatever form its fingerprint takes; without
+// a public key, by the MD5 fingerprint.
+func TestECSSSHKeyMatchesByPublicKey(t *testing.T) {
+	r := newECSKeyRig(t, []string{"root"}, "root")
+	r.f.keyPairs = nil
+	r.f.addKeyPairKey("ops", r.login, "89:f0:ba:62:ac:b8:aa:e1:61:5e:fd:81:69:86:6d:6b:f0:c0:5a:01")
+	if err := r.run("list", "web-1"); err != nil {
+		t.Fatalf("%v\n%s", err, r.h.stderr.String())
+	}
+	var asked bool
+	for _, q := range r.h.api.calls {
+		if q.Get("Action") == "DescribeKeyPairs" && q.Get("KeyPairName") == "ops" && q.Get("IncludePublicKey") == "true" {
+			asked = true
+		}
+	}
+	if !asked {
+		t.Error("DescribeKeyPairs was not asked for the public key of ops")
+	}
+	if len(r.srv.Commands()) == 0 {
+		t.Error("no SSH login")
 	}
 }
