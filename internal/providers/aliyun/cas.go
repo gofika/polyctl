@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/requests"
+	"github.com/aliyun/alibaba-cloud-sdk-go/services/alb"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/cas"
 
 	"github.com/gofika/polyctl/internal/platform"
@@ -470,11 +471,26 @@ func (c *client) albRegions(ctx context.Context, only []string) (regions []strin
 // of the regions hold: every load balancer, every listener, and for each
 // HTTPS or QUIC listener its server and CA certificates (ListListeners
 // does not carry them). Only read APIs are used. A region of the account
-// whose ALB endpoint does not exist has no load balancers; a region the
-// user named (named) must be readable, so that a mistyped one is never
-// taken as a region without listeners. Any other failure of a region fails
-// the check (*casCheckError).
+// that ALB does not offer (alb DescribeRegions) has no load balancers and
+// is not read; every other region must be readable, a DNS failure of its
+// endpoint included (a resolver hiccup must never make a region look
+// empty), and a region the user named (named) too, so that a mistyped one
+// is never taken as a region without listeners. A failure of a region
+// fails the check (*casCheckError).
 func (c *client) casCertificateReferences(ctx context.Context, regions []string, named bool) (*casReferences, error) {
+	if !named {
+		offered, err := c.albOfferedRegions(ctx)
+		if err != nil {
+			return nil, &casCheckError{Failures: []platform.RegionError{{Region: c.region, Err: err}}}
+		}
+		var keep []string
+		for _, r := range regions {
+			if offered[r] {
+				keep = append(keep, r)
+			}
+		}
+		regions = keep
+	}
 	type result struct {
 		refs []casReference
 		err  error
@@ -488,7 +504,7 @@ func (c *client) casCertificateReferences(ctx context.Context, regions []string,
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			refs, err := c.regionCertificateReferences(ctx, region, named)
+			refs, err := c.regionCertificateReferences(ctx, region)
 			results[i] = result{refs: refs, err: err}
 		}()
 	}
@@ -513,15 +529,12 @@ func (c *client) casCertificateReferences(ctx context.Context, regions []string,
 	return out, nil
 }
 
-func (c *client) regionCertificateReferences(ctx context.Context, region string, named bool) ([]casReference, error) {
+func (c *client) regionCertificateReferences(ctx context.Context, region string) ([]casReference, error) {
 	a, err := c.albClient(ctx, region)
 	if err != nil {
 		return nil, err
 	}
 	lbs, err := a.listLoadBalancers(ctx)
-	if errors.Is(err, errNoALBEndpoint) && !named {
-		return nil, nil
-	}
 	if err != nil {
 		return nil, err
 	}
@@ -546,6 +559,37 @@ func (c *client) regionCertificateReferences(ctx context.Context, region string,
 		}
 	}
 	return refs, nil
+}
+
+// albOfferedRegions lists the regions that offer ALB (alb DescribeRegions,
+// asked at the endpoint of the profile region, else of cn-hangzhou).
+func (c *client) albOfferedRegions(ctx context.Context) (map[string]bool, error) {
+	var resp *alb.DescribeRegionsResponse
+	for _, region := range []string{c.region, "cn-hangzhou"} {
+		a, err := c.albClient(ctx, region)
+		if err != nil {
+			return nil, err
+		}
+		req := alb.CreateDescribeRegionsRequest()
+		a.route(req)
+		resp, err = a.cl.DescribeRegions(req)
+		if err == nil {
+			break
+		}
+		if !isNoSuchHost(err) || region == "cn-hangzhou" {
+			return nil, wrapErr("alb DescribeRegions", err)
+		}
+	}
+	out := map[string]bool{}
+	for _, r := range resp.Regions {
+		if r.RegionId != "" {
+			out[r.RegionId] = true
+		}
+	}
+	if len(out) == 0 {
+		return nil, errors.New("alb DescribeRegions listed no region")
+	}
+	return out, nil
 }
 
 // casCertificateInUse returns the ALB listeners of the regions (every

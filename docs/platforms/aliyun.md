@@ -40,7 +40,7 @@ Grant the RAM user what the commands you use need:
 | `alb` | `AliyunSLBFullAccess` or the `alb:*` actions |
 | `alb load-balancer ensure` | also `AliyunVPCFullAccess`, `AliyunECSReadOnlyAccess`, `yundun-cert:ListUserCertificateOrder`, `AliyunResourceManagerReadOnlyAccess` |
 | `cas` | the `yundun-cert:*` actions |
-| `cas certificate delete` (listener check) | `alb:ListLoadBalancers`, `alb:ListListeners`, `alb:GetListenerAttribute`, `alb:ListListenerCertificates`, `ecs:DescribeRegions` |
+| `cas certificate delete` (listener check) | `alb:ListLoadBalancers`, `alb:ListListeners`, `alb:GetListenerAttribute`, `alb:ListListenerCertificates`, `alb:DescribeRegions`, `ecs:DescribeRegions` |
 
 A RAM denial (`Forbidden.RAM`) exits with code 3. The RAM actions of `ecs instance ssh-key` are listed under [SSH keys](#ssh-keys).
 
@@ -312,7 +312,7 @@ An account has two separate certificate stores. polyctl uses the Singapore store
 
 - `list` shows `ID`, `NAME`, `COMMON_NAME`, `START`, `END`, `DAYS` (UTC). `--expired`, `--expires-within <days>` (includes expired) and `--name` filter. JSON: `{"id", "name", "common_name", "start_date", "end_date", "days_to_expire", "expired", "fingerprint_sha1", "sans"}`.
 - `upload <name> --cert <fullchain.pem> --key <privkey.pem>` (`-` reads stdin). An encrypted or mismatched key, or an expired certificate, is exit code 2. A certificate of the same name is reused as it is (`unchanged`). Name certificates `upload_<root domain>_<YYYY-MM-DD of expiry>` so a renewal is a new upload.
-- `delete <cert-id>` or `delete --expired` asks first. polyctl refuses to delete a certificate an ALB HTTPS/QUIC listener uses (exit code 1, naming the listener); with `--expired` such ones are `skipped`. `--region` limits the regions checked; `--force` skips the check. Only ALB listeners are checked, not other products.
+- `delete <cert-id>` or `delete --expired` asks first. polyctl refuses to delete a certificate an ALB HTTPS/QUIC listener uses (exit code 1, naming the listener); with `--expired` such ones are `skipped`. Without `--region` every region of the account that ALB offers (ALB's own region list) is checked, and one of them that cannot be read, a DNS failure of its endpoint included, fails the check (exit code 1) instead of being taken as unused; `cert deploy --prune-expired` checks the same way and then deletes nothing. `--region` limits the regions checked; `--force` skips the check. Only ALB listeners are checked, not other products.
 
 ## Inventory types
 

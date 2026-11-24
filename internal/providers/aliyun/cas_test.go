@@ -311,7 +311,8 @@ func TestCASReferencesReadEveryHTTPSListener(t *testing.T) {
 		t.Errorf("GetListenerAttribute called %d times: HTTP listeners are not read", n)
 	}
 	// Without regions, every region of the account (DescribeRegions).
-	if _, err := c.casCertificateInUse(ctx, "7777", nil); err != nil || len(api.callsFor("DescribeRegions")) != 1 {
+	// ALB's own region list decides which of them offer ALB.
+	if _, err := c.casCertificateInUse(ctx, "7777", nil); err != nil || len(api.callsFor("DescribeRegions")) != 2 {
 		t.Errorf("all regions: %v, DescribeRegions %d", err, len(api.callsFor("DescribeRegions")))
 	}
 
@@ -352,17 +353,41 @@ func TestCASReferenceCheckRegionWithoutALB(t *testing.T) {
 	api.on("DescribeRegions", func(url.Values) (int, any) {
 		return 200, map[string]any{"Regions": map[string]any{"Region": []map[string]any{{"RegionId": "cn-shanghai"}, {"RegionId": "xx-noalb-1"}}}}
 	})
+	api.on(albDescribeRegions, func(url.Values) (int, any) {
+		return 200, map[string]any{"Regions": []map[string]any{{"RegionId": "cn-shanghai"}}}
+	})
 	c := api.client()
 	c.transport = noALBTransport{region: "xx-noalb-1", base: http.DefaultTransport}
 	ctx := context.Background()
-	// A region of the account without an ALB endpoint holds no listeners.
+	// A region of the account that ALB does not offer holds no listeners
+	// and is not read.
 	if refs, err := c.casCertificateInUse(ctx, "1", nil); err != nil || len(refs) != 0 {
 		t.Fatalf("account regions = %v, %v", refs, err)
 	}
+	for _, q := range api.callsFor("ListLoadBalancers") {
+		if q.Get("RegionId") == "xx-noalb-1" {
+			t.Errorf("a region ALB does not offer was read")
+		}
+	}
+	// A region ALB offers whose endpoint does not resolve (a resolver
+	// hiccup) fails the check: it is never taken as a region without
+	// listeners.
+	api.on(albDescribeRegions, func(url.Values) (int, any) {
+		return 200, map[string]any{"Regions": []map[string]any{{"RegionId": "cn-shanghai"}, {"RegionId": "xx-noalb-1"}}}
+	})
+	_, err := c.casCertificateInUse(ctx, "1", nil)
+	var ce *casCheckError
+	if !errors.As(err, &ce) || !strings.Contains(err.Error(), "xx-noalb-1") {
+		t.Errorf("offered region that does not resolve = %v", err)
+	}
+	// ALB's region list cannot be read: the check fails.
+	api.on(albDescribeRegions, func(url.Values) (int, any) { return 503, apiErr("ServiceUnavailable", "down") })
+	if _, err := c.casCertificateInUse(ctx, "1", nil); !errors.As(err, &ce) {
+		t.Errorf("region list failure = %v", err)
+	}
 	// A region the user named must be readable: a mistyped one is never
 	// taken as a region without listeners.
-	_, err := c.casCertificateInUse(ctx, "1", []string{"xx-noalb-1"})
-	var ce *casCheckError
+	_, err = c.casCertificateInUse(ctx, "1", []string{"xx-noalb-1"})
 	if !errors.As(err, &ce) || !strings.Contains(err.Error(), "xx-noalb-1") {
 		t.Errorf("named region without ALB = %v", err)
 	}

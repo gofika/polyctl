@@ -45,7 +45,10 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 		f.mu.Lock()
 		f.calls = append(f.calls, q)
 		f.queries = append(f.queries, r.URL.RawQuery)
-		h := f.handlers[q.Get("Action")]
+		h := f.handlers[q.Get("Action")+"@"+q.Get("Version")]
+		if h == nil {
+			h = f.handlers[q.Get("Action")]
+		}
 		f.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		if h == nil {
@@ -63,11 +66,31 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 	f.handlers["DescribeRegions"] = func(q url.Values) (int, any) {
 		return 200, map[string]any{"Regions": map[string]any{"Region": []map[string]any{{"RegionId": q.Get("RegionId")}}}}
 	}
+	// ALB's region list (a list, where ECS nests it in "Region"): by
+	// default every region the ECS list names offers ALB.
+	f.handlers[albDescribeRegions] = func(q url.Values) (int, any) {
+		f.mu.Lock()
+		h := f.handlers["DescribeRegions"]
+		f.mu.Unlock()
+		_, body := h(q)
+		b, _ := json.Marshal(body)
+		var ecs struct {
+			Regions struct {
+				Region []map[string]any
+			}
+		}
+		_ = json.Unmarshal(b, &ecs)
+		return 200, map[string]any{"Regions": ecs.Regions.Region}
+	}
 	f.handlers["DescribeNetworkInterfaces"] = func(q url.Values) (int, any) {
 		return 200, map[string]any{"NextToken": "", "TotalCount": 0, "NetworkInterfaceSets": map[string]any{"NetworkInterfaceSet": []any{}}}
 	}
 	return f
 }
+
+// albDescribeRegions is the handler key of ALB's DescribeRegions, which
+// shares its action name with ECS's.
+const albDescribeRegions = "DescribeRegions@2020-06-16"
 
 func (f *fakeAPI) on(action string, h func(q url.Values) (int, any)) {
 	f.mu.Lock()
