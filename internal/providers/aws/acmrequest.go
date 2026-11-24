@@ -61,12 +61,28 @@ later with ` + "`get <arn> --validation-records`" + `.
 Keep the validation records in DNS while the certificate is in use: ACM renews
 it through them. On Cloudflare they must not be proxied.`,
 		Example: "  polyctl aws acm certificate request example.com --dry-run\n  polyctl aws acm certificate request example.com --region us-east-1 -o json \\\n    | jq -r '.validation_records[] | \"\\(.name):CNAME:\\(.value):300\"'",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			wait, timeout, err := wf.Resolve(cmd)
 			if err != nil {
 				return err
+			}
+			if len(args) == 0 {
+				// The interactive flow: a domain of the index (DNS zones and
+				// registered domains of every platform), or another one,
+				// typed and checked.
+				d, err := rt.PickDomain(ctx, app.DomainPick{Title: "Domain of the certificate", Arg: "<domain>", Required: true,
+					Another: func() (string, error) {
+						return rt.AskInput("<domain>", "Domain of the certificate", "", func(s string) error {
+							_, _, err := certDomainArg(s)
+							return inline(err)
+						})
+					}})
+				if err != nil {
+					return err
+				}
+				args = []string{d}
 			}
 			domain, starred, err := certDomainArg(args[0])
 			if err != nil {

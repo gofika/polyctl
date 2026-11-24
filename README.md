@@ -606,6 +606,9 @@ What each command asks, and what it needs instead:
 | `aws route53 record upsert` without `--type` / `--value` | the record type, then the value, checked as typed (the current value of the set proposed) | `--type` and `--value` |
 | `aws route53 record delete` without `--type` | the record set, from the sets of the zone (of `--name` when given; the apex NS and SOA left out; none is nothing to do) | `--type` |
 | `aws route53domains get` / `ns get` / `ns set` without `<domain>`, `ns set` without nameservers | the registered domain, from those of the profile; the nameserver set of an indexed DNS zone of the domain, or "Enter nameservers..." | `<domain>`; `ns set`: `<nameserver>...` |
+| `aws acm certificate get` without `<domain\|arn>` | the certificate, from the inventory of the selected accounts (domain, names, status, expiry, account and region; restricted to `--region`); a domain whose certificates are in several accounts or regions: which one | `<domain\|arn>` (exit code 5 for a domain in several accounts or regions) |
+| `aws acm certificate request` without `<domain>` | the domain, from the indexed DNS zones and registered domains, or "Another domain..." (checked as typed) | `<domain>` |
+| `aws acm certificate import` without `<domain>`, or with several imported certificates of the domain | the domain, from the unexpired certificates of the local store (with `--cert-file`: typed and checked); the certificate to re-import into, or "Import as a new certificate" (same as `--new`) | `<domain>`; `--arn` or `--new` (exit code 5 otherwise) |
 
 A re-authentication (`auth login` for an account the profile already has) reuses what the previous login recorded (username, start URL, account, role, project, region, method), so in the non-interactive flow usually only the secret has to be passed again.
 

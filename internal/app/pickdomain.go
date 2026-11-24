@@ -30,6 +30,10 @@ type DomainPick struct {
 	Filter func(domain string, entries []inventory.IndexEntry) bool
 	// Label, when set, adds to the label of a domain.
 	Label func(domain string, entries []inventory.IndexEntry) string
+	// Another, when set, adds a last option "Another domain..." that runs
+	// it (a domain the index does not know, typed and checked); without
+	// indexed domains it runs straight away.
+	Another func() (string, error)
 }
 
 // PickDomain asks for one of the domains of the local index in the
@@ -94,6 +98,9 @@ func (rt *Runtime) PickDomain(ctx context.Context, p DomainPick) (string, error)
 		title = "Domain"
 	}
 	c := Choice{Title: title, Options: opts, Arg: p.Arg, Required: p.Required, What: what}
+	if p.Another != nil {
+		c.CreateLabel, c.Create = "Another domain...", p.Another
+	}
 	if len(opts) == 0 {
 		hint := " (run `polyctl domain index`)"
 		if rt.Flags.Profile != "" || only != "" {

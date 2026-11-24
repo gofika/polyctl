@@ -12,6 +12,7 @@ import (
 	"github.com/gofika/polyctl/internal/cert"
 	"github.com/gofika/polyctl/internal/output"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt"
 )
 
 // -------------------------------------------------------------- import
@@ -48,7 +49,7 @@ code 1); --new imports it as a new certificate (a new ARN, to be set where the
 old one is used). An expired certificate cannot be imported (exit code 1).
 Amazon-issued certificates are renewed by ACM and never replaced.`,
 		Example: "  polyctl aws acm certificate import example.com --region us-east-1\n  polyctl aws acm certificate import example.com --cert-file fullchain.pem --key-file privkey.pem --arn arn:aws:acm:<region>:<account-id>:certificate/<uuid>",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			if (certFile == "") != (keyFile == "") {
@@ -80,6 +81,16 @@ Amazon-issued certificates are renewed by ACM and never replaced.`,
 			tags, err := parseACMTags(tagArgs)
 			if err != nil {
 				return err
+			}
+			if len(args) == 0 {
+				// The interactive flow: the domain, from the unexpired
+				// certificates of the local store, or typed for the files
+				// of --cert-file.
+				d, err := askImportDomain(rt, certFile != "", staging)
+				if err != nil {
+					return err
+				}
+				args = []string{d}
 			}
 			var b *cert.Bundle
 			var domain string
@@ -184,8 +195,31 @@ Amazon-issued certificates are renewed by ACM and never replaced.`,
 					for _, e := range cands {
 						names = append(names, fmt.Sprintf("%s (%s, expires %s)", e.ID, e.Domain, timeStr(e.NotAfter)))
 					}
-					return &app.AmbiguousError{What: "imported certificate of " + domain + " in " + region, Candidates: names,
+					amb := &app.AmbiguousError{What: "imported certificate of " + domain + " in " + region, Candidates: names,
 						Hint: "pass --arn <arn> to choose, or --new to import another certificate"}
+					if !rt.Interactive() {
+						return amb
+					}
+					// The interactive flow asks which one, or to import a
+					// new certificate (--new).
+					var opts []prompt.Option
+					for _, e := range cands {
+						use := ""
+						if e.InUse {
+							use = "in use"
+						}
+						opts = append(opts, prompt.Option{Label: joinLabel(e.ID, e.Domain, "expires "+timeStr(e.NotAfter), use), Value: e.ID})
+					}
+					opts = append(opts, prompt.Option{Label: "Import as a new certificate (a new ARN)", Value: ""})
+					pick, err := rt.Pick().Select("Re-import into which certificate?", opts, "")
+					if err != nil {
+						return err
+					}
+					if pick != "" {
+						if into, err = c.DescribeCertificate(ctx, region, pick); err != nil {
+							return err
+						}
+					}
 				}
 			}
 			rep := acmImportReport{Report: platform.Report{Target: target, DryRun: rt.DryRun()}}
@@ -271,4 +305,36 @@ Amazon-issued certificates are renewed by ACM and never replaced.`,
 	cmd.Flags().BoolVar(&staging, "staging", false, "read the store of the Let's Encrypt staging CA")
 	cmd.Flags().StringVar(&region, "region", "", "region of the certificate (default: the profile's region; CloudFront needs us-east-1)")
 	return cmd
+}
+
+// askImportDomain asks for the <domain> of import in the interactive flow:
+// with files (--cert-file) a domain, typed and checked; otherwise one of
+// the unexpired certificates of the local store (an expired one cannot be
+// imported; none is nothing to do).
+func askImportDomain(rt *app.Runtime, files, staging bool) (string, error) {
+	if files {
+		return rt.AskInput("<domain>", "Domain of the certificate", "", func(s string) error {
+			_, _, err := certDomainArg(s)
+			return inline(err)
+		})
+	}
+	st, err := cert.OpenRuntimeStore(rt, staging)
+	if err != nil {
+		return "", err
+	}
+	roots, err := st.List()
+	if err != nil {
+		return "", err
+	}
+	var opts []prompt.Option
+	for _, root := range roots {
+		b, err := st.Load(root, false)
+		if err != nil || b == nil || !time.Now().Before(b.NotAfter) {
+			continue
+		}
+		days := int(time.Until(b.NotAfter).Hours() / 24)
+		opts = append(opts, prompt.Option{Label: fmt.Sprintf("%s  %s  expires %s (%d days)", root, b.KeyType, b.NotAfter.UTC().Format("2006-01-02"), days), Value: root})
+	}
+	return rt.Choose(app.Choice{Title: "Certificate of the local store to import", Options: opts, Arg: "<domain>",
+		Empty: app.NothingToDof("the store %s holds no unexpired certificate (run `polyctl cert ensure <domain>`, or pass --cert-file and --key-file)", st.Base)})
 }

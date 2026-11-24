@@ -740,9 +740,28 @@ A PENDING_VALIDATION certificate becomes VALIDATION_TIMED_OUT when it is not
 validated within 72 hours; write its records with ` + "`polyctl dns ensure`" + ` and keep
 them while the certificate is in use (ACM renews it through them).`,
 		Example: "  polyctl aws acm certificate get example.com\n  polyctl aws acm certificate get arn:aws:acm:<region>:<account-id>:certificate/<uuid> --validation-records -o json",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+			if len(args) == 0 {
+				// The interactive flow: a certificate of the inventory.
+				arn, err := rt.PickResource(ctx, app.ResourcePick{Platform: platform.AWS, Kind: platform.ResCertificate,
+					Title: "Certificate", Arg: "<domain|arn>", What: "ACM certificate",
+					Filter: func(r inventory.Resource) bool {
+						var c acmCertificate
+						return r.Decode(&c) == nil && c.ARN != "" && (region == "" || c.Region == region)
+					},
+					Label: func(r inventory.Resource) string {
+						var c acmCertificate
+						_ = r.Decode(&c)
+						return joinLabel(certOptionLabel(c.certificate()), "aws/"+r.Profile+"/"+c.Region)
+					},
+					Value: func(r inventory.Resource) string { return r.ID }})
+				if err != nil {
+					return err
+				}
+				args = []string{arn}
+			}
 			ref := strings.TrimSpace(args[0])
 			if region != "" && !validRegionName(region) {
 				return app.UsageErrf("--region %q: expected a region name such as us-east-1", region)
@@ -862,12 +881,20 @@ them while the certificate is in use (ACM renews it through them).`,
 					}
 					names = append(names, fmt.Sprintf("aws/%s/%s (%s)", h.profile, h.cert.Region, h.cert.ID))
 				}
-				if len(groups) > 1 {
-					slices.Sort(names)
-					return &app.AmbiguousError{What: "certificate of " + domain, Candidates: names, Hint: "pass --profile <name> and/or --region <region> to choose"}
-				}
 				best := pickCertificate(certsOf(hits))
 				profile = hits[0].profile
+				if len(groups) > 1 {
+					slices.Sort(names)
+					amb := &app.AmbiguousError{What: "certificate of " + domain, Candidates: names, Hint: "pass --profile <name> and/or --region <region> to choose"}
+					// The interactive flow asks which one.
+					h, err := disambiguate(rt, amb, hits, func(h certHit) string {
+						return joinLabel(certOptionLabel(h.cert), "aws/"+h.profile+"/"+h.cert.Region)
+					})
+					if err != nil {
+						return err
+					}
+					best, profile = h.cert, h.profile
+				}
 				found = &best
 				if !rt.Flags.Offline {
 					c, err := openProfile(ctx, rt, profile)
