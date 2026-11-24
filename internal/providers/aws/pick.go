@@ -333,3 +333,70 @@ func inline(err error) error {
 	msg := strings.TrimPrefix(err.Error(), app.ErrUsage.Error()+": ")
 	return errors.New(strings.TrimPrefix(msg, platform.ErrInvalidInput.Error()+": "))
 }
+
+// availableVPCs lists the available VPCs of region (every page), the
+// default VPC first, then by id.
+func (c *client) availableVPCs(ctx context.Context, region string) ([]ec2types.Vpc, error) {
+	region = c.regionOr(region)
+	pg := ec2.NewDescribeVpcsPaginator(c.ec2For(region), &ec2.DescribeVpcsInput{Filters: []ec2types.Filter{
+		{Name: awssdk.String("state"), Values: []string{string(ec2types.VpcStateAvailable)}}}})
+	var out []ec2types.Vpc
+	for pg.HasMorePages() {
+		page, err := pg.NextPage(ctx)
+		if err != nil {
+			return nil, ec2Err("DescribeVpcs", region, err)
+		}
+		for _, v := range page.Vpcs {
+			if v.State == "" || v.State == ec2types.VpcStateAvailable {
+				out = append(out, v)
+			}
+		}
+	}
+	slices.SortFunc(out, func(a, b ec2types.Vpc) int {
+		if da, db := awssdk.ToBool(a.IsDefault), awssdk.ToBool(b.IsDefault); da != db {
+			if da {
+				return -1
+			}
+			return 1
+		}
+		return strings.Compare(awssdk.ToString(a.VpcId), awssdk.ToString(b.VpcId))
+	})
+	return out, nil
+}
+
+// vpcLabel: "main  vpc-0abc  10.0.0.0/16  [default]".
+func vpcLabel(v ec2types.Vpc) string {
+	def := ""
+	if awssdk.ToBool(v.IsDefault) {
+		def = "[default]"
+	}
+	id := awssdk.ToString(v.VpcId)
+	return joinLabel(nameOr(tagName(v.Tags), id), id, awssdk.ToString(v.CidrBlock), def)
+}
+
+// pickVPC asks for the VPC of a create (--vpc) in the interactive flow: the
+// available VPCs of region, the default VPC preselected. polyctl creates no
+// VPCs: none is a usage error naming --vpc. The non-interactive flow gets
+// missing (nil: "--vpc is required").
+func pickVPC(ctx context.Context, rt *app.Runtime, c *client, region string, missing func() error) (string, error) {
+	if !rt.Interactive() {
+		if missing != nil {
+			return "", missing()
+		}
+		return "", app.UsageErrf("--vpc is required")
+	}
+	vpcs, err := c.availableVPCs(ctx, region)
+	if err != nil {
+		return "", err
+	}
+	var opts []prompt.Option
+	def := ""
+	for _, v := range vpcs {
+		id := awssdk.ToString(v.VpcId)
+		if def == "" && awssdk.ToBool(v.IsDefault) {
+			def = id
+		}
+		opts = append(opts, prompt.Option{Label: vpcLabel(v), Value: id})
+	}
+	return rt.Choose(app.Choice{Title: "VPC", Options: opts, Default: def, Arg: "--vpc", Required: true, What: "available VPC in " + c.regionOr(region)})
+}

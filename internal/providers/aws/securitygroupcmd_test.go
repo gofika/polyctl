@@ -402,7 +402,7 @@ func TestSGRuleRemoveUnknownPermissions(t *testing.T) {
 	h := newSGHarness(t, app.Flags{Yes: true})
 	g := h.addSG("ap-east-1", &fakeSG{id: "sg-0ccc0000", name: "web", rules: []fakeRule{tcpRule(443, "0.0.0.0/0", "")}})
 	s := &sgScope{c: sgClient(h), profile: "lab", region: "ap-east-1"}
-	sg, err := findSG(t.Context(), s, "web", "vpc-0abc")
+	sg, err := findSG(t.Context(), h.rt, s, "web", "vpc-0abc")
 	if err != nil || sg == nil {
 		t.Fatal(sg, err)
 	}

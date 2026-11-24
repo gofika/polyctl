@@ -23,8 +23,10 @@ type fakeFind struct {
 	addresses map[string][]ec2types.Address
 	enis      map[string][]ec2types.NetworkInterface
 	subnets   map[string]ec2types.Subnet
-	lbs       map[string][]elbtypes.LoadBalancer
-	dbs       map[string][]rdstypes.DBInstance
+	// vpcs are the VPCs per region.
+	vpcs map[string][]ec2types.Vpc
+	lbs  map[string][]elbtypes.LoadBalancer
+	dbs  map[string][]rdstypes.DBInstance
 	// regionErr fails every call in a region.
 	regionErr map[string]error
 	// eniPage is the page length of DescribeNetworkInterfaces (0: all).
@@ -165,4 +167,34 @@ func (f *fakeEC2) DescribeSubnets(_ context.Context, in *ec2.DescribeSubnetsInpu
 type fakeELB struct {
 	shared *fakeEC2s
 	region string
+}
+
+// DescribeVpcs lists the VPCs of the region, filtered on state (a VPC
+// without a state is available).
+func (f *fakeEC2) DescribeVpcs(_ context.Context, in *ec2.DescribeVpcsInput, _ ...func(*ec2.Options)) (*ec2.DescribeVpcsOutput, error) {
+	if err := f.findCall("DescribeVpcs"); err != nil {
+		return nil, err
+	}
+	f.shared.mu.Lock()
+	defer f.shared.mu.Unlock()
+	out := &ec2.DescribeVpcsOutput{}
+	for _, v := range f.shared.find.vpcs[f.region] {
+		ok := len(in.VpcIds) == 0 || slices.Contains(in.VpcIds, awssdk.ToString(v.VpcId))
+		for _, flt := range in.Filters {
+			switch awssdk.ToString(flt.Name) {
+			case "state":
+				st := string(v.State)
+				if st == "" {
+					st = "available"
+				}
+				ok = ok && slices.Contains(flt.Values, st)
+			default:
+				return nil, &fakeAPIError{"InvalidParameterValue", "unknown filter " + awssdk.ToString(flt.Name)}
+			}
+		}
+		if ok {
+			out.Vpcs = append(out.Vpcs, v)
+		}
+	}
+	return out, nil
 }

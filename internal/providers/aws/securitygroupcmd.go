@@ -129,7 +129,7 @@ func lookupVPC(rt *app.Runtime, profile, vpc string) (string, error) {
 
 // findSG returns the group ref names in the scope, nil when there is none.
 // A name held by groups of several VPCs is ambiguous.
-func findSG(ctx context.Context, s *sgScope, ref, vpc string) (*platform.SecurityGroup, error) {
+func findSG(ctx context.Context, rt *app.Runtime, s *sgScope, ref, vpc string) (*platform.SecurityGroup, error) {
 	if strings.TrimSpace(ref) == "" {
 		return nil, app.UsageErrf("the security group name or id is empty")
 	}
@@ -150,8 +150,14 @@ func findSG(ctx context.Context, s *sgScope, ref, vpc string) (*platform.Securit
 	for _, sg := range found {
 		names = append(names, sg.ID+" ("+sg.VPC+")")
 	}
-	return nil, &app.AmbiguousError{What: fmt.Sprintf("security group %q in %s", ref, s.where()), Candidates: names,
+	amb := &app.AmbiguousError{What: fmt.Sprintf("security group %q in %s", ref, s.where()), Candidates: names,
 		Hint: "the name is used in several VPCs; pass --vpc <vpc-id> or the security group id"}
+	// The interactive flow asks which one.
+	sg, err := disambiguate(rt, amb, found, sgOptionLabel)
+	if err != nil {
+		return nil, err
+	}
+	return &sg, nil
 }
 
 // sgNotFound is the error of a group that does not exist.
@@ -173,7 +179,7 @@ func resolveSG(ctx context.Context, rt *app.Runtime, s *sgScope, ref, vpcFlag st
 	if err != nil {
 		return nil, err
 	}
-	sg, err := findSG(ctx, s, ref, vpc)
+	sg, err := findSG(ctx, rt, s, ref, vpc)
 	if err != nil {
 		return nil, err
 	}
@@ -473,14 +479,10 @@ func sgGetCmd(rt *app.Runtime) *cobra.Command {
 		Short: "Show a security group, its ingress rules and its instances",
 		Example: `  polyctl aws ec2 security-group get web --vpc vpc-0abc
   polyctl aws ec2 security-group get sg-0123456789abcdef0 -o json`,
-		Args: cobra.ExactArgs(1),
+		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			s, err := openSGScope(ctx, rt, args[0], region)
-			if err != nil {
-				return err
-			}
-			sg, err := resolveSG(ctx, rt, s, args[0], vpc)
+			s, sg, err := sgTarget(ctx, rt, args, region, vpc, nil)
 			if err != nil {
 				return err
 			}
@@ -558,7 +560,7 @@ func sgCreateStep(rt *app.Runtime, s *sgScope, name, vpc, desc string, ensure bo
 				if !ensure {
 					return platform.Change{}, fmt.Errorf("security group %q already exists in %s; use `polyctl aws ec2 security-group ensure` to reuse it: %w", name, vpc, err)
 				}
-				sg, ferr := findSG(ctx, s, name, vpc)
+				sg, ferr := findSG(ctx, rt, s, name, vpc)
 				if ferr != nil || sg == nil {
 					return platform.Change{}, err
 				}
@@ -585,11 +587,13 @@ of the two is required) with the --rule ingress rules. A group of that name
 in the VPC is an error (exit code 1): use ensure to reuse it. The group is
 tagged Name=<name>, polyctl:managed=true and the tags of defaults.aws.tags.`,
 		Example: `  polyctl aws ec2 security-group create web --vpc vpc-0abc --rule tcp:http:0.0.0.0/0 --rule tcp:https:0.0.0.0/0`,
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			name := args[0]
-			rules, desc, err := f.check(name)
+			name := app.Arg(args, 0)
+			// A missing name is asked once the VPC is known; the rest is
+			// checked first.
+			rules, desc, err := f.check(nameOr(name, "x"))
 			if err != nil {
 				return err
 			}
@@ -597,11 +601,27 @@ tagged Name=<name>, polyctl:managed=true and the tags of defaults.aws.tags.`,
 			if err != nil {
 				return err
 			}
-			vpc, err := rt.RequireSetting(s.profile, platform.AWS, "vpc_id", "vpc", f.vpc)
+			vpc, err := rt.Setting(s.profile, platform.AWS, "vpc_id", f.vpc)
 			if err != nil {
 				return err
 			}
-			if sg, err := findSG(ctx, s, name, vpc); err != nil {
+			if vpc == "" {
+				if vpc, err = pickVPC(ctx, rt, s.c, s.region, func() error {
+					_, err := rt.RequireSetting(s.profile, platform.AWS, "vpc_id", "vpc", "")
+					return err
+				}); err != nil {
+					return err
+				}
+			}
+			if name == "" {
+				if name, err = askSGName(ctx, rt, s, vpc); err != nil {
+					return err
+				}
+				if rules, desc, err = f.check(name); err != nil {
+					return err
+				}
+			}
+			if sg, err := findSG(ctx, rt, s, name, vpc); err != nil {
 				return err
 			} else if sg != nil {
 				return fmt.Errorf("security group %q already exists in %s (%s, %s): use `polyctl aws ec2 security-group ensure %s` to reuse it", name, vpc, sg.ID, s.where(), name)
@@ -647,11 +667,13 @@ nothing.
 		Example: `  polyctl aws ec2 security-group ensure web --instance site-xz7 \
     --rule tcp:http:0.0.0.0/0 --rule tcp:https:0.0.0.0/0 --rule tcp:ssh:10.0.0.0/8
   polyctl aws ec2 security-group ensure existing-sg --instance site-xz7 --dry-run`,
-		Args: cobra.ExactArgs(1),
+		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			name := args[0]
-			rules, desc, err := f.check(name)
+			name := app.Arg(args, 0)
+			// A missing name is asked once the VPC is known; the rest is
+			// checked first.
+			rules, desc, err := f.check(nameOr(name, "x"))
 			if err != nil {
 				return err
 			}
@@ -679,10 +701,23 @@ nothing.
 					return err
 				}
 				if vpc == "" {
-					return app.UsageErrf("no VPC for security group %q: pass --vpc <vpc-id> or --instance <name|id>, or set defaults.aws.vpc_id in config.yaml", name)
+					missing := func() error {
+						return app.UsageErrf("no VPC for security group %q: pass --vpc <vpc-id> or --instance <name|id>, or set defaults.aws.vpc_id in config.yaml", name)
+					}
+					if vpc, err = pickVPC(ctx, rt, s.c, s.region, missing); err != nil {
+						return err
+					}
 				}
 			}
-			sg, err := findSG(ctx, s, name, vpc)
+			if name == "" {
+				if name, err = sgEnsureName(ctx, rt, s, vpc); err != nil {
+					return err
+				}
+				if rules, desc, err = f.check(name); err != nil {
+					return err
+				}
+			}
+			sg, err := findSG(ctx, rt, s, name, vpc)
 			if err != nil {
 				return err
 			}
@@ -773,14 +808,12 @@ rule, is not deleted (exit code 1): detach it or remove the reference
 first. The default group of a VPC cannot be deleted. A group that is gone
 by the time it is deleted is reported unchanged.`,
 		Example: "  polyctl aws ec2 security-group delete web --vpc vpc-0abc --yes",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			s, err := openSGScope(ctx, rt, args[0], region)
-			if err != nil {
-				return err
-			}
-			sg, err := resolveSG(ctx, rt, s, args[0], vpc)
+			// The default group of a VPC cannot be deleted: it is never
+			// offered.
+			s, sg, err := sgTarget(ctx, rt, args, region, vpc, func(g platform.SecurityGroup) bool { return g.Name != "default" })
 			if err != nil {
 				return err
 			}
@@ -837,23 +870,28 @@ func sgRuleAddCmd(rt *app.Runtime) *cobra.Command {
 exit code 4). Rules already present, whatever their description, are
 unchanged; the others are added in one call, each with --rule-description.`,
 		Example: `  polyctl aws ec2 security-group rule add sg-0123456789abcdef0 --rule icmp:all:::/0 --rule-description "ping v6"`,
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			rules, err := parseRules(specs, true)
+			rules, err := parseRules(specs, !rt.Interactive())
 			if err != nil {
 				return err
 			}
 			if err := checkAWSText("--rule-description", ruleDesc); err != nil {
 				return err
 			}
-			s, err := openSGScope(ctx, rt, args[0], region)
+			s, sg, err := sgTarget(ctx, rt, args, region, vpc, nil)
 			if err != nil {
 				return err
 			}
-			sg, err := resolveSG(ctx, rt, s, args[0], vpc)
-			if err != nil {
-				return err
+			if len(rules) == 0 {
+				picked, err := askRules(rt, s.c, *sg)
+				if err != nil {
+					return err
+				}
+				if rules, err = parseRules(picked, true); err != nil {
+					return err
+				}
 			}
 			missing, present, err := s.c.MissingIngressRules(*sg, rules)
 			if err != nil {
@@ -883,20 +921,21 @@ reported unchanged. The rules to remove are shown and a confirmation is
 asked (default no; --yes skips it, and the non-interactive flow needs
 --yes); nothing to remove asks nothing.`,
 		Example: "  polyctl aws ec2 security-group rule remove web --vpc vpc-0abc --rule tcp:22:10.0.0.0/8 --yes",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			rules, err := parseRules(specs, true)
+			rules, err := parseRules(specs, !rt.Interactive())
 			if err != nil {
 				return err
 			}
-			s, err := openSGScope(ctx, rt, args[0], region)
+			s, sg, err := sgTarget(ctx, rt, args, region, vpc, nil)
 			if err != nil {
 				return err
 			}
-			sg, err := resolveSG(ctx, rt, s, args[0], vpc)
-			if err != nil {
-				return err
+			if len(rules) == 0 {
+				if rules, err = pickRules(rt, *sg); err != nil {
+					return err
+				}
 			}
 			absent, present, err := s.c.MissingIngressRules(*sg, rules)
 			if err != nil {
