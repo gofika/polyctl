@@ -2,6 +2,8 @@ package gcp
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"fmt"
 	"slices"
 	"strings"
@@ -194,6 +196,50 @@ func TestGCPDeployerReplacesDueCertificatesInOneSwitch(t *testing.T) {
 	rep, _ = d.run(cert.DeployOptions{}, "global")
 	if slices.ContainsFunc(reportRows(rep), func(r string) bool { return strings.Contains(r, "us-central1") }) {
 		t.Errorf("--region global: %v", reportRows(rep))
+	}
+}
+
+func TestGCPDeployerKeepsTheCertificateOfAnotherKeyType(t *testing.T) {
+	d := newGCPDeploy(t)
+	g := d.h.gce
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rsaOld := pairWith(t, rsaKey, rsaKey, []string{"example.com", "*.example.com"}, 20)
+	ecOld := newPair(t, []string{"example.com", "*.example.com"}, 20)
+	rsaOnly := pairWith(t, rsaKey, rsaKey, []string{"example.org"}, 10)
+	g.addCert("us-central1", "example-com-rsa", rsaOld.chain)
+	g.addCert("us-central1", "example-com-ec", ecOld.chain)
+	g.addCert("us-central1", "example-org-rsa", rsaOnly.chain)
+	g.addHTTPSProxy("us-central1", "proxy-web", "lb-web", "example-com-rsa", "example-com-ec", "example-org-rsa")
+	g.addRule("us-central1", "fr-web", "targetHttpsProxies/proxy-web", "34.1.2.3", "443", nil)
+	d.bundle("example.com", 90)
+	d.bundle("example.org", 90)
+	rep, err := d.run(cert.DeployOptions{})
+	if err != nil {
+		t.Fatalf("deploy: %v\n%s", err, strings.Join(reportRows(rep), "\n"))
+	}
+	if certs := g.proxyCerts("us-central1", "proxy-web"); !slices.Equal(certs, []string{"example-com-rsa", "cert-example-com-20260401", "cert-example-org-20260401"}) {
+		t.Errorf("proxy certificates = %v", certs)
+	}
+	if g.cert("us-central1", "example-com-rsa") == nil || g.cert("us-central1", "example-com-ec") != nil {
+		t.Error("the RSA certificate must be kept, the ECDSA one replaced")
+	}
+	rows := reportRows(rep)
+	for _, w := range []string{
+		"gcp-lb/lab/us-central1/ssl-certificate/example-com-rsa skipped RSA certificate example-com-rsa of example.com kept on proxy-web beside the ECDSA one: the store has no RSA certificate of example.com",
+		"gcp-lb/lab/us-central1/proxy-web updated example-com-ec,example-org-rsa -> cert-example-com-20260401,cert-example-org-20260401 (key type changes, example-org-rsa: RSA -> ECDSA)",
+	} {
+		if !slices.Contains(rows, w) {
+			t.Errorf("missing row %q in\n%s", w, strings.Join(rows, "\n"))
+		}
+	}
+	// The next run keeps the RSA certificate although the proxy's ECDSA
+	// certificate is no longer due.
+	rep, err = d.run(cert.DeployOptions{})
+	if err != nil || len(g.lbWrites()) != 0 {
+		t.Fatalf("second run: %v %v\n%s", err, g.lbWrites(), strings.Join(reportRows(rep), "\n"))
 	}
 }
 

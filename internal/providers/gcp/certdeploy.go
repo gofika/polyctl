@@ -2,6 +2,9 @@ package gcp
 
 import (
 	"context"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -162,6 +165,10 @@ func (d lbDeployer) Discover(ctx context.Context, acct *platform.DeployAccount, 
 				Detail: "uses the certificate map " + lastSegment(p.CertificateMap) + "; not managed by polyctl"})
 			continue
 		}
+		// families are the key families of the self-managed certificates
+		// of the proxy, by root domain.
+		families := map[string][]string{}
+		start := len(targets)
 		for _, u := range p.SslCertificates {
 			sc, err := s.findCert(ctx, lastSegment(u))
 			if err != nil {
@@ -190,13 +197,22 @@ func (d lbDeployer) Discover(ctx context.Context, acct *platform.DeployAccount, 
 					Detail: "cannot tell the domain or the expiry of certificate " + sc.Name + ": " + link})
 				continue
 			}
-			serial := ""
+			serial, family := "", ""
 			if leaf, _, err := platform.LeafOf(sc.Certificate); err == nil {
 				serial = leaf.SerialNumber.Text(16)
+				family = keyFamily(leaf.PublicKey)
 			}
 			targets = append(targets, platform.DeployTarget{Deployer: gcpDeployerID, Platform: platform.GCP, Profile: acct.Profile, Region: s.scopeName(),
 				Kind: "gcp-https-proxy", ID: sc.Name, Name: name, Group: name, CurrentCertID: sc.Name, CurrentDomains: f.Domains,
-				CurrentNotAfter: f.Expire, CurrentSerial: serial, Attrs: map[string]string{"proxy": p.Name, "fingerprint": f.Fingerprint}})
+				CurrentNotAfter: f.Expire, CurrentSerial: serial, Attrs: map[string]string{"proxy": p.Name, "fingerprint": f.Fingerprint, "key_family": family}})
+			if root, err := platform.RegisteredDomain(f.Domain); err == nil && family != "" && !slices.Contains(families[root], family) {
+				families[root] = append(families[root], family)
+			}
+		}
+		for i := start; i < len(targets); i++ {
+			if root, err := platform.RegisteredDomain(targets[i].Domain()); err == nil {
+				targets[i].Attrs["proxy_key_families"] = strings.Join(families[root], ",")
+			}
 		}
 	}
 	return targets, skipped, nil
@@ -280,11 +296,47 @@ func (d lbDeployer) PlanBatch(ctx context.Context, acct *platform.DeployAccount,
 		return nil, fmt.Errorf("target HTTPS proxy %s (%s): %w", proxy, s.label(), err)
 	}
 	var steps []platform.Step
+	// A proxy can hold an RSA and an ECDSA certificate of one domain
+	// (clients get the one they support); the store holds one key type,
+	// so only the certificate of that key type is replaced and the other
+	// one is kept.
+	newFamily := func(it platform.DeployItem) string {
+		if it.Cert.Leaf == nil {
+			return ""
+		}
+		return keyFamily(it.Cert.Leaf.PublicKey)
+	}
+	var kept []platform.DeployItem
+	var replaced []platform.DeployItem
+	for _, it := range items {
+		// The proxy holds a certificate of the root of the store's key
+		// type (due now or not): one of another key type is kept.
+		have, nf := it.Target.Attrs["key_family"], newFamily(it)
+		if have != "" && nf != "" && have != nf && slices.Contains(strings.Split(it.Target.Attrs["proxy_key_families"], ","), nf) {
+			kept = append(kept, it)
+			continue
+		}
+		replaced = append(replaced, it)
+	}
+	for _, it := range kept {
+		steps = append(steps, platform.Step{Resource: platform.DeployResource(gcpDeployerID, acct.Profile, s.scopeName()+"/ssl-certificate/"+it.Target.ID),
+			Action: platform.Skipped, ID: it.Target.ID,
+			Desc: fmt.Sprintf("%s certificate %s of %s kept on %s beside the %s one: the store has no %s certificate of %s",
+				it.Target.Attrs["key_family"], it.Target.ID, it.Cert.Root, proxy, newFamily(it), it.Target.Attrs["key_family"], it.Cert.Root)})
+	}
+	items = replaced
+	if len(items) == 0 {
+		return steps, nil
+	}
 	newOf := map[string]string{}   // root -> new certificate name
 	replace := map[string]string{} // old name -> new name
 	var olds []string
+	var keyChanges []string
 	for _, it := range items {
 		root := it.Cert.Root
+		if have, nf := it.Target.Attrs["key_family"], newFamily(it); have != "" && nf != "" && have != nf {
+			keyChanges = append(keyChanges, fmt.Sprintf("%s: %s -> %s", it.Target.ID, have, nf))
+		}
 		name, ok := newOf[root]
 		if !ok {
 			res := platform.DeployResource(gcpDeployerID, acct.Profile, s.scopeName()+"/ssl-certificate/")
@@ -355,6 +407,9 @@ func (d lbDeployer) PlanBatch(ctx context.Context, acct *platform.DeployAccount,
 		return nil, fmt.Errorf("target HTTPS proxy %s would hold %d certificates; a proxy takes at most %d", proxy, len(urls), maxProxyCerts)
 	}
 	desc := strings.Join(olds, ",") + " -> " + strings.Join(added, ",")
+	if len(keyChanges) > 0 {
+		desc += " (key type changes, " + strings.Join(keyChanges, "; ") + ")"
+	}
 	steps = append(steps, platform.Step{Resource: res, Action: platform.Updated, ID: proxy, Desc: desc,
 		Attrs: map[string]string{"proxy": proxy, "old": strings.Join(olds, ","), "cert_name": strings.Join(added, ",")},
 		Apply: func(ctx context.Context) (platform.Change, error) {
@@ -422,4 +477,16 @@ func (d lbDeployer) Prune(ctx context.Context, acct *platform.DeployAccount, o p
 			Apply: func(ctx context.Context) (platform.Change, error) { return platform.Change{}, s.deleteCert(ctx, name) }})
 	}
 	return steps, nil
+}
+
+// keyFamily names the key family of a public key: RSA, ECDSA, or "" for
+// anything else.
+func keyFamily(pub crypto.PublicKey) string {
+	switch pub.(type) {
+	case *rsa.PublicKey:
+		return "RSA"
+	case *ecdsa.PublicKey:
+		return "ECDSA"
+	}
+	return ""
 }
