@@ -92,9 +92,27 @@ func TestDomainConversion(t *testing.T) {
 	if d.Extra["domain_id"] != int64(42) || d.Extra["transfer_protected"] != true {
 		t.Errorf("extra: %+v", d.Extra)
 	}
+	// The nameservers are elsewhere: GoDaddy does not serve the zone.
 	z := zoneFromDomain(d)
-	if z.ID != "example.com" || z.Name != "example.com" || len(z.Nameservers) != 2 || z.Status != "ACTIVE" {
+	if z.ID != "example.com" || z.Name != "example.com" || len(z.Nameservers) != 2 || z.Status != zoneInactive {
 		t.Errorf("zone: %+v", z)
+	}
+	for _, c := range []struct {
+		status string
+		ns     []string
+		want   string
+	}{
+		{"ACTIVE", []string{"NS07.DomainControl.com.", "ns08.domaincontrol.com"}, zoneActive},
+		{"ACTIVE", nil, zoneActive}, // GoDaddy's default nameservers
+		{"ACTIVE", []string{"a.ns.cloudflare.com", "b.ns.cloudflare.com"}, zoneInactive},
+		{"CANCELLED", nil, zoneInactive},
+		{"EXPIRED", []string{"ns07.domaincontrol.com"}, zoneInactive},
+		{"TRANSFERRED_OUT", nil, zoneInactive},
+		{"PENDING_UPDATE", nil, zoneActive},
+	} {
+		if got := zoneFromDomain(platform.Domain{Name: "x.com", Status: c.status, Nameservers: c.ns}).Status; got != c.want {
+			t.Errorf("%s %v: zone status %s, want %s", c.status, c.ns, got, c.want)
+		}
 	}
 }
 

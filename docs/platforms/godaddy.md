@@ -26,6 +26,8 @@ godaddy dns delete <domain> (--type A --name www | --id <zone|TYPE|name|value>) 
 
 GoDaddy has no record ids: records are addressed by type and name.
 
+Only domains GoDaddy serves DNS for are indexed as zones: a domain whose nameservers are not GoDaddy's (`*.domaincontrol.com`; a domain with no nameservers listed keeps GoDaddy's defaults), or whose status is cancelled, expired or transferred out, is left out of the zone and record sync, so the neutral `dns` commands do not route to it. `godaddy dns` still reaches it when named.
+
 - `add` appends one record to the name+type set; the others stay.
 - `upsert` creates the set or replaces all of it with the given `--value`s (repeat `--value` for several records), like `record upsert` on Route 53 and Cloud DNS.
 - `delete --type --name` deletes the whole set; `delete --id` deletes one record. It lists what it would delete and asks for confirmation (`--yes` in the non-interactive flow; see [Confirmations](../interactive.md#confirmations)). A set or record that does not exist is exit code 4 and asks nothing.

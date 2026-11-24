@@ -47,10 +47,68 @@ func domainFromAPI(d apiDomain) platform.Domain {
 	return out
 }
 
+// Zone statuses. A registered domain is only an "active" zone when GoDaddy
+// actually serves its DNS; otherwise the records GoDaddy keeps for it are
+// dormant and the domain must not be routed to GoDaddy for DNS operations.
+const (
+	zoneActive   = "active"
+	zoneInactive = "inactive"
+)
+
+// goDaddyNSSuffix matches GoDaddy's own nameservers (nsNN.domaincontrol.com).
+const goDaddyNSSuffix = ".domaincontrol.com"
+
+// hostedAtGoDaddy reports whether GoDaddy serves the DNS of a domain: at
+// least one nameserver is a GoDaddy host, or none is known (a domain keeps
+// GoDaddy's default nameservers until they are changed).
+func hostedAtGoDaddy(nameservers []string) bool {
+	if len(nameservers) == 0 {
+		return true
+	}
+	for _, ns := range nameservers {
+		if strings.HasSuffix(platform.NormalizeDomain(ns), goDaddyNSSuffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// goneStatuses are the prefixes of the GoDaddy domain statuses of a domain
+// the account no longer holds or that no longer resolves.
+var goneStatuses = []string{"CANCELLED", "EXPIRED", "TRANSFERRED_OUT", "CONFISCATED", "REPOSSESSED"}
+
+// liveDomain reports whether a domain status still lets GoDaddy serve DNS.
+func liveDomain(status string) bool {
+	status = strings.ToUpper(status)
+	for _, p := range goneStatuses {
+		if strings.HasPrefix(status, p) {
+			return false
+		}
+	}
+	return true
+}
+
 // zoneFromDomain exposes a registered domain as a DNS zone: GoDaddy hosts
-// one zone per domain and both are identified by the domain name.
+// one zone per domain and both are identified by the domain name. A domain
+// whose nameservers are elsewhere, or that is cancelled or expired, is an
+// inactive zone.
 func zoneFromDomain(d platform.Domain) platform.Zone {
-	return platform.Zone{ID: d.Name, Name: d.Name, Nameservers: d.Nameservers, Status: d.Status}
+	z := platform.Zone{ID: d.Name, Name: d.Name, Nameservers: d.Nameservers, Status: zoneActive}
+	if !hostedAtGoDaddy(d.Nameservers) || !liveDomain(d.Status) {
+		z.Status = zoneInactive
+	}
+	return z
+}
+
+// activeZones drops the zones GoDaddy does not serve.
+func activeZones(zones []platform.Zone) []platform.Zone {
+	out := zones[:0:0]
+	for _, z := range zones {
+		if z.Status == zoneActive {
+			out = append(out, z)
+		}
+	}
+	return out
 }
 
 // srvLabels splits a GoDaddy SRV record into its service, protocol and

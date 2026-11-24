@@ -74,7 +74,7 @@ func TestAuthorizationHeaders(t *testing.T) {
 func TestListDomainsPagination(t *testing.T) {
 	f, c := newTestClient(t)
 	for i := 0; i < 7; i++ {
-		f.addDomain(fmt.Sprintf("d%02d.example", i), "ns1.test", "ns2.test")
+		f.addDomain(fmt.Sprintf("d%02d.example", i), "ns07.domaincontrol.com", "ns08.domaincontrol.com")
 	}
 	c.api.domainPageSize = 3
 	domains, err := c.ListDomains(context.Background())
@@ -110,7 +110,7 @@ func TestListDomainsPagination(t *testing.T) {
 
 func TestListRecordsPaginationAndNames(t *testing.T) {
 	f, c := newTestClient(t)
-	f.addDomain("example.com", "ns1.test", "ns2.test")
+	f.addDomain("example.com", "ns07.domaincontrol.com", "ns08.domaincontrol.com")
 	var recs []apiRecord
 	for i := 0; i < 5; i++ {
 		recs = append(recs, apiRecord{Type: "A", Name: fmt.Sprintf("h%d", i), Data: fmt.Sprintf("10.0.0.%d", i), TTL: 600})
@@ -142,8 +142,8 @@ func TestListRecordsPaginationAndNames(t *testing.T) {
 
 func TestSync(t *testing.T) {
 	f, c := newTestClient(t)
-	f.addDomain("a.example", "ns1.test", "ns2.test")
-	f.addDomain("b.example", "ns1.test", "ns2.test")
+	f.addDomain("a.example", "ns07.domaincontrol.com", "ns08.domaincontrol.com")
+	f.addDomain("b.example", "ns07.domaincontrol.com", "ns08.domaincontrol.com")
 	f.setRecords("a.example", apiRecord{Type: "A", Name: "@", Data: "1.1.1.1"}, apiRecord{Type: "A", Name: "www", Data: "1.1.1.2"})
 	f.setRecords("b.example", apiRecord{Type: "TXT", Name: "@", Data: "hi"})
 	ctx := context.Background()
@@ -174,10 +174,43 @@ func TestSync(t *testing.T) {
 	}
 }
 
+// Only the domains GoDaddy serves DNS for are zones of the inventory:
+// not one whose nameservers are elsewhere, nor a cancelled one.
+func TestSyncLeavesOutDormantZones(t *testing.T) {
+	f, c := newTestClient(t)
+	f.addDomain("a.example", "ns07.domaincontrol.com", "ns08.domaincontrol.com")
+	f.addDomain("cf.example", "ada.ns.cloudflare.com", "bob.ns.cloudflare.com")
+	f.addDomain("gone.example")
+	f.domains["gone.example"].Status = "CANCELLED"
+	for _, d := range []string{"a.example", "cf.example", "gone.example"} {
+		f.setRecords(d, apiRecord{Type: "A", Name: "@", Data: "1.1.1.1"})
+	}
+	ctx := context.Background()
+	zones, err := c.Sync(ctx, platform.ResZone)
+	if err != nil || len(zones) != 1 || zones[0].ID != "a.example" {
+		t.Errorf("zone sync: %v %+v", err, zones)
+	}
+	recs, err := c.Sync(ctx, platform.ResDNSRecord)
+	if err != nil || len(recs) != 1 || recs[0].ParentID != "a.example" {
+		t.Errorf("record sync: %v %+v", err, recs)
+	}
+	if n := len(f.callsMatching("GET /v1/domains/cf.example/records")) + len(f.callsMatching("GET /v1/domains/gone.example/records")); n != 0 {
+		t.Errorf("dormant zones must not be read: %d calls", n)
+	}
+	all, err := c.ListZones(ctx)
+	if err != nil || len(all) != 3 || all[0].Status != zoneActive || all[1].Status != zoneInactive || all[2].Status != zoneInactive {
+		t.Errorf("ListZones: %v %+v", err, all)
+	}
+	domains, err := c.Sync(ctx, platform.ResDomain)
+	if err != nil || len(domains) != 3 {
+		t.Errorf("every domain stays in the domain sync: %v %+v", err, domains)
+	}
+}
+
 func TestSyncHonoursRateLimitReset(t *testing.T) {
 	f, c := newTestClient(t)
-	f.addDomain("a.example", "ns1.test", "ns2.test")
-	f.addDomain("b.example", "ns1.test", "ns2.test")
+	f.addDomain("a.example", "ns07.domaincontrol.com", "ns08.domaincontrol.com")
+	f.addDomain("b.example", "ns07.domaincontrol.com", "ns08.domaincontrol.com")
 	f.setRecords("a.example", apiRecord{Type: "A", Name: "@", Data: "1.1.1.1"})
 	f.setRecords("b.example", apiRecord{Type: "A", Name: "@", Data: "2.2.2.2"})
 	// The second domain's listing is rate limited once; the generic httpx
@@ -206,7 +239,7 @@ func TestSyncHonoursRateLimitReset(t *testing.T) {
 func TestSyncPacesRequests(t *testing.T) {
 	f, c := newTestClient(t)
 	for _, d := range []string{"a.example", "b.example", "c.example"} {
-		f.addDomain(d, "ns1.test", "ns2.test")
+		f.addDomain(d, "ns07.domaincontrol.com", "ns08.domaincontrol.com")
 		f.setRecords(d, apiRecord{Type: "A", Name: "@", Data: "1.1.1.1"})
 	}
 	c.pace = 50 * time.Millisecond
@@ -254,7 +287,7 @@ func TestRetryDelay(t *testing.T) {
 
 func TestUpdateRecordRenameFailures(t *testing.T) {
 	f, c := newTestClient(t)
-	f.addDomain("example.com", "ns1.test", "ns2.test")
+	f.addDomain("example.com", "ns07.domaincontrol.com", "ns08.domaincontrol.com")
 	f.setRecords("example.com", apiRecord{Type: "A", Name: "www", Data: "1.1.1.1", TTL: 600})
 	ctx := context.Background()
 
@@ -295,7 +328,7 @@ func TestUpdateRecordRenameFailures(t *testing.T) {
 
 func TestCreateUpdateDeleteRecord(t *testing.T) {
 	f, c := newTestClient(t)
-	f.addDomain("example.com", "ns1.test", "ns2.test")
+	f.addDomain("example.com", "ns07.domaincontrol.com", "ns08.domaincontrol.com")
 	f.setRecords("example.com", apiRecord{Type: "A", Name: "www", Data: "1.1.1.1", TTL: 600})
 	ctx := context.Background()
 
@@ -379,7 +412,7 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 
 func TestReplaceAndDeleteSet(t *testing.T) {
 	f, c := newTestClient(t)
-	f.addDomain("example.com", "ns1.test", "ns2.test")
+	f.addDomain("example.com", "ns07.domaincontrol.com", "ns08.domaincontrol.com")
 	f.setRecords("example.com", apiRecord{Type: "A", Name: "www", Data: "1.1.1.1"}, apiRecord{Type: "A", Name: "@", Data: "5.5.5.5"})
 	ctx := context.Background()
 
@@ -411,7 +444,7 @@ func TestReplaceAndDeleteSet(t *testing.T) {
 
 func TestRegistrarOperations(t *testing.T) {
 	f, c := newTestClient(t)
-	f.addDomain("example.com", "ns1.test", "ns2.test")
+	f.addDomain("example.com", "ns07.domaincontrol.com", "ns08.domaincontrol.com")
 	ctx := context.Background()
 
 	d, err := c.GetDomain(ctx, "Example.COM")

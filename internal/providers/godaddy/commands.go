@@ -228,6 +228,13 @@ func cacheDomain(ctx context.Context, rt *app.Runtime, profile string, d *platfo
 	}
 	zone := zoneFromDomain(*d)
 	zset := inventory.Set{Platform: platform.GoDaddy, Profile: profile, Type: platform.ResZone}
+	if zone.Status != zoneActive {
+		// GoDaddy does not serve its DNS (any more): not a zone to route to.
+		if err := db.Delete(ctx, zset, platform.ResZone, zone.ID); err != nil {
+			rt.Verbosef("warning: forget zone %s: %v", d.Name, err)
+		}
+		return
+	}
 	if err := db.Upsert(ctx, zset, app.ZoneResources([]platform.Zone{zone})[0], cfg.TTLFor(platform.ResZone)); err != nil {
 		rt.Verbosef("warning: cache zone %s: %v", d.Name, err)
 	}

@@ -303,18 +303,18 @@ Platform coverage:
 5. With `--offline` nothing is indexed; an unknown domain is an error.
 6. An unknown `--profile`, or a `--profile` / `--platform` pair with no suitable account, is exit code 4.
 
-The usual ambiguity is within one profile: a registrar (name.com, GoDaddy) lists every domain it holds as a zone too. If `acme` registers `example.com` at name.com and serves its DNS from Cloudflare, pass `--platform`:
+A registrar (name.com, GoDaddy) indexes a domain it holds as a zone only while it serves the domain's DNS: a domain whose nameservers point elsewhere (to Cloudflare, say), or a cancelled or expired GoDaddy domain, is not a second owner. The usual ambiguity is the same zone in two accounts, for example in the Cloudflare accounts of the profiles `acme` and `acme-old`; pass the flag the error names:
 
 ```text
 $ polyctl dns list example.com
-error: ambiguous owner of zone "example.com": candidates are [cloudflare/acme (zone 9a1...) namecom/acme (zone example.com)]; pass --platform <platform> to choose
+error: ambiguous owner of zone "example.com": candidates are [cloudflare/acme (zone 9a1...) cloudflare/acme-old (zone 4c2...)]; pass --profile <name> to choose
 
-$ polyctl dns list example.com --platform cloudflare
+$ polyctl dns list example.com --profile acme
 zone example.com via cloudflare/acme
 ...
 ```
 
-Registrar commands (`domain ns ...`) are not affected, since only name.com holds the registration. Two resources with the same name in one account (two Route 53 hosted zones called `example.com`) cannot be told apart this way; use the platform's own command with the resource id.
+Registrar commands (`domain ns ...`) look the domain up as a `domain`, not a `zone`, so a domain registered at one platform and served by another has one owner for each. Two resources with the same name in one account (two Route 53 hosted zones called `example.com`) cannot be told apart this way; use the platform's own command with the resource id.
 
 **Resources addressed by name or id** (instances, load balancers, ...) are found the same way, so you do not need to name the profile. An id match wins over a name match. Several matches are exit code 5 (pass `--profile`, `--platform`, or the id). No match syncs that resource type once for accounts with a missing or expired cache, then reports not found (exit code 4). A name found in the cache only tells the account and region: the name is then looked up live there, so a resource renamed since the last sync is never acted on in place of the one that holds the name now.
 

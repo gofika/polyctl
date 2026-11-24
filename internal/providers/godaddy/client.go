@@ -68,14 +68,17 @@ func (c *client) Sync(ctx context.Context, rt platform.ResourceType) ([]platform
 		if err != nil {
 			return nil, err
 		}
-		return app.ZoneResources(zones), nil
+		// Only zones GoDaddy actually serves are indexed, so that neutral
+		// domain routing does not see a second owner for domains whose DNS
+		// lives elsewhere, nor route to a cancelled or expired domain.
+		return app.ZoneResources(activeZones(zones)), nil
 	case platform.ResDNSRecord:
 		zones, err := c.ListZones(ctx)
 		if err != nil {
 			return nil, err
 		}
 		var out []platform.Resource
-		for i, z := range zones {
+		for i, z := range activeZones(zones) {
 			// One request per domain: stay under GoDaddy's per-minute limit.
 			if i > 0 && c.pace > 0 {
 				timer := time.NewTimer(c.pace)
@@ -180,6 +183,9 @@ func (c *client) CheckAvailable(ctx context.Context, name string) (*Availability
 // ---- DNSService ----
 
 // ListZones exposes every domain as a zone (Zone.ID == Zone.Name == domain).
+// Domains whose nameservers are not GoDaddy's, or that are cancelled or
+// expired, are returned with Status "inactive"; Sync leaves them out of the
+// inventory.
 func (c *client) ListZones(ctx context.Context) ([]platform.Zone, error) {
 	domains, err := c.ListDomains(ctx)
 	if err != nil {
