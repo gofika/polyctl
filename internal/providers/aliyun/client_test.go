@@ -31,6 +31,8 @@ type fakeAPI struct {
 	mu       sync.Mutex
 	handlers map[string]func(q url.Values) (int, any)
 	calls    []url.Values
+	// queries are the raw URL queries of the calls, in order.
+	queries []string
 }
 
 func newFakeAPI(t *testing.T) *fakeAPI {
@@ -42,6 +44,7 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 		q := r.Form
 		f.mu.Lock()
 		f.calls = append(f.calls, q)
+		f.queries = append(f.queries, r.URL.RawQuery)
 		h := f.handlers[q.Get("Action")]
 		f.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")

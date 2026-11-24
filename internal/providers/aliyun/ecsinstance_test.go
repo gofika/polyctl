@@ -122,6 +122,36 @@ func TestRunInstanceRequest(t *testing.T) {
 	}
 }
 
+// A Windows password travels in the form body, never in the URL query, and
+// keys the client token: a new password is a new request.
+func TestRunInstanceWindowsPassword(t *testing.T) {
+	api := newFakeAPI(t)
+	f := newFakeCompute(t, api)
+	f.addVSwitch("vsw-b", "sw-b", "vpc-1", "cn-shanghai-b", "172.16.0.0/22")
+	f.addGroup("sg-1", "sg-common", "vpc-1")
+	c := api.client()
+	const pw = "Kp7-tes7Password:abc"
+	spec := runSpec{Name: "win-a", HostName: "win-a", Type: "ecs.u1-c1m2.large", Image: "win2025", SecurityGroup: "sg-1",
+		VSwitch: "vsw-b", DiskGiB: 40, DiskCategory: "cloud_essd_entry", Password: pw}
+	spec.ClientToken = spec.token("p", "cn-shanghai")
+	if _, err := c.runInstance(context.Background(), "cn-shanghai", spec); err != nil {
+		t.Fatal(err)
+	}
+	if q := api.callsFor("RunInstances")[0]; q.Get("Password") != pw || q.Has("KeyPairName") {
+		t.Errorf("RunInstances = %v", q)
+	}
+	for _, raw := range api.queries {
+		if strings.Contains(raw, "Password") || strings.Contains(raw, "Kp7") {
+			t.Errorf("the password is in the URL: %s", raw)
+		}
+	}
+	other := spec
+	other.Password = "Zz9-otherPassword:xy"
+	if other.token("p", "cn-shanghai") == spec.ClientToken || strings.Contains(spec.ClientToken, pw) {
+		t.Error("the token does not follow the password")
+	}
+}
+
 func TestFindInstancesComparesCase(t *testing.T) {
 	api := newFakeAPI(t)
 	f := newFakeCompute(t, api)

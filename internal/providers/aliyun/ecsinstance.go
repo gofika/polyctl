@@ -60,15 +60,28 @@ type runSpec struct {
 	DiskGiB                     int
 	DiskCategory                string
 	ClientToken                 string
+	// Password is the Administrator password of a Windows instance ("" for
+	// a Linux instance, which logs in with its key pair only). It is sent
+	// in the form body, never in the query, so that it is in no URL: not
+	// in the error of a failed connection, not in the SDK's debug output.
+	Password string
 }
 
 // token derives the ClientToken of the request from its content: a retried
 // request returns the instance the first attempt made, and a request that
 // differs in anything gets another token (the same token with other
-// parameters is IdempotentParameterMismatch).
+// parameters is IdempotentParameterMismatch). A Windows password is part
+// of the content (the token is a SHA-256 digest, which does not reveal
+// it): a new password is a new request, so that an earlier instance of an
+// identical request, whose password is another one, is never answered and
+// taken for the instance of the password polyctl stores.
 func (s runSpec) token(profile, region string) string {
-	return platform.ClientToken("aliyun.ecs.RunInstances", profile, region, s.Name, s.HostName, s.Type, s.Image,
-		s.SecurityGroup, s.VSwitch, s.KeyPair, s.DiskGiB, s.DiskCategory)
+	parts := []any{"aliyun.ecs.RunInstances", profile, region, s.Name, s.HostName, s.Type, s.Image,
+		s.SecurityGroup, s.VSwitch, s.KeyPair, s.DiskGiB, s.DiskCategory}
+	if s.Password != "" {
+		parts = append(parts, s.Password)
+	}
+	return platform.ClientToken(parts...)
 }
 
 // runInstance creates one instance and returns its id.
@@ -95,6 +108,9 @@ func (c *client) runInstance(ctx context.Context, region string, s runSpec) (str
 	req.SystemDiskSize = strconv.Itoa(s.DiskGiB)
 	req.Amount = requests.NewInteger(1)
 	req.ClientToken = s.ClientToken
+	if s.Password != "" {
+		req.FormParams["Password"] = s.Password
+	}
 	resp, err := cl.RunInstances(req)
 	if err != nil {
 		return "", runInstanceError(wrapErr("ecs RunInstances "+s.Name, err))
