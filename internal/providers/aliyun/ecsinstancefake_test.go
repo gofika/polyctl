@@ -107,6 +107,10 @@ func (f *fakeECS) describeInstanceStatus(q url.Values) (int, any) {
 }
 
 func (f *fakeECS) runInstances(q url.Values) (int, any) {
+	if f.runGhost > 0 {
+		f.runGhost--
+		return 200, map[string]any{"InstanceIdSets": map[string]any{"InstanceIdSet": []string{"i-ghost"}}, "RequestId": "r"}
+	}
 	code, body := f.runInstancesAnswer(q)
 	if code == 200 && f.runLost > 0 {
 		f.runLost--

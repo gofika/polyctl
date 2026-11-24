@@ -554,28 +554,34 @@ func runStep(rt *app.Runtime, s *ecsScope, name, host string, f *instanceFlags, 
 				}
 				return iid, err
 			}
-			iid, err := call(ctx)
-			if err != nil && platform.OutcomeUnknown(err) && ctx.Err() == nil {
-				// The same token: ECS answers the instance an attempt that
-				// went through created, or creates it now.
-				rt.Infof("note: the result of RunInstances is unknown (%v); asking again with the same client token", err)
-				err = platform.Retry(ctx, platform.RetryPolicy{
-					Match:   func(err error) bool { return platform.OutcomeUnknown(err) && ctx.Err() == nil },
-					Initial: 2 * time.Second, Max: 8 * time.Second, MaxAttempts: 3, Clock: netClock(),
-				}, func(ctx context.Context) error {
-					var rerr error
-					iid, rerr = call(ctx)
-					return rerr
-				})
-			}
-			if err != nil {
-				if platform.OutcomeUnknown(err) {
+			// callKnown asks again with the same token while the result is
+			// unknown: ECS answers the instance an attempt that went
+			// through created, or creates it now. A result that stays
+			// unknown keeps the generated password.
+			callKnown := func(ctx context.Context) (string, error) {
+				iid, err := call(ctx)
+				if err != nil && platform.OutcomeUnknown(err) && ctx.Err() == nil {
+					rt.Infof("note: the result of RunInstances is unknown (%v); asking again with the same client token", err)
+					err = platform.Retry(ctx, platform.RetryPolicy{
+						Match:   func(err error) bool { return platform.OutcomeUnknown(err) && ctx.Err() == nil },
+						Initial: 2 * time.Second, Max: 8 * time.Second, MaxAttempts: 3, Clock: netClock(),
+					}, func(ctx context.Context) error {
+						var rerr error
+						iid, rerr = call(ctx)
+						return rerr
+					})
+				}
+				if err != nil && platform.OutcomeUnknown(err) {
 					if win != nil {
 						// The instance may run with this password: keep it.
 						win.pending(ctx, spec.ClientToken)
 					}
-					return platform.Change{}, fmt.Errorf("RunInstances result is unknown, the instance may already exist (look for instance %s before trying again): %w", name, err)
+					return "", fmt.Errorf("RunInstances result is unknown, the instance may already exist (look for instance %s before trying again): %w", name, err)
 				}
+				return iid, err
+			}
+			iid, err := callKnown(ctx)
+			if err != nil {
 				return platform.Change{}, err
 			}
 			in, lerr := lookupNewInstance(ctx, s, iid)
@@ -585,7 +591,7 @@ func runStep(rt *app.Runtime, s *ecsScope, name, host string, f *instanceFlags, 
 				// before is answered again. Ask once more under a new token.
 				rt.Infof("note: RunInstances answered %s, an instance of an earlier identical request that no longer exists; asking again with a new client token", iid)
 				spec.ClientToken = platform.ClientToken(spec.ClientToken, netClock().Now().UnixNano())
-				if iid, err = call(ctx); err != nil {
+				if iid, err = callKnown(ctx); err != nil {
 					return platform.Change{}, err
 				}
 				in, lerr = lookupNewInstance(ctx, s, iid)

@@ -524,3 +524,17 @@ func TestWindowsPendingDroppedByCreate(t *testing.T) {
 		t.Errorf("stored = %+v", got)
 	}
 }
+
+// The request asked again under a new token (the first answered a deleted
+// instance) keeps the password too when its result stays unknown.
+func TestWindowsRunNewTokenResultUnknown(t *testing.T) {
+	h, f := winHarness(t, app.Flags{})
+	f.runGhost, f.runLost = 1, 100
+	err := h.run(winCreate...)
+	if err == nil || !strings.Contains(err.Error(), "result is unknown, the instance may already exist") {
+		t.Fatalf("unknown = %v", err)
+	}
+	if got := storedLogin(t, h, "win-a"); len(got) != 1 || !strings.HasPrefix(got[0].InstanceID, pendingInstancePrefix) || got[0].Password == "" {
+		t.Errorf("stored = %+v", got)
+	}
+}

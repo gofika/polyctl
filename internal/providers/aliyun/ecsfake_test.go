@@ -69,6 +69,10 @@ type fakeECS struct {
 	// runLost is the number of RunInstances calls that create the
 	// instance but answer a server-side failure.
 	runLost int
+	// runGhost is the number of RunInstances calls that answer i-ghost,
+	// an instance that does not exist (that of an earlier identical
+	// request, deleted since).
+	runGhost int
 	// typeArch is the CpuArchitecture of instance types (X86, ARM).
 	typeArch map[string]string
 }
