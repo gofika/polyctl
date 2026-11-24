@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/gofika/polyctl/internal/app"
+	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/platform"
 	"github.com/gofika/polyctl/internal/prompt"
 	"github.com/gofika/polyctl/internal/prompt/prompttest"
@@ -173,5 +174,28 @@ func TestAmbiguityIsAPickInTheInteractiveFlow(t *testing.T) {
 	h.rt.Picker = prompttest.New(t, prompttest.Abort{})
 	if _, err := h.rt.ResolveDomain(ctx, "www.shared.com", platform.ResZone); !errors.Is(err, prompt.ErrAborted) {
 		t.Errorf("abort = %v", err)
+	}
+}
+
+// PickResource offers the inventory rows of the selected accounts, filtered
+// and labelled by the command; an empty selection is nothing to do.
+func TestPickResource(t *testing.T) {
+	h := newHarness(t, app.Flags{}, nil)
+	h.seedStandard()
+	p := prompttest.New(t, "z-other")
+	h.rt.Picker = p
+	got, err := h.rt.PickResource(ctx, app.ResourcePick{Platform: platform.NameCom, Kind: platform.ResZone, Title: "Zone", Arg: "<zone>",
+		Filter: func(r inventory.Resource) bool { return r.Name != "shared.com" }})
+	if err != nil || got != "z-other" {
+		t.Fatalf("pick = %q, %v", got, err)
+	}
+	if a := p.Find("Zone"); prompttest.Values(a.Options) != "z-example z-other z-sub" || a.Options[1].Label != "other.com  z-other  namecom/b" {
+		t.Errorf("options %+v", a.Options)
+	}
+	p.Done()
+	h.rt.Flags.Profile = "a"
+	if _, err := h.rt.PickResource(ctx, app.ResourcePick{Platform: platform.NameCom, Kind: platform.ResZone, Arg: "<zone>",
+		Filter: func(inventory.Resource) bool { return false }}); !errors.Is(err, platform.ErrNothingToDo) {
+		t.Errorf("empty = %v", err)
 	}
 }
