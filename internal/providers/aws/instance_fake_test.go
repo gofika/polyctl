@@ -83,12 +83,12 @@ type fakeInstances struct {
 	errOnce     map[string][]error // call -> errors of its next calls, one each
 	// runLost is the number of RunInstances calls that launch the instance
 	// but lose the answer (a transport error with no code).
-	runLost int
-	runs        []*ec2.RunInstancesInput
-	filters     [][]ec2types.Filter
-	pageSize    int
-	nextIP      int
-	nextID      int
+	runLost  int
+	runs     []*ec2.RunInstancesInput
+	filters  [][]ec2types.Filter
+	pageSize int
+	nextIP   int
+	nextID   int
 }
 
 func (fi *fakeInstances) init() {
