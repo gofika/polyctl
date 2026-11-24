@@ -157,6 +157,45 @@ func TestACMDeployerKeyAlgorithmChangeAndDryRun(t *testing.T) {
 	if rsa.serial != "0b:02" || !slices.ContainsFunc(acmRows(rep), func(r string) bool { return strings.Contains(r, "the ARN changed, update where "+rsa.arn+" is used") }) {
 		t.Errorf("rows = %v", acmRows(rep))
 	}
+	newARN := s.certs[len(s.certs)-1].arn
+	// The next runs find the certificate imported already: nothing is
+	// imported again, in --all and in domain mode.
+	for _, o := range []cert.DeployOptions{{}, {Domain: "example.com"}} {
+		rep, err = d.run(o, "us-east-1")
+		if err != nil || len(d.h.acmWrites()) != 0 {
+			t.Fatalf("run %+v: %v %v", o, err, d.h.acmWrites())
+		}
+		if !slices.ContainsFunc(acmRows(rep), func(r string) bool {
+			return strings.HasPrefix(r, "aws-acm/lab/us-east-1/"+rsa.arn+" skipped") && strings.Contains(r, "imported as "+newARN+" already")
+		}) {
+			t.Errorf("run %+v rows = %v", o, acmRows(rep))
+		}
+	}
+}
+
+func TestACMDeployerRefusedReimportImportsOnce(t *testing.T) {
+	d := newACMDeploy(t)
+	old := d.h.addCert(&fakeCert{region: "us-east-1", domain: "example.com", typ: acmImported, status: acmIssued, notAfter: at(3), serial: "0b:02"})
+	d.h.acm().refuseReimport = true
+	if _, err := d.run(cert.DeployOptions{}, "us-east-1"); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(d.h.acm().certs); n != 2 {
+		t.Fatalf("certificates after the first run = %d", n)
+	}
+	rep, err := d.run(cert.DeployOptions{}, "us-east-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := d.h.acm()
+	if len(s.certs) != 2 || len(s.imports) != 1 || s.imports[0].CertificateArn == nil || *s.imports[0].CertificateArn != old.arn {
+		t.Fatalf("second run: certs=%d imports=%+v", len(s.certs), s.imports)
+	}
+	if !slices.ContainsFunc(acmRows(rep), func(r string) bool {
+		return strings.HasPrefix(r, "aws-acm/lab/us-east-1/"+old.arn+" skipped") && strings.Contains(r, "ACM refused the re-import")
+	}) {
+		t.Errorf("rows = %v", acmRows(rep))
+	}
 }
 
 func TestACMDeployerPrune(t *testing.T) {

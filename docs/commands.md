@@ -248,7 +248,7 @@ polyctl cert deploy example.com --deployer gcp-lb --region asia-east2
 |----------|---------|-------|
 | `aliyun-alb` | HTTPS listeners of Alibaba Cloud ALB (default certificate) | Uploads to the region's CAS store as `cert.name_template` (default `upload_<root>_<YYYY-MM-DD of expiry>`) and waits for each listener to be `Running` again. Stopped listeners and SNI certificates are left alone. |
 | `gcp-lb` | Target HTTPS proxies of global and regional forwarding rules | Creates `cert-<root with hyphens>-<YYYYMMDD>` and deletes the old self-managed certificate. Google-managed certificates and certificate maps are `skipped`. |
-| `aws-acm` | Imported ACM certificates | Re-imports under the same ARN, so load balancers and CloudFront need no change. A different key type is imported as a new certificate (tag `polyctl:domain=<root>`): set the new ARN where the old one was used. Amazon-issued certificates are `skipped`. Never imports a certificate for the first time (use `aws acm certificate import`). |
+| `aws-acm` | Imported ACM certificates | Re-imports under the same ARN, so load balancers and CloudFront need no change. A different key type (or a re-import ACM refuses) is imported as a new certificate (tag `polyctl:domain=<root>`): set the new ARN where the old one was used. Later runs find the new certificate by its serial number and report the old one `skipped` (with a warning while something still uses it) instead of importing again; delete the old certificate once nothing uses it (`--prune-expired` does once it expired). Amazon-issued certificates are `skipped`. Never imports a certificate for the first time (use `aws acm certificate import`). |
 
 **Options**
 

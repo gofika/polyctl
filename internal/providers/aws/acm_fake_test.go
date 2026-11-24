@@ -51,8 +51,11 @@ type fakeACMs struct {
 	requests []*acm.RequestCertificateInput
 	imports  []*acm.ImportCertificateInput
 	errs     map[string]error
-	pageSize int
-	seq      int
+	// refuseReimport makes every re-import fail the way ACM refuses a
+	// certificate it finds different from the current one.
+	refuseReimport bool
+	pageSize       int
+	seq            int
 	// dvoAfter, recordsAfter and fail are the defaults of new
 	// certificates.
 	dvoAfter, recordsAfter int
@@ -287,7 +290,7 @@ func (f *fakeACM) ImportCertificate(_ context.Context, in *acm.ImportCertificate
 		if c == nil {
 			return nil, notFoundErr(arn)
 		}
-		if c.keyAlg != alg {
+		if c.keyAlg != alg || s.refuseReimport {
 			return nil, &acmtypes.ValidationException{Message: awssdk.String(fmt.Sprintf("New certificate has a key of %s which is different from %s in the current certificate.", alg, c.keyAlg))}
 		}
 		c.domain, c.names, c.serial, c.notAfter, c.status = domain, []string{domain}, serial, &notAfter, acmIssued

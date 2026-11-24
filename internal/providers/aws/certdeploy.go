@@ -158,8 +158,26 @@ func (d acmDeployer) Plan(ctx context.Context, acct *platform.DeployAccount, t p
 		o.Warnf("%s: %s; imported as the new certificate %s: the ARN changed, update the load balancers and CloudFront distributions that use %s", acct.Profile, why, arn, t.ID)
 		return platform.Change{ID: arn, Detail: fmt.Sprintf("new certificate %s (%s): the ARN changed, update where %s is used", arn, desc, t.ID)}, nil
 	}
+	// replaced is the change of a target whose certificate an earlier run
+	// imported as a new certificate already: it is not imported again.
+	replaced := func(arn, why string) platform.Change {
+		detail := fmt.Sprintf("%s; the certificate (serial %s) is imported as %s already: update the load balancers and CloudFront distributions that use %s, then delete it",
+			why, cert.Serial, arn, t.ID)
+		if t.Attrs["in_use_by"] != "" {
+			o.Warnf("%s: %s", acct.Profile, detail)
+		}
+		return platform.Change{Action: platform.Skipped, Detail: detail}
+	}
 	if have := t.Attrs["key_algorithm"]; have != "" && have != alg {
 		why := fmt.Sprintf("ACM cannot change the key algorithm of %s (%s, the new certificate has %s)", t.ID, have, alg)
+		arn, err := c.importedWithSerial(ctx, t.Region, cert, t.ID)
+		if err != nil {
+			return nil, err
+		}
+		if arn != "" {
+			ch := replaced(arn, why)
+			return []platform.Step{{Resource: res, Action: platform.Skipped, ID: t.ID, Desc: ch.Detail}}, nil
+		}
 		return []platform.Step{{Resource: res, Action: platform.Updated, ID: t.ID, Desc: "import as a new certificate (" + desc + "): the ARN changes",
 			Apply: func(ctx context.Context) (platform.Change, error) { return importNew(ctx, why) }}}, nil
 	}
@@ -168,7 +186,15 @@ func (d acmDeployer) Plan(ctx context.Context, acct *platform.DeployAccount, t p
 			_, err := c.ImportCertificate(ctx, platform.CertificateImport{Region: t.Region, ARN: t.ID, Cert: cert.Cert, Chain: cert.Chain, Key: cert.Key})
 			var ve *acmtypes.ValidationException
 			if err != nil && errors.As(err, &ve) && strings.Contains(ve.ErrorMessage(), "different from") {
-				return importNew(ctx, "ACM refused the re-import: "+ve.ErrorMessage())
+				why := "ACM refused the re-import: " + ve.ErrorMessage()
+				arn, err := c.importedWithSerial(ctx, t.Region, cert, t.ID)
+				if err != nil {
+					return platform.Change{}, err
+				}
+				if arn != "" {
+					return replaced(arn, why), nil
+				}
+				return importNew(ctx, why)
 			}
 			if err != nil {
 				return platform.Change{}, err
@@ -178,6 +204,37 @@ func (d acmDeployer) Plan(ctx context.Context, acct *platform.DeployAccount, t p
 			}
 			return platform.Change{Detail: "re-imported " + desc + " (the ARN stays)"}, nil
 		}}}, nil
+}
+
+// importedWithSerial returns the ARN of another imported certificate of
+// the region that holds the serial number of cert (an earlier run imported
+// it as a new certificate), or "". Only certificates whose domain cert
+// covers are read.
+func (c *client) importedWithSerial(ctx context.Context, region string, cert *platform.DeployCert, except string) (string, error) {
+	certs, err := c.ListCertificates(ctx, platform.CertificateFilter{Region: region, KeyTypes: acmSyncKeyTypes})
+	if err != nil {
+		return "", err
+	}
+	want := platform.SerialKey(cert.Serial)
+	for _, s := range certs {
+		if s.Type != acmImported || s.ID == except {
+			continue
+		}
+		if len(cert.Names) > 0 && !platform.CertCovers(cert.Names, s.Domain) {
+			continue
+		}
+		full, err := c.DescribeCertificate(ctx, region, s.ID)
+		if errors.Is(err, platform.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if platform.SerialKey(full.Serial) == want {
+			return s.ID, nil
+		}
+	}
+	return "", nil
 }
 
 // Prune deletes the expired imported certificates of the regions that
