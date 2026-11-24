@@ -4,6 +4,7 @@
 # - gofmt, go vet and go test on this machine;
 # - go vet and compiled (not run) tests for linux, darwin and windows,
 #   so code that does not build on another platform fails here;
+#   plus a check that tests moving the home directory also set USERPROFILE;
 # - go test in a temporary worktree checked out with CRLF line endings,
 #   as actions/checkout does on windows-latest (core.autocrlf=true);
 # - shellcheck of the install scripts, and a parse of install.ps1 when
@@ -38,7 +39,17 @@ check_host() {
 }
 
 check_cross() {
-	local goos=$1 pkg
+	local goos=$1 pkg f
+	if [ "$goos" = windows ]; then
+		# os.UserHomeDir reads USERPROFILE on Windows, not HOME: a test
+		# that moves the home directory has to set both.
+		for f in $(git grep -l 'Setenv("HOME"' -- '*_test.go'); do
+			if ! grep -q 'Setenv("USERPROFILE"' "$f"; then
+				echo "$f sets HOME but not USERPROFILE (os.UserHomeDir on Windows)"
+				return 1
+			fi
+		done
+	fi
 	GOOS=$goos GOARCH=amd64 go vet ./... || return 1
 	for pkg in $(go list ./...); do
 		GOOS=$goos GOARCH=amd64 go test -c -o /dev/null "$pkg" || return 1
