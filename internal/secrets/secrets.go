@@ -70,15 +70,21 @@ type Credentials struct {
 	Password string `json:"password" yaml:"password"`
 	// PrivateKey is the PEM private key that decrypts an AWS Windows
 	// password, when polyctl created the key pair. It is never shown.
-	PrivateKey string    `json:"-" yaml:"-"`
-	CreatedAt  time.Time `json:"created_at" yaml:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at" yaml:"updated_at"`
+	PrivateKey string `json:"-" yaml:"-"`
+	// KeyPair is the name of the key pair polyctl created for the
+	// instance (an AWS Windows instance launched without a key of the
+	// user's), so that deleting the instance deletes it too; "" when the
+	// key pair is the user's, which polyctl never deletes.
+	KeyPair   string    `json:"-" yaml:"-"`
+	CreatedAt time.Time `json:"created_at" yaml:"created_at"`
+	UpdatedAt time.Time `json:"updated_at" yaml:"updated_at"`
 }
 
 // sealed is what is encrypted.
 type sealed struct {
 	Password   string `json:"password,omitempty"`
 	PrivateKey string `json:"private_key,omitempty"`
+	KeyPair    string `json:"key_pair,omitempty"`
 }
 
 // ErrKeyLost is wrapped by the error of a read when secrets are stored but
@@ -193,7 +199,7 @@ func (s *Store) Put(ctx context.Context, c Credentials) error {
 	if err != nil {
 		return err
 	}
-	plain, err := json.Marshal(sealed{Password: c.Password, PrivateKey: c.PrivateKey})
+	plain, err := json.Marshal(sealed{Password: c.Password, PrivateKey: c.PrivateKey, KeyPair: c.KeyPair})
 	if err != nil {
 		return err
 	}
@@ -231,7 +237,7 @@ func (s *Store) open(row inventory.SecretRow) (Credentials, error) {
 	if err != nil {
 		return c, fmt.Errorf("cannot read the stored credentials of instance %s: malformed content", row.InstanceID)
 	}
-	c.Password, c.PrivateKey = v.Password, v.PrivateKey
+	c.Password, c.PrivateKey, c.KeyPair = v.Password, v.PrivateKey, v.KeyPair
 	return c, nil
 }
 

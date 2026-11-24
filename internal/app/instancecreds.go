@@ -175,8 +175,9 @@ type PasswordCommand struct {
 	// with: no row for the instance (stored is nil), or a row whose
 	// password is not known yet (an AWS password still being generated).
 	// It returns an error wrapping platform.ErrNotFound when there is
-	// nothing to fetch. It is never called with --offline. A password it
-	// returns is stored before it is shown.
+	// nothing to fetch; its message, unless it is the bare sentinel, is
+	// then the command's error (exit code 4). It is never called with
+	// --offline. A password it returns is stored before it is shown.
 	Retrieve func(ctx context.Context, profile, location, instance string, stored *secrets.Credentials) (*secrets.Credentials, error)
 }
 
@@ -248,6 +249,10 @@ func InstancePasswordCommand(rt *Runtime, pc PasswordCommand) *cobra.Command {
 			if len(found) == 1 {
 				cur = &found[0]
 			}
+			// notFound is the explanation Retrieve gave for having nothing
+			// to fetch (a password not generated yet, no key to decrypt
+			// it): it says more than the generic message.
+			var notFound error
 			if (cur == nil || cur.Password == "") && pc.Retrieve != nil && !rt.Flags.Offline {
 				got, err := pc.Retrieve(ctx, profile, location, ref, cur)
 				switch {
@@ -260,7 +265,12 @@ func InstancePasswordCommand(rt *Runtime, pc PasswordCommand) *cobra.Command {
 					cur = got
 				case err != nil && !errors.Is(err, platform.ErrNotFound):
 					return err
+				case err != nil && err != platform.ErrNotFound: //nolint:errorlint // the bare sentinel carries no explanation
+					notFound = err
 				}
+			}
+			if notFound != nil && (cur == nil || cur.Password == "") {
+				return notFound
 			}
 			if cur == nil {
 				return fmt.Errorf("%w: no Windows credentials stored for instance %q in profile %s: polyctl stores them when it creates an instance with --os windows; for another instance reset the password in the platform's console",

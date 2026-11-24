@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -299,6 +300,13 @@ func TestPasswordCommandRetrieve(t *testing.T) {
 	}
 	if err := passwordCmd(t, h, pc, "nosuch"); !errors.Is(err, platform.ErrNotFound) || calls != 2 {
 		t.Errorf("unknown instance = %v (%d calls)", err, calls)
+	}
+	// An explanation of Retrieve is the error of the command.
+	pc.Retrieve = func(context.Context, string, string, string, *secrets.Credentials) (*secrets.Credentials, error) {
+		return nil, fmt.Errorf("%w: pass --key-file", platform.ErrNotFound)
+	}
+	if err := passwordCmd(t, h, pc, "other"); !errors.Is(err, platform.ErrNotFound) || !strings.Contains(err.Error(), "pass --key-file") {
+		t.Errorf("explained = %v", err)
 	}
 }
 

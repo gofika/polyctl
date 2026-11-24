@@ -63,7 +63,7 @@ func TestRoundTripAndNoPlaintext(t *testing.T) {
 	s := New(db, keys)
 	const pw = "Zq7-secret-PASSWORD:x"
 	const pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEsecretkeymaterial\n-----END RSA PRIVATE KEY-----"
-	if err := s.Put(ctx, Credentials{Ref: ref, Name: "win-1", User: "Administrator", Password: pw, PrivateKey: pem}); err != nil {
+	if err := s.Put(ctx, Credentials{Ref: ref, Name: "win-1", User: "Administrator", Password: pw, PrivateKey: pem, KeyPair: "win-1-win"}); err != nil {
 		t.Fatal(err)
 	}
 	if keys.sets != 1 {
@@ -73,7 +73,7 @@ func TestRoundTripAndNoPlaintext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Password != pw || got.PrivateKey != pem || got.User != "Administrator" || got.Name != "win-1" || got.CreatedAt.IsZero() {
+	if got.Password != pw || got.PrivateKey != pem || got.KeyPair != "win-1-win" || got.User != "Administrator" || got.Name != "win-1" || got.CreatedAt.IsZero() {
 		t.Fatalf("got %+v", got)
 	}
 	// A second store (another process) reads it with the same data key.
