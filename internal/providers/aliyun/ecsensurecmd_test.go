@@ -37,6 +37,7 @@ func TestInstanceEnsureCreatesTheChain(t *testing.T) {
 	if !strings.HasPrefix(run.Get("VSwitchId"), "vsw-new") || !strings.HasPrefix(run.Get("SecurityGroupId"), "sg-new") || run.Get("ClientToken") == "" {
 		t.Errorf("RunInstances = %v", run)
 	}
+	assertKeyOnly(t, run, "ops")
 	auth := h.api.callsFor("AuthorizeSecurityGroup")[0]
 	if len(permissions(auth)) != 3 {
 		t.Errorf("rules = %v", permissions(auth))
@@ -268,5 +269,19 @@ func TestInstanceEnsureFailedBindingHasNoAddress(t *testing.T) {
 	h.jsonOut(&out)
 	if out.Result.InstanceID != "i-1" || out.Result.PublicIP != "" {
 		t.Errorf("result = %+v", out.Result)
+	}
+}
+
+// ensure of a missing Linux instance without a key pair writes nothing: a
+// Linux instance logs in with a key only.
+func TestInstanceEnsureNewNeedsAKeyPair(t *testing.T) {
+	h, f, _ := computeHarness(t, app.Flags{})
+	f.images = realImages()
+	err := h.run("ecs", "instance", "ensure", "site_a")
+	if !errors.Is(err, platform.ErrInvalidInput) && !errors.Is(err, app.ErrUsage) {
+		t.Fatalf("no key = %v", err)
+	}
+	if len(f.writes) != 0 {
+		t.Errorf("writes = %v", f.writes)
 	}
 }

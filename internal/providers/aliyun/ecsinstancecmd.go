@@ -596,7 +596,10 @@ vSwitches and the security group as well.
 - The key pair: an existing one first (--key-pair, or the key pair that
   holds --ssh-key / --ssh-key-file, compared by fingerprint), else the key
   is imported under --key-pair (asked for on a terminal; no name is ever
-  chosen for you).
+  chosen for you). A key pair is required: Linux instances log in with a
+  key only and polyctl never sets a password; without any key flag a
+  terminal asks for a key file, and the non-interactive flow is exit
+  code 2 before anything is read.
 - The image is --image (any image id: the way to use another system), else
   the newest public image of --os (alibaba-cloud-linux, or windows; see
   image latest) for the architecture of the type (a size resolves to an
@@ -642,6 +645,11 @@ vSwitches and the security group as well.
 			if !f.windows() {
 				if in, err = f.keyInput(rt); err != nil {
 					return err
+				}
+				if !f.keys.Given() && !rt.Interactive() {
+					// Before anything is read: an instance without a key
+					// pair is one nobody can log in to.
+					return app.UsageErrf("a key pair is required (Linux instances log in with a key only, never a password): pass --key-pair <name> (an existing key pair), or --ssh-key-file <path> / --ssh-key <public key> with --key-pair <name> to import one")
 				}
 			}
 			if rt.Flags.Offline {

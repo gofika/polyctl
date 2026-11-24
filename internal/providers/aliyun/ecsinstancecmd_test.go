@@ -3,6 +3,7 @@ package aliyun
 import (
 	"context"
 	"errors"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -105,6 +106,7 @@ func TestInstanceCreate(t *testing.T) {
 	if run.Get("VSwitchId") != "vsw-b" || run.Get("SecurityGroupId") != "sg-1" || run.Get("SystemDisk.Size") != "40" || run.Get("InstanceType") != "ecs.u1-c1m2.large" {
 		t.Errorf("RunInstances = %v", run)
 	}
+	assertKeyOnly(t, run, "ops")
 	rep := reportOf(t, h)
 	if c := changeOf(t, rep, "instance/site-a status"); !strings.HasPrefix(c.Detail, "Running") {
 		t.Errorf("status = %+v", c)
@@ -380,5 +382,32 @@ func TestInstanceCreateAgainAfterDelete(t *testing.T) {
 	}
 	if c := changeOf(t, reportOf(t, h), "instance/site-a"); c.ID == first || c.ID == "" {
 		t.Errorf("change = %+v", c)
+	}
+}
+
+// assertKeyOnly checks that a Linux RunInstances binds the key pair and
+// sets no password: none sent, none inherited from the image.
+func assertKeyOnly(t *testing.T, run url.Values, keyPair string) {
+	t.Helper()
+	if run.Get("KeyPairName") != keyPair {
+		t.Errorf("KeyPairName = %q, want %q", run.Get("KeyPairName"), keyPair)
+	}
+	for _, k := range []string{"Password", "PasswordInherit", "UserData"} {
+		if run.Has(k) {
+			t.Errorf("RunInstances sends %s", k)
+		}
+	}
+}
+
+// A Linux create without a key pair fails before anything is read.
+func TestInstanceCreateRequiresAKeyPair(t *testing.T) {
+	h, f, _ := computeHarness(t, app.Flags{})
+	siteNet(f)
+	err := h.run("ecs", "instance", "create", "site-a", "--type", "ecs.u1-c1m2.large", "--security-group", "sg-common")
+	if !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "--key-pair") || !strings.Contains(err.Error(), "never a password") {
+		t.Fatalf("no key = %v", err)
+	}
+	if len(f.writes) != 0 || len(h.api.callsFor("DescribeInstances")) != 0 {
+		t.Errorf("writes %v, calls %d", f.writes, len(h.api.callsFor("DescribeInstances")))
 	}
 }
