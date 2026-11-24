@@ -149,7 +149,7 @@ All state lives in one directory, `~/.config/polyctl/` by default (created with 
 | File | Purpose |
 | --- | --- |
 | `config.yaml` | Profiles and settings. Metadata only, never secrets. Written atomically with mode `0600`. |
-| `inventory.db` | SQLite cache of platform resources and the domain index. |
+| `inventory.db` | SQLite cache of platform resources and the domain index, and the encrypted login credentials of the Windows instances polyctl creates (see Instance login credentials). |
 | `credentials.json` | Secrets, **only** when the OS keyring is unavailable or `credential_store: file` is set. Mode `0600`. |
 | `credentials.lock` | Empty lock file next to it. polyctl holds a lock on it while it changes stored secrets, so that several polyctl processes running at once do not drop each other's entries. Safe to delete when no polyctl is running. |
 
@@ -379,9 +379,11 @@ When the keyring cannot be reached (headless servers, containers, no D-Bus sessi
 
 Force a backend with `credential_store: file` / `keyring` in `config.yaml` or the `POLYCTL_CREDENTIAL_STORE` environment variable.
 
+The same store holds one more entry, `/instance-secrets` (a name no profile can have): the data key that encrypts the instance login credentials kept in `inventory.db` (see below). `auth logout` does not touch it.
+
 ### `inventory.db` schema
 
-The inventory is a WAL-mode SQLite database with four tables:
+The inventory is a WAL-mode SQLite database with five tables:
 
 ```sql
 CREATE TABLE resources (
@@ -419,6 +421,20 @@ CREATE TABLE ip_index (                -- address / prefix / DNS name -> resourc
   PRIMARY KEY (platform, profile, resource_type, resource_id, ip, kind)
 );
 
+CREATE TABLE instance_secrets (        -- Windows logins of created instances, sealed (see below)
+  platform      TEXT    NOT NULL,
+  profile       TEXT    NOT NULL,
+  location      TEXT    NOT NULL,     -- region, or zone where instances live in one
+  instance_id   TEXT    NOT NULL,
+  name          TEXT    NOT NULL,     -- instance name when stored
+  user          TEXT    NOT NULL,     -- login user name (not secret)
+  nonce         BLOB    NOT NULL,     -- AES-GCM nonce, fresh for every write
+  secret        BLOB    NOT NULL,     -- AES-256-GCM ciphertext of the password (and an AWS private key)
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL,
+  PRIMARY KEY (platform, profile, location, instance_id)
+);
+
 CREATE TABLE sync_state (              -- freshness of each synced set
   platform      TEXT    NOT NULL,
   profile       TEXT    NOT NULL,
@@ -430,9 +446,21 @@ CREATE TABLE sync_state (              -- freshness of each synced set
 );
 ```
 
-`resources.data` keeps each object in its platform-native shape (serialised as JSON), so `-o json` on a cached read shows the same fields a live read would. The version of that JSON is kept in SQLite's `user_version`; whenever a database is opened that still holds DNS records written by 0.1.x, their `content` field is renamed to `value`, so they keep their values without a new sync. `domain_index` is rebuilt from `zone` and `domain` resources on every sync; DNS records are never indexed, they are looked up through their zone. `ip_index` is written with the resources that carry addresses (every network interface, secondary and alias address of an instance, a load balancer's addresses and DNS name, an elastic / static address, a database endpoint) and rebuilt with their set; prefixes (GCP alias ranges, IPv6 prefixes) match every address they contain. A database created by an older version gets the table on first use and fills it on the next sync of those types. The file is safe to delete at any time: polyctl recreates it and re-fetches on demand.
+`resources.data` keeps each object in its platform-native shape (serialised as JSON), so `-o json` on a cached read shows the same fields a live read would. The version of that JSON is kept in SQLite's `user_version`; whenever a database is opened that still holds DNS records written by 0.1.x, their `content` field is renamed to `value`, so they keep their values without a new sync. `domain_index` is rebuilt from `zone` and `domain` resources on every sync; DNS records are never indexed, they are looked up through their zone. `ip_index` is written with the resources that carry addresses (every network interface, secondary and alias address of an instance, a load balancer's addresses and DNS name, an elastic / static address, a database endpoint) and rebuilt with their set; prefixes (GCP alias ranges, IPv6 prefixes) match every address they contain. A database created by an older version gets the table on first use and fills it on the next sync of those types. Apart from `instance_secrets`, the file is a cache and safe to delete at any time: polyctl recreates it and re-fetches on demand. `instance_secrets` is not a cache: a sync, `auth logout` (which purges the profile's cached rows) and `--refresh` leave it alone, `auth rename` moves its rows to the new name, and deleting the file loses the stored Windows passwords, which no platform can show again.
 
 `polyctl inventory path` prints the database actually in use (`POLYCTL_INVENTORY_DB` when set, otherwise `<config dir>/inventory.db`).
+
+### Instance login credentials
+
+Linux instances log in with an SSH key only. Every Linux create of `aws ec2 instance`, `gcp compute instance` and `aliyun ecs instance` (and `aliyun ecs instance ensure`) sends a key, never a password: polyctl has no password flags for Linux, sends no password, password inheritance or user data that would set one, and a Linux create without any usable key is exit code 2 before anything is created (for an AWS or Alibaba Cloud create before anything is read; on those two a terminal asks for a public key file instead).
+
+A Windows instance logs in with a user name and a password. polyctl keeps the ones it sets or retrieves when it creates a Windows instance in the `instance_secrets` table of `inventory.db`, so that the login is known right after the create:
+
+- The user name is stored as it is; the password (and, for AWS, the private key that decrypts the password AWS generates) is sealed with AES-256-GCM: a random nonce for every write, the row's platform, location, instance id and user name as additional data (a ciphertext copied to another row does not open). Nothing secret is ever stored in plain text, in the inventory's other tables, in change reports, in `hooks.on_failure` payloads, in error messages or in `-v` output.
+- The 32-byte data key is generated (from `crypto/rand`) the first time a credential is stored, and kept in the credential store under `/instance-secrets`: the OS keyring, or `credentials.json` (mode `0600`) where there is no keyring. It never enters `inventory.db`. Copying `inventory.db` to another machine without that entry, or removing the entry, makes the stored credentials unreadable: reading them is then exit code 1 with a message that says so, and polyctl does not replace the key on a read.
+- An interactive create prints the user name and the password once it is done, clearly labelled: on stdout after the change report with the table output, on stderr (the terminal) with `-o json` / `-o yaml` so that stdout stays one document. The non-interactive flow never prints the password: a note on stderr names the user and the command that shows the password, `<tree> password <name|id>`, which prints `INSTANCE`, `USER` and `PASSWORD` (`-o json`: `{"instance", "id", "user", "password", "platform", "profile", "location", "updated_at"}`); an instance with nothing stored is exit code 4. When the credentials cannot be stored, an interactive create prints them with a warning that they cannot be shown again, and a non-interactive one fails with exit code 1 (without the password).
+- `--dry-run` generates no password, stores nothing and creates no data key. Deleting an instance through polyctl removes its stored credentials once the delete succeeded.
+- Generated passwords are 20 characters from `crypto/rand`, with upper- and lower-case letters, digits and at least one of `@#-_+=.,:` (accepted by Alibaba Cloud, AWS and Compute Engine Windows images, free of quotes, backslashes, spaces and shell or `cmd.exe` metacharacters), starting with a letter or digit, without the look-alikes `0 O 1 l I`.
 
 ## Interactive and non-interactive use
 
@@ -1660,6 +1688,8 @@ internal/cert/               The certificate store, the ACME account and issuanc
 internal/config/             config.yaml loading/saving (profiles and their accounts), TTL defaults, defaults / naming /
                              hooks / cert / dns settings
 internal/creds/              Keyring store, 0600 file store, Multi (read from any, write to primary)
+internal/secrets/            Instance login credentials sealed with AES-256-GCM in inventory.db (data key in the
+                             credential store), the Windows password generator
 internal/inventory/          SQLite schema, Replace/Upsert/Delete, Purge/RenameProfile, domain lookup, IP index, stats
 internal/output/             table / json / yaml rendering
 internal/dnstest/            Fake DNS resolvers on 127.0.0.1 for tests
@@ -1674,10 +1704,10 @@ Adding a platform means implementing `platform.Provider` (and `DNSService` / `Re
 
 ## Security notes
 
-- Secrets never enter `config.yaml`, the inventory or command output. `auth list` shows metadata only.
+- Secrets never enter `config.yaml`, the inventory or command output. `auth list` shows metadata only. The one exception is the login of a Windows instance polyctl created: stored encrypted in the inventory, and printed only by an interactive create and by the `password` command of the instance group.
 - Keyring entries are created under the service name `polyctl`; on macOS you may be asked once to allow `polyctl` access to the Keychain item.
 - When the keyring is unavailable, `credentials.json` is written with mode `0600` inside a `0700` directory. Treat that file like `~/.aws/credentials`. Set `credential_store: keyring` if you would rather fail than fall back.
-- `inventory.db` contains the full record data of every zone you synced (including TXT verification strings and the public IPs of instances). It is not encrypted; keep the config directory private or point `POLYCTL_INVENTORY_DB` at a protected location.
+- `inventory.db` contains the full record data of every zone you synced (including TXT verification strings and the public IPs of instances). It is not encrypted, except the Windows passwords of the `instance_secrets` table, which are sealed with a data key kept in the credential store (see Instance login credentials); keep the config directory private or point `POLYCTL_INVENTORY_DB` at a protected location.
 - Secrets are read from the terminal without echo. Passing them on the command line with `--set token=...` is convenient for scripts but leaves them in shell history and in the process list; prefer the interactive prompt, or `--set key=-` with the value piped on stdin by a secrets manager.
 - AWS SSO role credentials and GCP OAuth access tokens are short-lived and minted on demand; polyctl stores the Identity Center access/refresh tokens (plus the registered OIDC client) and the Google refresh token, and refreshes them when possible.
 - A Cloudflare browser login (`method=oauth`) stores the OAuth access token, the refresh token, the expiry and the granted scopes in the credential store, never in `config.yaml` (which records the method, the account and the list of granted scopes) and never in output, `-v` included. The client is a public one without a secret: each login is bound to a fresh PKCE verifier and a random `state`, the redirect is taken by a listener on `127.0.0.1` only, on a random port, for one request on one path, and the page it shows contains nothing of the request. The authorization covers a whole account, so prefer an API token where single zones are enough. `auth logout` revokes the refresh token and the access token at Cloudflare, best effort: when Cloudflare cannot be reached, or with `--offline`, a note says that the authorization could not be revoked, the account is removed all the same, and the authorization stays valid until you withdraw it in the Cloudflare dashboard.
