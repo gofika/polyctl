@@ -67,12 +67,7 @@ comment; on a terminal it is asked.`,
 				Windows: instanceWindows(l.inst), Metadata: &metadataKeyStore{rt: rt, l: l},
 				Running: l.inst.Status == statusRunning, State: l.inst.Status}, nil
 		},
-		UserFromKey: func(k *platform.PublicKey) string {
-			if m := commentUserRe.FindStringSubmatch(k.Comment); m != nil {
-				return m[1]
-			}
-			return ""
-		},
+		UserFromKey: func(k *platform.PublicKey) string { return commentUser(k.Comment) },
 	})
 }
 

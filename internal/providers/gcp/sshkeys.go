@@ -51,8 +51,9 @@ func (k sshKey) same(user string, key ssh.PublicKey) bool {
 
 var (
 	// commentUserRe takes the user from the e-mail address at the end of a
-	// key's comment ("... alice@example.com" -> "alice").
-	commentUserRe = regexp.MustCompile(`(\w+)@[\w.]+\s*$`)
+	// key's comment: the whole local part ("... john.smith@my-mac.local"
+	// -> "john.smith").
+	commentUserRe = regexp.MustCompile(`([A-Za-z0-9._-]+)@[A-Za-z0-9.-]+\s*$`)
 	sshUserRe     = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]*$`)
 	userPrefixRe  = regexp.MustCompile(`^([^\s:]+):(\S.*)$`)
 )
@@ -75,8 +76,18 @@ func splitUser(text string) (user, rest string) {
 	return "", text
 }
 
+// commentUser is the local part of the e-mail address that ends a key's
+// comment, "" when there is none or it is not a valid user name.
+func commentUser(comment string) string {
+	m := commentUserRe.FindStringSubmatch(comment)
+	if m == nil || checkSSHUser(m[1], "comment") != nil {
+		return ""
+	}
+	return m[1]
+}
+
 // keyUser decides the user of a key: the "user:" prefix, else --ssh-user,
-// else the name before the @ of the e-mail address that ends the key's
+// else the whole local part of the e-mail address that ends the key's
 // comment. None of them is a usage error.
 func keyUser(prefix, sshUser string, key *platform.PublicKey, source string) (string, error) {
 	user := prefix
@@ -85,11 +96,11 @@ func keyUser(prefix, sshUser string, key *platform.PublicKey, source string) (st
 		user, flag = sshUser, "--ssh-user"
 	}
 	if user == "" {
-		m := commentUserRe.FindStringSubmatch(key.Comment)
-		if m == nil {
-			return "", fmt.Errorf("%w: %s: cannot tell the user of the key (its comment ends with no e-mail address); write it as user:ssh-ed25519 AAAA..., or pass --ssh-user <name>", platform.ErrInvalidInput, source)
+		user = commentUser(key.Comment)
+		if user == "" {
+			return "", fmt.Errorf("%w: %s: cannot tell the user of the key (its comment ends with no e-mail address whose local part is a valid user name); write it as user:ssh-ed25519 AAAA..., or pass --ssh-user <name>", platform.ErrInvalidInput, source)
 		}
-		user, flag = m[1], source
+		flag = source
 	}
 	if err := checkSSHUser(user, flag); err != nil {
 		return "", err

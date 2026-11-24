@@ -666,7 +666,7 @@ and naming.gcp_instance_internal_ip) are reserved, or reused when they
 exist, and bound to the instance; --static-ip=false uses ephemeral ones.
 
 --ssh-key (the public key itself, "user:ssh-ed25519 AAAA..." or a key whose
-comment ends with an e-mail address, whose name is the user),
+comment ends with an e-mail address, whose whole local part is the user),
 --ssh-key-file (every key of the file; --ssh-user names the user) and
 defaults.gcp.ssh_keys go into the instance's ssh-keys metadata, except the
 keys the project metadata already holds (--ssh-key-instance-only writes

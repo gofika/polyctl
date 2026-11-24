@@ -126,3 +126,24 @@ func TestCollectSSHKeysAndMetadata(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+// The user taken from a comment is the whole local part of the address,
+// whatever dots and hyphens it or the host holds.
+func TestCommentUser(t *testing.T) {
+	for comment, want := range map[string]string{
+		"john.smith@laptop":   "john.smith",
+		"ci-bot@host":         "ci-bot",
+		"akira@my-mac.local":  "akira",
+		"key of alice@x.com ": "alice",
+		"laptop":              "",
+		"-bad@host":           "",
+	} {
+		if got := commentUser(comment); got != want {
+			t.Errorf("commentUser(%q) = %q, want %q", comment, got, want)
+		}
+	}
+	k, err := parseSSHKey(testPublicKey(t, "john.smith@laptop"), "", "--ssh-key")
+	if err != nil || k.User != "john.smith" {
+		t.Errorf("parseSSHKey = %+v, %v", k, err)
+	}
+}
