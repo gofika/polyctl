@@ -233,3 +233,14 @@ func TestSSHKeyRefusedKeyPairKeyUsesTempAccess(t *testing.T) {
 		t.Errorf("stderr %q", s)
 	}
 }
+
+// The key pair's key with no way to reach the instance and no temporary
+// way in: the error says to pass --address, not another key.
+func TestSSHKeyUnreachableKeyPairKeyNoTempAccess(t *testing.T) {
+	r := newKeyRig(t, "ec2-user")
+	r.inst.PublicIP, r.inst.PrivateIP = "", ""
+	err := r.run("list", "web-1", "--accept-new-host-key")
+	if err == nil || !strings.Contains(err.Error(), "pass --address") || strings.Contains(err.Error(), "--identity-file") {
+		t.Fatalf("unreachable: %v", err)
+	}
+}

@@ -1118,6 +1118,11 @@ func (sc SSHKeyCommand) open(ctx context.Context, rt *Runtime, f *sshKeyFlags, a
 			return nil, err
 		}
 		if len(inst.TempAccess) == 0 {
+			var ae *sshremote.AuthError
+			if !errors.As(err, &ae) {
+				// Not reachable: another key would not help.
+				return nil, err
+			}
 			return nil, fmt.Errorf("%w; pass the private key of a key the instance accepts with --identity-file%s", err, loginHint)
 		}
 		reason, untried = fmt.Sprintf("the key pair %s of instance %s did not log in: %v", kpName, inst.label(), err), false
