@@ -699,6 +699,29 @@ func TestLatestWindowsAMI(t *testing.T) {
 	}
 }
 
+// A Windows SSM parameter whose image is deprecated is passed over for the
+// newest available image, with a note.
+func TestLatestWindowsAMIParameterNotPickable(t *testing.T) {
+	h := winHarness(t, app.Flags{})
+	c := &client{region: "ap-east-1", ec2For: func(r string) ec2API { return newEC2(awssdk.Config{Region: r}) },
+		ssmFor: func(r string) ssmAPI { return newSSM(awssdk.Config{Region: r}) }}
+	h.ec2.mu.Lock()
+	for i, im := range h.ec2.inst.images["ap-east-1"] {
+		if awssdk.ToString(im.ImageId) == "ami-0win2025" {
+			h.ec2.inst.images["ap-east-1"][i].DeprecationTime = awssdk.String("2026-01-01T00:00:00.000Z")
+		}
+	}
+	h.ec2.mu.Unlock()
+	var notes []string
+	img, err := c.latestWindowsAMI(context.Background(), "", func(s string) { notes = append(notes, s) })
+	if err != nil || img.ID != "ami-0win2025old" || !img.Windows {
+		t.Fatalf("deprecated parameter image = %+v, %v", img, err)
+	}
+	if len(notes) != 1 || !strings.Contains(notes[0], "not an available x86_64 image") {
+		t.Errorf("notes = %v", notes)
+	}
+}
+
 // A failed RunInstances deletes the key pair polyctl created for it.
 func TestWindowsRunFailureDeletesTheKeyPair(t *testing.T) {
 	h := winHarness(t, app.Flags{})
