@@ -139,6 +139,11 @@ func TestDNSDeleteIDOfAnotherZone(t *testing.T) {
 	if code != cli.ExitUsage || strings.Contains(stderr, "(y/N)") || len(e.f.Writes()) != 0 || !strings.Contains(stderr, "belongs to zone other.com") {
 		t.Errorf("exit %d, writes %v, %s", code, e.f.Writes(), stderr)
 	}
+	// The neutral dns delete finds no record with that id in the zone named.
+	code, _, stderr = e.run(nil, "", "dns", "delete", "example.com", "--id", "other.com|A|www|203.0.113.1", "--yes")
+	if code != cli.ExitNotFound || len(e.f.Writes()) != 0 {
+		t.Errorf("neutral: exit %d, writes %v, %s", code, e.f.Writes(), stderr)
+	}
 }
 
 // The record picked in the interactive flow is confirmed too.
