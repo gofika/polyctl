@@ -658,7 +658,11 @@ change report; no fit is exit code 4, a size of 0 vCPUs or 0 GiB or a
 size with --arch arm64 exit code 2. The network goes into one network
 interface with a public IP unless --public-ip=false. --ssh-key /
 --ssh-key-file bind the key pair that holds that public key, importing it
-under --key-pair when none does. Without any key pair the instance gets no SSH key.
+under --key-pair when none does. A key pair is required: Linux instances
+log in with a key only, and polyctl never sets or enables a password.
+Without --key-pair, --ssh-key, --ssh-key-file or defaults.aws.key_name (an
+existing key pair) a terminal asks for a public key file, and the
+non-interactive flow is exit code 2 before anything is created.
 
 --disk adds a data disk (/dev/sdb, gp3, 3000 IOPS, 125 MiB/s by default)
 that is kept when the instance is deleted; encryption follows the
@@ -729,6 +733,11 @@ running and prints its addresses.`,
 			defaultKey, err := rt.Setting(profile, platform.AWS, "key_name", "")
 			if err != nil {
 				return err
+			}
+			if !keys.Given() && defaultKey == "" && !rt.Interactive() {
+				// Before anything is read: an instance without a key pair is
+				// one nobody can log in to.
+				return app.UsageErrf("a key pair is required (Linux instances log in with a key only, never a password): pass --key-pair <name> (an existing key pair), --ssh-key-file <path> / --ssh-key <public key> with --key-pair <name> to import one, or set defaults.aws.key_name")
 			}
 			tags, err := keyPairTags(rt, profile)
 			if err != nil {
@@ -812,7 +821,11 @@ running and prints its addresses.`,
 			var plan platform.Plan
 			spec := platform.CreateSpec{Name: name, Region: region, Type: typ, Image: img.ID, Arch: arch, Subnet: subnet,
 				SecurityGroups: sgs, PublicIP: publicIP, Disk: diskSpec, Tags: tags, ClientToken: newClientToken()}
-			if keys.Given() || defaultKey != "" {
+			// Linux instances log in with a key only, and polyctl never
+			// sets a password: an instance without a key pair is one nobody
+			// can log in to, so a key pair is always resolved (asked for on
+			// a terminal, a usage error otherwise).
+			{
 				kp, err := platform.ResolveKeyPair(ctx, &keyPairLister{c: c, region: region}, keyIn)
 				if err != nil {
 					return err
@@ -835,8 +848,6 @@ running and prints its addresses.`,
 					storeKeyPair(ctx, rt, c, prof.Name, info)
 					return info.KeyPairID, nil
 				}))
-			} else {
-				rt.Infof("note: no key pair (pass --key-pair, --ssh-key or --ssh-key-file, or set defaults.aws.key_name): the instance gets no SSH key")
 			}
 			if len(sgs) == 0 {
 				rt.Infof("note: no security group given (--sg or defaults.aws.security_group_ids): the VPC's default security group is used")

@@ -618,7 +618,14 @@ func useFakeClock(t *testing.T) *fakeClock {
 func newInstanceHarness(t *testing.T, flags app.Flags) *awsHarness {
 	t.Helper()
 	useFakeClock(t)
-	return newAWSHarness(t, flags, map[string]any{"subnet_id": "subnet-0def", "security_group_ids": []any{"sg-0aaa"}})
+	h := newAWSHarness(t, flags, map[string]any{"subnet_id": "subnet-0def", "security_group_ids": []any{"sg-0aaa"}, "key_name": "site-key"})
+	// Every create binds a key pair: the default one exists in the
+	// regions the tests create in.
+	k := genED25519(t)
+	for _, region := range []string{"ap-east-1", "us-west-2"} {
+		h.add(region, newFakeKeyPair("site-key", k))
+	}
+	return h
 }
 
 // addInstance puts an instance into the fake account.

@@ -36,7 +36,7 @@ func TestInstanceCreateSize(t *testing.T) {
 		if in.InstanceType != "t3.medium" || awssdk.ToString(in.ImageId) != "ami-0x86" {
 			t.Errorf("run input = %+v", in)
 		}
-		rep := h.report()
+		rep := createReport(h)
 		if c := rep.Changes[0]; c.Action != platform.Created || !strings.Contains(c.Detail, "type=t3.medium(2H4G)") ||
 			c.Attrs["instance_type"] != "t3.medium" || c.Attrs["size"] != "2H4G" {
 			t.Errorf("report = %+v", rep)
@@ -46,12 +46,13 @@ func TestInstanceCreateSize(t *testing.T) {
 
 func TestInstanceCreateSizeDryRunAndDefault(t *testing.T) {
 	useFakeClock(t)
-	h := newAWSHarness(t, app.Flags{DryRun: true}, map[string]any{"subnet_id": "subnet-0def", "security_group_ids": []any{"sg-0aaa"}, "instance_type": "4h8g"})
+	h := newAWSHarness(t, app.Flags{DryRun: true}, map[string]any{"subnet_id": "subnet-0def", "security_group_ids": []any{"sg-0aaa"}, "instance_type": "4h8g", "key_name": "site-key"})
+	h.add("ap-east-1", newFakeKeyPair("site-key", genED25519(t)))
 	h.addSubnet()
 	if err := h.run("ec2", "instance", "create", "site-new"); err != nil {
 		t.Fatalf("%v\n%s", err, h.stderr.String())
 	}
-	rep := h.report()
+	rep := createReport(h)
 	c := rep.Changes[0]
 	if !rep.DryRun || c.Action != platform.WouldCreate || !strings.Contains(c.Detail, "type=c6a.xlarge(4h8g)") || c.Attrs["instance_type"] != "c6a.xlarge" {
 		t.Errorf("report = %+v", rep)

@@ -143,7 +143,7 @@ func TestInstanceCreate(t *testing.T) {
 	if err := h.run("ec2", "instance", "create", "site-new", "--type", "c6a.xlarge", "--disk", "400", "--tag", "team=ops", "--wait"); err != nil {
 		t.Fatalf("%v\n%s", err, h.stderr.String())
 	}
-	rep := h.report()
+	rep := createReport(h)
 	if len(rep.Changes) != 1 || rep.Changes[0].Action != platform.Created || rep.Changes[0].Attrs["public_ip"] == "" || !strings.Contains(rep.Changes[0].Detail, "running") {
 		t.Fatalf("report = %+v", rep)
 	}
@@ -155,7 +155,7 @@ func TestInstanceCreate(t *testing.T) {
 	if awssdk.ToString(nic.SubnetId) != "subnet-0def" || strings.Join(nic.Groups, ",") != "sg-0aaa" || !awssdk.ToBool(nic.AssociatePublicIpAddress) || awssdk.ToInt32(nic.DeviceIndex) != 0 {
 		t.Errorf("nic = %+v", nic)
 	}
-	if awssdk.ToString(in.ImageId) != "ami-0x86" || in.InstanceType != "c6a.xlarge" || awssdk.ToString(in.ClientToken) != "token-1" || in.KeyName != nil {
+	if awssdk.ToString(in.ImageId) != "ami-0x86" || in.InstanceType != "c6a.xlarge" || awssdk.ToString(in.ClientToken) != "token-1" || awssdk.ToString(in.KeyName) != "site-key" {
 		t.Errorf("run input = %+v", in)
 	}
 	if len(in.BlockDeviceMappings) != 1 {
@@ -176,8 +176,9 @@ func TestInstanceCreate(t *testing.T) {
 	if tags["Name"] != "site-new" || tags["team"] != "ops" {
 		t.Errorf("tags = %v", tags)
 	}
-	if !strings.Contains(h.stderr.String(), "no key pair") {
-		t.Errorf("stderr lacks the key pair note: %s", h.stderr.String())
+	// A Linux instance logs in with its key only: nothing sets a password.
+	if in.UserData != nil {
+		t.Errorf("user data = %q", awssdk.ToString(in.UserData))
 	}
 
 	// The same name again: exit code 1, no write.
@@ -193,7 +194,7 @@ func TestInstanceCreateDryRunAndArch(t *testing.T) {
 	if err := h.run("ec2", "instance", "create", "site-arm", "--type", "t4g.small", "--disk", "20", "--disk-type", "gp2", "--wait"); err != nil {
 		t.Fatalf("%v\n%s", err, h.stderr.String())
 	}
-	rep := h.report()
+	rep := createReport(h)
 	if !rep.DryRun || len(rep.Changes) != 1 || rep.Changes[0].Action != platform.WouldCreate || rep.Changes[0].ID != platform.Pending {
 		t.Fatalf("report = %+v", rep)
 	}
@@ -231,7 +232,7 @@ func TestInstanceCreateAMIFallback(t *testing.T) {
 	if err := h.run("ec2", "instance", "create", "x", "--type", "t3.nano"); err != nil {
 		t.Fatal(err)
 	}
-	if rep := h.report(); !strings.Contains(rep.Changes[0].Detail, "ami=ami-new618") || !strings.Contains(h.stderr.String(), "newest Amazon Linux 2023 image") {
+	if rep := createReport(h); !strings.Contains(rep.Changes[0].Detail, "ami=ami-new618") || !strings.Contains(h.stderr.String(), "newest Amazon Linux 2023 image") {
 		t.Errorf("fallback = %+v / %s", rep, h.stderr.String())
 	}
 	if h.ec2.inst.imageCalls < 5 {
@@ -241,7 +242,7 @@ func TestInstanceCreateAMIFallback(t *testing.T) {
 	if err := h.run("ec2", "instance", "create", "x", "--type", "t4g.small"); err != nil {
 		t.Fatal(err)
 	}
-	if rep := h.report(); !strings.Contains(rep.Changes[0].Detail, "ami=ami-arm") {
+	if rep := createReport(h); !strings.Contains(rep.Changes[0].Detail, "ami=ami-arm") {
 		t.Errorf("arm64 fallback = %+v", rep)
 	}
 	h.ec2.inst.images["ap-east-1"] = h.ec2.inst.images["ap-east-1"][4:6] // no standard image
@@ -260,7 +261,7 @@ func TestInstanceCreateImageOverrides(t *testing.T) {
 	if err := h.run("ec2", "instance", "create", "x", "--type", "t4g.small", "--ami", "ami-0arm"); err != nil {
 		t.Fatalf("%v\n%s", err, h.stderr.String())
 	}
-	if d := h.report().Changes[0].Detail; !strings.Contains(d, "ami=ami-0arm") {
+	if d := createReport(h).Changes[0].Detail; !strings.Contains(d, "ami=ami-0arm") {
 		t.Errorf("--ami detail = %q", d)
 	}
 	// An image the type cannot run.
@@ -273,7 +274,7 @@ func TestInstanceCreateImageOverrides(t *testing.T) {
 	if err := h.run("ec2", "instance", "create", "x", "--type", "t3.nano", "--os", "al2023", "--arch", "x86_64"); err != nil {
 		t.Fatal(err)
 	}
-	if d := h.report().Changes[0].Detail; !strings.Contains(d, "ami=ami-0x86") {
+	if d := createReport(h).Changes[0].Detail; !strings.Contains(d, "ami=ami-0x86") {
 		t.Errorf("--os al2023 detail = %q", d)
 	}
 	// --arch the type does not run.
@@ -290,7 +291,7 @@ func TestInstanceCreateImageOverrides(t *testing.T) {
 	h.stdout.Reset()
 	if err := h.run("ec2", "instance", "create", "x", "--type", "mac2.metal", "--ami", "ami-0mac"); err != nil {
 		t.Errorf("--ami on mac2.metal = %v", err)
-	} else if d := h.report().Changes[0].Detail; !strings.Contains(d, "ami=ami-0mac") {
+	} else if d := createReport(h).Changes[0].Detail; !strings.Contains(d, "ami=ami-0mac") {
 		t.Errorf("--ami on mac2.metal detail = %q", d)
 	}
 	if w := h.writes(); len(w) != 0 {
@@ -634,5 +635,43 @@ func TestResizeWaitPort(t *testing.T) {
 	}
 	if err := h.run("ec2", "instance", "resize", "web", "--type", "c6a.large", "--wait-port", "70000"); !errors.Is(err, app.ErrUsage) {
 		t.Errorf("bad port = %v", err)
+	}
+}
+
+// createReport is the report of a create without the row of the default
+// key pair every create binds.
+func createReport(h *awsHarness) platform.Report {
+	h.t.Helper()
+	rep := h.report()
+	var out []platform.Change
+	for _, c := range rep.Changes {
+		if c.Resource == "key-pair/site-key" && c.Action == platform.Unchanged {
+			continue
+		}
+		out = append(out, c)
+	}
+	rep.Changes = out
+	return rep
+}
+
+// A create without any key pair fails before anything is read or written:
+// a Linux instance logs in with a key only.
+func TestInstanceCreateRequiresAKeyPair(t *testing.T) {
+	useFakeClock(t)
+	h := newAWSHarness(t, app.Flags{}, map[string]any{"subnet_id": "subnet-0def", "security_group_ids": []any{"sg-0aaa"}})
+	err := h.run("ec2", "instance", "create", "site-new", "--type", "t3.nano")
+	if !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "--key-pair") || !strings.Contains(err.Error(), "never a password") {
+		t.Fatalf("no key = %v", err)
+	}
+	if calls := h.ec2.calls(); len(calls) != 0 {
+		t.Errorf("calls made: %v", calls)
+	}
+	// A default key pair that does not exist is no key either.
+	h2 := newAWSHarness(t, app.Flags{DryRun: true}, map[string]any{"subnet_id": "subnet-0def", "security_group_ids": []any{"sg-0aaa"}, "key_name": "gone"})
+	if err := h2.run("ec2", "instance", "create", "site-new", "--type", "t3.nano"); !errors.Is(err, platform.ErrInvalidInput) {
+		t.Errorf("missing default key pair = %v", err)
+	}
+	if w := h2.writes(); len(w) != 0 {
+		t.Errorf("writes = %v", w)
 	}
 }
