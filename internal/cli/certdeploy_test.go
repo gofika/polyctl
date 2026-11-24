@@ -250,6 +250,18 @@ func TestCertDeployDNSAccountsPicksTheDNSAccount(t *testing.T) {
 		t.Fatalf("ambiguous: %v %s (writes %v)", err, out, d.writes)
 	}
 
+	// A pin to an account that does not host the zone fails the domain; it
+	// is not skipped as managed elsewhere.
+	cfg = loadConfig(t, cfgPath)
+	cfg.Cert.DNSAccounts = map[string]string{zoneName: string(fakePlatform2) + "/b"}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	out, _, err = run(t, cfgPath, "cert", "deploy", "--all", "--deployer", "fake-lb", "-o", "json")
+	if ExitCodeFor(err) != ExitError || !strings.Contains(out, "cert.dns_accounts names "+string(fakePlatform2)+"/b for both.example") || len(d.writes) != 0 {
+		t.Fatalf("wrong pin: %v %s (writes %v)", err, out, d.writes)
+	}
+
 	cfg = loadConfig(t, cfgPath)
 	cfg.Cert.DNSAccounts = map[string]string{zoneName: string(fakePlatform2) + "/a"}
 	if err := cfg.Save(); err != nil {

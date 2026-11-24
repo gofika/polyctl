@@ -103,18 +103,28 @@ func NewEnv(rt *app.Runtime, staging bool) (*Env, error) {
 		return nil, usage("cert.dns_accounts: %v", err)
 	}
 	env.Route = func(ctx context.Context, root string) (*Route, error) {
-		r := rt
+		pin, ok := pins[root]
 		// --profile / --platform of cert ensure win over the pin.
-		if pin, ok := pins[root]; ok && rt.Flags.Profile == "" && rt.Flags.Platform == "" {
-			if _, err := cfg.Profile(pin.Profile); err != nil {
-				return nil, usage("cert.dns_accounts: %s: %v", root, err)
-			}
-			if r, err = rt.Pinned(pin.Profile, pin.Platform); err != nil {
-				return nil, err
-			}
-			rt.Verbosef("DNS account of %s: %s (cert.dns_accounts)", root, pin)
+		if !ok || rt.Flags.Profile != "" || rt.Flags.Platform != "" {
+			return route(ctx, rt, root)
 		}
-		return route(ctx, r, root)
+		if _, err := cfg.Profile(pin.Profile); err != nil {
+			return nil, usage("cert.dns_accounts: %s: %v", root, err)
+		}
+		pinned, err := rt.Pinned(pin.Profile, pin.Platform)
+		if err != nil {
+			return nil, err
+		}
+		rt.Verbosef("DNS account of %s: %s (cert.dns_accounts)", root, pin)
+		r, err := route(ctx, pinned, root)
+		if err != nil && errors.Is(err, app.ErrDomainUnknown) {
+			// The pin says the account hosts root: not finding it there is
+			// a configuration error, not "managed elsewhere" (which cert
+			// deploy skips).
+			return nil, fmt.Errorf("%w: cert.dns_accounts names %s for %s, but it does not host the zone of %s (%v)",
+				platform.ErrNotFound, pin, root, root, err)
+		}
+		return r, err
 	}
 	env.LiveNS = func(ctx context.Context, root string) []string {
 		r := platform.LiveNS(ctx, root, resolvers, cfg.NSTimeout())
