@@ -2,6 +2,7 @@ package aliyun
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -262,4 +263,130 @@ func pickSize(ctx context.Context, rt *app.Runtime, s *ecsScope, zones []string,
 	}
 	return rt.Choose(app.Choice{Title: "Instance size (the cheapest x86 type of the size is used)", Options: opts, Default: def,
 		Arg: "--type", Required: true, Empty: app.UsageErrf("--type is required, and no x86 instance type is in stock in %s", where)})
+}
+
+// inline turns a usage error into the message an Input shows under the
+// value being typed.
+func inline(err error) error {
+	if err == nil {
+		return nil
+	}
+	return errors.New(strings.TrimPrefix(err.Error(), app.ErrUsage.Error()+": "))
+}
+
+// askInstanceName asks for the name of a new instance, checked as it is
+// typed (the rules of checkInstanceName and of the host name made of it).
+func askInstanceName(rt *app.Runtime) (string, error) {
+	return rt.AskInput("<name>", "Name of the new instance", "", func(v string) error {
+		if err := checkInstanceName(v); err != nil {
+			return inline(err)
+		}
+		_, _, err := normalizeHostName(v)
+		return inline(err)
+	})
+}
+
+// newSGValue is the value of the "Create a new security group..." option.
+const newSGValue = "\x00new-sg"
+
+// pickInstanceSG asks for the security group of a new instance in the
+// interactive flow: the groups of vpc (the one named by
+// naming.aliyun_ecs_security_group preselected), or "Create a new security
+// group..." with the name asked (the naming template's name proposed,
+// checked as it is typed, unused in the VPC). It returns the group chosen,
+// or the name of the group to create.
+func pickInstanceSG(ctx context.Context, rt *app.Runtime, s *ecsScope, vpc string) (*securityGroup, string, error) {
+	if !rt.Interactive() {
+		return nil, "", app.UsageErrf("--security-group is required")
+	}
+	groups, err := s.c.listSecurityGroups(ctx, s.region, vpc, "", "")
+	if err != nil {
+		return nil, "", err
+	}
+	def, err := rt.ResourceName("aliyun_ecs_security_group", "", map[string]string{"region": s.region})
+	if err != nil {
+		return nil, "", err
+	}
+	var opts []prompt.Option
+	pre := ""
+	for _, g := range groups {
+		if g.VPC != vpc {
+			continue
+		}
+		opts = append(opts, prompt.Option{Label: sgLabel(g), Value: g.ID})
+		if g.Name == def && pre == "" {
+			pre = g.ID
+		}
+	}
+	newName := ""
+	v, err := rt.Choose(app.Choice{Title: "Security group (VPC " + vpc + ")", Options: opts, Default: pre, Arg: "--security-group", Required: true,
+		CreateLabel: "Create a new security group...", Create: func() (string, error) {
+			taken := map[string]bool{}
+			for _, g := range groups {
+				taken[g.Name] = true
+			}
+			proposal := def
+			if taken[proposal] {
+				proposal = ""
+			}
+			n, err := rt.AskInput("--security-group", "Name of the new security group (rules: defaults.aliyun.ecs_security_group_rules, else ICMP, 80 and 443)", proposal, func(v string) error {
+				if err := checkInstanceSGName(v); err != nil {
+					return inline(err)
+				}
+				if taken[strings.TrimSpace(v)] {
+					return fmt.Errorf("VPC %s already has a security group %q", vpc, strings.TrimSpace(v))
+				}
+				return nil
+			})
+			newName = n
+			return newSGValue, err
+		}})
+	if err != nil {
+		return nil, "", err
+	}
+	if v == newSGValue {
+		return nil, newName, nil
+	}
+	for i := range groups {
+		if groups[i].ID == v {
+			return &groups[i], "", nil
+		}
+	}
+	return nil, "", fmt.Errorf("security group %s is no longer listed", v)
+}
+
+// pickVSwitchOf asks for an Available vSwitch of the region (of vpc and
+// zone when they are given), labelled with its zone, CIDR block, VPC and
+// free addresses. empty is returned when there is none.
+func pickVSwitchOf(ctx context.Context, rt *app.Runtime, s *ecsScope, vpc, zone, arg string, empty error) (*vSwitch, error) {
+	if !rt.Interactive() {
+		return nil, app.UsageErrf("%s is required", arg)
+	}
+	list, err := s.c.listVSwitches(ctx, s.region, vpc, "", "")
+	if err != nil {
+		return nil, err
+	}
+	names := map[string]string{}
+	if vpcs, err := s.c.listVPCs(ctx, s.region, true); err == nil {
+		for _, v := range vpcs {
+			names[v.ID] = v.Name
+		}
+	}
+	var opts []prompt.Option
+	for _, v := range list {
+		if v.Status != statusAvailable || (zone != "" && v.Zone != zone) {
+			continue
+		}
+		opts = append(opts, prompt.Option{Label: vswLabel(v, names), Value: v.ID})
+	}
+	id, err := rt.Choose(app.Choice{Title: "vSwitch", Options: opts, Arg: arg, Required: true, Empty: empty})
+	if err != nil {
+		return nil, err
+	}
+	for i := range list {
+		if list[i].ID == id {
+			return &list[i], nil
+		}
+	}
+	return nil, fmt.Errorf("vSwitch %s is no longer listed", id)
 }

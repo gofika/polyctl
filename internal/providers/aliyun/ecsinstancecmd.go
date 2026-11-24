@@ -220,9 +220,11 @@ type instanceFlags struct {
 	typ, image, osName, diskCategory, vswitch, securityGroup string
 	disk                                                     int
 	keys                                                     app.KeyFlags
-	eip                                                      bool
-	wait                                                     app.WaitFlags
-	region                                                   string
+	// defaultKeyPair is defaults.aliyun.ecs_key_pair, read by keyInput.
+	defaultKeyPair string
+	eip            bool
+	wait           app.WaitFlags
+	region         string
 	// size is --type written as <cores>H<memory>G (nil for a type id);
 	// choice is the type it resolved to.
 	size   *platform.TypeShorthand
@@ -430,8 +432,21 @@ func (f *instanceFlags) keyInput(rt *app.Runtime) (platform.KeyInput, error) {
 			return platform.KeyInput{}, err
 		}
 	}
-	in, err := rt.KeyInput(&f.keys, platform.KeyInput{Match: platform.MatchByFingerprintMD5,
-		AllowedTypes: platform.AliyunKeyTypes, MinNameLength: keyPairNameMin, CheckName: checkKeyPairName})
+	base := platform.KeyInput{Match: platform.MatchByFingerprintMD5,
+		AllowedTypes: platform.AliyunKeyTypes, MinNameLength: keyPairNameMin, CheckName: checkKeyPairName}
+	// defaults.aliyun.ecs_key_pair: the key pair used without asking when
+	// no key flag is given and it exists in the region.
+	if !f.keys.Given() {
+		if profile, err := rt.ProfileFor(platform.Aliyun); err == nil {
+			def, err := rt.Setting(profile, platform.Aliyun, "ecs_key_pair", "")
+			if err != nil {
+				return platform.KeyInput{}, err
+			}
+			f.defaultKeyPair = def
+			base.DefaultName = def
+		}
+	}
+	in, err := rt.KeyInput(&f.keys, base)
 	if err != nil {
 		return in, err
 	}
@@ -657,21 +672,33 @@ else is created except the key pair: use ensure to create the VPC, the
 vSwitches and the security group as well.
 
 - --type is required (or defaults.aliyun.ecs_instance_type): a type id,
-  or a size <cores>H<memory>G such as 2H4G (see Instance sizes below).
+  or a size <cores>H<memory>G such as 2H4G (see Instance sizes below). A
+  terminal without either asks for the size, from the sizes of the x86
+  types in stock in the instance's zones (2H4G preselected).
 - --vswitch (id or name) places the instance and decides its zone; default
   the vSwitch named by naming.aliyun_vswitch for zone b ({region}-switch-b)
-  in the VPC named by naming.aliyun_vpc, which must exist.
+  in the VPC named by naming.aliyun_vpc, which must exist (a terminal
+  without it offers the Available vSwitches of the region).
 - --security-group (name or id; required) is looked up in the vSwitch's
-  VPC.
+  VPC. A terminal without it offers the groups of that VPC (the one of
+  naming.aliyun_ecs_security_group preselected) and "Create a new security
+  group...", which asks for the name and creates the group with the rules
+  of ensure (defaults.aliyun.ecs_security_group_rules, else ICMP, 80 and
+  443 from anywhere) before the instance.
+- <name> is asked on a terminal when it is left out, checked as it is
+  typed.
 - The key pair: an existing one first (--key-pair, or the key pair that
   holds --ssh-key / --ssh-key-file, compared by fingerprint), else the key
   is imported under --key-pair (asked for on a terminal; no name is ever
-  chosen for you). A key pair is required: Linux instances log in with a
-  key only and polyctl never sets a password; without any key flag a
-  terminal asks for a key file, and the non-interactive flow is exit
-  code 2 before anything is read (with --image, once the image is read:
-  only then is it known to be Linux or Windows; still before anything is
-  written).
+  chosen for you). Without any key flag, defaults.aliyun.ecs_key_pair is
+  used when it exists in the region. A key pair is required: Linux
+  instances log in with a key only and polyctl never sets a password;
+  without any key flag or default a terminal lists the key pairs of the
+  region (the one holding a ~/.ssh/*.pub key marked and preselected) and
+  "Import a new key pair from a public key file...", and the
+  non-interactive flow is exit code 2 before anything is read (with
+  --image, once the image is read: only then is it known to be Linux or
+  Windows; still before anything is written).
 - The image is --image (any image id: the way to use another system), else
   the newest public image of --os (alibaba-cloud-linux, or windows; see
   image latest) for the architecture of the type (a size resolves to an
@@ -702,10 +729,16 @@ vSwitches and the security group as well.
 ` + instanceSizeHelp,
 		Example: `  polyctl aliyun ecs instance create site-a --type ecs.u1-c1m1.large --security-group sg-common \
     --key-pair ops --ssh-key-file ~/.ssh/id_ed25519.pub`,
-		Args: cobra.ExactArgs(1),
+		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			name := args[0]
+			name := app.Arg(args, 0)
+			if name == "" {
+				var err error
+				if name, err = askInstanceName(rt); err != nil {
+					return err
+				}
+			}
 			if err := checkInstanceName(name); err != nil {
 				return err
 			}
@@ -720,7 +753,7 @@ vSwitches and the security group as well.
 			if err != nil {
 				return err
 			}
-			if f.securityGroup == "" {
+			if f.securityGroup == "" && !rt.Interactive() {
 				return app.UsageErrf("--security-group is required: pass the name or id of a security group of the vSwitch's VPC (or use ensure)")
 			}
 			wait, timeout, err := f.wait.Resolve(cmd)
@@ -760,7 +793,14 @@ vSwitches and the security group as well.
 					return err
 				}
 			}
-			if f.typ, err = rt.RequireSetting(s.profile, platform.Aliyun, "ecs_instance_type", "type", f.typ); err != nil {
+			// The interactive flow asks for a type no flag or setting
+			// gives, once the zones are known.
+			if rt.Interactive() {
+				f.typ, err = rt.Setting(s.profile, platform.Aliyun, "ecs_instance_type", f.typ)
+			} else {
+				f.typ, err = rt.RequireSetting(s.profile, platform.Aliyun, "ecs_instance_type", "type", f.typ)
+			}
+			if err != nil {
 				return err
 			}
 			if err := f.parseSize(); err != nil {
@@ -768,20 +808,50 @@ vSwitches and the security group as well.
 			}
 			// A size picks its zone among the vSwitches it may use: --vswitch,
 			// else the default vSwitches that exist.
-			vsws, err := createVSwitches(ctx, rt, s, f.vswitch, f.size != nil)
+			vsws, err := createVSwitches(ctx, rt, s, f.vswitch, f.typ == "" || f.size != nil)
 			if err != nil {
 				return err
 			}
 			vsw := vsws[0]
-			sg, err := findInstanceSG(ctx, s, f.securityGroup, vsw.VPC)
-			if err != nil {
-				return err
+			if f.typ == "" {
+				var zones []string
+				for _, v := range vsws {
+					zones = append(zones, v.Zone)
+				}
+				if f.typ, err = pickSize(ctx, rt, s, zones, "", nil, defaultPickSize); err != nil {
+					return err
+				}
+				if err := f.parseSize(); err != nil {
+					return err
+				}
 			}
-			if sg == nil {
-				return fmt.Errorf("%w: security group %q in %s (%s)", platform.ErrNotFound, f.securityGroup, s.where(), vsw.VPC)
+			var sg *securityGroup
+			var newSG string
+			if f.securityGroup == "" {
+				if sg, newSG, err = pickInstanceSG(ctx, rt, s, vsw.VPC); err != nil {
+					return err
+				}
+			} else {
+				if sg, err = findInstanceSG(ctx, s, f.securityGroup, vsw.VPC); err != nil {
+					return err
+				}
+				if sg == nil {
+					return fmt.Errorf("%w: security group %q in %s (%s)", platform.ErrNotFound, f.securityGroup, s.where(), vsw.VPC)
+				}
 			}
-			if sg.VPC != vsw.VPC {
+			if sg != nil && sg.VPC != vsw.VPC {
 				return fmt.Errorf("security group %s is in VPC %s and vSwitch %s in VPC %s: they must be in the same VPC", sg.ID, sg.VPC, vsw.ID, vsw.VPC)
+			}
+			var groupID string
+			var groupCreated bool
+			if sg != nil {
+				groupID = sg.ID
+			}
+			var newRules []platform.IngressRule
+			if newSG != "" {
+				if newRules, err = instanceRules(rt, s, nil); err != nil {
+					return err
+				}
 			}
 			if found, err := s.c.findInstances(ctx, s.region, name); err != nil {
 				return err
@@ -832,6 +902,12 @@ vSwitches and the security group as well.
 			if kpStep.Resource != "" {
 				plan.Add(kpStep)
 			}
+			if newSG != "" {
+				// The security group chosen to be created, with the default
+				// rules of ensure, in the vSwitch's VPC.
+				plan.Add(sgCreateStep(rt, s, newSG, vsw.VPC, "", &groupID, &groupCreated))
+				addRuleSteps(&plan, rt, s, "security-group/"+newSG+"/rule", func() string { return groupID }, func() bool { return groupCreated }, newRules, nil, sgPriorityDefault, "")
+			}
 			var win *windowsLogin
 			if f.windows() {
 				// Before the first write: a password that cannot be stored
@@ -841,7 +917,7 @@ vSwitches and the security group as well.
 				}
 				win = newWindowsLogin(rt, s, name)
 			}
-			plan.Add(runStep(rt, s, name, host, &f, image, func() string { return sg.ID }, func() string { return vsw.ID }, func() string { return kp.Name }, nil, win, &instID))
+			plan.Add(runStep(rt, s, name, host, &f, image, func() string { return groupID }, func() string { return vsw.ID }, func() string { return kp.Name }, func() bool { return groupCreated }, win, &instID))
 			if wait || f.eip {
 				plan.Add(waitStep(rt, s, name, id, timeout))
 			}
@@ -863,7 +939,7 @@ vSwitches and the security group as well.
 // requireKey refuses a non-interactive Linux create without any key flag:
 // an instance without a key pair is one nobody can log in to.
 func requireKey(rt *app.Runtime, f *instanceFlags) error {
-	if f.keys.Given() || rt.Interactive() {
+	if f.keys.Given() || f.defaultKeyPair != "" || rt.Interactive() {
 		return nil
 	}
 	return app.UsageErrf("a key pair is required (Linux instances log in with a key only, never a password): pass --key-pair <name> (an existing key pair), or --ssh-key-file <path> / --ssh-key <public key> with --key-pair <name> to import one")
@@ -968,7 +1044,15 @@ func createVSwitches(ctx context.Context, rt *app.Runtime, s *ecsScope, ref stri
 		out = append(out, v)
 	}
 	if len(out) == 0 {
-		return nil, app.UsageErrf("no vSwitch for the instance: the default vSwitch %s of VPC %q does not exist in %s; pass --vswitch <id|name>, or use ensure", strings.Join(names, " or "), vpcName, s.region)
+		missing := app.UsageErrf("no vSwitch for the instance: the default vSwitch %s of VPC %q does not exist in %s; pass --vswitch <id|name>, or use ensure", strings.Join(names, " or "), vpcName, s.region)
+		if !rt.Interactive() {
+			return nil, missing
+		}
+		v, err := pickVSwitchOf(ctx, rt, s, "", "", "--vswitch", missing)
+		if err != nil {
+			return nil, err
+		}
+		return []*vSwitch{v}, nil
 	}
 	return out, nil
 }

@@ -437,18 +437,8 @@ func (e *instanceEnsure) planNew(ctx context.Context, cmd *cobra.Command, host s
 	if err != nil {
 		return err
 	}
-	ruleSpecs, err := rt.SettingList(s.profile, platform.Aliyun, "ecs_security_group_rules", specs)
+	rules, err := instanceRules(rt, s, specs)
 	if err != nil {
-		return err
-	}
-	if len(ruleSpecs) == 0 {
-		ruleSpecs = defaultInstanceRules
-	}
-	rules, err := platform.ParseIngressRules(ruleSpecs)
-	if err != nil {
-		if len(specs) == 0 {
-			return app.UsageErrf("defaults.aliyun.ecs_security_group_rules: %v", err)
-		}
 		return err
 	}
 	if err := checkInstanceSGName(sgRef); err != nil {
@@ -514,6 +504,24 @@ func (e *instanceEnsure) planNew(ctx context.Context, cmd *cobra.Command, host s
 		e.plan.Add(eipStep(rt, s, e.name, e.id, ep, &e.eip))
 	}
 	return nil
+}
+
+// instanceRules returns the ingress rules of the security group of an
+// instance: --rule, else defaults.aliyun.ecs_security_group_rules, else
+// defaultInstanceRules.
+func instanceRules(rt *app.Runtime, s *ecsScope, specs []string) ([]platform.IngressRule, error) {
+	ruleSpecs, err := rt.SettingList(s.profile, platform.Aliyun, "ecs_security_group_rules", specs)
+	if err != nil {
+		return nil, err
+	}
+	if len(ruleSpecs) == 0 {
+		ruleSpecs = defaultInstanceRules
+	}
+	rules, err := platform.ParseIngressRules(ruleSpecs)
+	if err != nil && len(specs) == 0 {
+		return nil, app.UsageErrf("defaults.aliyun.ecs_security_group_rules: %v", err)
+	}
+	return rules, err
 }
 
 // pickVSwitch returns the existing vSwitch a want stands for, as vswPlan
