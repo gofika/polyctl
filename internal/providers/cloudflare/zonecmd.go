@@ -10,6 +10,7 @@ import (
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/output"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt"
 )
 
 // This file holds what the zone lifecycle commands (create, ensure,
@@ -211,8 +212,21 @@ func openAccount(ctx context.Context, rt *app.Runtime) (*session, string, error)
 	case 1:
 		return s, accounts[0].ID, nil
 	}
-	return nil, "", app.UsageErrf("the credentials of profile %s see %d accounts (%s); pin one with `polyctl auth login cloudflare --profile %s --set account_id=<id>`",
-		s.profile, len(accounts), accountNames(accounts), s.profile)
+	if !rt.Interactive() {
+		return nil, "", app.UsageErrf("the credentials of profile %s see %d accounts (%s); pin one with `polyctl auth login cloudflare --profile %s --set account_id=<id>`",
+			s.profile, len(accounts), accountNames(accounts), s.profile)
+	}
+	// The interactive flow asks, for this run only.
+	var opts []prompt.Option
+	for _, a := range accounts {
+		opts = append(opts, prompt.Option{Label: fmt.Sprintf("%s  %s", a.Name, a.ID), Value: a.ID})
+	}
+	id, err := rt.Choose(app.Choice{Title: "Cloudflare account of the new zone", Options: opts, Arg: "--set account_id"})
+	if err != nil {
+		return nil, "", err
+	}
+	rt.Infof("note: to skip this question, pin the account with `polyctl auth login cloudflare --profile %s --set account_id=%s`", s.profile, id)
+	return s, id, nil
 }
 
 // --- output ------------------------------------------------------------------

@@ -115,3 +115,19 @@ func TestR2DomainUpdatePicks(t *testing.T) {
 		t.Errorf("empty bucket: exit %d, %s", code, stderr)
 	}
 }
+
+// zone ensure without <domain> offers the registered domains without a
+// Cloudflare zone and "Another domain...", whose name is checked as it is
+// typed.
+func TestZoneEnsureAsksTheDomain(t *testing.T) {
+	e := newZoneEnv(t)
+	p := prompttest.New(t, prompttest.Label("Another domain"), "not a domain", "example.org")
+	code, stdout, stderr := e.runPick(p, "cloudflare", "zone", "ensure", "--dry-run", "-o", "json")
+	if code != cli.ExitOK || !strings.Contains(stdout, `"zone/example.org"`) || len(e.f.writes()) != 0 {
+		t.Fatalf("ensure: exit %d, %s %s", code, stdout, stderr)
+	}
+	p.Done()
+	if code, _, _ := e.run("cloudflare", "zone", "ensure"); code != cli.ExitUsage {
+		t.Errorf("non-interactive: exit %d", code)
+	}
+}

@@ -348,9 +348,13 @@ A zone that exists already in the account is an error (exit code 1): use
 ` + "`zone ensure`" + `, which reuses it. Cloudflare holds a domain in one account
 only, so a zone of that name in another account is an error as well.`,
 		Example: "  polyctl cloudflare zone create example.com --profile acme",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			domain, err := zoneDomainArg(args[0])
+			arg, err := newZoneDomain(cmd.Context(), rt, args)
+			if err != nil {
+				return err
+			}
+			domain, err := zoneDomainArg(arg)
 			if err != nil {
 				return err
 			}
@@ -395,9 +399,13 @@ A new zone is "pending" until its nameservers, printed below the report, are
 set at the registrar; ensure does not wait for it.`,
 		Example: `  polyctl cloudflare zone ensure example.com --preset optimized --ssl flexible
   polyctl cloudflare zone ensure example.com --preset optimized --dry-run -o json`,
-		Args: cobra.ExactArgs(1),
+		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			domain, err := zoneDomainArg(args[0])
+			arg, err := newZoneDomain(cmd.Context(), rt, args)
+			if err != nil {
+				return err
+			}
+			domain, err := zoneDomainArg(arg)
 			if err != nil {
 				return err
 			}

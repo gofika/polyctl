@@ -255,3 +255,51 @@ func nonEmpty(s, def string) string {
 	}
 	return s
 }
+
+// anotherDomain is the value of the "Another domain..." option of
+// newZoneDomain.
+const anotherDomain = "\x00other"
+
+// newZoneDomain fills in the <domain> of zone create / ensure in the
+// interactive flow: the domains registered at any registrar the index knows
+// that have no Cloudflare zone yet, or another name, checked as it is
+// typed.
+func newZoneDomain(ctx context.Context, rt *app.Runtime, args []string) (string, error) {
+	if len(args) > 0 {
+		return args[0], nil
+	}
+	if !rt.Interactive() {
+		return "", app.UsageErrf("<domain> is required")
+	}
+	var opts []prompt.Option
+	if db, err := rt.DB(); err == nil {
+		if entries, err := db.IndexEntries(ctx); err == nil {
+			zoned := map[string]bool{}
+			for _, e := range entries {
+				if e.Type == platform.ResZone && e.Platform == platform.Cloudflare {
+					zoned[e.Domain] = true
+				}
+			}
+			seen := map[string]bool{}
+			for _, e := range entries {
+				if e.Type != platform.ResDomain || zoned[e.Domain] || seen[e.Domain] {
+					continue
+				}
+				seen[e.Domain] = true
+				opts = append(opts, prompt.Option{Label: fmt.Sprintf("%s  registered at %s/%s", e.Domain, e.Platform, e.Profile), Value: e.Domain})
+			}
+		}
+	}
+	opts = append(opts, prompt.Option{Label: "Another domain...", Value: anotherDomain})
+	v, err := rt.Choose(app.Choice{Title: "Domain of the new zone", Options: opts, Arg: "<domain>"})
+	if err != nil || v != anotherDomain {
+		return v, err
+	}
+	return rt.AskInput("<domain>", "Domain of the new zone (such as example.com)", "", func(s string) error {
+		_, err := zoneDomainArg(s)
+		if err != nil {
+			return errors.New(strings.TrimPrefix(err.Error(), app.ErrUsage.Error()+": "))
+		}
+		return nil
+	})
+}
