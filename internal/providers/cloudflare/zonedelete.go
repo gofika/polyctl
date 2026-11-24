@@ -33,15 +33,15 @@ run the command again.
 A zone that no longer exists is not found (exit code 4) and is removed from
 the local inventory.`,
 		Example: "  polyctl cloudflare zone delete example.com\n  polyctl cloudflare zone delete example.com --yes",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			if !rt.DryRun() {
+			if !rt.DryRun() && len(args) > 0 {
 				if err := rt.CanConfirm("delete zone " + args[0]); err != nil {
 					return err
 				}
 			}
-			s, err := resolveLiveZone(ctx, rt, args[0])
+			s, err := resolveLiveZone(ctx, rt, app.Arg(args, 0))
 			if err != nil {
 				return err
 			}

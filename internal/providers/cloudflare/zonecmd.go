@@ -147,6 +147,14 @@ func routeZone(ctx context.Context, rt *app.Runtime, ref string) (*Client, inven
 	if rt.Flags.Offline {
 		return nil, inventory.Resource{}, app.ErrOffline
 	}
+	if ref == "" {
+		// The <zone> left out in the interactive flow: asked for among
+		// the zones of the selected accounts.
+		var err error
+		if ref, err = pickLiveZone(ctx, rt); err != nil {
+			return nil, inventory.Resource{}, err
+		}
+	}
 	res, err := rt.ResolveResource(ctx, platform.Cloudflare, platform.ResZone, ref)
 	if errors.Is(err, platform.ErrNotFound) && !rt.Flags.Refresh {
 		// The inventory is fresh but does not know the zone (it may have

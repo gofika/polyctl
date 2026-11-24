@@ -96,11 +96,11 @@ A zone that never had any is listed empty. The table cuts expressions at
 of -o json / -o yaml are cleaned (only description, ref, enabled, action,
 expression and action_parameters) and are the input of 'rule set --file'.`,
 		Example:           fmt.Sprintf("  polyctl cloudflare %s rule list example.com\n  polyctl cloudflare %s rule list example.com -o yaml > rules.yaml", ph.Service, ph.Service),
-		Args:              cobra.ExactArgs(1),
+		Args:              app.ArgsOrInteractive(rt, 1, nil),
 		ValidArgsFunction: completeZones(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			s, err := resolveRulesZone(ctx, rt, args[0])
+			s, err := resolveRulesZone(ctx, rt, app.Arg(args, 0))
 			if err != nil {
 				return err
 			}
@@ -159,7 +159,7 @@ The write has no lock: run one set per zone and phase at a time.`,
 		Example: fmt.Sprintf(`  polyctl cloudflare %[1]s rule set example.com --file rules.yaml --dry-run
   polyctl cloudflare %[1]s rule set example.com --file rules.yaml
   polyctl cloudflare %[1]s rule set example.com --file rules.yaml --replace -y`, ph.Service),
-		Args:              cobra.ExactArgs(1),
+		Args:              app.ArgsOrInteractive(rt, 1, nil),
 		ValidArgsFunction: completeZones(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -177,7 +177,7 @@ The write has no lock: run one set per zone and phase at a time.`,
 			if err != nil {
 				return err
 			}
-			s, err := resolveRulesZone(ctx, rt, args[0])
+			s, err := resolveRulesZone(ctx, rt, app.Arg(args, 0))
 			if err != nil {
 				return err
 			}

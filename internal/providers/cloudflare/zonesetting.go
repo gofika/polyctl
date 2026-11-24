@@ -78,11 +78,11 @@ func newZoneSettingListCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:               "list <zone>",
 		Short:             "List the settings of a zone (rum, Argo and Foundation DNS are read with `setting get`)",
-		Args:              cobra.ExactArgs(1),
+		Args:              app.ArgsOrInteractive(rt, 1, nil),
 		ValidArgsFunction: completeZones(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			s, err := resolveLiveZone(ctx, rt, args[0])
+			s, err := resolveLiveZone(ctx, rt, app.Arg(args, 0))
 			if err != nil {
 				return err
 			}
@@ -101,15 +101,28 @@ func newZoneSettingGetCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:               "get <zone> <setting>",
 		Short:             "Show one setting of a zone",
-		Args:              cobra.ExactArgs(2),
+		Args:              app.ArgsOrInteractive(rt, 2, nil),
 		ValidArgsFunction: completeZones(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			name, err := settingName(args[1])
+			if len(args) == 2 {
+				if _, err := settingName(args[1]); err != nil {
+					return err
+				}
+			}
+			s, err := resolveLiveZone(ctx, rt, app.Arg(args, 0))
 			if err != nil {
 				return err
 			}
-			s, err := resolveLiveZone(ctx, rt, args[0])
+			if len(args) < 2 {
+				// The interactive flow lists the settings of the zone.
+				picked, err := pickSetting(ctx, rt, s, false)
+				if err != nil {
+					return err
+				}
+				args = []string{s.name(), picked}
+			}
+			name, err := settingName(args[1])
 			if err != nil {
 				return err
 			}
@@ -145,25 +158,39 @@ waits (up to --timeout) until the zone reports the new ones and prints them;
 set them at the registrar (polyctl domain ns set).`,
 		Example: `  polyctl cloudflare zone setting set example.com always_use_https on
   polyctl cloudflare zone setting set example.com argo_smart_routing on`,
-		Args:              cobra.ExactArgs(3),
+		Args:              app.ArgsOrInteractive(rt, 3, nil),
 		ValidArgsFunction: completeZones(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			name, err := settingName(args[1])
-			if err != nil {
-				return err
-			}
 			if timeout <= 0 {
 				return app.UsageErrf("--timeout must be a positive duration, got %s", timeout)
 			}
-			// The value of the special settings is checked before
-			// anything is read.
-			if name == settingArgo || name == settingFoundationDNS {
-				if _, err := settingValue(name, args[2], nil); err != nil {
-					return app.UsageErrf("%v", err)
+			if len(args) >= 2 {
+				name, err := settingName(args[1])
+				if err != nil {
+					return err
+				}
+				// The value of the special settings is checked before
+				// anything is read.
+				if len(args) == 3 && (name == settingArgo || name == settingFoundationDNS) {
+					if _, err := settingValue(name, args[2], nil); err != nil {
+						return app.UsageErrf("%v", err)
+					}
 				}
 			}
-			s, err := resolveLiveZone(ctx, rt, args[0])
+			s, err := resolveLiveZone(ctx, rt, app.Arg(args, 0))
+			if err != nil {
+				return err
+			}
+			if len(args) < 2 {
+				// The interactive flow lists the editable settings.
+				picked, err := pickSetting(ctx, rt, s, true)
+				if err != nil {
+					return err
+				}
+				args = []string{s.name(), picked}
+			}
+			name, err := settingName(args[1])
 			if err != nil {
 				return err
 			}
@@ -173,6 +200,13 @@ set them at the registrar (polyctl domain ns set).`,
 			}
 			if err != nil {
 				return s.gone(ctx, rt, err)
+			}
+			if len(args) < 3 {
+				v, err := askSettingValue(rt, name, cur.Value)
+				if err != nil {
+					return err
+				}
+				args = append(args, v)
 			}
 			value, err := settingValue(name, args[2], cur.Value)
 			if errors.Is(err, errBadSettingValue) {

@@ -102,10 +102,18 @@ func cachedZones(ctx context.Context, rt *app.Runtime) ([]platform.Zone, string,
 
 // resolveZone finds a zone by name or id: inventory first, then remotely
 // (unless --offline). A remote hit is stored in the inventory.
+//
+// An empty arg (the <zone> left out in the interactive flow) is asked for
+// among the zones of the profile.
 func resolveZone(ctx context.Context, rt *app.Runtime, arg string) (*platform.Zone, string, error) {
 	zones, profile, _, err := cachedZones(ctx, rt)
 	if err != nil {
 		return nil, profile, err
+	}
+	if arg == "" {
+		if arg, err = pickCachedZone(rt, zones, profile); err != nil {
+			return nil, profile, err
+		}
 	}
 	if z := matchZone(zones, arg); z != nil {
 		return z, profile, nil
@@ -237,10 +245,10 @@ func newZoneCmd(rt *app.Runtime) *cobra.Command {
 		&cobra.Command{
 			Use:               "get <zone>",
 			Short:             "Show one zone",
-			Args:              cobra.ExactArgs(1),
+			Args:              app.ArgsOrInteractive(rt, 1, nil),
 			ValidArgsFunction: completeZones(rt),
 			RunE: func(cmd *cobra.Command, args []string) error {
-				z, profile, err := resolveZone(cmd.Context(), rt, args[0])
+				z, profile, err := resolveZone(cmd.Context(), rt, app.Arg(args, 0))
 				if err != nil {
 					return err
 				}
@@ -318,10 +326,10 @@ func newDNSListCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:               "list <zone>",
 		Short:             "List DNS records of a zone",
-		Args:              cobra.ExactArgs(1),
+		Args:              app.ArgsOrInteractive(rt, 1, nil),
 		ValidArgsFunction: completeZones(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			z, profile, err := resolveZone(cmd.Context(), rt, args[0])
+			z, profile, err := resolveZone(cmd.Context(), rt, app.Arg(args, 0))
 			if err != nil {
 				return err
 			}
@@ -367,18 +375,30 @@ func newDNSCreateCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:               "create <zone>",
 		Short:             "Create a DNS record",
-		Args:              app.ProxiedArgs(cobra.ExactArgs(1)),
+		Args:              app.ProxiedArgs(app.ArgsOrInteractive(rt, 1, nil)),
 		ValidArgsFunction: completeZones(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if typ == "" || value == "" {
+			// The interactive flow asks for what is missing: the zone,
+			// the type and the value.
+			if (typ == "" || value == "") && !rt.Interactive() {
 				return app.UsageErrf("--type and --value are required")
 			}
 			if rt.Flags.Offline {
 				return app.ErrOffline
 			}
-			z, profile, err := resolveZone(cmd.Context(), rt, args[0])
+			z, profile, err := resolveZone(cmd.Context(), rt, app.Arg(args, 0))
 			if err != nil {
 				return err
+			}
+			if typ == "" {
+				if typ, err = rt.PickRecordType(platform.Cloudflare); err != nil {
+					return err
+				}
+			}
+			if value == "" {
+				if value, err = rt.AskRecordValue(strings.ToUpper(typ), ""); err != nil {
+					return err
+				}
 			}
 			s, err := mutationSession(cmd.Context(), rt)
 			if err != nil {
@@ -431,14 +451,14 @@ func newDNSUpdateCmd(rt *app.Runtime) *cobra.Command {
 
 --proxied is a boolean: --proxied switches the proxy on, --proxied=false
 switches it off, and without it the record keeps its current setting.`,
-		Args:              app.ProxiedArgs(app.RecordIDArgs),
+		Args:              app.ProxiedArgs(app.RecordIDArgsOrInteractive(rt)),
 		ValidArgsFunction: app.CompleteRecordIDArgs(rt, platform.Cloudflare),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			id := args[1]
+			id := app.Arg(args, 1)
 			if rt.Flags.Offline {
 				return app.ErrOffline
 			}
-			z, profile, err := resolveZone(cmd.Context(), rt, args[0])
+			z, profile, err := resolveZone(cmd.Context(), rt, app.Arg(args, 0))
 			if err != nil {
 				return err
 			}
@@ -449,6 +469,11 @@ switches it off, and without it the record keeps its current setting.`,
 			existing, err := s.client.ListRecords(cmd.Context(), z.ID)
 			if err != nil {
 				return err
+			}
+			if id == "" {
+				if id, err = rt.PickRecordID("Update which record of "+z.Name+"?", existing, nil); err != nil {
+					return err
+				}
 			}
 			var cur *platform.Record
 			for i := range existing {
@@ -520,20 +545,35 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:               "delete <zone> <record-id>",
 		Short:             "Delete one DNS record (ids are shown by `polyctl cloudflare dns list`)",
-		Args:              app.RecordIDArgs,
+		Args:              app.RecordIDArgsOrInteractive(rt),
 		ValidArgsFunction: app.CompleteRecordIDArgs(rt, platform.Cloudflare),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			id := args[1]
+			id := app.Arg(args, 1)
 			if rt.Flags.Offline {
 				return app.ErrOffline
 			}
-			z, profile, err := resolveZone(cmd.Context(), rt, args[0])
+			z, profile, err := resolveZone(cmd.Context(), rt, app.Arg(args, 0))
 			if err != nil {
 				return err
 			}
 			s, err := mutationSession(cmd.Context(), rt)
 			if err != nil {
 				return err
+			}
+			if id == "" {
+				existing, err := s.client.ListRecords(cmd.Context(), z.ID)
+				if err != nil {
+					return err
+				}
+				mark := func(r platform.Record) string {
+					if owner, ok := s.client.Match(*z, r); ok {
+						return owner
+					}
+					return ""
+				}
+				if id, err = rt.PickRecordID("Delete which record of "+z.Name+"?", existing, mark); err != nil {
+					return err
+				}
 			}
 			// The record is read first: the CNAME of an R2 custom domain
 			// cannot be deleted through the DNS API, only by unbinding the
@@ -594,18 +634,29 @@ func newCacheCmd(rt *app.Runtime) *cobra.Command {
 	purge := &cobra.Command{
 		Use:               "purge <zone>",
 		Short:             "Purge cached content (--everything, or --url/--host/--tag/--prefix)",
-		Args:              cobra.ExactArgs(1),
+		Args:              app.ArgsOrInteractive(rt, 1, nil),
 		ValidArgsFunction: completeZones(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			req := purgeRequest{PurgeEverything: everything, Files: urls, Hosts: hosts, Tags: tags, Prefixes: prefixes}
 			selective := len(urls)+len(hosts)+len(tags)+len(prefixes) > 0
-			if everything == selective {
+			if everything && selective {
 				return app.UsageErrf("pass exactly one of --everything or a selection (--url, --host, --tag, --prefix)")
 			}
+			if !everything && !selective {
+				// The interactive flow asks what to purge.
+				if !rt.Interactive() {
+					return app.UsageErrf("pass exactly one of --everything or a selection (--url, --host, --tag, --prefix)")
+				}
+				var err error
+				if everything, urls, hosts, tags, prefixes, err = askPurge(rt); err != nil {
+					return err
+				}
+				selective = !everything
+			}
+			req := purgeRequest{PurgeEverything: everything, Files: urls, Hosts: hosts, Tags: tags, Prefixes: prefixes}
 			if rt.Flags.Offline {
 				return app.ErrOffline
 			}
-			z, profile, err := resolveZone(cmd.Context(), rt, args[0])
+			z, profile, err := resolveZone(cmd.Context(), rt, app.Arg(args, 0))
 			if err != nil {
 				return err
 			}
@@ -669,7 +720,7 @@ func settingCmd(rt *app.Runtime, use, short, setting string, allowed []string) *
 	return &cobra.Command{
 		Use:               use,
 		Short:             short,
-		Args:              cobra.RangeArgs(1, 2),
+		Args:              app.RangeArgsOrInteractive(rt, 1, 2, nil),
 		ValidArgsFunction: completeZones(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if rt.Flags.Offline {
@@ -686,7 +737,7 @@ func settingCmd(rt *app.Runtime, use, short, setting string, allowed []string) *
 					return app.UsageErrf("value must be one of: %s", strings.Join(allowed, ", "))
 				}
 			}
-			z, profile, err := resolveZone(cmd.Context(), rt, args[0])
+			z, profile, err := resolveZone(cmd.Context(), rt, app.Arg(args, 0))
 			if err != nil {
 				return err
 			}
