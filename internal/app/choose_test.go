@@ -220,3 +220,16 @@ func TestPickRecordID(t *testing.T) {
 		t.Errorf("labels:\n%s", l)
 	}
 }
+
+// NamesArgs asks for the names to check, re-asking on a malformed one.
+func TestNamesArgs(t *testing.T) {
+	rt, p := interactiveRT(t, "nodot", "a.com, b.org")
+	got, err := rt.NamesArgs(nil)
+	if err != nil || strings.Join(got, " ") != "a.com b.org" {
+		t.Errorf("names = %v, %v", got, err)
+	}
+	p.Done()
+	if got, _ := rt.NamesArgs([]string{"x.com"}); len(got) != 1 {
+		t.Errorf("given names = %v", got)
+	}
+}

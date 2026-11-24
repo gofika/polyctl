@@ -441,8 +441,12 @@ func newDomainCheckCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "check <name>...",
 		Short: "Check whether domains are available for registration",
-		Args:  cobra.MinimumNArgs(1),
+		Args:  app.MinArgsOrInteractive(rt, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			args, err := rt.NamesArgs(args)
+			if err != nil {
+				return err
+			}
 			if rt.Flags.Offline {
 				return app.ErrOffline
 			}

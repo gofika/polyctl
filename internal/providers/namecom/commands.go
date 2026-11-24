@@ -493,8 +493,12 @@ func newDomainCheckCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "check <name>...",
 		Short: "Check availability and purchase price of domain names",
-		Args:  cobra.MinimumNArgs(1),
+		Args:  app.MinArgsOrInteractive(rt, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			args, err := rt.NamesArgs(args)
+			if err != nil {
+				return err
+			}
 			c, p, err := open(cmd.Context(), rt)
 			if err != nil {
 				return err

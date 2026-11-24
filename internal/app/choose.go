@@ -225,3 +225,40 @@ func Arg(args []string, i int) string {
 	}
 	return ""
 }
+
+// NamesArgs fills in a missing list of domain names (the <name>... of a
+// registrar's domain check) in the interactive flow: names cannot be
+// listed, so they are asked, separated by spaces or commas, and checked as
+// they are typed. With names given it returns args as it is.
+func (rt *Runtime) NamesArgs(args []string) ([]string, error) {
+	if len(args) > 0 {
+		return args, nil
+	}
+	v, err := rt.AskInput("<name>...", "Domain names to check (separated by spaces or commas)", "", func(s string) error {
+		names := strings.Fields(strings.ReplaceAll(s, ",", " "))
+		if len(names) == 0 {
+			return errors.New("at least one name is required")
+		}
+		for _, n := range names {
+			if d := platform.NormalizeDomain(n); !strings.Contains(d, ".") || strings.ContainsAny(d, " /:@?#*") {
+				return fmt.Errorf("%q is not a domain name (such as example.com)", n)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return strings.Fields(strings.ReplaceAll(v, ",", " ")), nil
+}
+
+// MinArgsOrInteractive requires at least min arguments, except in the
+// interactive flow, where they may be left out: the command asks for them.
+func MinArgsOrInteractive(rt *Runtime, min int) cobra.PositionalArgs {
+	return func(cmd *cobra.Command, args []string) error {
+		if len(args) < min && rt.Interactive() {
+			return nil
+		}
+		return cobra.MinimumNArgs(min)(cmd, args)
+	}
+}
