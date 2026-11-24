@@ -482,38 +482,55 @@ func newAuthStatusCmd(rt *app.Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			rows, failed, err := verifyAccounts(cmd.Context(), rt, refs)
+			rows, failures, err := verifyAccounts(cmd.Context(), rt, refs)
 			if err != nil {
 				return err
 			}
 			if err := rt.Render(rows, func() output.Grid { return statusGrid(rows) }); err != nil {
 				return err
 			}
-			if failed {
-				return errVerificationFailed()
-			}
-			return nil
+			return errVerificationFailed(failures, len(rows))
 		},
 	}
 }
 
-func errVerificationFailed() error {
-	return fmt.Errorf("%w: one or more accounts failed verification", platform.ErrUnauthorized)
+// errVerificationFailed is the error of an auth status run whose accounts
+// failed with failures: an authentication error (exit code 3) when every
+// one of them is a credential or permission failure, like cert deploy,
+// otherwise a general error (exit code 1). A network failure, a timeout or
+// a platform outage says nothing about the credentials.
+func errVerificationFailed(failures []error, total int) error {
+	if len(failures) == 0 {
+		return nil
+	}
+	for _, err := range failures {
+		if !errors.Is(err, platform.ErrUnauthorized) && !errors.Is(err, platform.ErrForbidden) {
+			return fmt.Errorf("%d of %d account(s) failed verification; first error: %v", len(failures), total, failures[0])
+		}
+	}
+	return fmt.Errorf("%d of %d account(s) failed verification; first error: %w", len(failures), total, failures[0])
 }
 
-// verifyAccounts checks the credentials of each account and reports whether
-// any of them failed.
-func verifyAccounts(ctx context.Context, rt *app.Runtime, refs []config.AccountRef) (rows []statusRow, failed bool, err error) {
+// verifyAccounts checks the credentials of each account and returns the
+// failures. It stops when ctx is cancelled (Ctrl-C) and returns ctx's error:
+// the accounts left would only fail with it.
+func verifyAccounts(ctx context.Context, rt *app.Runtime, refs []config.AccountRef) (rows []statusRow, failures []error, err error) {
 	cfg, err := rt.Config()
 	if err != nil {
-		return nil, false, err
+		return nil, nil, err
 	}
 	for _, ref := range refs {
+		if err := ctx.Err(); err != nil {
+			return rows, failures, err
+		}
 		row := statusRow{Name: ref.Profile, Platform: ref.Platform, Current: ref.Profile == cfg.CurrentProfile}
 		id, err := verifyAccount(ctx, rt, ref)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return rows, failures, ctxErr
+			}
 			row.Error = err.Error()
-			failed = true
+			failures = append(failures, err)
 		} else {
 			row.OK = true
 			row.Verified = !rt.Flags.Offline
@@ -521,7 +538,7 @@ func verifyAccounts(ctx context.Context, rt *app.Runtime, refs []config.AccountR
 		}
 		rows = append(rows, row)
 	}
-	return rows, failed, nil
+	return rows, failures, nil
 }
 
 // statusGrid is the table of `auth status`.

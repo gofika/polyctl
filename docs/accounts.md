@@ -66,7 +66,7 @@ Sets `current_profile`. An unknown profile exits with code 4. Interactively, wit
 
 ### auth status
 
-Verifies the stored credentials of every account (or of `--profile`) against the platform and prints the resolved identity (account, user, email, ARN, project...). Exits with code 3 if any account fails. With `--offline` it only checks that credentials are present.
+Verifies the stored credentials of every account (or of `--profile`) against the platform and prints the resolved identity (account, user, email, ARN, project...). Exits with code 3 when every failing account failed for its credentials or permissions, and with code 1 when one failed for another reason (network, timeout, platform outage); each row keeps its own error. Ctrl-C stops it before the accounts left. With `--offline` it only checks that credentials are present.
 
 ### auth rename
 

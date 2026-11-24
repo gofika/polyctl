@@ -177,6 +177,8 @@ type fakeClient struct {
 	failDelete string
 	// zoneErr fails GetZone; domainErr fails GetDomain.
 	zoneErr, domainErr error
+	// verifyErr fails Verify.
+	verifyErr error
 }
 
 var (
@@ -204,6 +206,9 @@ func (c *fakeClient) count(prefix string) int {
 
 func (c *fakeClient) Verify(ctx context.Context) (*platform.Identity, error) {
 	c.record("Verify")
+	if c.verifyErr != nil {
+		return nil, c.verifyErr
+	}
 	return &platform.Identity{Account: "fake-account"}, nil
 }
 

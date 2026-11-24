@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1190,3 +1191,57 @@ func TestAuthLogoutSavesAfterEachAccount(t *testing.T) {
 }
 
 func openInventoryPath(dir string) string { return filepath.Join(dir, "inventory.db") }
+
+// auth status exits 3 only when every failed account failed for its
+// credentials or permissions; a network failure is a general error (exit
+// 1). After Ctrl-C it stops instead of failing every account left.
+func TestAuthStatusExitCodeFollowsFailures(t *testing.T) {
+	_, cfgPath := setupMulti(t)
+	network := errors.New("dial tcp: connection refused")
+	for _, c := range []struct {
+		name     string
+		a, a2, b error
+		want     int
+	}{
+		{"all ok", nil, nil, nil, ExitOK},
+		{"auth only", platform.ErrUnauthorized, nil, fmt.Errorf("%w: denied", platform.ErrForbidden), ExitAuth},
+		{"network only", nil, network, nil, ExitError},
+		{"auth and network", platform.ErrUnauthorized, network, nil, ExitError},
+	} {
+		clientOn("a", fakePlatform).verifyErr = c.a
+		clientOn("a", fakePlatform2).verifyErr = c.a2
+		clientOn("b", fakePlatform2).verifyErr = c.b
+		stdout, _, err := run(t, cfgPath, "auth", "status", "-o", "json")
+		if got := ExitCodeFor(err); got != c.want {
+			t.Errorf("%s: exit %d (%v), want %d", c.name, got, err, c.want)
+		}
+		var rows []statusRow
+		if jerr := json.Unmarshal([]byte(stdout), &rows); jerr != nil || len(rows) != 3 {
+			t.Errorf("%s: rows %q (%v)", c.name, stdout, jerr)
+		}
+	}
+
+	for _, ref := range []struct {
+		p  string
+		id platform.ID
+	}{{"a", fakePlatform}, {"a", fakePlatform2}, {"b", fakePlatform2}} {
+		clientOn(ref.p, ref.id).verifyErr = nil
+	}
+	resetCalls := func() {
+		for _, k := range []*fakeClient{clientOn("a", fakePlatform), clientOn("a", fakePlatform2), clientOn("b", fakePlatform2)} {
+			k.mu.Lock()
+			k.calls = nil
+			k.mu.Unlock()
+		}
+	}
+	resetCalls()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r := runFlow(t, ctx, cfgPath, nil, strings.NewReader(""), "auth", "status")
+	if !errors.Is(r.err, context.Canceled) || r.code == ExitAuth {
+		t.Errorf("cancelled auth status = %v (exit %d), want context.Canceled and not exit 3", r.err, r.code)
+	}
+	if n := clientOn("a", fakePlatform).count("Verify") + clientOn("a", fakePlatform2).count("Verify") + clientOn("b", fakePlatform2).count("Verify"); n != 0 {
+		t.Errorf("a cancelled auth status verified %d account(s)", n)
+	}
+}
