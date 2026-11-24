@@ -229,7 +229,10 @@ func resolveInstance(ctx context.Context, rt *app.Runtime, ref, zone string, all
 	case len(hits) == 0:
 		if len(elsewhere) > 0 {
 			sort.Strings(elsewhere)
-			return nil, fmt.Errorf("%w: %s %q in zone %s (one is in zone %s; pass that --zone to use it)", platform.ErrNotFound, what, ref, zone, strings.Join(elsewhere, ", "))
+			if len(elsewhere) == 1 {
+				return nil, fmt.Errorf("%w: %s %q in zone %s (one is in zone %s; pass that --zone to use it)", platform.ErrNotFound, what, ref, zone, elsewhere[0])
+			}
+			return nil, fmt.Errorf("%w: %s %q in zone %s (it is in zones %s; pass one of them as --zone)", platform.ErrNotFound, what, ref, zone, strings.Join(elsewhere, ", "))
 		}
 		if syncErr != nil {
 			return nil, fmt.Errorf("cannot tell where %s %q is: %w", what, ref, syncErr)

@@ -227,7 +227,7 @@ polyctl gcp compute firewall ensure --preset lb-health-check --network default -
 - `delete` asks for confirmation. A missing rule is exit code 4.
 - `ensure` creates a missing rule or adds the missing ranges, tags and protocols to an existing one; it never removes anything. A rule on another network, with the other direction, disabled, a deny rule, or targeting service accounts is exit code 1.
   - `--preset lb-health-check` makes the rule load balancer health checks and proxies need: name `allow-lb-health-check-{network}` (`naming.gcp_lb_firewall`), sources Google's health check ranges (`35.191.0.0/16`, `130.211.0.0/22`) plus the subnetworks of the network in `--region` (proxy-only included), all TCP ports, target tag `defaults.gcp.lb_network_tag` (`lb-health-check`) or `--target-tag`. Run it again per region whose load balancers use the network.
-  - `--instance` (with optional `--zone`) also adds the target tag to that instance; its network and region become the defaults. Without it, `--region` defaults to the region of `defaults.gcp.zone`.
+  - `--instance` (with optional `--zone`, which pins the instance to that zone) also adds the target tag to that instance; its network and region become the defaults. Without it, `--region` defaults to the region of `defaults.gcp.zone`.
 
 ## Networks and subnetworks
 
@@ -295,7 +295,7 @@ Requirements, checked before anything is written (also in `--dry-run`):
 | `--address` | ephemeral IP | Regional static external address, reserved when missing (suggested `{lb-name}-ip`). |
 | `--health-timeout` | `3m` | Wait for a `HEALTHY` backend (http/https). Timing out is reported `skipped` with a checklist, exit code 0. |
 | `--no-wait` / `--timeout` | wait, `10m` | `--no-wait` skips the health wait; `--timeout` bounds each operation. |
-| `--zone` / `--region` | the instance's | Only narrow the lookup; the instance's own values are used. |
+| `--zone` / `--region` | the instance's | `--zone` pins the instance (only one in that zone is used); a different `--region` is noted and the instance's region used. |
 
 Components: the health check firewall rule and instance tag (as `firewall ensure --preset lb-health-check`; skipped with a reason when the account may not manage firewall rules), a TCP health check, the instance group `ig-{instance}` with a named port, the backend service, for http/https a URL map and HTTP or HTTPS proxy, for tcp a TCP proxy, and the forwarding rule. Prefixes are set by `naming.gcp_lb_prefix`, `gcp_instance_group_prefix`, `gcp_backend_service_prefix`, `gcp_proxy_prefix` and `gcp_forwarding_rule_prefix`. An instance already in an instance group keeps it, so several load balancers (http, https, tcp) can share one group. The load balancer address is printed on stderr.
 

@@ -981,3 +981,18 @@ func TestCheckProjectLogin(t *testing.T) {
 		}
 	}
 }
+
+// TestInstanceZoneNamesEveryOtherZone: a name held only in other zones is
+// not found, and the error names each of those zones.
+func TestInstanceZoneNamesEveryOtherZone(t *testing.T) {
+	h := newGCPHarness(t, app.Flags{}, nil)
+	h.gce.addInstance("proj", "us-central1-a", "web-1", "10.128.0.5", "")
+	h.gce.addInstance("proj", "us-central1-c", "web-1", "10.128.0.6", "")
+	if err := h.run("compute", "instance", "list"); err != nil {
+		t.Fatal(err)
+	}
+	err := h.run("compute", "instance", "get", "web-1", "--zone", "us-central1-b")
+	if exitClass(err) != "notfound" || !strings.Contains(err.Error(), "in zones us-central1-a, us-central1-c") {
+		t.Errorf("err = %v", err)
+	}
+}

@@ -655,7 +655,7 @@ submits them.`,
 	fl.StringVar(&preset, "preset", "", "lb-health-check: the rule load balancer health checks need (computed ranges, tag and protocol)")
 	fl.StringVar(&region, "region", "", "with --preset: the region whose subnetworks the rule allows (default: the --instance's region, else that of defaults.gcp.zone)")
 	fl.StringVar(&instance, "instance", "", "with --preset: also add the target tag to this instance (name or id)")
-	fl.StringVar(&zone, "zone", "", "zone of the --instance (default: from the inventory)")
+	fl.StringVar(&zone, "zone", "", "zone of the --instance; only an instance in this zone is used (default: from the inventory)")
 	app.AddWaitFlags(cmd, &wf, true, app.DefaultWaitTimeout)
 	return cmd
 }
