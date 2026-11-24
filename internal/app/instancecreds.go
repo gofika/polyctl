@@ -210,11 +210,6 @@ type PasswordCommand struct {
 	Reset bool
 }
 
-// InstancePasswordCommand builds `<tree> password <name|id>`: it shows the
-// Windows user name and password polyctl stored when it created the
-// instance (table: INSTANCE, USER, PASSWORD; -o json / -o yaml: an object
-// with instance, id, user, password, platform, profile, location and
-// updated_at).
 // pickStoredInstance asks for one of the instances of the profile whose
 // Windows credentials are stored (in location, "" for every one); none is
 // nothing to do.
@@ -255,6 +250,11 @@ func storedLabel(name, id, location, user string) string {
 	return strings.Join(parts, "  ")
 }
 
+// InstancePasswordCommand builds `<tree> password <name|id>`: it shows the
+// Windows user name and password polyctl stored when it created the
+// instance (table: INSTANCE, USER, PASSWORD; -o json / -o yaml: an object
+// with instance, id, user, password, platform, profile, location and
+// updated_at).
 func InstancePasswordCommand(rt *Runtime, pc PasswordCommand) *cobra.Command {
 	var location string
 	long := "Show the Windows user name and password of an instance created by polyctl\n" +
