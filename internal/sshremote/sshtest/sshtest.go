@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -148,6 +149,8 @@ func (s *Server) session(user string, ch ssh.Channel, reqs <-chan *ssh.Request) 
 		_ = req.Reply(true, nil)
 		var payload struct{ Cmd string }
 		_ = ssh.Unmarshal(req.Payload, &payload)
+		// The client sends its whole standard input, then EOF.
+		stdin, _ := io.ReadAll(ch)
 		s.mu.Lock()
 		s.commands = append(s.commands, Command{User: user, Cmd: payload.Cmd})
 		msg, forced := s.forced[user]
@@ -158,7 +161,7 @@ func (s *Server) session(user string, ch ssh.Channel, reqs <-chan *ssh.Request) 
 		case forced:
 			stdout, code = msg+"\n", 142
 		case s.System != nil:
-			stdout, stderr, code = s.System.Run(user, payload.Cmd)
+			stdout, stderr, code = s.System.Run(user, payload.Cmd, string(stdin))
 		case payload.Cmd == "echo polyctl-login-ok; id -un":
 			stdout = "polyctl-login-ok\n" + user + "\n"
 		default:
@@ -195,6 +198,10 @@ type System struct {
 	// Shell, when set, is the shell that runs commands, also as the sh
 	// of PATH (/bin/dash, to run the script as Debian's sh would).
 	Shell string
+	// LoginShell, when set, is the login shell that runs commands (as
+	// sshd runs them with the user's shell), while sh of PATH stays the
+	// system's (/bin/tcsh, to check a csh login shell).
+	LoginShell string
 
 	bin, passwd string
 }
@@ -265,8 +272,9 @@ exec "$@"
 // Home is the home directory of user.
 func (s *System) Home(user string) string { return s.Users[user].Home }
 
-// Run runs cmd as user with /bin/sh in the fake system.
-func (s *System) Run(user, cmd string) (stdout, stderr string, code int) {
+// Run runs cmd as user with /bin/sh in the fake system, stdin as its
+// standard input.
+func (s *System) Run(user, cmd, stdin string) (stdout, stderr string, code int) {
 	u, ok := s.Users[user]
 	if !ok {
 		return "", "no such user\n", 1
@@ -281,6 +289,9 @@ func (s *System) Run(user, cmd string) (stdout, stderr string, code int) {
 			}
 		}
 	}
+	if s.LoginShell != "" {
+		shell = s.LoginShell
+	}
 	c := exec.Command(shell, "-c", cmd)
 	env := []string{
 		"PATH=" + s.bin + string(os.PathListSeparator) + os.Getenv("PATH"),
@@ -293,6 +304,7 @@ func (s *System) Run(user, cmd string) (stdout, stderr string, code int) {
 	c.Env = env
 	var out, errb bytes.Buffer
 	c.Stdout, c.Stderr = &out, &errb
+	c.Stdin = strings.NewReader(stdin)
 	err := c.Run()
 	if ee, ok := err.(*exec.ExitError); ok {
 		return out.String(), errb.String(), ee.ExitCode()

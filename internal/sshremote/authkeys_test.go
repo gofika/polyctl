@@ -204,7 +204,7 @@ func TestOtherUserThroughSudo(t *testing.T) {
 	}
 	var sawSudo bool
 	for _, cmd := range srv.Commands() {
-		if strings.HasPrefix(cmd.Cmd, "sudo -n -u 'deploy' sh -c ") {
+		if strings.HasPrefix(cmd.Cmd, "sudo -n -u 'deploy' sh -s -- ") {
 			sawSudo = true
 		}
 	}
@@ -242,9 +242,9 @@ func TestRootUsesSudoForOtherUsers(t *testing.T) {
 	var viaSudo, direct int
 	for _, cmd := range srv.Commands() {
 		switch {
-		case strings.HasPrefix(cmd.Cmd, "sudo -n -u 'ecs-user' sh -c "):
+		case strings.HasPrefix(cmd.Cmd, "sudo -n -u 'ecs-user' sh -s -- "):
 			viaSudo++
-		case strings.HasPrefix(cmd.Cmd, "sh -c "):
+		case strings.HasPrefix(cmd.Cmd, "sh -s -- "):
 			direct++
 		}
 	}
@@ -364,5 +364,30 @@ func TestScriptUnderEveryShell(t *testing.T) {
 				t.Fatalf("add for bob through sudo: %v", err)
 			}
 		})
+	}
+}
+
+// The command line is one line of single-quoted words and the script goes
+// to its standard input, so a csh login shell (root on older FreeBSD) runs
+// it too, with a comment holding a quote and a '!'.
+func TestCshLoginShell(t *testing.T) {
+	csh := "/bin/tcsh"
+	if _, err := os.Stat(csh); err != nil {
+		t.Skip("no " + csh)
+	}
+	k := newKey(t)
+	srv, sys := scriptServer(t, k, "alice", "bob")
+	c := login(t, srv, k, "alice")
+	sys.LoginShell = csh
+	nk := newKey(t)
+	if added, err := c.AddKey(t.Context(), "alice", nk.pub, "it's me!"); err != nil || !added {
+		t.Fatalf("add under csh: %v %v", added, err)
+	}
+	if added, err := c.AddKey(t.Context(), "bob", nk.pub, "ci"); err != nil || !added {
+		t.Fatalf("add for bob through sudo under csh: %v %v", added, err)
+	}
+	data, _ := os.ReadFile(filepath.Join(sys.Home("alice"), ".ssh", "authorized_keys"))
+	if string(data) != line(nk.pub, "it's me!")+"\n" {
+		t.Errorf("file %q", data)
 	}
 }

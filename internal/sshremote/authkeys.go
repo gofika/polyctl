@@ -137,20 +137,28 @@ func CheckUser(user, flag string) error {
 // as the owner of the files it writes.
 func (c *Client) NeedsSudo(user string) bool { return user != c.User }
 
-// command is the shell command that runs the script for user with args.
-func (c *Client) command(user string, args ...string) string {
+// command is the shell command that runs the script for user with args,
+// and the script itself, which goes to the command's standard input: the
+// command line is then one line of single-quoted words, which a csh, tcsh
+// or fish login shell runs as a POSIX shell does (a multi-line quoted
+// script is an error in csh).
+func (c *Client) command(user string, args ...string) (cmd, stdin string) {
 	var b strings.Builder
 	if c.NeedsSudo(user) {
 		b.WriteString("sudo -n -u " + shellQuote(user) + " ")
 	}
-	prog := strings.NewReplacer("@HEADER@", shellQuote(header), "@SSHD_CONFIG@", shellQuote(SSHDConfig)).Replace(script)
-	b.WriteString("sh -c ")
-	b.WriteString(shellQuote(prog))
-	b.WriteString(" polyctl-sshkey")
+	b.WriteString("sh -s --")
 	for _, a := range args {
 		b.WriteString(" " + shellQuote(a))
 	}
-	return b.String()
+	prog := strings.NewReplacer("@HEADER@", shellQuote(header), "@SSHD_CONFIG@", shellQuote(SSHDConfig)).Replace(script)
+	return b.String(), prog
+}
+
+// runScript runs the script for user with args.
+func (c *Client) runScript(ctx context.Context, user string, args ...string) (stdout, stderr []byte, code int, err error) {
+	cmd, prog := c.command(user, args...)
+	return c.RunInput(ctx, cmd, prog)
 }
 
 // Entry is a line of authorized_keys that holds a key.
@@ -252,7 +260,7 @@ func (c *Client) scriptError(user string, stdout, stderr []byte, code int) error
 
 // ListKeys reads the authorized_keys file of user.
 func (c *Client) ListKeys(ctx context.Context, user string) (*AuthorizedKeys, error) {
-	out, errb, code, err := c.Run(ctx, c.command(user, "list", user))
+	out, errb, code, err := c.runScript(ctx, user, "list", user)
 	if err != nil {
 		return nil, err
 	}
@@ -321,7 +329,7 @@ func (c *Client) apply(ctx context.Context, ak *AuthorizedKeys, del []int, line 
 	for _, n := range del {
 		nums = append(nums, strconv.Itoa(n))
 	}
-	out, errb, code, err := c.Run(ctx, c.command(ak.User, "apply", ak.User, ak.Sum, strings.Join(nums, " "), line))
+	out, errb, code, err := c.runScript(ctx, ak.User, "apply", ak.User, ak.Sum, strings.Join(nums, " "), line)
 	if err != nil {
 		return err
 	}

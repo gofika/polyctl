@@ -264,6 +264,11 @@ func firstLine(s string) string {
 // Run runs cmd in a new session and returns its stdout, stderr and exit
 // status. A cancelled context closes the connection.
 func (c *Client) Run(ctx context.Context, cmd string) (stdout, stderr []byte, code int, err error) {
+	return c.RunInput(ctx, cmd, "")
+}
+
+// RunInput is Run with stdin as the command's standard input.
+func (c *Client) RunInput(ctx context.Context, cmd, stdin string) (stdout, stderr []byte, code int, err error) {
 	sess, err := c.conn.NewSession()
 	if err != nil {
 		return nil, nil, -1, err
@@ -272,7 +277,7 @@ func (c *Client) Run(ctx context.Context, cmd string) (stdout, stderr []byte, co
 	var out, errb bytes.Buffer
 	sess.Stdout = &out
 	sess.Stderr = &errb
-	sess.Stdin = strings.NewReader("")
+	sess.Stdin = strings.NewReader(stdin)
 	stop := context.AfterFunc(ctx, func() { _ = c.conn.Close() })
 	defer stop()
 	err = sess.Run(cmd)
