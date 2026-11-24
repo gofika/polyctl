@@ -64,13 +64,14 @@ func vswLabel(v vSwitch, vpcNames map[string]string) string {
 	return joinLabel(nameOr(v.Name, v.ID), v.ID, v.Zone, v.CIDR, vpc, free)
 }
 
-// instanceOptionLabel: "site-a  i-1  cn-shanghai-b  Running  ecs.u1  203.0.113.9".
+// instanceOptionLabel: "site-a  i-1  Running  ecs.u1  cn-shanghai-b
+// 172.16.0.5  203.0.113.9", in the order of the aws and gcp labels.
 func instanceOptionLabel(in Instance) string {
 	ip := in.PublicIP
 	if ip == "" {
 		ip = in.EIP
 	}
-	return joinLabel(nameOr(in.Name, in.ID), in.ID, in.Zone, in.Status, in.Type, ip)
+	return joinLabel(nameOr(in.Name, in.ID), in.ID, in.Status, in.Type, in.Zone, in.PrivateIP, ip)
 }
 
 // lbOptionLabel: "web  alb-1  Active  dns-name".
