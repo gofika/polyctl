@@ -217,6 +217,21 @@ func TestSSHKeyAllAccessFails(t *testing.T) {
 	if err := r.run("list", "web-1"); !errors.Is(err, platform.ErrUnauthorized) {
 		t.Errorf("all denied: %v", err)
 	}
+	// A policy denial (a RAM action not allowed, ErrForbidden) is a denial
+	// too, and not a reason to log in again.
+	forbidden := func(name string) app.SSHKeyAccess {
+		return app.SSHKeyAccess{Name: name, RunCommand: func(context.Context, string) ([]byte, []byte, int, error) {
+			return nil, nil, 0, fmt.Errorf("%w: ecs RunCommand", platform.ErrForbidden)
+		}}
+	}
+	r.inst.TempAccess = []app.SSHKeyAccess{forbidden("Test Assistant")}
+	if err := r.run("list", "web-1"); !errors.Is(err, platform.ErrForbidden) || errors.Is(err, platform.ErrUnauthorized) {
+		t.Errorf("all forbidden: %v", err)
+	}
+	r.inst.TempAccess = []app.SSHKeyAccess{pushAccess(srv, &pushed, false, denied), forbidden("Test Assistant")}
+	if err := r.run("list", "web-1"); !errors.Is(err, platform.ErrUnauthorized) {
+		t.Errorf("unauthorized and forbidden: %v", err)
+	}
 }
 
 // The key pair's local key that the instance refuses (removed from

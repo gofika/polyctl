@@ -1148,7 +1148,10 @@ func (sc SSHKeyCommand) open(ctx context.Context, rt *Runtime, f *sshKeyFlags, a
 
 	// The temporary ways in, in order.
 	failures := []string{reason}
-	denied := true
+	// denied: the platform refused every temporary way in (a RAM / IAM
+	// denial, ErrForbidden, or credentials it does not take,
+	// ErrUnauthorized).
+	denied, unauthorized := true, false
 	for _, a := range inst.TempAccess {
 		var err error
 		if a.Check != nil {
@@ -1189,11 +1192,14 @@ func (sc SSHKeyCommand) open(ctx context.Context, rt *Runtime, f *sshKeyFlags, a
 			return nil, ctx.Err()
 		}
 		failures = append(failures, a.Name+": "+err.Error())
-		if !errors.Is(err, platform.ErrUnauthorized) {
+		switch {
+		case errors.Is(err, platform.ErrUnauthorized):
+			unauthorized = true
+		case !errors.Is(err, platform.ErrForbidden):
 			denied = false
 		}
 	}
-	return nil, &sshKeyAccessError{denied: denied, msg: fmt.Sprintf("cannot reach the keys of instance %s: %s; pass the private key of a key the instance accepts with --identity-file%s",
+	return nil, &sshKeyAccessError{denied: denied, unauthorized: unauthorized, msg: fmt.Sprintf("cannot reach the keys of instance %s: %s; pass the private key of a key the instance accepts with --identity-file%s",
 		inst.label(), strings.Join(failures, "; "), loginHint)}
 }
 
@@ -1235,15 +1241,21 @@ var errPushFailed = errors.New("push failed")
 type sshKeyAccessError struct {
 	msg    string
 	denied bool
+	// unauthorized: one of the denials was ErrUnauthorized, not only
+	// ErrForbidden.
+	unauthorized bool
 }
 
 func (e *sshKeyAccessError) Error() string { return e.msg }
 
 func (e *sshKeyAccessError) Unwrap() error {
-	if e.denied {
+	switch {
+	case !e.denied:
+		return nil
+	case e.unauthorized:
 		return platform.ErrUnauthorized
 	}
-	return nil
+	return platform.ErrForbidden
 }
 
 // pushKey logs in with a one-time key generated in memory, pushed by a for
