@@ -301,6 +301,26 @@ func TestDNSEnsureDuplicates(t *testing.T) {
 	if r.err != nil || m.writes() != 0 || dnsActions(r.changes) != "dns-record/www/A=unchanged dns-record/www/A=would_delete" || r.changes[1].ID != "r9" {
 		t.Fatalf("prune dry run = %+v, %v", r.changes, r.err)
 	}
+
+	// One has the desired value but another TTL: that one is updated, not
+	// reported as ambiguous, and --prune-duplicates deletes the other.
+	ttl := func() *memDNS {
+		m := dup()
+		for i := range m.recs {
+			m.recs[i].TTL = 3600
+		}
+		return m
+	}
+	m = ttl()
+	r = ensure(t, m, Cloudflare, false, false, "www:A:203.0.113.2:300")
+	if r.err != nil || strings.Join(m.calls, ",") != "update:r2:203.0.113.2" || dnsActions(r.changes) != "dns-record/www/A=updated" || !strings.Contains(r.changes[0].Detail, "1 other record(s)") {
+		t.Fatalf("value match, other ttl = %+v, %v, %v", r.changes, r.err, m.calls)
+	}
+	m = ttl()
+	r = ensure(t, m, Cloudflare, true, false, "www:A:203.0.113.2:300")
+	if r.err != nil || strings.Join(m.calls, ",") != "update:r2:203.0.113.2,delete:r9" {
+		t.Fatalf("value match, other ttl, prune = %+v, %v, %v", r.changes, r.err, m.calls)
+	}
 }
 
 func TestDNSEnsureSetSemantics(t *testing.T) {

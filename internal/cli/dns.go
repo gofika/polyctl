@@ -682,10 +682,11 @@ front of its value ("10 mail.example.com"), an SRV value is
 Several records with the same name and type form a set: each value that is
 missing is created and nothing is updated (several MX or TXT values). One
 record against several existing ones of that name and type is fine when one of
-them is as desired; otherwise the command stops before writing anything (exit
-code 5), unless --prune-duplicates is given: it keeps one record (updating the
-oldest when none is as desired) and deletes the others, after the creates and
-updates. proxied=true on a platform other than Cloudflare reports the record as
+them is as desired, or has the desired value (its TTL or proxied setting is
+then updated); otherwise the command stops before writing anything (exit code
+5), unless --prune-duplicates is given: it keeps one record (updating the
+oldest when none has the desired value) and deletes the others, after the
+creates and updates. proxied=true on a platform other than Cloudflare reports the record as
 skipped. The zone is always read live: --offline is refused (exit code 6).`,
 		Args:              app.ArgsOrInteractive(rt, 1, nil),
 		ValidArgsFunction: completeDomains(rt),

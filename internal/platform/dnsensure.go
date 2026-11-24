@@ -580,9 +580,11 @@ type DNSEnsure struct {
 // differs, unchanged when one is as desired. Desired records sharing a name
 // and type form a set: each value missing is created, nothing is updated.
 // One desired record against several existing ones is fine when one of
-// them is as desired (the others are left alone, or deleted with
-// PruneDuplicates); otherwise it is ambiguous (ErrAmbiguous), unless
-// PruneDuplicates picks the oldest one to update and deletes the rest. The
+// them is as desired, or else when one has the desired value (that one is
+// updated in its other fields, such as the TTL); the others are left alone,
+// or deleted with PruneDuplicates. When none has the desired value it is
+// ambiguous (ErrAmbiguous), unless PruneDuplicates picks the oldest one to
+// update and deletes the rest. The
 // deletions come last. Errors are returned before any step runs.
 func PlanDNSEnsure(in DNSEnsure) (*Plan, error) {
 	existing := map[string][]Record{}
@@ -650,8 +652,14 @@ func PlanDNSEnsure(in DNSEnsure) (*Plan, error) {
 					break
 				}
 			}
+			if keep < 0 {
+				// A record holding the desired value is the one to
+				// bring in line (TTL, proxied); only when none holds it
+				// is the choice ambiguous.
+				keep = findValueIndex(recs, d)
+			}
 			if keep < 0 && !in.PruneDuplicates {
-				return nil, fmt.Errorf("%w: %s: %d records of %s %s exist and none is as desired, so which one to update cannot be told; pass --prune-duplicates to update the oldest and delete the others, or remove them first with `polyctl dns delete`",
+				return nil, fmt.Errorf("%w: %s: %d records of %s %s exist and none has the desired value, so which one to update cannot be told; pass --prune-duplicates to update the oldest and delete the others, or remove them first with `polyctl dns delete`",
 					ErrAmbiguous, d.label(), len(recs), d.Name, d.Type)
 			}
 			if keep < 0 {
@@ -705,17 +713,26 @@ func sortOldestFirst(recs []Record) {
 // findValue returns the record of recs whose value (and, when given, MX
 // priority) is the desired one.
 func findValue(recs []Record, d DesiredRecord) (Record, bool) {
+	if i := findValueIndex(recs, d); i >= 0 {
+		return recs[i], true
+	}
+	return Record{}, false
+}
+
+// findValueIndex is findValue returning the index of the first such
+// record, or -1.
+func findValueIndex(recs []Record, d DesiredRecord) int {
 	want := compareValue(d.Type, d.Value, d.Priority)
-	for _, r := range recs {
+	for i, r := range recs {
 		if existingCompareValue(r) != want {
 			continue
 		}
 		if d.Type == "MX" && d.Priority != nil && (r.Priority == nil || *r.Priority != *d.Priority) {
 			continue
 		}
-		return r, true
+		return i
 	}
-	return Record{}, false
+	return -1
 }
 
 func (in DNSEnsure) record(d DesiredRecord) Record {
