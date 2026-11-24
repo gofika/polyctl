@@ -61,8 +61,10 @@ func PasswordCommandLine(tree, instance string) string {
 // nothing. When they cannot be stored, the interactive flow still shows
 // them (with a warning, as they are shown only this once) and the command
 // succeeds; the non-interactive flow, which never prints a password, fails
-// with an error that says so (without the password).
-func (rt *Runtime) SaveCredentials(ctx context.Context, c secrets.Credentials, tree string) error {
+// with an error that says so (without the password) and what to do: hint,
+// the PasswordCommand.Hint of the platform, given the instance id (nil:
+// reset the password in the platform's console).
+func (rt *Runtime) SaveCredentials(ctx context.Context, c secrets.Credentials, tree string, hint func(ref string) string) error {
 	if rt.DryRun() {
 		return nil
 	}
@@ -76,7 +78,11 @@ func (rt *Runtime) SaveCredentials(ctx context.Context, c secrets.Credentials, t
 			rt.showCredentials(c, tree, false)
 			return nil
 		}
-		return fmt.Errorf("instance %s was created, but its login credentials could not be stored: %w (reset the password in the platform's console)", label(c), err)
+		advice := "reset the password in the platform's console"
+		if hint != nil {
+			advice = hint(instanceArg(c))
+		}
+		return fmt.Errorf("instance %s was created, but its login credentials could not be stored: %w; %s", label(c), err, advice)
 	}
 	rt.ShowCredentials(c, tree)
 	return nil

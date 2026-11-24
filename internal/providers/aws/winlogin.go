@@ -380,7 +380,7 @@ func (w *windowsLogin) finish(ctx context.Context) error {
 	if w.stored {
 		w.rt.ShowCredentials(w.credentials(), ec2InstanceTree)
 	} else {
-		err = w.rt.SaveCredentials(ctx, w.credentials(), ec2InstanceTree)
+		err = w.rt.SaveCredentials(ctx, w.credentials(), ec2InstanceTree, nil)
 	}
 	if w.password == "" && w.createdKeyPair == "" {
 		w.rt.Infof("note: polyctl does not store the private key of --key-file: pass it to `%s --key-file <path>`", app.PasswordCommandLine(ec2InstanceTree, w.id))

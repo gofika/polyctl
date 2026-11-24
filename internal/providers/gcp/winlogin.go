@@ -441,7 +441,7 @@ func (w *windowsLogin) finish(ctx context.Context) error {
 		w.rt.ShowCredentials(w.credentials(), computeInstanceTree)
 		return nil
 	}
-	return w.rt.SaveCredentials(ctx, w.credentials(), computeInstanceTree)
+	return w.rt.SaveCredentials(ctx, w.credentials(), computeInstanceTree, passwordResetHint)
 }
 
 // windowsCreateFlags refuses the Windows login flags on a Linux create:
@@ -457,6 +457,13 @@ func windowsCreateFlags(cmd *cobra.Command, what string) error {
 }
 
 // ------------------------------------------------------------ password
+
+// passwordResetHint is the advice for an instance whose password polyctl
+// does not hold (nothing stored, or credentials a create could not store):
+// password --reset.
+func passwordResetHint(ref string) string {
+	return "`" + app.PasswordCommandLine(computeInstanceTree, ref) + " --reset` sets a new password through the guest agent of a running Windows instance (asks first)"
+}
 
 func computePasswordCmd(rt *app.Runtime) *cobra.Command {
 	var reset bool
@@ -487,9 +494,7 @@ never sets a password on them. A stopped instance is exit code 1. With
 --dry-run nothing is generated, written or asked. Without --reset, an
 instance with nothing stored is exit code 4 with a hint to use --reset.
 Deleting the instance with polyctl removes its stored credentials.`,
-		Hint: func(ref string) string {
-			return "`" + app.PasswordCommandLine(computeInstanceTree, ref) + " --reset` sets a new password through the guest agent of a running Windows instance (asks first)"
-		},
+		Hint: passwordResetHint,
 	})
 	cmd.Short = "Show (or with --reset set) the Windows user name and password of an instance"
 	cmd.Example += "\n  polyctl " + computeInstanceTree + " password win-1 --reset\n" +

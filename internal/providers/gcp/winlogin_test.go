@@ -712,3 +712,20 @@ func TestInstanceWindows(t *testing.T) {
 		t.Error("debian")
 	}
 }
+
+// Credentials a non-interactive create could not store fail the command
+// with the --reset hint of the password command, not the console advice.
+func TestWindowsLoginStoreFailureHintsReset(t *testing.T) {
+	h := newGCPHarness(t, app.Flags{}, nil)
+	if err := creds.NewFile(h.dir).Set(secrets.DataKeyName, map[string]string{"key": "broken"}); err != nil {
+		t.Fatal(err)
+	}
+	w := &windowsLogin{rt: h.rt, profile: "default", zone: "us-central1-a", name: "win-1", user: defaultWindowsUser,
+		created: true, id: "1234", password: agentPassword}
+	err := w.finish(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "could not be stored") ||
+		!strings.Contains(err.Error(), "`polyctl gcp compute instance password 1234 --reset`") || strings.Contains(err.Error(), "console") ||
+		strings.Contains(err.Error(), agentPassword) {
+		t.Fatalf("finish = %v", err)
+	}
+}

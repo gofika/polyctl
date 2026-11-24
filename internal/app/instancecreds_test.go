@@ -31,7 +31,7 @@ const tree = "fake compute instance"
 func TestSaveCredentialsInteractiveTable(t *testing.T) {
 	h := newHarness(t, app.Flags{Profile: "a"}, nil)
 	h.rt.Picker = &terminalStub{}
-	if err := h.rt.SaveCredentials(ctx, winCreds(), tree); err != nil {
+	if err := h.rt.SaveCredentials(ctx, winCreds(), tree, nil); err != nil {
 		t.Fatal(err)
 	}
 	out := h.stdout.String()
@@ -60,7 +60,7 @@ func TestSaveCredentialsInteractiveTable(t *testing.T) {
 func TestSaveCredentialsInteractiveJSONUsesStderr(t *testing.T) {
 	h := newHarness(t, app.Flags{Profile: "a", Output: "json"}, nil)
 	h.rt.Picker = &terminalStub{}
-	if err := h.rt.SaveCredentials(ctx, winCreds(), tree); err != nil {
+	if err := h.rt.SaveCredentials(ctx, winCreds(), tree, nil); err != nil {
 		t.Fatal(err)
 	}
 	if h.stdout.Len() != 0 {
@@ -73,7 +73,7 @@ func TestSaveCredentialsInteractiveJSONUsesStderr(t *testing.T) {
 
 func TestSaveCredentialsNonInteractive(t *testing.T) {
 	h := newHarness(t, app.Flags{Profile: "a"}, nil)
-	if err := h.rt.SaveCredentials(ctx, winCreds(), tree); err != nil {
+	if err := h.rt.SaveCredentials(ctx, winCreds(), tree, nil); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(h.stdout.String()+h.stderr.String(), winPassword) {
@@ -102,7 +102,7 @@ func TestDryRunStoresAndShowsNothing(t *testing.T) {
 	if err := h.rt.PrepareSecrets(); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.rt.SaveCredentials(ctx, winCreds(), tree); err != nil {
+	if err := h.rt.SaveCredentials(ctx, winCreds(), tree, nil); err != nil {
 		t.Fatal(err)
 	}
 	h.rt.ShowCredentials(winCreds(), tree)
@@ -143,9 +143,17 @@ func TestSaveCredentialsFailure(t *testing.T) {
 	if err := creds.NewFile(h.dir).Set(secrets.DataKeyName, map[string]string{"key": "broken"}); err != nil {
 		t.Fatal(err)
 	}
-	err := h.rt.SaveCredentials(ctx, winCreds(), tree)
-	if err == nil || strings.Contains(err.Error(), winPassword) || !strings.Contains(err.Error(), "could not be stored") {
+	err := h.rt.SaveCredentials(ctx, winCreds(), tree, nil)
+	if err == nil || strings.Contains(err.Error(), winPassword) || !strings.Contains(err.Error(), "could not be stored") ||
+		!strings.Contains(err.Error(), "reset the password in the platform's console") {
 		t.Fatalf("non-interactive = %v", err)
+	}
+	// A platform's hint replaces the console advice, given the instance id.
+	hint := func(ref string) string { return "`polyctl " + tree + " password " + ref + " --reset` sets a new one" }
+	err = h.rt.SaveCredentials(ctx, winCreds(), tree, hint)
+	if err == nil || !strings.Contains(err.Error(), "could not be stored") || !strings.Contains(err.Error(), "password i-1 --reset` sets a new one") ||
+		strings.Contains(err.Error(), "console") {
+		t.Fatalf("with a hint = %v", err)
 	}
 	if strings.Contains(h.stdout.String()+h.stderr.String(), winPassword) {
 		t.Error("the password was printed")
@@ -156,7 +164,7 @@ func TestSaveCredentialsFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	h2.rt.Picker = &terminalStub{}
-	if err := h2.rt.SaveCredentials(ctx, winCreds(), tree); err != nil {
+	if err := h2.rt.SaveCredentials(ctx, winCreds(), tree, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(h2.stdout.String(), "password: "+winPassword) || !strings.Contains(h2.stderr.String(), "could not be stored") ||
@@ -179,7 +187,7 @@ func passwordCmd(t *testing.T, h *harness, pc app.PasswordCommand, args ...strin
 
 func TestPasswordCommand(t *testing.T) {
 	h := newHarness(t, app.Flags{Profile: "a"}, nil)
-	if err := h.rt.SaveCredentials(ctx, winCreds(), tree); err != nil {
+	if err := h.rt.SaveCredentials(ctx, winCreds(), tree, nil); err != nil {
 		t.Fatal(err)
 	}
 	pc := app.PasswordCommand{Platform: platform.NameCom, Tree: tree, LocationFlag: "region"}
@@ -225,7 +233,7 @@ func TestPasswordCommand(t *testing.T) {
 	// A name stored twice is ambiguous; the id is not.
 	c2 := winCreds()
 	c2.Location, c2.InstanceID = "r2", "i-2"
-	if err := h.rt.SaveCredentials(ctx, c2, tree); err != nil {
+	if err := h.rt.SaveCredentials(ctx, c2, tree, nil); err != nil {
 		t.Fatal(err)
 	}
 	var amb *app.AmbiguousError
@@ -247,7 +255,7 @@ func TestPasswordCommand(t *testing.T) {
 
 func TestPasswordCommandLostKey(t *testing.T) {
 	h := newHarness(t, app.Flags{Profile: "a"}, nil)
-	if err := h.rt.SaveCredentials(ctx, winCreds(), tree); err != nil {
+	if err := h.rt.SaveCredentials(ctx, winCreds(), tree, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := creds.NewFile(h.dir).Delete(secrets.DataKeyName); err != nil {
@@ -268,7 +276,7 @@ func TestPasswordCommandRetrieve(t *testing.T) {
 	pending := winCreds()
 	pending.Password = ""
 	pending.PrivateKey = "PEM"
-	if err := h.rt.SaveCredentials(ctx, pending, tree); err != nil {
+	if err := h.rt.SaveCredentials(ctx, pending, tree, nil); err != nil {
 		t.Fatal(err)
 	}
 	calls := 0

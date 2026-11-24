@@ -82,7 +82,7 @@ func (w *windowsLogin) finish(ctx context.Context) error {
 		w.rt.ShowCredentials(w.credentials(), ecsInstanceTree)
 		return nil
 	}
-	return w.rt.SaveCredentials(ctx, w.credentials(), ecsInstanceTree)
+	return w.rt.SaveCredentials(ctx, w.credentials(), ecsInstanceTree, nil)
 }
 
 // forgetLogin removes the stored credentials of a deleted instance.
