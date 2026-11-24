@@ -1,6 +1,7 @@
 package gcp
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	"google.golang.org/api/compute/v1"
 
+	"github.com/gofika/polyctl/internal/prompt"
 	"github.com/gofika/polyctl/internal/prompt/prompttest"
 )
 
@@ -143,5 +145,120 @@ func TestInstanceCreatePicksNetwork(t *testing.T) {
 	p.Done()
 	if l := prompttest.Labels(p.Asked[0].Options); l != "prod  auto  0 subnets" {
 		t.Errorf("networks offered: %s", l)
+	}
+}
+
+// emptyHome makes a temporary home directory without ~/.ssh.
+func emptyHome(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+}
+
+func metaItem(key, value string) *compute.MetadataItems {
+	return &compute.MetadataItems{Key: key, Value: &value}
+}
+
+// On a terminal, a Linux instance in a project without SSH login can get
+// a public key typed in (for somebody else's machine), checked as it is
+// typed; the user comes from its comment, or is asked. Leaving the
+// question creates nothing.
+func TestInstanceCreateTypedSSHKey(t *testing.T) {
+	emptyHome(t)
+	h, _ := interactiveGCP(t, defaultsUS())
+	h.rt.Flags.DryRun = true
+	h.gce.projectMeta["proj"] = &compute.Metadata{}
+
+	p := h.answer(prompttest.Label("Enter a public key"), "not a key", "-----BEGIN OPENSSH PRIVATE KEY-----", testPublicKey(t, ""), "friend")
+	if err := h.run("compute", "instance", "create", "web-9"); err != nil {
+		t.Fatalf("create: %v\n%s", err, h.stderr.String())
+	}
+	p.Done()
+	if l := prompttest.Labels(p.Asked[0].Options); l != "A public key file...\nEnter a public key..." {
+		t.Errorf("key entries without ~/.ssh:\n%s", l)
+	}
+	if out := strings.Join(rows(h.report()), "\n"); !strings.Contains(out, "ssh keys friend") {
+		t.Errorf("report:\n%s", out)
+	}
+
+	p = h.answer(prompttest.Label("Enter a public key"), testPublicKey(t, "alice@example.com"))
+	if err := h.run("compute", "instance", "create", "web-9"); err != nil {
+		t.Fatalf("create: %v\n%s", err, h.stderr.String())
+	}
+	p.Done()
+	if out := strings.Join(rows(h.report()), "\n"); !strings.Contains(out, "ssh keys alice") {
+		t.Errorf("report:\n%s", out)
+	}
+
+	h.rt.Flags.DryRun = false
+	for _, answers := range [][]any{{prompttest.Abort{}}, {prompttest.Label("Enter a public key"), prompttest.Abort{}}} {
+		h.answer(answers...)
+		if err := h.run("compute", "instance", "create", "web-9"); !errors.Is(err, prompt.ErrAborted) {
+			t.Errorf("abort = %v", err)
+		}
+	}
+	if _, ok := h.gce.instances["proj/us-central1-a/web-9"]; ok {
+		t.Error("an instance was created after a cancel")
+	}
+}
+
+// A key the project metadata holds for the same user, in a project that
+// blocks its keys, is pointed out and added to the instance.
+func TestInstanceCreateTypedKeyInBlockedProject(t *testing.T) {
+	emptyHome(t)
+	h, _ := interactiveGCP(t, defaultsUS())
+	h.rt.Flags.DryRun = true
+	line := testPublicKey(t, "")
+	h.gce.projectMeta["proj"] = &compute.Metadata{Items: []*compute.MetadataItems{
+		metaItem(blockProjectKeys, "TRUE"), metaItem(sshKeysItem, "ops:"+line)}}
+	p := h.answer(prompttest.Label("Enter a public key"), "ops:"+line)
+	if err := h.run("compute", "instance", "create", "web-9"); err != nil {
+		t.Fatalf("create: %v\n%s", err, h.stderr.String())
+	}
+	p.Done()
+	if !strings.Contains(h.stderr.String(), "is in the project metadata, but the project blocks its SSH keys") {
+		t.Errorf("stderr:\n%s", h.stderr.String())
+	}
+	if out := strings.Join(rows(h.report()), "\n"); !strings.Contains(out, "ssh keys ops") {
+		t.Errorf("report:\n%s", out)
+	}
+}
+
+// A key the project metadata already holds for that user (and does not
+// block) is pointed out: using the project key puts no key on the
+// instance; "add it anyway" does. A key of another user is not a match.
+func TestPickSSHKeyAlreadyInProject(t *testing.T) {
+	emptyHome(t)
+	h, _ := interactiveGCP(t, nil)
+	line := testPublicKey(t, "")
+	md := &compute.Metadata{Items: []*compute.MetadataItems{metaItem(sshKeysItem, "ops:"+line)}}
+
+	p := h.answer(prompttest.Label("Enter a public key"), "ops:"+line, "project")
+	keys, err := pickSSHKey(h.rt, "", md)
+	p.Done()
+	if err != nil || len(keys) != 0 {
+		t.Fatalf("use the project key = %v, %v", keys, err)
+	}
+	a := p.Find(`This public key is already in the project metadata for user "ops"`)
+	if a.Default != "project" || !strings.Contains(prompttest.Labels(a.Options), "Use the project key") || !strings.Contains(prompttest.Labels(a.Options), "Add it to the instance anyway") {
+		t.Errorf("question (default %q):\n%s", a.Default, prompttest.Labels(a.Options))
+	}
+
+	p = h.answer(prompttest.Label("Enter a public key"), "ops:"+line, "instance")
+	if keys, err = pickSSHKey(h.rt, "", md); err != nil || len(keys) != 1 || keys[0].User != "ops" || keys[0].Source != typedSSHKeySource {
+		t.Fatalf("add anyway = %v, %v", keys, err)
+	}
+	p.Done()
+
+	p = h.answer(prompttest.Label("Enter a public key"), "dev:"+line)
+	if keys, err = pickSSHKey(h.rt, "", md); err != nil || len(keys) != 1 || keys[0].User != "dev" {
+		t.Fatalf("another user = %v, %v", keys, err)
+	}
+	p.Done()
+
+	h.answer(prompttest.Label("Enter a public key"), "ops:"+line, prompttest.Abort{})
+	if _, err := pickSSHKey(h.rt, "", md); !errors.Is(err, prompt.ErrAborted) {
+		t.Errorf("abort = %v", err)
 	}
 }

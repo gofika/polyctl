@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -306,48 +305,49 @@ func pickSubnet(rt *app.Runtime, network, region string, subs []*compute.Subnetw
 	return rt.Choose(app.Choice{Title: "Subnetwork of " + network + " in " + region, Options: opts, Arg: "--subnet", Required: true, What: "subnetwork"})
 }
 
-// errNoLocalKey says there is no ~/.ssh/*.pub to offer and nothing was
-// typed: the caller keeps its own usage error.
-var errNoLocalKey = errors.New("no local public key")
+// typedSSHKeySource is the source of a public key typed in the
+// interactive flow.
+const typedSSHKeySource = platform.TypedKeySource
 
 // pickSSHKey asks, in the interactive flow, for a public key to put into
 // the ssh-keys metadata of a new Linux instance when the project offers
 // no SSH login: the usable ~/.ssh/*.pub files (type, fingerprint,
-// comment; those already in the project metadata marked), or "Another
-// file..." for a path checked as it is typed. A key whose user cannot be
-// told (no user: prefix, no e-mail comment, no --ssh-user) asks for the
-// user. No local key file returns errNoLocalKey.
+// comment; those already in the project metadata marked), "Another
+// file..." for a path checked as it is typed, or "Enter a public key..."
+// for the key itself (one line, an optional "user:" prefix), checked as
+// it is typed. A key whose user cannot be told (no user: prefix, no e-mail
+// comment, no --ssh-user) asks for the user. A key the project metadata
+// already holds for that user is pointed out: the instance can rely on the
+// project key (no keys returned) unless the project blocks its keys, or
+// the key is added to the instance anyway.
 func pickSSHKey(rt *app.Runtime, sshUser string, md *compute.Metadata) ([]sshKey, error) {
 	present := metadataKeys(md)
-	var opts []prompt.Option
-	def := ""
+	var candidates []platform.KeyFileCandidate
 	for _, path := range platform.PublicKeyFiles() {
 		pk, err := platform.LoadPublicKeyFile(path)
 		if err != nil || pk.CheckType(platform.AnyKeyTypes) != nil {
 			continue
 		}
-		label := joinLabel(app.HomeRelative(path), pk.Summary())
+		c := platform.KeyFileCandidate{Path: path, Key: pk}
 		for _, m := range present {
-			if string(m.Key.Marshal()) == string(pk.Key.Marshal()) {
-				label += "  [in project metadata]"
+			if pk.Equal(m.Key) {
+				c.Note = "in project metadata"
 				break
 			}
 		}
-		if def == "" || filepath.Base(path) == "id_ed25519.pub" {
-			def = path
-		}
-		opts = append(opts, prompt.Option{Label: label, Value: path})
+		candidates = append(candidates, c)
 	}
-	if len(opts) == 0 {
-		return nil, errNoLocalKey
-	}
-	opts = append(opts, prompt.Option{Label: "Another file...", Value: otherValue})
 	pick := rt.Pick()
-	path, err := pick.Select("SSH public key for the instance (the project metadata offers no SSH login)", opts, def)
+	choice, err := app.PickKeyFile(pick, "SSH public key for the instance (the project metadata offers no SSH login)", candidates)
 	if err != nil {
 		return nil, err
 	}
-	if path == otherValue {
+	var keys []sshKey
+	switch {
+	case app.IsTypedKey(choice):
+		keys, err = askTypedSSHKey(pick, sshUser)
+	case app.IsOtherKeyFile(choice):
+		var path string
 		if path, err = pick.Input("Path of the public key file (.pub)", "", func(s string) error {
 			if strings.TrimSpace(s) == "" {
 				return errors.New("a path is required")
@@ -357,18 +357,117 @@ func pickSSHKey(rt *app.Runtime, sshUser string, md *compute.Metadata) ([]sshKey
 		}); err != nil {
 			return nil, err
 		}
+		keys, err = loadPickedKeyFile(pick, path, sshUser)
+	default:
+		keys, err = loadPickedKeyFile(pick, choice, sshUser)
 	}
+	if err != nil {
+		return nil, err
+	}
+	return projectKeyOrInstance(rt, md, present, keys)
+}
+
+// loadPickedKeyFile reads a picked public key file; when the user of its
+// key cannot be told, the user is asked.
+func loadPickedKeyFile(pick prompt.Picker, path, sshUser string) ([]sshKey, error) {
 	keys, err := loadSSHKeyFile(path, sshUser)
 	if err == nil || sshUser != "" || !strings.Contains(err.Error(), "cannot tell the user") {
 		return keys, err
 	}
-	user, err := pick.Input("User of the key on the instance (--ssh-user)", "", func(s string) error {
-		return checkSSHUser(strings.TrimSpace(s), "--ssh-user")
+	user, err := askKeyUser(pick)
+	if err != nil {
+		return nil, err
+	}
+	return loadSSHKeyFile(path, user)
+}
+
+// askTypedSSHKey asks for a public key itself (one line, an optional
+// "user:" prefix), checked as it is typed, and then for its user when it
+// cannot be told.
+func askTypedSSHKey(pick prompt.Picker, sshUser string) ([]sshKey, error) {
+	parse := func(text string) (string, *platform.PublicKey, error) {
+		prefix, rest := splitUser(strings.TrimSpace(text))
+		pk, err := platform.ParseTypedPublicKey(rest)
+		if err == nil {
+			err = pk.CheckType(platform.AnyKeyTypes)
+		}
+		if err == nil && prefix != "" {
+			err = checkSSHUser(prefix, "user: prefix")
+		}
+		return prefix, pk, err
+	}
+	text, err := pick.Input("Public key (one line: \"ssh-ed25519 AAAA... comment\", optionally user:...)", "", func(s string) error {
+		_, _, err := parse(s)
+		return inlineErr(err)
 	})
 	if err != nil {
 		return nil, err
 	}
-	return loadSSHKeyFile(path, strings.TrimSpace(user))
+	prefix, pk, err := parse(text)
+	if err != nil {
+		return nil, err
+	}
+	user, err := keyUser(prefix, sshUser, pk, typedSSHKeySource)
+	if err != nil {
+		if prefix != "" || sshUser != "" || !strings.Contains(err.Error(), "cannot tell the user") {
+			return nil, err
+		}
+		if user, err = askKeyUser(pick); err != nil {
+			return nil, err
+		}
+	}
+	return []sshKey{{User: user, Key: pk, Source: typedSSHKeySource}}, nil
+}
+
+func askKeyUser(pick prompt.Picker) (string, error) {
+	user, err := pick.Input("User of the key on the instance (--ssh-user)", "", func(s string) error {
+		return checkSSHUser(strings.TrimSpace(s), "--ssh-user")
+	})
+	return strings.TrimSpace(user), err
+}
+
+// projectKeyOrInstance points out keys the project metadata already holds
+// for the same user. When the project does not block its keys, the user
+// may rely on them (no keys for the instance) or add them to the instance
+// anyway; when it does, they are added to the instance, with a note.
+func projectKeyOrInstance(rt *app.Runtime, md *compute.Metadata, present []metadataKey, keys []sshKey) ([]sshKey, error) {
+	var inProject []sshKey
+	for _, k := range keys {
+		for _, m := range present {
+			if k.same(m.User, m.Key) {
+				inProject = append(inProject, k)
+				break
+			}
+		}
+	}
+	if len(inProject) == 0 || len(inProject) != len(keys) {
+		return keys, nil
+	}
+	if projectKeysBlocked(md) {
+		rt.Infof("note: the key of user %s is in the project metadata, but the project blocks its SSH keys (block-project-ssh-keys=TRUE): it is added to the instance", inProject[0].User)
+		return keys, nil
+	}
+	const useProject, addAnyway = "project", "instance"
+	v, err := rt.Pick().Select(fmt.Sprintf("This public key is already in the project metadata for user %q", inProject[0].User), []prompt.Option{
+		{Label: "Use the project key (no ssh-keys metadata on the instance)", Value: useProject},
+		{Label: "Add it to the instance anyway", Value: addAnyway},
+	}, useProject)
+	if err != nil {
+		return nil, err
+	}
+	if v == useProject {
+		return nil, nil
+	}
+	return keys, nil
+}
+
+// inlineErr drops the "invalid input: " prefix of an error shown under a
+// question.
+func inlineErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	return errors.New(strings.TrimPrefix(err.Error(), platform.ErrInvalidInput.Error()+": "))
 }
 
 // zoneArg fills in a missing <zone> of a gcp dns command in the

@@ -671,8 +671,9 @@ image but --os windows, an image of the windows-cloud project or one
 with the WINDOWS guest OS feature) is created only when the project
 metadata holds SSH keys (not blocked) or enables OS Login; otherwise
 create is exit code 2 before anything is written (on a terminal, a public
-key from ~/.ssh/*.pub, or another file, is offered for the instance's own
-ssh-keys metadata instead).
+key from ~/.ssh/*.pub, another file or a key typed in is offered for the
+instance's own ssh-keys metadata instead; a key the project metadata holds
+for that user is pointed out).
 
 On a terminal, what is missing is asked: the zone (UP, not deprecated),
 the machine type of the zone (x86_64, current families, not deprecated,
@@ -1024,9 +1025,6 @@ func runCreate(cmd *cobra.Command, rt *app.Runtime, o *createOptions, name strin
 			// instance's own ssh-keys metadata instead.
 			md, _ := readProjectMD()
 			picked, perr := pickSSHKey(rt, o.sshUser, md)
-			if errors.Is(perr, errNoLocalKey) {
-				return err
-			}
 			if perr != nil {
 				return perr
 			}
