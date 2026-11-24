@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -256,32 +255,6 @@ func TestSyncPacesRequests(t *testing.T) {
 	go func() { time.Sleep(20 * time.Millisecond); cancel() }()
 	if _, err := c.Sync(ctx, platform.ResDNSRecord); !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled while pacing, got %v", err)
-	}
-}
-
-func TestRetryDelay(t *testing.T) {
-	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	h := http.Header{}
-	if d := retryDelay(h, now); d != 0 {
-		t.Errorf("no header: %s", d)
-	}
-	h.Set("RateLimit-Reset", "7")
-	if d := retryDelay(h, now); d != 7*time.Second {
-		t.Errorf("RateLimit-Reset: %s", d)
-	}
-	h.Set("RateLimit-Reset", "0")
-	if d := retryDelay(h, now); d != time.Second {
-		t.Errorf("zero rounds up: %s", d)
-	}
-	h = http.Header{}
-	h.Set("Retry-After", now.Add(90*time.Second).UTC().Format(http.TimeFormat))
-	if d := retryDelay(h, now); d != 90*time.Second {
-		t.Errorf("Retry-After date: %s", d)
-	}
-	h.Set("Retry-After", "garbage")
-	h.Set("RateLimit-Reset", "3")
-	if d := retryDelay(h, now); d != 3*time.Second {
-		t.Errorf("fallback to RateLimit-Reset: %s", d)
 	}
 }
 

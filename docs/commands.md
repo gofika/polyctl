@@ -44,6 +44,7 @@ Every `dns` command also takes `--profile` and `--platform`.
 - In tables, special TTLs are shown by name: `auto` (Cloudflare automatic, `1` in the API), `alias` (Route 53 alias records) and `default` (a GoDaddy record written without `--ttl`). JSON and YAML keep the raw value.
 - `--proxied` is Cloudflare only. `--proxied` turns the proxy on, `--proxied=false` turns it off (the `=` is required). Without it, `dns set` keeps the current setting and `dns add` uses Cloudflare's default. The `PROXIED` column appears for Cloudflare zones.
 - After a write, the inventory is updated, so the next `dns list` shows the change without `--refresh`.
+- A Cloudflare, name.com or GoDaddy request refused for its rate limit (HTTP 429) waits for the delay the platform announces (`Retry-After`, `RateLimit-Reset`; at most 2 minutes per wait, 3 waits per request) and is sent again, so a long `dns delete --all` or sync rides out the limit window instead of failing partway.
 
 ### dns set and dns add
 

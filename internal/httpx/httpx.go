@@ -30,12 +30,15 @@ type Client struct {
 	MaxRetries int
 }
 
-// New returns a client with sane defaults.
+// New returns a client with sane defaults. Its transport honours the
+// Retry-After / RateLimit-Reset delay of a 429 (see RateLimitTransport).
 func New(baseURL string, prepare func(*http.Request)) *Client {
 	return &Client{
 		BaseURL: strings.TrimRight(baseURL, "/"),
 		HTTP: &http.Client{
-			Timeout: 60 * time.Second,
+			// 429 responses wait for the delay the server announces.
+			Transport: NewRateLimitTransport(nil),
+			Timeout:   60 * time.Second,
 			// REST APIs do not redirect; following one would resend the
 			// Authorization header (possibly over plain http) and turn a
 			// POST into a bodiless GET. Surface 3xx as an error instead.

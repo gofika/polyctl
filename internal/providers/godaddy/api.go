@@ -44,13 +44,13 @@ type api struct {
 // newAPI builds the client. A Personal Access Token is sent as
 // `Authorization: Bearer <token>`; the legacy key pair as
 // `Authorization: sso-key <key>:<secret>`. 429 responses are retried after
-// the delay GoDaddy announces in RateLimit-Reset / Retry-After.
+// the delay GoDaddy announces in RateLimit-Reset / Retry-After (the httpx
+// transport does that).
 func newAPI(baseURL string, cred credentials) *api {
 	auth := cred.authorization()
 	h := httpx.New(baseURL, func(r *http.Request) {
 		r.Header.Set("Authorization", auth)
 	})
-	h.HTTP.Transport = newRateLimitTransport(h.HTTP.Transport)
 	return &api{
 		http:           h,
 		domainPageSize: defaultDomainPageSize,
