@@ -293,7 +293,7 @@ size <cores>H<memory>G.`,
 		},
 	}
 	cmd.Flags().StringVar(&typ, "machine-type", "", "new machine type, or a size <cores>H<memory>G such as 2H4G (required)")
-	cmd.Flags().StringVar(&zone, "zone", "", "zone of the instance (default: from the inventory)")
+	cmd.Flags().StringVar(&zone, "zone", "", "zone of the instance; only an instance in this zone is used (default: from the inventory)")
 	cmd.Flags().BoolVar(&start, "start", false, "start the instance after the change (default: only when it was running; --start=false leaves it stopped)")
 	cmd.Flags().IntVar(&port, "wait-port", 0, "after the start, wait up to 5 minutes until this TCP port accepts connections (22 for SSH)")
 	cmd.Flags().BoolVar(&waitSSHFlag, "wait-ssh", false, "the same as --wait-port 22")

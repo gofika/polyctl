@@ -96,7 +96,7 @@ gcp compute instance-group list | get <name> | delete <name> [--zone <z>]
 `get`, `start`, `stop`, `delete`, `resize`, `reboot`, `update`, `password` and `ssh-key` take the name or numeric id. polyctl finds the project and zone from the inventory of every selected GCP account (synced once when the instance is unknown, always with `--refresh`), then reads it live.
 
 - One name in several zones or projects is exit code 5: pass `--zone`, `--profile` or the id.
-- `--zone` also finds an instance the inventory does not know.
+- `--zone` pins the instance: only an instance in that zone is used (instance names are unique only within a zone). It also finds an instance the inventory does not know. A name held only in other zones is exit code 4, and the error names those zones.
 - Not found is exit code 4.
 - `reboot` also takes an internal or external IP.
 

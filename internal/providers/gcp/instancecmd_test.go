@@ -124,10 +124,32 @@ func TestInstanceGetFindsUncachedInstanceByZone(t *testing.T) {
 		t.Errorf("sync failure with --zone = %q, %v", h.stdout.String(), err)
 	}
 	delete(h.gce.fail, "GET /projects/proj/aggregated/instances")
-	// A wrong --zone for a known instance is noted, and the real zone used.
-	if err := h.run("compute", "instance", "get", "web-1", "--zone", "us-central1-b", "--field", "zone"); err != nil || h.stdout.String() != "us-central1-a\n" ||
-		!strings.Contains(h.stderr.String(), "not us-central1-b") {
-		t.Errorf("wrong --zone = %q, %v, %s", h.stdout.String(), err, h.stderr.String())
+	// --zone pins the instance: the web-1 of another zone is not used.
+	if err := h.run("compute", "instance", "get", "web-1", "--zone", "us-central1-b", "--field", "zone"); exitClass(err) != "notfound" ||
+		!strings.Contains(err.Error(), "one is in zone us-central1-a") || h.stdout.String() != "" {
+		t.Errorf("wrong --zone = %q, %v", h.stdout.String(), err)
+	}
+}
+
+// TestInstanceZonePinsDelete: the inventory knows web-1 in one zone only;
+// --zone of another zone acts on the web-1 there (found live), or on
+// nothing, never on the cached one.
+func TestInstanceZonePinsDelete(t *testing.T) {
+	h := newGCPHarness(t, app.Flags{}, nil)
+	h.gce.addInstance("proj", "us-central1-a", "web-1", "10.128.0.5", "")
+	if err := h.run("compute", "instance", "list"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.run("compute", "instance", "delete", "web-1", "--zone", "europe-west1-b", "--yes"); exitClass(err) != "notfound" || len(h.gce.writes()) != 0 {
+		t.Errorf("no web-1 in the zone = %v, writes %v", err, h.gce.writes())
+	}
+	// A web-1 created there since the last sync is found live.
+	h.gce.addInstance("proj", "europe-west1-b", "web-1", "10.132.0.5", "")
+	if err := h.run("compute", "instance", "delete", "web-1", "--zone", "europe-west1-b", "--yes"); err != nil {
+		t.Fatalf("%v\n%s", err, h.stderr.String())
+	}
+	if h.gce.instance("europe-west1-b", "web-1") != nil || h.gce.instance("us-central1-a", "web-1") == nil {
+		t.Errorf("writes = %v", h.gce.writes())
 	}
 }
 

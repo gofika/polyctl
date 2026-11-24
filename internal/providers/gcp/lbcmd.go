@@ -248,7 +248,7 @@ step of the plan.`,
 	fl.StringVar(&sslCert, "ssl-certificate", "", "existing regional SSL certificate of the HTTPS proxy (required for https)")
 	fl.StringVar(&backendProtocol, "backend-protocol", "", "with --protocol https: http (default, TLS ends at the load balancer) or https")
 	fl.StringVar(&address, "address", "", "regional static external address of the forwarding rule, reserved when missing (recommended name: {lb-name}-ip; default: an ephemeral IP)")
-	fl.StringVar(&zone, "zone", "", "zone of the instance (default: from the inventory)")
+	fl.StringVar(&zone, "zone", "", "zone of the instance; only an instance in this zone is used (default: from the inventory)")
 	fl.StringVar(&region, "region", "", "region of the instance (only checked: the instance's region is used)")
 	fl.DurationVar(&healthTimeout, "health-timeout", defaultHealthTimeout, "how long http and https wait for a HEALTHY backend")
 	app.AddWaitFlags(cmd, &wf, true, app.DefaultWaitTimeout)

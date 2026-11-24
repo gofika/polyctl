@@ -828,7 +828,7 @@ IP.`
 			return rt.RenderReport(platform.Report{Target: l.target(), Changes: []platform.Change{change}})
 		},
 	}
-	cmd.Flags().StringVar(&zone, "zone", "", "zone of the instance (default: from the inventory)")
+	cmd.Flags().StringVar(&zone, "zone", "", "zone of the instance; only an instance in this zone is used (default: from the inventory)")
 	app.AddWaitFlags(cmd, &wf, false, app.DefaultWaitTimeout)
 	return cmd
 }

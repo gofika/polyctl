@@ -159,10 +159,11 @@ func inventoryInstanceHits(ctx context.Context, rt *app.Runtime, accounts []conf
 // resolveInstance finds the instance ref names without the user naming the
 // account: the inventory of every selected GCP account is searched by id
 // and by name (with allowIP, an IP address is looked up among the
-// instances' internal and external IPs), in every status. --zone narrows
-// several matches, and finds an instance the inventory does not know yet;
-// a --zone that differs from the zone of the only match is noted and the
-// real zone used. Several matches are ambiguous (exit code 5); the
+// instances' internal and external IPs), in every status. --zone keeps
+// only the matches in that zone (a name is unique only within a zone, so
+// a match elsewhere is another machine), and finds an instance of that
+// zone the inventory does not know yet; with no match in the zone it is
+// not found (exit code 4), naming the zones that hold the name. Several matches are ambiguous (exit code 5); the
 // interactive flow lets the user choose among the matches of an IP. The
 // instance is then read live: the inventory may be stale.
 func resolveInstance(ctx context.Context, rt *app.Runtime, ref, zone string, allowIP bool) (*locatedInstance, error) {
@@ -182,16 +183,19 @@ func resolveInstance(ctx context.Context, rt *app.Runtime, ref, zone string, all
 	if err != nil {
 		return nil, err
 	}
-	if zone != "" && len(hits) > 1 {
+	// An explicit --zone pins the instance: names are unique only within
+	// a zone, so a match in another zone is another machine.
+	var elsewhere []string
+	if zone != "" {
 		var inZone []instanceHit
 		for _, h := range hits {
 			if h.inst.Zone == zone {
 				inZone = append(inZone, h)
+			} else if !slices.Contains(elsewhere, h.inst.Zone) {
+				elsewhere = append(elsewhere, h.inst.Zone)
 			}
 		}
-		if len(inZone) > 0 {
-			hits = inZone
-		}
+		hits = inZone
 	}
 	if len(hits) == 0 && zone != "" && !byIP {
 		// Not cached yet: ask each account in that zone.
@@ -223,6 +227,10 @@ func resolveInstance(ctx context.Context, rt *app.Runtime, ref, zone string, all
 	}
 	switch {
 	case len(hits) == 0:
+		if len(elsewhere) > 0 {
+			sort.Strings(elsewhere)
+			return nil, fmt.Errorf("%w: %s %q in zone %s (one is in zone %s; pass that --zone to use it)", platform.ErrNotFound, what, ref, zone, strings.Join(elsewhere, ", "))
+		}
 		if syncErr != nil {
 			return nil, fmt.Errorf("cannot tell where %s %q is: %w", what, ref, syncErr)
 		}
@@ -235,9 +243,6 @@ func resolveInstance(ctx context.Context, rt *app.Runtime, ref, zone string, all
 		hits = []instanceHit{h}
 	}
 	h := hits[0]
-	if zone != "" && zone != h.inst.Zone {
-		rt.Infof("note: instance %s is in zone %s, not %s; using %s", h.inst.Name, h.inst.Zone, zone, h.inst.Zone)
-	}
 	c, err := openProfile(ctx, rt, h.profile)
 	if err != nil {
 		return nil, err
@@ -508,7 +513,7 @@ nothing on stdout.`,
 			return rt.Render(d, func() output.Grid { return detailGrid(d) })
 		},
 	}
-	cmd.Flags().StringVar(&zone, "zone", "", "zone of the instance (default: from the inventory)")
+	cmd.Flags().StringVar(&zone, "zone", "", "zone of the instance; only an instance in this zone is used (default: from the inventory)")
 	cmd.Flags().StringVar(&field, "field", "", "print only the raw value of this field ("+strings.Join(getFields, ", ")+")")
 	return cmd
 }
@@ -1403,7 +1408,7 @@ requested, the Windows login polyctl stored for the instance is removed.`,
 			return err
 		},
 	}
-	cmd.Flags().StringVar(&zone, "zone", "", "zone of the instance (default: from the inventory)")
+	cmd.Flags().StringVar(&zone, "zone", "", "zone of the instance; only an instance in this zone is used (default: from the inventory)")
 	cmd.Flags().BoolVar(&releaseIPs, "release-ips", false, "also delete the RESERVED addresses {name}-external-ip and {name}-internal-ip (implies --wait)")
 	app.AddWaitFlags(cmd, &wf, false, app.DefaultWaitTimeout)
 	return cmd
@@ -1484,7 +1489,7 @@ reset to complete (--timeout, 3m).`,
 			return rt.RenderReport(platform.Report{Target: l.target(), Changes: []platform.Change{change}})
 		},
 	}
-	cmd.Flags().StringVar(&zone, "zone", "", "zone of the instance (default: from the inventory)")
+	cmd.Flags().StringVar(&zone, "zone", "", "zone of the instance; only an instance in this zone is used (default: from the inventory)")
 	app.AddWaitFlags(cmd, &wf, false, defaultResetTimeout)
 	return cmd
 }
@@ -1550,7 +1555,7 @@ value marked).`,
 			return rt.RenderReport(platform.Report{Target: l.target(), Changes: []platform.Change{change}})
 		},
 	}
-	cmd.Flags().StringVar(&zone, "zone", "", "zone of the instance (default: from the inventory)")
+	cmd.Flags().StringVar(&zone, "zone", "", "zone of the instance; only an instance in this zone is used (default: from the inventory)")
 	cmd.Flags().BoolVar(&ipForward, "ip-forward", false, "allow the instance to forward IP packets (--ip-forward=false switches it off)")
 	return cmd
 }

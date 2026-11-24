@@ -49,7 +49,7 @@ to the Google account: gcloud compute os-login ssh-keys add). The user of
 a key is --user, else the user of the user@host that ends the key's
 comment; on a terminal it is asked.`,
 		Flags: func(cmd *cobra.Command) {
-			cmd.Flags().StringVar(&zone, "zone", "", "zone of the instance (narrows several matches, finds an instance not in the inventory yet)")
+			cmd.Flags().StringVar(&zone, "zone", "", "zone of the instance; only an instance in this zone is used, also one not in the inventory yet")
 		},
 		Resolve: func(ctx context.Context, arg string) (*app.SSHKeyInstance, error) {
 			if arg == "" {
