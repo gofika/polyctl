@@ -55,6 +55,8 @@ type fakeDeployer struct {
 	batch     bool
 	writes    []string
 	batches   [][]string
+	// cancel, when set, is called by Discover, as Ctrl-C would be.
+	cancel context.CancelFunc
 }
 
 func (f *fakeDeployer) ID() string            { return f.id }
@@ -63,6 +65,12 @@ func (f *fakeDeployer) Platform() platform.ID { return f.platform }
 func (f *fakeDeployer) Discover(ctx context.Context, acct *platform.DeployAccount, o platform.DeployOptions) ([]platform.DeployTarget, []platform.Change, error) {
 	if f.panics {
 		panic("boom")
+	}
+	if f.cancel != nil {
+		f.cancel()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
 	}
 	if err := f.discoverErr[acct.Profile]; err != nil {
 		return nil, nil, err
@@ -645,5 +653,31 @@ func TestDeployIssueTimeoutFailsTheDomain(t *testing.T) {
 		return strings.HasPrefix(r, "cert/example.com failed the certificate of example.com was not ensured within --issue-timeout 20ms")
 	}) {
 		t.Errorf("rows = %v", deployRows(rep))
+	}
+}
+
+// After Ctrl-C the run stops: the deployers left in the account are not
+// run, and the failure is notified once instead of once per item, each
+// notification possibly waiting its whole hook timeout.
+func TestDeployStopsAndNotifiesOnceWhenCancelled(t *testing.T) {
+	h := newDeployHarness(t, "acme", "other")
+	h.bundles["example.com"] = deployBundle(t, "example.com", 90)
+	targets := func() map[string][]*fakeTarget {
+		return map[string][]*fakeTarget{"acme": {{id: "l1", name: "lb-1", domains: []string{"example.com"}, notAfter: days(5), serial: "01"}}}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d1 := &fakeDeployer{id: "fake-a", platform: platform.AWS, targets: targets(), cancel: cancel}
+	d2 := &fakeDeployer{id: "fake-b", platform: platform.AWS, targets: targets()}
+	d3 := &fakeDeployer{id: "fake-c", platform: platform.AWS, targets: targets()}
+	_, err := Deploy(ctx, h.env, DeployOptions{All: true, Days: 30, Prune: true, Deployers: []platform.CertDeployer{d1, d2, d3}})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
+	}
+	if len(h.notified) != 1 {
+		t.Errorf("notified %d times, want once: %+v", len(h.notified), h.notified)
+	}
+	if len(d2.writes)+len(d3.writes) != 0 || len(h.confirm) != 0 {
+		t.Errorf("work after the cancellation: %v %v, prune confirm %v", d2.writes, d3.writes, h.confirm)
 	}
 }

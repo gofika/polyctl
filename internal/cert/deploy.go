@@ -130,6 +130,10 @@ type deployRun struct {
 	failed, auth, total int
 	first               error
 	prunes              []pruneJob
+	// cancelNotified records that a failure after the run was cancelled
+	// (Ctrl-C) was notified: the items failing after it fail for the same
+	// reason, and each hook may wait its whole timeout.
+	cancelNotified bool
 }
 
 // pruneJob is the cleanup of one deployer in one account, run once every
@@ -176,6 +180,10 @@ func Deploy(ctx context.Context, env *DeployEnv, o DeployOptions) (*DeployReport
 		}
 		r.account(ctx, ref)
 	}
+	if err := ctx.Err(); err != nil {
+		// Cancelled in the last account: no cleanup, and not a success.
+		return r.rep, err
+	}
 	r.prune(ctx)
 	if len(r.rep.Changes) == 0 {
 		env.infof("nothing to deploy: no certificate target found in the selected accounts")
@@ -216,6 +224,10 @@ func (r *deployRun) count(ctx context.Context, err error, f app.Failure, notify 
 	}
 	if r.first == nil {
 		r.first = err
+	}
+	if notify && ctx.Err() != nil {
+		notify = !r.cancelNotified
+		r.cancelNotified = true
 	}
 	if notify && !r.o.DryRun && r.env.Notify != nil {
 		f.Event = "cert.deploy.failed"
@@ -267,6 +279,9 @@ func (r *deployRun) account(ctx context.Context, ref config.AccountRef) {
 	}
 	wrote := false
 	for _, d := range deps {
+		if ctx.Err() != nil {
+			break // cancelled: the run stops after this account
+		}
 		acct := &platform.DeployAccount{Platform: ref.Platform, Profile: ref.Profile, Client: client, Regions: slices.Clone(regions)}
 		if r.deployer(ctx, d, acct) {
 			wrote = true
@@ -313,6 +328,9 @@ func (r *deployRun) deployer(ctx context.Context, d platform.CertDeployer, acct 
 	bd, batch := d.(platform.BatchDeployer)
 	now := r.env.now()
 	for _, t := range targets {
+		if ctx.Err() != nil {
+			break // cancelled: every target left would fail the same way
+		}
 		res := t.Resource()
 		attrs := targetAttrs(t, now)
 		f := base
@@ -390,6 +408,9 @@ func (r *deployRun) deployer(ctx context.Context, d platform.CertDeployer, acct 
 		}
 	}
 	for _, g := range groups {
+		if ctx.Err() != nil {
+			break
+		}
 		r.total++
 		first := g.items[0].Target
 		f := base
@@ -405,7 +426,7 @@ func (r *deployRun) deployer(ctx context.Context, d platform.CertDeployer, acct 
 			wrote = true
 		}
 	}
-	if r.o.Prune {
+	if r.o.Prune && ctx.Err() == nil {
 		steps, err := d.Prune(ctx, acct, r.po)
 		if err != nil {
 			r.env.infof("warning: %s of %s: expired certificates not cleaned up: %v", d.ID(), acct.Profile, err)

@@ -256,7 +256,7 @@ func unknownSubcommand(cmd *cobra.Command, args []string) error {
 
 // Main runs the CLI and returns the exit code.
 func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := interruptContext(signal.NotifyContext)
 	defer stop()
 
 	httpx.UserAgent = "polyctl/" + Version
@@ -278,6 +278,23 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stderr, "error: %v\n", err)
 	return code
+}
+
+// notifyFunc has the signature of signal.NotifyContext.
+type notifyFunc func(parent context.Context, sigs ...os.Signal) (context.Context, context.CancelFunc)
+
+// interruptContext returns a context cancelled by the first Ctrl-C or
+// SIGTERM. Signal handling is released at once after that, so that a
+// second Ctrl-C ends the process the default way while the command is
+// still winding down (a failure hook, for example, waits up to its
+// timeout after the cancellation).
+func interruptContext(notify notifyFunc) (context.Context, context.CancelFunc) {
+	ctx, stop := notify(context.Background(), os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+	return ctx, stop
 }
 
 // NewRoot builds the command tree bound to rt.
