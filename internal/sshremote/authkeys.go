@@ -203,6 +203,21 @@ func (a *AuthorizedKeys) Has(key ssh.PublicKey) []Entry {
 	return out
 }
 
+// Restrictions returns the options of an authorized_keys line that may stop
+// the key from logging in to a shell: a forced command (command=), restrict,
+// a source address limit (from=) or an expiry (expiry-time=).
+func Restrictions(options []string) []string {
+	var out []string
+	for _, o := range options {
+		name, _, _ := strings.Cut(o, "=")
+		switch strings.ToLower(strings.TrimSpace(name)) {
+		case "command", "restrict", "from", "expiry-time":
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
 // CustomFile reports whether sshd reads keys from somewhere else than
 // ~/.ssh/authorized_keys: an AuthorizedKeysFile without that path, which
 // polyctl does not edit.

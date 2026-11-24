@@ -510,3 +510,49 @@ func TestSSHKeyMetadataStore(t *testing.T) {
 		t.Errorf("add under OS Login: %v", err)
 	}
 }
+
+// A key that is there only on a restricted line (a forced command, as the
+// root line of AWS images has) is unchanged, with the options in the detail
+// and a warning; the line is left alone, and list shows the options.
+func TestSSHKeyAddReportsARestrictedLine(t *testing.T) {
+	r := newKeyRig(t, "ec2-user")
+	r.h.rt.Flags.Output = "json"
+	_ = r.h.rt.Init()
+	nk := newSSHTestKey(t)
+	restricted := `no-port-forwarding,command="echo 'Please login as ec2-user';exit 142" ` + nk.line("kp") + "\n"
+	r.authorized("ec2-user", r.login.line("login")+"\n"+restricted)
+	if err := r.run("add", "web-1", "--ssh-key", nk.line("kp"), "--accept-new-host-key"); err != nil {
+		t.Fatal(err)
+	}
+	rep := r.report()
+	if len(rep.Changes) != 1 || rep.Changes[0].Action != platform.Unchanged || !strings.Contains(rep.Changes[0].Detail, `command="echo`) {
+		t.Fatalf("report %+v", rep)
+	}
+	if !strings.Contains(r.h.stderr.String(), "may stop it from logging in") {
+		t.Errorf("stderr = %q", r.h.stderr.String())
+	}
+	if !strings.HasSuffix(r.file("ec2-user"), restricted) {
+		t.Errorf("the restricted line changed: %q", r.file("ec2-user"))
+	}
+	if err := r.run("list", "web-1"); err != nil {
+		t.Fatal(err)
+	}
+	var rows []app.SSHKeyRow
+	if err := json.Unmarshal(r.h.stdout.Bytes(), &rows); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, row := range rows {
+		if row.Fingerprint == ssh.FingerprintSHA256(nk.pub) {
+			found = true
+			if !row.Restricted || len(row.Options) != 2 {
+				t.Errorf("row %+v, want restricted with its options", row)
+			}
+		} else if row.Restricted {
+			t.Errorf("an unrestricted line is marked: %+v", row)
+		}
+	}
+	if !found {
+		t.Errorf("rows %+v", rows)
+	}
+}

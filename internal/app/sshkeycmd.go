@@ -135,8 +135,10 @@ func (i *SSHKeyInstance) label() string {
 type SSHKeyStore interface {
 	// List returns the keys the instance accepts, of every user.
 	List(ctx context.Context) (*SSHKeyListing, error)
-	// Add ensures key logs in user; false when it already did and nothing
-	// was written.
+	// Add ensures the key is listed for user, under any options; false
+	// when it already was and nothing was written. A line that restricts
+	// the key (command=, restrict, from=, expiry-time=) is reported by the
+	// command, never changed.
 	Add(ctx context.Context, user string, key *platform.PublicKey) (bool, error)
 	// Remove ensures none of keys logs in user (in the keys the store can
 	// write); it returns how many entries it removed.
@@ -187,6 +189,11 @@ type SSHKeyRow struct {
 	// Ignored marks a key the instance does not accept (blocked
 	// project-wide keys).
 	Ignored bool `json:"ignored,omitempty" yaml:"ignored,omitempty"`
+	// Options are the authorized_keys options of the line.
+	Options []string `json:"options,omitempty" yaml:"options,omitempty"`
+	// Restricted marks a line whose options may stop the key from logging
+	// in to a shell (command=, restrict, from=, expiry-time=).
+	Restricted bool `json:"restricted,omitempty" yaml:"restricted,omitempty"`
 }
 
 // sshKeyFlags are the flags of the ssh-key commands.
@@ -372,6 +379,9 @@ func sshKeyListCommand(rt *Runtime, sc SSHKeyCommand) *cobra.Command {
 					if r.Ignored {
 						src += " (ignored)"
 					}
+					if r.Restricted {
+						src += " (restricted)"
+					}
 					g.Rows = append(g.Rows, []string{r.User, r.Type, r.Fingerprint, r.Comment, src})
 				}
 				return g
@@ -471,6 +481,11 @@ func sshKeyAddCommand(rt *Runtime, sc SSHKeyCommand) *cobra.Command {
 							d := "already present (" + e.Source + ")"
 							if e.ReadOnly {
 								d = "already present in " + e.Source + " (left as it is)"
+							}
+							if r := sshremote.Restrictions(e.Options); len(r) > 0 {
+								opts := strings.Join(r, ",")
+								d = "already present (" + e.Source + ") with options " + opts + "; this line may not allow a shell login, polyctl leaves it as it is"
+								s.note(fmt.Sprintf("warning: the key is already in %s of %s with options %s, which may stop it from logging in to a shell; polyctl does not change that line", e.Source, user, opts))
 							}
 							return platform.Change{Detail: d}, true, nil
 						}
@@ -783,7 +798,8 @@ func (s *sshKeySession) inUse(user string, k ssh.PublicKey) bool {
 func (s *sshKeySession) row(e SSHKeyEntry) SSHKeyRow {
 	pk := &platform.PublicKey{Key: e.Key}
 	return SSHKeyRow{User: e.User, Type: pk.Algorithm(), Fingerprint: pk.FingerprintSHA256(), Comment: e.Comment,
-		Source: e.Source, InUse: s.inUse(e.User, e.Key), ReadOnly: e.ReadOnly, Ignored: e.Ignored}
+		Source: e.Source, InUse: s.inUse(e.User, e.Key), ReadOnly: e.ReadOnly, Ignored: e.Ignored,
+		Options: e.Options, Restricted: len(sshremote.Restrictions(e.Options)) > 0}
 }
 
 func (s *sshKeySession) note(msg string) {
