@@ -161,10 +161,15 @@ func (d albDeployer) Discover(ctx context.Context, acct *platform.DeployAccount,
 			return nil, nil, err
 		}
 		lbs, err := a.listLoadBalancers(ctx)
-		if errors.Is(err, errNoALBEndpoint) {
+		if errors.Is(err, errNoALBEndpoint) && len(acct.Regions) == 0 {
+			// The profile region has no ALB: nothing to deploy to.
+			o.Warnf("%s: ALB is not available in the profile region %s; name the regions of the load balancers with --region or cert.aliyun.regions", acct.Profile, region)
 			continue
 		}
 		if err != nil {
+			// A region named with --region or cert.aliyun.regions must be
+			// readable: a mistyped one is never taken as a region without
+			// listeners.
 			return nil, nil, fmt.Errorf("%s: %w", region, err)
 		}
 		for _, lb := range lbs {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"slices"
 	"strings"
@@ -293,6 +294,29 @@ func TestALBDeployerPermissionAndPrune(t *testing.T) {
 	}
 	if _, err := d.run(cert.DeployOptions{Prune: true}); err != nil || !slices.Equal(d.cas.deletes, []string{"3333"}) {
 		t.Errorf("prune: %v %v", err, d.cas.deletes)
+	}
+}
+
+func TestALBDeployerFailsANamedRegionWithoutALB(t *testing.T) {
+	d := newALBDeploy(t)
+	d.c.transport = noALBTransport{region: "cn-hongkongg", base: http.DefaultTransport}
+	rep, err := d.run(cert.DeployOptions{}, "cn-hongkongg")
+	if err == nil || !strings.Contains(err.Error(), "cn-hongkongg") {
+		t.Fatalf("named region without ALB = %v\n%s", err, strings.Join(deployRowsOf(rep), "\n"))
+	}
+	if !slices.ContainsFunc(deployRowsOf(rep), func(r string) bool {
+		return strings.HasPrefix(r, "aliyun-alb/acme/account failed") && strings.Contains(r, "cn-hongkongg")
+	}) {
+		t.Errorf("rows = %v", deployRowsOf(rep))
+	}
+	// The profile region without ALB is a warning, not a failure.
+	var warned []string
+	d.c.transport = noALBTransport{region: d.c.region, base: http.DefaultTransport}
+	dep, _ := platform.GetDeployer(albDeployerID)
+	acct := &platform.DeployAccount{Platform: platform.Aliyun, Profile: "acme", Client: d.c}
+	targets, _, err := dep.Discover(context.Background(), acct, platform.DeployOptions{Infof: func(f string, a ...any) { warned = append(warned, fmt.Sprintf(f, a...)) }})
+	if err != nil || len(targets) != 0 || !slices.ContainsFunc(warned, func(w string) bool { return strings.Contains(w, "not available in the profile region") }) {
+		t.Errorf("profile region without ALB: %v %v %v", targets, err, warned)
 	}
 }
 
