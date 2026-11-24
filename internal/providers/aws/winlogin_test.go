@@ -20,6 +20,7 @@ import (
 
 	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/creds"
+	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/platform"
 	"github.com/gofika/polyctl/internal/secrets"
 )
@@ -692,6 +693,19 @@ func TestWindowsRunFailureDeletesTheKeyPair(t *testing.T) {
 	}
 	if strings.Join(h.ec2.deletedKeyPairs, ",") != "win-a-win" || len(storedWin(t, h, "win-a")) != 0 {
 		t.Errorf("deleted %v", h.ec2.deletedKeyPairs)
+	}
+	db, err := h.rt.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := db.List(context.Background(), inventory.Query{Platform: platform.AWS, Type: platform.ResKeyPair})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if r.Name == "win-a-win" {
+			t.Errorf("the deleted key pair is still in the inventory: %+v", r)
+		}
 	}
 }
 

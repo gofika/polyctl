@@ -293,6 +293,9 @@ type windowsLogin struct {
 	// stored with the credentials, and deleting the instance deletes it);
 	// "" when the key is the user's (--key-file), which is not stored.
 	createdKeyPair string
+	// createdKeyPairID is its id, to drop it from the inventory when it
+	// is deleted again.
+	createdKeyPairID string
 
 	id       string
 	password string
@@ -627,7 +630,7 @@ func windowsKeyPairStep(ctx context.Context, rt *app.Runtime, c *client, profile
 				_, _ = c.deleteKeyPair(ctx, region, kpName)
 				return platform.Change{}, fmt.Errorf("the private key AWS returned for key pair %s: %v (the key pair was deleted again)", kpName, err)
 			}
-			win.key, win.createdKeyPair = k, info.Name
+			win.key, win.createdKeyPair, win.createdKeyPairID = k, info.Name, info.KeyPairID
 			storeKeyPair(ctx, rt, c, profile, info)
 			return platform.Change{ID: info.KeyPairID}, nil
 		}}, nil

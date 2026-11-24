@@ -953,6 +953,9 @@ running and prints its addresses.`,
 						if _, derr := c.deleteKeyPair(ctx, region, win.createdKeyPair); derr != nil {
 							rt.Infof("warning: the key pair %s created for the instance was not deleted: %v", win.createdKeyPair, derr)
 						} else {
+							if win.createdKeyPairID != "" {
+								dropKeyPair(ctx, rt, prof.Name, win.createdKeyPairID)
+							}
 							rt.Infof("key pair %s, created for the instance, deleted again", win.createdKeyPair)
 						}
 					}
