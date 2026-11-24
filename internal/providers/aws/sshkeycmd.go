@@ -178,6 +178,12 @@ func (c *client) sendSSHPublicKey(ctx context.Context, region, id, az, user stri
 	}
 	if _, err := c.icFor(region).SendSSHPublicKey(ctx, in); err != nil {
 		m := mapErr(err)
+		// AuthException (HTTP 400) is how EC2 Instance Connect says the
+		// credentials may not push a key to this instance or for this OS
+		// user (an ec2:osuser condition, say): an authorization failure.
+		if apiErrorCode(err) == "AuthException" && !errors.Is(m, platform.ErrUnauthorized) {
+			m = fmt.Errorf("%w: %w", platform.ErrUnauthorized, err)
+		}
 		if errors.Is(m, platform.ErrUnauthorized) {
 			return fmt.Errorf("ec2-instance-connect:SendSSHPublicKey in %s (the credentials need the IAM action ec2-instance-connect:SendSSHPublicKey on the instance): %w", region, m)
 		}

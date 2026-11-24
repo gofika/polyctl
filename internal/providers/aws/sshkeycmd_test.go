@@ -270,6 +270,13 @@ func TestEC2SSHKeyInstanceConnect(t *testing.T) {
 		t.Fatalf("denied: %v", err)
 	}
 
+	// AuthException (no access to the instance or OS user) is exit code 3 too.
+	r.ic.err = &fakeAPIError{"AuthException", "you do not have access to the EC2 instance"}
+	err = r.run("add", "web-1", "--ssh-key", other, "--instance-connect")
+	if !errors.Is(err, platform.ErrUnauthorized) || !strings.Contains(err.Error(), "IAM action ec2-instance-connect:SendSSHPublicKey") {
+		t.Fatalf("auth exception: %v", err)
+	}
+
 	// An image without EC2 Instance Connect: the hint names the condition.
 	r.addImage("ami-0deb", "debian-12-amd64-20261101", "Debian 12")
 	r.inst.image = "ami-0deb"
