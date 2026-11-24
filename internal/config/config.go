@@ -254,12 +254,21 @@ func Dir() (string, error) {
 	if d := os.Getenv(EnvConfigDir); d != "" {
 		return d, os.MkdirAll(d, 0o700)
 	}
+	d, err := DefaultDir()
+	if err != nil {
+		return "", err
+	}
+	return d, os.MkdirAll(d, 0o700)
+}
+
+// DefaultDir returns the configuration directory used when neither
+// --config-dir nor POLYCTL_CONFIG_DIR is set, without creating it.
+func DefaultDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	d := filepath.Join(home, ".config", "polyctl")
-	return d, os.MkdirAll(d, 0o700)
+	return filepath.Join(home, ".config", "polyctl"), nil
 }
 
 // DefaultPath returns the config file path.

@@ -23,6 +23,7 @@ All state lives in one directory, `~/.config/polyctl/` by default (created with 
 | `inventory.db` | SQLite cache of platform resources and the domain index, plus the encrypted login credentials of Windows instances polyctl creates (see [Instances](instances.md)). Schema: [Development](development.md). |
 | `credentials.json` | Secrets, **only** when the OS keyring is unavailable or `credential_store: file` is set. Mode `0600`. |
 | `credentials.lock` | Lock file used while stored secrets change. Safe to delete when no polyctl is running. |
+| `keyring-service` | Only in a config directory other than the default one: records that its keyring entries were copied from the shared service (see [Credential storage](#credential-storage)). |
 
 ## Environment variables and global flags
 
@@ -231,7 +232,12 @@ find:
 
 ## Credential storage
 
-Each account's secret is one keyring entry: service `polyctl`, account `<profile>/<platform>` (for example `acme/cloudflare`).
+Each account's secret is one keyring entry: account `<profile>/<platform>` (for example `acme/cloudflare`), under a service that depends on the config directory:
+
+- the default directory (`~/.config/polyctl`): service `polyctl`;
+- any other directory (`--config-dir`, `POLYCTL_CONFIG_DIR`): service `polyctl:<16 hex digits>`, from the SHA-256 of the directory's absolute path. Two directories with a profile of the same name therefore never overwrite or delete each other's secrets. Moving or renaming such a directory changes its service: log in again, or use `credential_store: file`, which keeps the secrets inside the directory.
+
+Releases before this layout stored the entries of every directory under `polyctl`. On its first run with a reachable keyring, a non-default directory copies the entries of its own accounts (and `/instance-secrets`, when it has an `inventory.db` and no data key in `credentials.json`) from `polyctl` to its own service, then writes the `keyring-service` marker file and stops looking at `polyctl`. The entries under `polyctl` stay, as they may belong to the default directory; remove leftovers with your keyring tool if no default directory uses them.
 
 - macOS: Keychain
 - Windows: Credential Manager

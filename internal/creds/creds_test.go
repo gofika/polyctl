@@ -12,7 +12,89 @@ import (
 	"testing"
 
 	"github.com/gofika/polyctl/internal/creds"
+	"github.com/zalando/go-keyring"
 )
+
+// Two configuration directories with a profile of the same name keep
+// separate keyring entries: a login or logout in one leaves the other alone.
+// The default directory keeps the service of earlier releases.
+func TestKeyringEntriesPerConfigDir(t *testing.T) {
+	keyring.MockInit()
+	def, other := t.TempDir(), t.TempDir()
+	if got := creds.ServiceFor(def, def); got != creds.Service {
+		t.Errorf("ServiceFor(default) = %q, want %q", got, creds.Service)
+	}
+	svc := creds.ServiceFor(other, def)
+	if svc == creds.Service || !strings.HasPrefix(svc, creds.Service+":") {
+		t.Errorf("ServiceFor(other) = %q", svc)
+	}
+	if again := creds.ServiceFor(filepath.Join(other, "."), def); again != svc {
+		t.Errorf("ServiceFor is not stable across spellings: %q vs %q", again, svc)
+	}
+	a, err := creds.Open("keyring", def, def)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := creds.Open("keyring", other, def)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Set("default/aws", map[string]string{"k": "a"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Set("default/aws", map[string]string{"k": "b"}); err != nil {
+		t.Fatal(err)
+	}
+	if s, err := a.Get("default/aws"); err != nil || s["k"] != "a" {
+		t.Errorf("default dir reads %v, %v; another dir overwrote it", s, err)
+	}
+	if err := b.Delete("default/aws"); err != nil {
+		t.Fatal(err)
+	}
+	if s, err := a.Get("default/aws"); err != nil || s["k"] != "a" {
+		t.Errorf("default dir reads %v, %v after a logout in another dir", s, err)
+	}
+	if s, err := (creds.Keyring{}).Get("default/aws"); err != nil || s["k"] != "a" {
+		t.Errorf("the default dir's entry is not under the shared service: %v, %v", s, err)
+	}
+}
+
+// Adopt copies entries written under the shared service by earlier releases
+// to a directory's own service, without removing the shared ones and
+// without overwriting entries the directory already has.
+func TestKeyringAdopt(t *testing.T) {
+	keyring.MockInit()
+	shared := creds.Keyring{}
+	own := creds.Keyring{Service: creds.ServiceFor(t.TempDir(), t.TempDir())}
+	if err := shared.Set("p/aws", map[string]string{"k": "old"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := shared.Set("p/gcp", map[string]string{"k": "shared"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := own.Set("p/gcp", map[string]string{"k": "own"}); err != nil {
+		t.Fatal(err)
+	}
+	copied, err := own.Adopt([]string{"p/aws", "p/gcp", "p/none"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(copied, []string{"p/aws"}) {
+		t.Errorf("copied = %v, want [p/aws]", copied)
+	}
+	if s, err := own.Get("p/aws"); err != nil || s["k"] != "old" {
+		t.Errorf("own p/aws = %v, %v", s, err)
+	}
+	if s, _ := own.Get("p/gcp"); s["k"] != "own" {
+		t.Errorf("Adopt overwrote an own entry: %v", s)
+	}
+	if _, err := shared.Get("p/aws"); err != nil {
+		t.Errorf("Adopt removed the shared entry: %v", err)
+	}
+	if c, err := shared.Adopt([]string{"p/aws"}); err != nil || c != nil {
+		t.Errorf("Adopt on the shared service = %v, %v; want a no-op", c, err)
+	}
+}
 
 func TestKey(t *testing.T) {
 	if got := creds.Key("acme", "cloudflare"); got != "acme/cloudflare" {
@@ -240,7 +322,7 @@ func TestMultiPropagatesPrimaryErrors(t *testing.T) {
 
 func TestOpenFileMode(t *testing.T) {
 	dir := t.TempDir()
-	m, err := creds.Open("file", dir)
+	m, err := creds.Open("file", dir, "")
 	if err != nil {
 		t.Fatalf("Open(file): %v", err)
 	}
@@ -253,7 +335,7 @@ func TestOpenFileMode(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "credentials.json")); err != nil {
 		t.Fatalf("file store not written under config dir: %v", err)
 	}
-	if _, err := creds.Open("vault", dir); err == nil || !strings.Contains(err.Error(), "unknown credential_store") {
+	if _, err := creds.Open("vault", dir, ""); err == nil || !strings.Contains(err.Error(), "unknown credential_store") {
 		t.Fatalf("Open(vault) = %v, want unknown mode error", err)
 	}
 }

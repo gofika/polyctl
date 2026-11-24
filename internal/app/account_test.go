@@ -1268,7 +1268,7 @@ func TestUpdateSecretRecordsTheBackend(t *testing.T) {
 	if _, err := file.Get("p/namecom"); !errors.Is(err, creds.ErrNotFound) {
 		t.Errorf("the file copy survived: %v", err)
 	}
-	if s, err := (creds.Keyring{}).Get("p/namecom"); err != nil || s["token"] != "refreshed" {
+	if s, err := (creds.Keyring{Service: creds.ServiceFor(dir, "")}).Get("p/namecom"); err != nil || s["token"] != "refreshed" {
 		t.Errorf("keyring = %v, %v", s, err)
 	}
 	disk, err := config.Load(cfgPath)
@@ -1277,6 +1277,76 @@ func TestUpdateSecretRecordsTheBackend(t *testing.T) {
 	}
 	if a, _ := disk.Account("p", platform.NameCom); a == nil || a.CredentialBackend != "keyring" {
 		t.Errorf("account on disk = %+v, want credential_backend keyring", a)
+	}
+}
+
+// A configuration directory other than the default one uses a keyring
+// service of its own. Its first run copies the entries its accounts (and its
+// instance secrets' data key) had under the shared service of earlier
+// releases, keeps the shared entries for the default directory, and then
+// stops looking at the shared service: a logout there is not undone.
+func TestNonDefaultDirAdoptsSharedKeyringEntries(t *testing.T) {
+	keyring.MockInit()
+	registerFakes()
+	resetFakes()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	dir := t.TempDir()
+	t.Setenv(config.EnvConfigDir, dir)
+	t.Setenv("POLYCTL_CREDENTIAL_STORE", "auto")
+	t.Setenv("POLYCTL_OUTPUT", "")
+	body := "profiles:\n  p:\n    platforms:\n      namecom:\n        credential_backend: keyring\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "inventory.db"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	shared := creds.Keyring{}
+	if err := shared.Set("p/namecom", map[string]string{"token": "t"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := shared.Set("/instance-secrets", map[string]string{"key": "k"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := shared.Set("q/namecom", map[string]string{"token": "other"}); err != nil {
+		t.Fatal(err)
+	}
+	run := func() *app.Runtime {
+		rt := app.New(app.Flags{}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+		if err := rt.Init(); err != nil {
+			t.Fatal(err)
+		}
+		return rt
+	}
+	p, err := run().LoadProfile("p", platform.NameCom)
+	if err != nil || p.Secret["token"] != "t" {
+		t.Fatalf("LoadProfile = %+v, %v", p, err)
+	}
+	own := creds.Keyring{Service: creds.ServiceFor(dir, filepath.Join(home, ".config", "polyctl"))}
+	if own.Shared() {
+		t.Fatal("a non-default directory uses the shared service")
+	}
+	if s, err := own.Get("/instance-secrets"); err != nil || s["key"] != "k" {
+		t.Errorf("data key not copied: %v, %v", s, err)
+	}
+	if _, err := own.Get("q/namecom"); !errors.Is(err, creds.ErrNotFound) {
+		t.Errorf("an entry of no account of this directory was copied: %v", err)
+	}
+	if _, err := shared.Get("p/namecom"); err != nil {
+		t.Errorf("the shared entry was removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, app.KeyringMarker)); err != nil {
+		t.Errorf("no marker: %v", err)
+	}
+	// Removed from this directory (a logout): the next run must not copy
+	// the shared entry back.
+	if err := own.Delete("p/namecom"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run().LoadProfile("p", platform.NameCom); !errors.Is(err, platform.ErrUnauthorized) {
+		t.Errorf("LoadProfile after removal = %v, want unauthorized", err)
 	}
 }
 

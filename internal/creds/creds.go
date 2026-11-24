@@ -3,6 +3,8 @@
 package creds
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,7 +15,41 @@ import (
 	"github.com/zalando/go-keyring"
 )
 
-const service = "polyctl"
+// Service is the keyring service of the default configuration directory.
+// Other configuration directories use ServiceFor, so that two directories
+// with a profile of the same name do not share (and overwrite or delete)
+// each other's entries.
+const Service = "polyctl"
+
+// ServiceFor returns the keyring service of the configuration directory
+// dir: Service for the default directory (defaultDir), else
+// "polyctl:<first 16 hex digits of the SHA-256 of dir's absolute path>".
+func ServiceFor(dir, defaultDir string) string {
+	if dir == "" || samePath(dir, defaultDir) {
+		return Service
+	}
+	sum := sha256.Sum256([]byte(canonical(dir)))
+	return Service + ":" + hex.EncodeToString(sum[:8])
+}
+
+// canonical returns the absolute, cleaned form of path with symbolic links
+// resolved when possible.
+func canonical(path string) string {
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+	}
+	return filepath.Clean(path)
+}
+
+func samePath(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	return canonical(a) == canonical(b)
+}
 
 // ErrNotFound is returned when no secret exists under a key.
 var ErrNotFound = errors.New("credentials not found")
@@ -32,13 +68,23 @@ type Store interface {
 	Delete(key string) error
 }
 
-// Keyring uses the OS credential manager via go-keyring.
-type Keyring struct{}
+// Keyring uses the OS credential manager via go-keyring. Service is the
+// keyring service its entries are stored under ("" means Service).
+type Keyring struct {
+	Service string
+}
 
 func (Keyring) Name() string { return "keyring" }
 
-func (Keyring) Get(key string) (map[string]string, error) {
-	s, err := keyring.Get(service, key)
+func (k Keyring) service() string {
+	if k.Service == "" {
+		return Service
+	}
+	return k.Service
+}
+
+func (k Keyring) Get(key string) (map[string]string, error) {
+	s, err := keyring.Get(k.service(), key)
 	if err != nil {
 		if errors.Is(err, keyring.ErrNotFound) {
 			return nil, ErrNotFound
@@ -48,28 +94,65 @@ func (Keyring) Get(key string) (map[string]string, error) {
 	return decode(s)
 }
 
-func (Keyring) Set(key string, secret map[string]string) error {
+func (k Keyring) Set(key string, secret map[string]string) error {
 	b, err := json.Marshal(secret)
 	if err != nil {
 		return err
 	}
-	if err := keyring.Set(service, key, string(b)); err != nil {
+	if err := keyring.Set(k.service(), key, string(b)); err != nil {
 		return fmt.Errorf("keyring: %w", err)
 	}
 	return nil
 }
 
-func (Keyring) Delete(key string) error {
-	err := keyring.Delete(service, key)
+func (k Keyring) Delete(key string) error {
+	err := keyring.Delete(k.service(), key)
 	if err != nil && !errors.Is(err, keyring.ErrNotFound) {
 		return fmt.Errorf("keyring: %w", err)
 	}
 	return nil
 }
 
+// Shared reports whether the keyring uses the service shared by the default
+// configuration directory and earlier polyctl releases.
+func (k Keyring) Shared() bool { return k.service() == Service }
+
+// Adopt copies to the keyring's own service the entries under keys that it
+// lacks and that exist under the shared service Service, where earlier
+// releases stored the entries of every configuration directory. The
+// shared entries stay: they may belong to the default directory. It does
+// nothing for the default directory's keyring. It returns the keys copied.
+func (k Keyring) Adopt(keys []string) (copied []string, err error) {
+	if k.Shared() {
+		return nil, nil
+	}
+	legacy := Keyring{}
+	for _, key := range keys {
+		_, err := k.Get(key)
+		if err == nil {
+			continue
+		}
+		if !errors.Is(err, ErrNotFound) {
+			return copied, err
+		}
+		s, err := legacy.Get(key)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return copied, err
+		}
+		if err := k.Set(key, s); err != nil {
+			return copied, err
+		}
+		copied = append(copied, key)
+	}
+	return copied, nil
+}
+
 // Probe checks that the keyring is usable on this machine.
 func (k Keyring) Probe() error {
-	_, err := keyring.Get(service, "__polyctl_probe__")
+	_, err := keyring.Get(k.service(), "__polyctl_probe__")
 	if err == nil || errors.Is(err, keyring.ErrNotFound) {
 		return nil
 	}
@@ -235,6 +318,26 @@ func (m *Multi) Name() string { return m.Primary.Name() }
 
 func (m *Multi) stores() []Store { return append([]Store{m.Primary}, m.Others...) }
 
+// Keyring returns the keyring backend of the store, when it has one.
+func (m *Multi) Keyring() (Keyring, bool) {
+	for _, s := range m.stores() {
+		if k, ok := s.(Keyring); ok {
+			return k, true
+		}
+	}
+	return Keyring{}, false
+}
+
+// File returns the file backend of the store, when it has one.
+func (m *Multi) File() (*File, bool) {
+	for _, s := range m.stores() {
+		if f, ok := s.(*File); ok {
+			return f, true
+		}
+	}
+	return nil, false
+}
+
 // Has reports whether a backend with this name is part of the store. An
 // empty name (backend unknown) counts as present.
 func (m *Multi) Has(backend string) bool {
@@ -345,25 +448,29 @@ func (m *Multi) Delete(key string) error {
 	})
 }
 
-// Open selects a store. mode is "auto", "keyring" or "file".
-func Open(mode, configDir string) (*Multi, error) {
+// Open selects a store for the configuration directory configDir. mode is
+// "auto", "keyring" or "file". defaultDir is the default configuration
+// directory: its keyring entries use Service, those of any other directory
+// a service of their own (ServiceFor).
+func Open(mode, configDir, defaultDir string) (*Multi, error) {
 	file := NewFile(configDir)
+	kr := Keyring{Service: ServiceFor(configDir, defaultDir)}
 	switch mode {
 	case "file":
 		return &Multi{Primary: file}, nil
 	case "keyring":
-		if err := (Keyring{}).Probe(); err != nil {
+		if err := kr.Probe(); err != nil {
 			return nil, fmt.Errorf("keyring unavailable: %w", err)
 		}
-		return &Multi{Primary: Keyring{}, Others: []Store{file}}, nil
+		return &Multi{Primary: kr, Others: []Store{file}}, nil
 	case "", "auto":
-		if err := (Keyring{}).Probe(); err != nil {
+		if err := kr.Probe(); err != nil {
 			return &Multi{
 				Primary: file,
 				Warning: fmt.Sprintf("system keyring unavailable (%v); storing credentials in %s (mode 0600)", err, file.Path),
 			}, nil
 		}
-		return &Multi{Primary: Keyring{}, Others: []Store{file}}, nil
+		return &Multi{Primary: kr, Others: []Store{file}}, nil
 	}
 	return nil, fmt.Errorf("unknown credential_store %q (expected auto, keyring or file)", mode)
 }

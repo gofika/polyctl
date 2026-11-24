@@ -368,7 +368,10 @@ func (rt *Runtime) Creds() (*creds.Multi, error) {
 	if v := os.Getenv("POLYCTL_CREDENTIAL_STORE"); v != "" {
 		mode = v
 	}
-	st, err := creds.Open(mode, dir)
+	// An unknown home directory leaves "" as the default directory: every
+	// directory then gets a keyring service of its own.
+	def, _ := config.DefaultDir()
+	st, err := creds.Open(mode, dir, def)
 	if err != nil {
 		return nil, err
 	}
@@ -377,8 +380,65 @@ func (rt *Runtime) Creds() (*creds.Multi, error) {
 		fmt.Fprintln(rt.Stderr, "warning: "+st.Warning)
 	}
 	rt.store = st
+	rt.adoptSharedKeyring(cfg, st, dir)
 	rt.migrateSecrets(cfg, st)
 	return st, nil
+}
+
+// KeyringMarker is the file in a configuration directory other than the
+// default one that records that the keyring entries this directory had
+// under the shared service were copied to its own service.
+const KeyringMarker = "keyring-service"
+
+// adoptSharedKeyring copies, once per configuration directory other than
+// the default one, the keyring entries of its accounts (and the data key of
+// instance secrets) that earlier releases stored under the service shared
+// by every directory, to the directory's own service. The shared entries
+// are left in place: they may belong to the default directory. It retries
+// on a later run while the keyring is out of reach or a copy fails.
+func (rt *Runtime) adoptSharedKeyring(cfg *config.Config, st *creds.Multi, dir string) {
+	kr, ok := st.Keyring()
+	if !ok || kr.Shared() {
+		return
+	}
+	marker := filepath.Join(dir, KeyringMarker)
+	if _, err := os.Stat(marker); err == nil {
+		return
+	}
+	var keys []string
+	for _, ref := range cfg.Accounts("") {
+		a := cfg.Profiles[ref.Profile].Platforms[ref.Platform]
+		if a.CredentialBackend != "" && a.CredentialBackend != kr.Name() {
+			continue
+		}
+		keys = append(keys, creds.Key(ref.Profile, string(ref.Platform)))
+		if a.LegacySecret {
+			keys = append(keys, ref.Profile)
+		}
+	}
+	// The data key, when this directory has instance secrets and no data
+	// key in its file store.
+	if _, err := os.Stat(filepath.Join(dir, "inventory.db")); err == nil {
+		inFile := false
+		if f, ok := st.File(); ok {
+			_, err := f.Get(secrets.DataKeyName)
+			inFile = err == nil
+		}
+		if !inFile {
+			keys = append(keys, secrets.DataKeyName)
+		}
+	}
+	copied, err := kr.Adopt(keys)
+	if len(copied) > 0 {
+		rt.Verbosef("copied %d keyring entries of %s from the shared service %q to %q", len(copied), dir, creds.Service, kr.Service)
+	}
+	if err != nil {
+		rt.Verbosef("copy keyring entries from the shared service: %v", err)
+		return
+	}
+	if err := os.WriteFile(marker, []byte(kr.Service+"\n"), 0o600); err != nil {
+		rt.Verbosef("write %s: %v", marker, err)
+	}
 }
 
 // migrateSecrets moves the secrets of accounts converted from the legacy
