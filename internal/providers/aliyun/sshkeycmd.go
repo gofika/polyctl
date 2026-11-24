@@ -13,7 +13,9 @@ import (
 // `aliyun ecs instance ssh-key list|add|remove` manage the keys of a Linux
 // instance over SSH (an instance binds one key pair, to the login user set
 // at creation): the shared commands of package app, with the login user
-// the instance was created with.
+// the instance was created with. When this machine has no private key of
+// the bound key pair, the keys are reached through Cloud Assistant
+// (cloudassistant.go), which runs the key script as root without SSH.
 
 // The login users of an ECS Linux instance: root, unless the instance was
 // created to log in as ecs-user (RunInstances ImageOptions.LoginAsNonRoot,
@@ -58,7 +60,11 @@ instance created to log in as ecs-user, which cannot log in as root;
 otherwise root, then ecs-user. Pass --login-user for a user added by hand.
 The key pair is the one bound to the instance (ecs:DescribeKeyPairs,
 matched by public key); it stays as it is: these commands only edit
-authorized_keys, which needs no restart.`,
+authorized_keys, which needs no restart. Without a local private key of
+it, no other local key is tried; the keys are reached through Cloud
+Assistant (ecs:RunCommand of a shell script, run as root, the key script
+as the target user; ecs:DescribeInvocationResults) when the instance's
+agent is online (ecs:DescribeCloudAssistantStatus).`,
 		Flags: func(cmd *cobra.Command) {
 			cmd.Flags().StringVar(&region, "region", "", "region of the instance (default: look it up in the inventory of every account)")
 		},
@@ -88,6 +94,12 @@ authorized_keys, which needs no restart.`,
 			if in.KeyPair != "" {
 				inst.KeyPair, inst.KeyPairError = s.c.boundKeyPair(ctx, s.region, in.KeyPair)
 			}
+			id := in.ID
+			inst.TempAccess = []app.SSHKeyAccess{{Name: "Cloud Assistant",
+				Check: func(ctx context.Context) error { return s.c.cloudAssistantOnline(ctx, s.region, id) },
+				RunCommand: func(ctx context.Context, cmd string) ([]byte, []byte, int, error) {
+					return s.c.runShellCommand(ctx, s.region, id, cmd)
+				}}}
 			return inst, nil
 		},
 	})

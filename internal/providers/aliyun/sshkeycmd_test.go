@@ -3,10 +3,12 @@ package aliyun
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/pem"
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -250,18 +252,187 @@ func TestECSSSHKeyPick(t *testing.T) {
 	}
 }
 
-// A key pair whose private key is not on this machine: no local key is
-// tried, and the error says so.
-func TestECSSSHKeyForeignKeyPair(t *testing.T) {
-	r := newECSKeyRig(t, []string{"ecs-user"}, "root", "ecs-user")
+// useAssistant makes Cloud Assistant of the instance online, running the
+// commands as root in the rig's fake system.
+func (r *ecsKeyRig) useAssistant() *fakeAssistant {
+	a := newFakeAssistant(r.t, r.h.api)
+	a.status["i-1"] = "true"
+	a.exec = func(id, cmd string) (string, string, int) {
+		if id != "i-1" {
+			r.t.Errorf("RunCommand on %s", id)
+		}
+		return r.sys.Run("root", cmd, "")
+	}
+	return a
+}
+
+// ranApply reports whether one of the programs Cloud Assistant ran ran the
+// apply script.
+func ranApply(t *testing.T, progs []string) bool {
+	t.Helper()
+	re := regexp.MustCompile(`echo ([A-Za-z0-9+/=]+) \|`)
+	for _, p := range progs {
+		if m := re.FindStringSubmatch(p); m != nil {
+			prog, _ := base64.StdEncoding.DecodeString(m[1])
+			if strings.Contains(string(prog), "sh -s -- 'apply'") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// A key pair whose private key is not on this machine (the instance may
+// have been created for someone else): no local key is tried, and the
+// keys are listed and edited through Cloud Assistant, as root running the
+// key script as the login user. --dry-run runs the read-only script only;
+// the last key stays guarded; a missing key pair and an instance without
+// one go the same way.
+func TestECSSSHKeyCloudAssistant(t *testing.T) {
+	r := newECSKeyRig(t, []string{"root", "ecs-user"}, "root", "ecs-user")
 	r.vm["KeyPairName"] = "someone-else"
 	r.f.addKeyPair("someone-else", strings.Repeat("ab", 16), "2026-11-17T13:54Z")
-	err := r.run("list", "web-1")
-	if err == nil || !strings.Contains(err.Error(), "the key pair someone-else of instance web-1 (i-1) has no private key on this machine") {
-		t.Fatalf("foreign key pair: %v", err)
+	a := r.useAssistant()
+	a.hidden, a.running = 1, 2
+
+	k, line := ecsKeyLine(t, "alice@laptop")
+	r.h.rt.Flags.DryRun = true
+	if err := r.run("add", "web-1", "--ssh-key", line); err != nil {
+		t.Fatalf("%v\n%s", err, r.h.stderr.String())
+	}
+	if r.file("root") != "" || !strings.Contains(r.h.stdout.String(), "would_create") || len(a.runs) == 0 {
+		t.Fatalf("dry run: file %q out %q runs %d", r.file("root"), r.h.stdout.String(), len(a.runs))
+	}
+	if ranApply(t, a.programs) {
+		t.Fatal("the dry run ran the apply script")
+	}
+	r.h.rt.Flags.DryRun = false
+	if err := r.run("add", "web-1", "--ssh-key", line); err != nil {
+		t.Fatalf("%v\n%s", err, r.h.stderr.String())
+	}
+	errOut := r.h.stderr.String()
+	for _, want := range []string{"the key pair someone-else of instance web-1 (i-1) has no private key on this machine",
+		"no local key is tried", "trying Cloud Assistant", "editing the keys of root on instance web-1 (i-1) through Cloud Assistant"} {
+		if !strings.Contains(errOut, want) {
+			t.Errorf("stderr lacks %q:\n%s", want, errOut)
+		}
+	}
+	if r.file("root") != line+"\n" || r.file("ecs-user") != "" {
+		t.Fatalf("root %q, ecs-user %q", r.file("root"), r.file("ecs-user"))
 	}
 	if n := len(r.srv.Commands()); n != 0 {
-		t.Errorf("logged in with a key that is not the key pair's (%d commands)", n)
+		t.Errorf("logged in over SSH (%d commands)", n)
+	}
+	// Cloud Assistant takes at most 24 KB of base64 command content.
+	for _, q := range a.runs {
+		if n := len(q.Get("CommandContent")); n > 24*1024 {
+			t.Errorf("CommandContent of %d bytes", n)
+		}
+	}
+	q := a.runs[len(a.runs)-1]
+	if q.Get("Timeout") != "60" || q.Get("KeepCommand") != "false" || q.Get("Username") != "" || q.Get("Name") != "polyctl-ssh-key" {
+		t.Errorf("RunCommand = %v", q)
+	}
+
+	if err := r.run("list", "web-1"); err != nil {
+		t.Fatal(err)
+	}
+	var rows []app.SSHKeyRow
+	r.h.jsonOut(&rows)
+	if len(rows) != 1 || rows[0].User != "root" || rows[0].Fingerprint != ssh.FingerprintSHA256(k) || rows[0].InUse {
+		t.Fatalf("rows = %+v", rows)
+	}
+	r.h.rt.Flags.Yes = true
+	if err := r.run("remove", "web-1", "--ssh-key", line); err == nil || !strings.Contains(err.Error(), "last key of root") {
+		t.Fatalf("last key: %v", err)
+	}
+
+	// A key pair that cannot be read, and an instance without one.
+	r.vm["KeyPairName"] = "gone"
+	if err := r.run("list", "web-1"); err != nil {
+		t.Fatal(err)
+	}
+	if s := r.h.stderr.String(); !strings.Contains(s, "the key pair gone of instance web-1 (i-1) cannot be read (no key pair of that name in cn-shanghai)") ||
+		!strings.Contains(s, "through Cloud Assistant") {
+		t.Errorf("missing key pair:\n%s", s)
+	}
+	r.vm["KeyPairName"] = ""
+	if err := r.run("list", "web-1"); err != nil {
+		t.Fatal(err)
+	}
+	if s := r.h.stderr.String(); !strings.Contains(s, "instance web-1 (i-1) has no key pair") || !strings.Contains(s, "through Cloud Assistant") {
+		t.Errorf("no key pair:\n%s", s)
+	}
+	if n := len(r.srv.Commands()); n != 0 {
+		t.Errorf("logged in over SSH (%d commands)", n)
+	}
+}
+
+// When Cloud Assistant cannot be used the error names the key pair and why
+// Cloud Assistant failed, and suggests --identity-file: an agent offline or
+// missing (RunCommand is not called), an invocation that does not finish,
+// output that may be cut. A RAM denial of RunCommand is an authorization
+// failure; a denial of the status check leaves RunCommand to decide.
+func TestECSSSHKeyCloudAssistantFailures(t *testing.T) {
+	r := newECSKeyRig(t, []string{"root"}, "root")
+	r.vm["KeyPairName"] = "someone-else"
+	r.f.addKeyPair("someone-else", strings.Repeat("ab", 16), "2026-11-17T13:54Z")
+	a := r.useAssistant()
+
+	cases := []struct {
+		name  string
+		setup func()
+		want  string
+		run   bool
+	}{
+		{"offline", func() { a.status["i-1"] = "false" }, "Cloud Assistant: the Cloud Assistant agent of the instance is not online", false},
+		{"no agent", func() { delete(a.status, "i-1") }, "Cloud Assistant: the instance has no Cloud Assistant agent", false},
+		{"timed out", func() { a.result, a.errorCode = "Timeout", "ExecutionTimeout" }, "did not finish: Timeout (ExecutionTimeout)", true},
+		{"agent gone", func() { a.result, a.errorCode = "Failed", "ClientNotRunning" }, "did not finish: Failed (ClientNotRunning)", true},
+		{"dropped", func() { a.dropped = 10 }, "it may be cut", true},
+		{"near the limit", func() { a.pad = strings.Repeat("x", assistantOutputLimit) }, "it may be cut", true},
+	}
+	for _, c := range cases {
+		a.status["i-1"], a.result, a.errorCode, a.dropped, a.pad, a.runs = "true", "", "", 0, "", nil
+		c.setup()
+		err := r.run("list", "web-1")
+		if err == nil || !strings.Contains(err.Error(), c.want) || !strings.Contains(err.Error(), "has no private key on this machine") ||
+			!strings.Contains(err.Error(), "--identity-file") || errors.Is(err, platform.ErrForbidden) {
+			t.Errorf("%s: %v", c.name, err)
+		}
+		if (len(a.runs) > 0) != c.run {
+			t.Errorf("%s: %d RunCommand calls", c.name, len(a.runs))
+		}
+	}
+	if n := len(r.srv.Commands()); n != 0 {
+		t.Errorf("logged in over SSH (%d commands)", n)
+	}
+
+	a.status["i-1"], a.result, a.errorCode, a.dropped, a.pad, a.runs = "true", "", "", 0, "", nil
+	a.runErr = "Forbidden.RAM"
+	err := r.run("list", "web-1")
+	if !errors.Is(err, platform.ErrForbidden) || !strings.Contains(err.Error(), "ecs:RunCommand") {
+		t.Errorf("RunCommand denied: %v", err)
+	}
+
+	a.runErr, a.statusErr = "", "Forbidden.RAM"
+	if err := r.run("list", "web-1"); err != nil || len(a.runs) == 0 {
+		t.Errorf("status check denied: %v (%d RunCommand calls)\n%s", err, len(a.runs), r.h.stderr.String())
+	}
+}
+
+// The wrapper Cloud Assistant runs gives back the command's standard
+// output exactly and its standard error apart, with its exit status.
+func TestAssistantProgramSplitsOutput(t *testing.T) {
+	sys := sshtest.NewSystem(t)
+	prog, mark := assistantProgram(`printf 'a\n\nb'; echo "warn: x" >&2; printf 'c\n'; exit 5`)
+	out, errb, code := sys.Run("root", prog, "")
+	so, se, ok := splitAssistantOutput(out+errb, mark)
+	if !ok || string(so) != "a\n\nbc\n" || string(se) != "warn: x\n" || code != 5 {
+		t.Errorf("stdout %q stderr %q code %d ok %v (raw %q)", so, se, code, ok, out+errb)
+	}
+	if _, _, ok := splitAssistantOutput("cut", mark); ok {
+		t.Error("output without the marker accepted")
 	}
 }
 
