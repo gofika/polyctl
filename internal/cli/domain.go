@@ -76,9 +76,13 @@ func newDomainInfoCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:               "info <domain>",
 		Short:             "Show registrar details and the DNS zone of a domain",
-		Args:              cobra.ExactArgs(1),
+		Args:              app.ArgsOrInteractive(rt, 1, nil),
 		ValidArgsFunction: completeDomains(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			args, err := domainArgs(cmd, rt, args, app.DomainPick{})
+			if err != nil {
+				return err
+			}
 			info := domainInfo{Domain: platform.NormalizeDomain(args[0]), Cached: true}
 			if rt.Flags.Profile != "" || rt.Flags.Platform != "" {
 				// A selection that names no account is reported as such
@@ -171,9 +175,13 @@ func newDomainNSGetCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:               "get <domain>",
 		Short:             "Show the nameservers set at the registrar",
-		Args:              cobra.ExactArgs(1),
+		Args:              app.ArgsOrInteractive(rt, 1, nil),
 		ValidArgsFunction: completeDomains(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			args, err := domainArgs(cmd, rt, args, app.DomainPick{Title: "Registered domain", Kinds: domainKinds})
+			if err != nil {
+				return err
+			}
 			t, err := rt.ResolveDomain(cmd.Context(), args[0], platform.ResDomain)
 			if err != nil {
 				return err
@@ -200,10 +208,19 @@ func newDomainNSSetCmd(rt *app.Runtime) *cobra.Command {
 		Short:             "Set the nameservers at the registrar",
 		Long:              "Replace the nameservers of <domain> at its registrar with the ones given.\n" + app.NameserverHelp,
 		Example:           "  polyctl domain ns set example.com ns1.example.net ns2.example.net",
-		Args:              app.NameserverArgs,
+		Args:              app.NameserverArgsOrInteractive(rt),
 		ValidArgsFunction: completeDomains(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ns, err := app.Nameservers(args[1:])
+			args, err := domainArgs(cmd, rt, args, app.DomainPick{Title: "Registered domain", Kinds: domainKinds, Required: true})
+			if err != nil {
+				return err
+			}
+			var ns []string
+			if len(args) < 2 {
+				ns, err = rt.PickNameservers(cmd.Context(), args[0])
+			} else {
+				ns, err = app.Nameservers(args[1:])
+			}
 			if err != nil {
 				return err
 			}
@@ -253,12 +270,16 @@ func newDomainWhichCmd(rt *app.Runtime) *cobra.Command {
 		Long: "Show every account that owns a domain, as a registrar or as a DNS zone.\n" +
 			"--profile and --platform narrow the list to the owners in that profile and\n" +
 			"on that platform, as on domain list; without them every owner is shown.",
-		Args:              cobra.ExactArgs(1),
+		Args:              app.ArgsOrInteractive(rt, 1, nil),
 		ValidArgsFunction: completeDomains(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Validates --profile and --platform, so that a mistyped one
 			// is an error and not an empty list.
 			if _, err := rt.Accounts(); err != nil {
+				return err
+			}
+			args, err := domainArgs(cmd, rt, args, app.DomainPick{})
+			if err != nil {
 				return err
 			}
 			only, err := rt.RoutePlatform()
@@ -435,10 +456,14 @@ func newDomainNSCheckCmd(rt *app.Runtime) *cobra.Command {
 			"  polyctl domain ns check www.example.com -o json\n" +
 			"  polyctl domain ns check example.com --resolver 223.5.5.5,114.114.114.114\n" +
 			"  polyctl domain ns check example.com --no-registrar",
-		Args:              cobra.ExactArgs(1),
+		Args:              app.ArgsOrInteractive(rt, 1, nil),
 		ValidArgsFunction: completeDomains(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := rt.Config()
+			if err != nil {
+				return err
+			}
+			args, err = domainArgs(cmd, rt, args, app.DomainPick{})
 			if err != nil {
 				return err
 			}
