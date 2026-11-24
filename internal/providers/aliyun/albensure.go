@@ -223,9 +223,27 @@ nothing created.
 		Example: `  polyctl aliyun alb load-balancer ensure example.com --service site-a --dry-run -o json
   polyctl aliyun alb load-balancer ensure example.com --service site-a --https-backend
   polyctl aliyun alb load-balancer ensure example.com --service site-a --cert 1234567`,
-		Args: cobra.ExactArgs(1),
+		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+			if len(args) == 0 {
+				// A host name cannot be listed: it is asked, checked as it
+				// is typed.
+				v, err := rt.AskInput("<domain>", "Domain the load balancer serves (such as example.com)", "", func(s string) error {
+					d := platform.NormalizeDomain(s)
+					switch {
+					case !strings.Contains(d, "."), strings.ContainsAny(d, " /:@?#"):
+						return fmt.Errorf("%q is not a domain name (such as example.com)", s)
+					case strings.Contains(d, "*"):
+						return fmt.Errorf("a wildcard domain makes no load balancer name")
+					}
+					return nil
+				})
+				if err != nil {
+					return err
+				}
+				args = []string{v}
+			}
 			domain := platform.NormalizeDomain(args[0])
 			if domain == "" {
 				return app.UsageErrf("the domain is empty")
@@ -234,7 +252,24 @@ nothing created.
 				return app.UsageErrf("%q: a wildcard domain makes no load balancer name; give the bare domain (%s)", args[0], strings.TrimPrefix(strings.TrimPrefix(domain, "*"), "."))
 			}
 			if service == "" {
-				return app.UsageErrf("--service is required: name the ECS instance behind the load balancer")
+				if !rt.Interactive() {
+					return app.UsageErrf("--service is required: name the ECS instance behind the load balancer")
+				}
+				// The Running instances: the load balancer follows the VPC
+				// of the one chosen.
+				prof, err := rt.ProfileFor(platform.Aliyun)
+				if err != nil {
+					return err
+				}
+				reg, err := resolveRegion(rt, prof, region)
+				if err != nil {
+					return err
+				}
+				picked, err := instanceArg(ctx, rt, nil, reg, "Running aliyun instance", statusIn(instRunning))
+				if err != nil {
+					return app.RequiredPick(err, "--service")
+				}
+				service = picked[0]
 			}
 			if eips != albEIPCount {
 				return app.UsageErrf("--eips must be %d (one per zone of a dual-zone load balancer), got %d", albEIPCount, eips)

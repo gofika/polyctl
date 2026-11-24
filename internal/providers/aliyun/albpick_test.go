@@ -127,3 +127,22 @@ func TestALBGroupAndACLCreatePicks(t *testing.T) {
 		t.Errorf("stdout = %s", h.stdout.String())
 	}
 }
+
+// load-balancer ensure without <domain> and --service asks for the domain
+// (checked as typed) and a Running instance of the region.
+func TestALBEnsureAsksDomainAndService(t *testing.T) {
+	t.Setenv(app.EnvNonInteractive, "")
+	h, net, _, _, _ := albHarness(t, app.Flags{DryRun: true})
+	in := net.instances[len(net.instances)-1]
+	in["Status"] = instRunning
+	p := prompttest.New(t, "not a domain", "example.com", "i-site")
+	h.rt.Picker = p
+	err := h.run("alb", "load-balancer", "ensure", "--listener", "http:80")
+	p.Done()
+	if err != nil {
+		t.Fatalf("ensure: %v\n%s", err, h.stderr.String())
+	}
+	if a := p.Asked[2]; a.Title != "Instance" || !strings.Contains(prompttest.Labels(a.Options), "site-a  i-site") {
+		t.Errorf("instance pick: %+v", a)
+	}
+}
