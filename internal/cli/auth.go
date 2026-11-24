@@ -14,6 +14,7 @@ import (
 	"github.com/gofika/polyctl/internal/creds"
 	"github.com/gofika/polyctl/internal/output"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt"
 )
 
 func newAuthCmd(rt *app.Runtime) *cobra.Command {
@@ -217,8 +218,19 @@ func loginAccount(ctx context.Context, rt *app.Runtime, prov platform.Provider, 
 		// next to one that lives in another profile: the user most
 		// likely wants to re-authenticate that one.
 		if others := cfg.ProfilesFor(id); len(others) > 0 {
-			return usageErr("%s is already configured in profile(s) %s; pass --profile <name> to re-authenticate one of them, or --profile %s to add another %s account to this profile",
-				id, strings.Join(others, ", "), name, id)
+			if !rt.Interactive() {
+				return usageErr("%s is already configured in profile(s) %s; pass --profile <name> to re-authenticate one of them, or --profile %s to add another %s account to this profile",
+					id, strings.Join(others, ", "), name, id)
+			}
+			// The interactive flow asks which of these is meant.
+			chosen, err := pickLoginProfile(rt, cfg, id, others, name)
+			if err != nil {
+				return err
+			}
+			name = chosen
+			if prof = cfg.Profiles[name]; prof != nil {
+				acct = prof.Platforms[id]
+			}
 		}
 	}
 	if acct != nil {
@@ -820,4 +832,24 @@ func removeAccount(ctx context.Context, rt *app.Runtime, ref config.AccountRef, 
 		return fmt.Errorf("save config: %w (the %s credentials of profile %q were already removed, but the account is still listed; run the command again to finish)", err, id, name)
 	}
 	return nil
+}
+
+// pickLoginProfile asks where a login of platform id goes when the platform
+// is configured in other profiles only: re-authenticate the account of one
+// of them, add another account to the target profile, or a new profile
+// (its name checked as it is typed).
+func pickLoginProfile(rt *app.Runtime, cfg *config.Config, id platform.ID, others []string, target string) (string, error) {
+	var opts []prompt.Option
+	for _, o := range others {
+		opts = append(opts, prompt.Option{Label: fmt.Sprintf("Re-authenticate %s in profile %s", id, o), Value: o})
+	}
+	if _, ok := cfg.Profiles[target]; ok || target != "" {
+		opts = append(opts, prompt.Option{Label: fmt.Sprintf("Add another %s account to profile %s", id, target), Value: target})
+	}
+	opts = append(opts, prompt.Option{Label: "New profile...", Value: newProfileValue})
+	v, err := rt.Pick().Select(fmt.Sprintf("%s is already configured in profile(s) %s", id, strings.Join(others, ", ")), opts, others[0])
+	if err != nil || v != newProfileValue {
+		return v, err
+	}
+	return rt.AskInput("--profile", "Name of the new profile", "", func(s string) error { return checkNewProfileName(cfg, s) })
 }

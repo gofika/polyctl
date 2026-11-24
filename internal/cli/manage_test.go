@@ -244,9 +244,26 @@ func TestAuthLoginPicksPlatform(t *testing.T) {
 	if _, _, err := run(t, cfgPath, "auth", "use", "other"); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err, _ = runPick(t, cfgPath, []any{p2}, "auth", "login")
-	if ExitCodeFor(err) != ExitUsage || !strings.Contains(err.Error(), "already configured in profile(s) default") {
-		t.Errorf("login of a platform that lives elsewhere = %v, want the usage error", err)
+	// The interactive flow asks where the login goes: re-authenticate it
+	// in default, add another account to the current profile, or a new
+	// profile; leaving the question logs in nowhere.
+	_, stderr, err, pk := runPick(t, cfgPath, []any{p2, abort{}}, "auth", "login")
+	if err != nil || strings.TrimSpace(stderr) != "cancelled" {
+		t.Errorf("login of a platform that lives elsewhere = %v (stderr %q)", err, stderr)
+	}
+	if a := pk.Find(p2 + " is already configured in profile(s) default"); values(a.Options) != "default other /new" || a.Default != "default" {
+		t.Errorf("login target options %+v (default %q)", a.Options, a.Default)
+	}
+	// A new profile: its name is checked as it is typed.
+	if _, _, err, _ := runPick(t, cfgPath, []any{p2, prompttest.Label("New profile"), "default", "fresh"}, "auth", "login"); err != nil {
+		t.Fatalf("login into a new profile: %v", err)
+	}
+	if got := accountNames(loadConfig(t, cfgPath)); !strings.Contains(got, "fresh/"+p2) {
+		t.Errorf("accounts after the login into a new profile = %q", got)
+	}
+	// Non-interactive: unchanged.
+	if _, _, err := run(t, cfgPath, "auth", "login", p2); ExitCodeFor(err) != ExitUsage || !strings.Contains(err.Error(), "already configured in profile(s)") {
+		t.Errorf("non-interactive login of a platform that lives elsewhere = %v, want the usage error", err)
 	}
 
 	_, stderr, err, _ = runPick(t, cfgPath, []any{abort{}}, "auth", "login")
