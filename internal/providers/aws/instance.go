@@ -676,10 +676,12 @@ func (c *client) stopInstanceChecked(ctx context.Context, region, id string, for
 // is in state want, and returns it as last read. A wait for running fails
 // when the instance falls back to stopped after it was seen starting, or
 // is terminated; a missing instance counts as terminated (and as not yet
-// visible while waiting for anything else).
+// visible while waiting for anything else). A failed poll is retried until
+// waitErrorBudget polls in a row failed (see tolerant).
 func (c *client) waitInstanceState(ctx context.Context, region, id, label, want string, timeout time.Duration) (ec2types.Instance, error) {
 	region = c.regionOr(region)
 	var last ec2types.Instance
+	var tol tolerant
 	started := false
 	err := platform.WaitUntil(ctx, platform.WaitOptions{
 		Resource: "instance/" + label, Want: want, Timeout: timeout, Interval: instancePollInterval, Clock: instanceClock,
@@ -690,10 +692,11 @@ func (c *client) waitInstanceState(ctx context.Context, region, id, label, want 
 				if want == stateTerminated {
 					return platform.WaitDone, stateTerminated, nil
 				}
-				return platform.KeepWaiting, "not visible yet", nil
+				return platform.KeepWaiting, "not visible yet", tol.check(nil)
 			}
-			return platform.KeepWaiting, "", err
+			return platform.KeepWaiting, "", tol.check(err)
 		}
+		tol.check(nil)
 		last = in
 		st := instanceState(in)
 		if st == want {

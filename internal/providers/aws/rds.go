@@ -702,6 +702,7 @@ type dbWait struct {
 // waitDB polls the instance until w.done, and returns it as last read.
 func (c *client) waitDB(ctx context.Context, w dbWait) (rdstypes.DBInstance, error) {
 	var last rdstypes.DBInstance
+	var tol tolerant
 	fatal := w.fatal
 	if fatal == nil {
 		fatal = dbFatal
@@ -717,10 +718,11 @@ func (c *client) waitDB(ctx context.Context, w dbWait) (rdstypes.DBInstance, err
 					case w.goneFails:
 						return platform.KeepWaiting, "", err
 					}
-					return platform.KeepWaiting, "not visible yet", nil
+					return platform.KeepWaiting, "not visible yet", tol.check(nil)
 				}
-				return platform.KeepWaiting, "", err
+				return platform.KeepWaiting, "", tol.check(err)
 			}
+			tol.check(nil)
 			last = db
 			st := awssdk.ToString(db.DBInstanceStatus)
 			if w.done != nil && w.done(db) {

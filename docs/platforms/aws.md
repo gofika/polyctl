@@ -112,6 +112,8 @@ polyctl aws ec2 instance create site-new --type c6a.xlarge --disk 400 --dry-run
 - One network interface, public IP unless `--public-ip=false`. Tags: Name, `defaults.aws.tags`, `--tag`, on the instance and its volumes.
 - Waits until running and prints public and private IP. `--dry-run` resolves image and type and reports `would create`.
 
+Waits on EC2 instances, EBS volumes and RDS instances ride out up to two failed polls in a row (throttling, a network error); the third in a row, or a credential error, ends the wait with that error.
+
 **start / stop** — an instance already in the target state is `unchanged`. `stop` asks for confirmation; `--force` skips the clean shutdown. A `pending` instance is first waited for (at most `--timeout`) until it is running, because AWS refuses to stop an instance that never ran. A refused stop is reported with the exit code of its error (3 for missing permission, 4 for a missing instance). `--wait` waits for running (and prints addresses) or stopped.
 
 **reboot** reboots a running instance and starts a stopped one (other states: exit code 1). A started instance gets a new public IP unless it has an Elastic IP.

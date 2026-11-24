@@ -78,7 +78,8 @@ type fakeInstances struct {
 	pwDelay     int
 	pwCalls     map[string]int
 	volErr      error
-	errs        map[string]error // call -> error of that call
+	errs        map[string]error   // call -> error of that call
+	errOnce     map[string][]error // call -> errors of its next calls, one each
 	runs        []*ec2.RunInstancesInput
 	filters     [][]ec2types.Filter
 	pageSize    int
@@ -224,6 +225,10 @@ func matchPattern(pattern, s string) bool {
 
 func (f *fakeEC2) callErr(call string) error {
 	f.record(call)
+	if q := f.shared.inst.errOnce[call]; len(q) > 0 {
+		f.shared.inst.errOnce[call] = q[1:]
+		return q[0]
+	}
 	return f.shared.inst.errs[call]
 }
 
@@ -897,5 +902,28 @@ func TestDeleteProtectedIsNotAuth(t *testing.T) {
 	err := h.run("ec2", "instance", "delete", "web")
 	if err == nil || errors.Is(err, platform.ErrUnauthorized) || !strings.Contains(err.Error(), "termination protection") {
 		t.Errorf("protected = %v", err)
+	}
+}
+
+func TestWaitInstanceStateTransientErrors(t *testing.T) {
+	h := newInstanceHarness(t, app.Flags{})
+	h.addInstance("ap-east-1", &fakeInstance{id: "i-0aaaaaaaaaaaaaaa1", name: "web", typ: "t3.nano", state: stateStopping, next: []string{stateStopping, stateStopped}})
+	c := &client{region: "ap-east-1", ec2For: func(r string) ec2API { return newEC2(awssdk.Config{Region: r}) }}
+	flaky := &fakeAPIError{"RequestLimitExceeded", "slow down"}
+	// Two failed polls in a row are retried.
+	h.ec2.inst.errOnce = map[string][]error{"DescribeInstances": {flaky, flaky}}
+	in, err := c.waitInstanceState(context.Background(), "", "i-0aaaaaaaaaaaaaaa1", "web", stateStopped, time.Minute)
+	if err != nil || instanceState(in) != stateStopped {
+		t.Fatalf("two transient errors = %v (%s)", err, instanceState(in))
+	}
+	// The third in a row ends the wait.
+	h.ec2.inst.errOnce = map[string][]error{"DescribeInstances": {flaky, flaky, flaky}}
+	if _, err := c.waitInstanceState(context.Background(), "", "i-0aaaaaaaaaaaaaaa1", "web", stateRunning, time.Minute); err == nil || !strings.Contains(err.Error(), "slow down") {
+		t.Errorf("three transient errors = %v", err)
+	}
+	// A credential error ends it at once.
+	h.ec2.inst.errOnce = map[string][]error{"DescribeInstances": {&fakeAPIError{"AuthFailure", "no"}}}
+	if _, err := c.waitInstanceState(context.Background(), "", "i-0aaaaaaaaaaaaaaa1", "web", stateRunning, time.Minute); !errors.Is(err, platform.ErrUnauthorized) {
+		t.Errorf("auth failure = %v", err)
 	}
 }

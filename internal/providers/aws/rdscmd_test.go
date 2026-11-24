@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	rdstypes "github.com/aws/aws-sdk-go-v2/service/rds/types"
@@ -783,5 +784,22 @@ func TestRDSDeleteFailsAfterProtectionOff(t *testing.T) {
 	err := h.run("rds", "instance", "delete", "db-a")
 	if err == nil || !strings.Contains(err.Error(), "delete old snapshots") || !strings.Contains(err.Error(), "switch it on again") {
 		t.Errorf("err = %v", err)
+	}
+}
+
+func TestWaitDBTransientErrors(t *testing.T) {
+	h, _ := newRDSHarness(t, app.Flags{}, nil)
+	h.addDB("ap-east-1", "db-a", dbAvailable)
+	r := h.rds()
+	c := &client{region: "ap-east-1", rdsFor: func(reg string) rdsAPI { return newRDS(awssdk.Config{Region: reg}) }}
+	w := dbWait{region: "ap-east-1", id: "db-a", want: dbAvailable, interval: dbPowerPoll, timeout: time.Hour, done: statusIs(dbAvailable)}
+	flaky := &fakeAPIError{"Throttling", "rate exceeded"}
+	r.errOnce = map[string][]error{"DescribeDBInstances": {flaky, flaky}}
+	if _, err := c.waitDB(context.Background(), w); err != nil {
+		t.Fatalf("two transient errors = %v", err)
+	}
+	r.errOnce = map[string][]error{"DescribeDBInstances": {flaky, flaky, flaky}}
+	if _, err := c.waitDB(context.Background(), w); err == nil || !strings.Contains(err.Error(), "rate exceeded") {
+		t.Errorf("three transient errors = %v", err)
 	}
 }
