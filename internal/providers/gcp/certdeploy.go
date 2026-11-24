@@ -165,9 +165,6 @@ func (d lbDeployer) Discover(ctx context.Context, acct *platform.DeployAccount, 
 				Detail: "uses the certificate map " + lastSegment(p.CertificateMap) + "; not managed by polyctl"})
 			continue
 		}
-		// families are the key families of the self-managed certificates
-		// of the proxy, by root domain.
-		families := map[string][]string{}
 		start := len(targets)
 		for _, u := range p.SslCertificates {
 			sc, err := s.findCert(ctx, lastSegment(u))
@@ -205,14 +202,23 @@ func (d lbDeployer) Discover(ctx context.Context, acct *platform.DeployAccount, 
 			targets = append(targets, platform.DeployTarget{Deployer: gcpDeployerID, Platform: platform.GCP, Profile: acct.Profile, Region: s.scopeName(),
 				Kind: "gcp-https-proxy", ID: sc.Name, Name: name, Group: name, CurrentCertID: sc.Name, CurrentDomains: f.Domains,
 				CurrentNotAfter: f.Expire, CurrentSerial: serial, Attrs: map[string]string{"proxy": p.Name, "fingerprint": f.Fingerprint, "key_family": family}})
-			if root, err := platform.RegisteredDomain(f.Domain); err == nil && family != "" && !slices.Contains(families[root], family) {
-				families[root] = append(families[root], family)
-			}
 		}
+		// proxy_key_families are the key families of the other
+		// certificates of the proxy that cover every name of a target:
+		// the target is one of a pair of an RSA and an ECDSA certificate
+		// of the same names. A certificate of other names (another
+		// subdomain) does not make it a pair.
 		for i := start; i < len(targets); i++ {
-			if root, err := platform.RegisteredDomain(targets[i].Domain()); err == nil {
-				targets[i].Attrs["proxy_key_families"] = strings.Join(families[root], ",")
+			var families []string
+			for j := start; j < len(targets); j++ {
+				fam := targets[j].Attrs["key_family"]
+				if j == i || fam == "" || slices.Contains(families, fam) || len(targets[i].CurrentDomains) == 0 ||
+					len(uncoveredNames(targets[j].CurrentDomains, targets[i].CurrentDomains)) > 0 {
+					continue
+				}
+				families = append(families, fam)
 			}
+			targets[i].Attrs["proxy_key_families"] = strings.Join(families, ",")
 		}
 	}
 	return targets, skipped, nil
@@ -309,8 +315,9 @@ func (d lbDeployer) PlanBatch(ctx context.Context, acct *platform.DeployAccount,
 	var kept []platform.DeployItem
 	var replaced []platform.DeployItem
 	for _, it := range items {
-		// The proxy holds a certificate of the root of the store's key
-		// type (due now or not): one of another key type is kept.
+		// The proxy holds a certificate of the store's key type that
+		// covers every name of this one (due now or not): this one, of
+		// another key type, is kept.
 		have, nf := it.Target.Attrs["key_family"], newFamily(it)
 		if have != "" && nf != "" && have != nf && slices.Contains(strings.Split(it.Target.Attrs["proxy_key_families"], ","), nf) {
 			kept = append(kept, it)

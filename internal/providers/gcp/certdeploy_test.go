@@ -267,6 +267,34 @@ func TestGCPDeployerKeepsACertificateAddedWhileTheNewOneIsCreated(t *testing.T) 
 	}
 }
 
+func TestGCPDeployerReplacesAnRSACertificateOfOtherNames(t *testing.T) {
+	d := newGCPDeploy(t)
+	g := d.h.gce
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An RSA certificate of www and an ECDSA one of api are not a pair
+	// of one name set: both give way to the store's certificate.
+	www := pairWith(t, rsaKey, rsaKey, []string{"www.example.com"}, 20)
+	api := newPair(t, []string{"api.example.com"}, 20)
+	g.addCert("us-central1", "www-rsa", www.chain)
+	g.addCert("us-central1", "api-ec", api.chain)
+	g.addHTTPSProxy("us-central1", "proxy-web", "lb-web", "www-rsa", "api-ec")
+	g.addRule("us-central1", "fr-web", "targetHttpsProxies/proxy-web", "34.1.2.3", "443", nil)
+	d.bundle("example.com", 90)
+	rep, err := d.run(cert.DeployOptions{})
+	if err != nil {
+		t.Fatalf("deploy: %v\n%s", err, strings.Join(reportRows(rep), "\n"))
+	}
+	if certs := g.proxyCerts("us-central1", "proxy-web"); !slices.Equal(certs, []string{"cert-example-com-20260401"}) {
+		t.Errorf("proxy certificates = %v\n%s", certs, strings.Join(reportRows(rep), "\n"))
+	}
+	if g.cert("us-central1", "www-rsa") != nil {
+		t.Error("the RSA certificate of www must be replaced")
+	}
+}
+
 func TestGCPDeployerNamesAndFailures(t *testing.T) {
 	d := newGCPDeploy(t)
 	g := d.h.gce
