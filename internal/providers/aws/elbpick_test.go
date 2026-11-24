@@ -114,6 +114,43 @@ func TestListenerCreateAsks(t *testing.T) {
 	}
 }
 
+// listener create's target group pick offers "New target group...": its
+// name, protocol (for TLS: TCP or TLS) and port are asked, and the group is
+// created before the listener that forwards to it.
+func TestListenerCreateNewTG(t *testing.T) {
+	h := elbPickHarness(t)
+	exp := time.Now().Add(90 * 24 * time.Hour)
+	h.addCert(&fakeCert{region: "ap-east-1", domain: "example.com", status: acmIssued, notAfter: &exp})
+
+	p := prompttest.New(t, prompttest.Label("site-xz7-lb"), "TLS", "443", prompttest.Label("New target group"),
+		"db-target", "web-8443", "TCP", prompttest.KeepDefault{}, prompttest.Label("example.com"))
+	h.rt.Picker = p
+	if err := h.run("elbv2", "listener", "create"); err != nil {
+		t.Fatalf("create: %v\n%s", err, h.stderr.String())
+	}
+	p.Done()
+	if v := prompttest.Values(p.Find("Protocol of the new target group").Options); v != "TCP TLS" {
+		t.Errorf("target group protocols offered %q", v)
+	}
+	if a := p.Find("Port the targets of the new target group receive traffic on"); a.Default != "443" {
+		t.Errorf("port default = %q, want the listener's port", a.Default)
+	}
+	a := actions(h.report())
+	if a["target-group/web-8443 created"] != 1 || a["listener/site-xz7-lb:443 created"] != 1 {
+		t.Errorf("create = %v", a)
+	}
+	if w := strings.Join(h.elbWrites(), ","); !strings.HasPrefix(w, "CreateTargetGroup") || !strings.Contains(w, "CreateListener") {
+		t.Errorf("writes = %s, want the target group first", w)
+	}
+
+	// Leaving the questions of the new group creates nothing.
+	h.resetELB()
+	h.rt.Picker = prompttest.New(t, prompttest.Label("site-xz7-lb"), "TCP", "9000", prompttest.Label("New target group"), prompttest.Abort{})
+	if err := h.run("elbv2", "listener", "create"); !errors.Is(err, prompt.ErrAborted) || len(h.elbWrites()) != 0 {
+		t.Errorf("abort = %v, writes %v", err, h.elbWrites())
+	}
+}
+
 // target-group create asks the name (checked against the region), the
 // protocol and the port; the VPC comes from defaults.aws.vpc_id. update
 // without a change offers registering or deregistering targets.

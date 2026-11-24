@@ -187,7 +187,13 @@ func listenerCreateCmd(rt *app.Runtime) *cobra.Command {
 TCP_UDP, HTTP, HTTPS) that forwards to --target-group (name or ARN, in the
 load balancer's region). TLS and HTTPS need --cert (the ARN of an ACM
 certificate, see aws acm); the other protocols take none. A listener on the
-port already is an error (exit code 1): use listener update.`,
+port already is an error (exit code 1): use listener update.
+
+A terminal asks for what is missing: the load balancer (the active ones),
+the protocol, the port, the target group (those that fit the load
+balancer, or a new one: its name, protocol and port are asked and it is
+created first, with instance targets and the AWS health check) and, for
+TLS and HTTPS, the certificate (the issued ACM certificates).`,
 		Example: "  polyctl aws elbv2 listener create site-xz7-lb --protocol TCP --port 30001 --target-group db-30001-target",
 		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -202,6 +208,8 @@ port already is an error (exit code 1): use listener update.`,
 					return err
 				}
 			}
+			// newTG is the target group the interactive flow creates first.
+			var newTG *newTGSpec
 			portGiven := cmd.Flags().Changed("port")
 			if !portGiven && !interactive {
 				return app.UsageErrf("--port is required")
@@ -260,7 +268,15 @@ port already is an error (exit code 1): use listener update.`,
 					}
 				}
 				if tgRef == "" {
-					if tgRef, err = pickTG(ctx, rt, s, "--target-group", "target group of "+lb.VPC+" that fits a "+lb.Type+" load balancer", true, tgFits(*lb)); err != nil {
+					create := func() (string, error) {
+						spec, err := askNewTG(ctx, rt, s, protocol, port)
+						if err != nil {
+							return "", err
+						}
+						newTG = &spec
+						return newTGValue, nil
+					}
+					if tgRef, err = pickTGOrCreate(ctx, rt, s, "--target-group", "target group of "+lb.VPC+" that fits a "+lb.Type+" load balancer", true, tgFits(*lb), create); err != nil {
 						return err
 					}
 				}
@@ -270,12 +286,16 @@ port already is an error (exit code 1): use listener update.`,
 					}
 				}
 			}
-			if a, ok := parseELBARN(tgRef); ok && a.Region != s.region {
-				return app.UsageErrf("target group %s is in %s, the load balancer in %s", tgRef, a.Region, s.region)
-			}
-			tg, err := resolveTG(ctx, s, tgRef)
-			if err != nil {
-				return err
+			tg := &platform.LBTargetGroup{}
+			if newTG != nil {
+				tg.Name = newTG.name
+			} else {
+				if a, ok := parseELBARN(tgRef); ok && a.Region != s.region {
+					return app.UsageErrf("target group %s is in %s, the load balancer in %s", tgRef, a.Region, s.region)
+				}
+				if tg, err = resolveTG(ctx, s, tgRef); err != nil {
+					return err
+				}
 			}
 			listeners, err := s.c.ListListeners(ctx, s.region, lb.ID)
 			if err != nil {
@@ -287,6 +307,28 @@ port already is an error (exit code 1): use listener update.`,
 				}
 			}
 			var plan platform.Plan
+			if newTG != nil {
+				// The target group the interactive flow asked for goes
+				// first; the listener forwards to it.
+				var tags map[string]string
+				if !rt.DryRun() {
+					if tags, err = elbTagsFor(rt, s.profile); err != nil {
+						return err
+					}
+				}
+				spec := *newTG
+				plan.Add(platform.Step{Resource: "target-group/" + spec.name, Action: platform.Created,
+					Desc: fmt.Sprintf("%s/%d instance %s", strings.ToLower(spec.protocol), spec.port, lb.VPC),
+					Apply: func(ctx context.Context) (platform.Change, error) {
+						g, err := s.c.CreateTargetGroup(ctx, platform.TargetGroupSpec{Region: s.region, Name: spec.name, Protocol: spec.protocol, Port: int32(spec.port),
+							VPC: lb.VPC, TargetType: "instance", Tags: tags})
+						if err != nil {
+							return platform.Change{}, err
+						}
+						tg.ID = g.ID
+						return platform.Change{ID: g.ID}, nil
+					}})
+			}
 			plan.Add(platform.Step{Resource: fmt.Sprintf("listener/%s:%d", lb.Name, port), Action: platform.Created,
 				Desc: fmt.Sprintf("%s:%d -> %s", strings.ToLower(protocol), port, tg.Name),
 				Apply: func(ctx context.Context) (platform.Change, error) {

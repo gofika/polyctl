@@ -75,6 +75,12 @@ func tgOptionLabel(g platform.LBTargetGroup) string {
 // those keep accepts, valued by ARN. arg names the input; required turns
 // an empty list into a usage error naming arg.
 func pickTG(ctx context.Context, rt *app.Runtime, s *lbScope, arg, what string, required bool, keep func(platform.LBTargetGroup) bool) (string, error) {
+	return pickTGOrCreate(ctx, rt, s, arg, what, required, keep, nil)
+}
+
+// pickTGOrCreate is pickTG with a last "New target group..." option that
+// runs create (nil: none).
+func pickTGOrCreate(ctx context.Context, rt *app.Runtime, s *lbScope, arg, what string, required bool, keep func(platform.LBTargetGroup) bool, create func() (string, error)) (string, error) {
 	if !rt.Interactive() {
 		return "", app.UsageErrf("%s is required", arg)
 	}
@@ -88,7 +94,57 @@ func pickTG(ctx context.Context, rt *app.Runtime, s *lbScope, arg, what string, 
 			opts = append(opts, prompt.Option{Label: tgOptionLabel(g), Value: g.ID})
 		}
 	}
-	return rt.Choose(app.Choice{Title: "Target group", Options: opts, Arg: arg, Required: required, What: what + " in " + s.where()})
+	c := app.Choice{Title: "Target group", Options: opts, Arg: arg, Required: required, What: what + " in " + s.where()}
+	if create != nil {
+		c.CreateLabel, c.Create = "New target group...", create
+	}
+	return rt.Choose(c)
+}
+
+// newTGValue is the value pickTGOrCreate returns for a target group the
+// listener create asks for and creates first.
+const newTGValue = "\x00new-target-group"
+
+// newTGSpec is a target group listener create creates before the
+// listener: instance targets, the AWS health check, no targets yet.
+type newTGSpec struct {
+	name, protocol string
+	port           int
+}
+
+// tgProtocolsFor lists the target group protocols a listener of protocol
+// forwards to, the usual one first.
+func tgProtocolsFor(protocol string) []string {
+	switch protocol {
+	case "HTTP", "HTTPS":
+		return []string{"HTTP", "HTTPS"}
+	case "TLS":
+		return []string{"TCP", "TLS"}
+	}
+	return []string{protocol}
+}
+
+// askNewTG asks what a new target group of a listener needs: its name
+// (checked as typed), its protocol (asked only when the listener's
+// protocol allows several) and the port the targets receive traffic on
+// (the listener's port proposed).
+func askNewTG(ctx context.Context, rt *app.Runtime, s *lbScope, listenerProtocol string, listenerPort int) (newTGSpec, error) {
+	var spec newTGSpec
+	var err error
+	if spec.name, err = askELBName(ctx, rt, s, "target group", false); err != nil {
+		return spec, err
+	}
+	protos := tgProtocolsFor(listenerProtocol)
+	spec.protocol = protos[0]
+	if len(protos) > 1 {
+		if spec.protocol, err = chooseOne(rt, "Protocol of the new target group", "--target-group", protos, protos[0]); err != nil {
+			return spec, err
+		}
+	}
+	if spec.port, err = askPort(rt, "--target-group", "Port the targets of the new target group receive traffic on", strconv.Itoa(listenerPort)); err != nil {
+		return spec, err
+	}
+	return spec, nil
 }
 
 // tgArg fills in a missing <name|arn> of a target group command in the
