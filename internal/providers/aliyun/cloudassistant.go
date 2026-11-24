@@ -40,6 +40,9 @@ const (
 	assistantCutMargin = 100
 	// assistantCommandName names the command in the console.
 	assistantCommandName = "polyctl-ssh-key"
+	// errInvokeNotFound is DescribeInvocationResults' answer for an
+	// invocation it does not know (yet).
+	errInvokeNotFound = "InvalidInvokeId.NotFound"
 )
 
 // assistantPollInterval is the pause between two DescribeInvocationResults
@@ -174,6 +177,10 @@ func (c *client) runShellCommand(ctx context.Context, region, id, command string
 			out, err := cl.DescribeInvocationResults(q)
 			if err != nil {
 				w := wrapErr("ecs DescribeInvocationResults "+region, err)
+				// An invocation just created may not be visible yet.
+				if platform.HasErrorCode(w, errInvokeNotFound) {
+					return platform.KeepWaiting, "not visible yet", nil
+				}
 				if errors.Is(w, platform.ErrForbidden) || errors.Is(w, platform.ErrUnauthorized) {
 					return platform.KeepWaiting, "", fmt.Errorf("the credentials need the RAM action ecs:DescribeInvocationResults: %w", w)
 				}

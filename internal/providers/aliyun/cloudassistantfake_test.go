@@ -23,7 +23,9 @@ type fakeAssistant struct {
 	// exec runs a command as root on an instance.
 	exec func(id, cmd string) (stdout, stderr string, code int)
 
-	hidden, running int
+	// unknown reads answer InvalidInvokeId.NotFound, then hidden reads
+	// nothing and running reads Running.
+	unknown, hidden, running int
 	// result, when set, is the InvocationStatus of every invocation, with
 	// errorCode as its ErrorCode.
 	result, errorCode string
@@ -33,6 +35,8 @@ type fakeAssistant struct {
 	// statusErr and runErr, when set, answer DescribeCloudAssistantStatus
 	// and RunCommand.
 	statusErr, runErr string
+	// resultsErr, when set, answers DescribeInvocationResults.
+	resultsErr string
 
 	runs        []url.Values
 	programs    []string
@@ -100,12 +104,19 @@ func (a *fakeAssistant) runCommand(q url.Values) (int, any) {
 }
 
 func (a *fakeAssistant) describeResults(q url.Values) (int, any) {
+	if a.resultsErr != "" {
+		return 403, apiErr(a.resultsErr, "not allowed")
+	}
 	inv := a.invocations[q.Get("InvokeId")]
 	if inv == nil || q.Get("ContentEncoding") != "Base64" {
 		return 400, apiErr("InvalidInvokeId.NotFound", "no such invocation")
 	}
 	n := a.reads[q.Get("InvokeId")]
 	a.reads[q.Get("InvokeId")] = n + 1
+	if n < a.unknown {
+		return 404, apiErr("InvalidInvokeId.NotFound", "no such invocation")
+	}
+	n -= a.unknown
 	var rows []map[string]any
 	switch {
 	case n < a.hidden:

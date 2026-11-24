@@ -293,7 +293,7 @@ func TestECSSSHKeyCloudAssistant(t *testing.T) {
 	r.vm["KeyPairName"] = "someone-else"
 	r.f.addKeyPair("someone-else", strings.Repeat("ab", 16), "2026-11-17T13:54Z")
 	a := r.useAssistant()
-	a.hidden, a.running = 1, 2
+	a.unknown, a.hidden, a.running = 1, 1, 2
 
 	k, line := ecsKeyLine(t, "alice@laptop")
 	r.h.rt.Flags.DryRun = true
