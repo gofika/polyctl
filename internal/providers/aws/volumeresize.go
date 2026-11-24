@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt"
 )
 
 // locateInstanceVolume finds the volume attached to an instance as device
@@ -48,12 +50,23 @@ func locateInstanceVolume(ctx context.Context, rt *app.Runtime, ref, device, reg
 		return &locatedVolume{c: li.c, profile: li.profile, region: li.region, vol: all[0]}, nil
 	}
 	var cands []string
-	for _, v := range all {
+	var opts []prompt.Option
+	for i, v := range all {
 		dev := ""
 		if a := volumeAttached(v); a != nil {
 			dev = awssdk.ToString(a.Device)
 		}
 		cands = append(cands, fmt.Sprintf("%s %s %dGB", dev, awssdk.ToString(v.VolumeId), awssdk.ToInt32(v.Size)))
+		opts = append(opts, prompt.Option{Label: joinLabel(dev, awssdk.ToString(v.VolumeId), fmt.Sprintf("%d GB", awssdk.ToInt32(v.Size)), string(v.VolumeType), tagName(v.Tags)), Value: strconv.Itoa(i)})
+	}
+	if rt.Interactive() {
+		// The interactive flow asks which volume is meant.
+		v, err := rt.Pick().Select("Volume of instance "+instanceLabel(li.inst), opts, "")
+		if err != nil {
+			return nil, err
+		}
+		i, _ := strconv.Atoi(v)
+		return &locatedVolume{c: li.c, profile: li.profile, region: li.region, vol: all[i]}, nil
 	}
 	return nil, app.UsageErrf("instance %s has no volume attached as %s; its volumes are: %s. Pass --device <dev> or the volume id",
 		instanceLabel(li.inst), orNone(dev), strings.Join(cands, ", "))
@@ -152,13 +165,13 @@ instance are printed.`,
 				}
 				change.Type = typ
 			}
-			if change.empty() {
+			if change.empty() && !rt.Interactive() {
 				return app.UsageErrf("resize needs at least one of --size, --type, --iops or --throughput")
 			}
 			switch {
 			case len(args) == 1 && instance != "":
 				return app.UsageErrf("name the volume, or --instance (with --device) to find it, not both")
-			case len(args) == 0 && instance == "":
+			case len(args) == 0 && instance == "" && !rt.Interactive():
 				return app.UsageErrf("resize needs the volume id or name, or --instance <name|id> [--device <dev>]")
 			case device != "" && instance == "":
 				return app.UsageErrf("--device needs --instance")
@@ -175,6 +188,14 @@ instance are printed.`,
 					timeout = volumeCompleteTimeout
 				}
 			}
+			region := region
+			if len(args) == 0 && instance == "" {
+				h, err := pickVolume(ctx, rt, region, "available or in-use EBS volume", volumeStatesIn(volAvailable, volInUse))
+				if err != nil {
+					return err
+				}
+				args, region = []string{h.v.ID}, ""
+			}
 			var l *locatedVolume
 			if len(args) == 1 {
 				l, err = resolveVolume(ctx, rt, args[0], region)
@@ -188,6 +209,28 @@ instance are printed.`,
 				return err
 			}
 			l.store(ctx, rt)
+			if change.empty() {
+				// The interactive flow: the new size, larger than the
+				// current one (EBS volumes cannot shrink).
+				curSize := awssdk.ToInt32(l.vol.Size)
+				v, err := rt.AskInput("--size", fmt.Sprintf("New size of %s in GB (now %d GB; volumes only grow)", l.id(), curSize), strconv.Itoa(int(curSize)), func(s string) error {
+					n, err := strconv.Atoi(strings.TrimSpace(s))
+					switch {
+					case err != nil || n <= 0:
+						return fmt.Errorf("a whole number of GB is required")
+					case n <= int(curSize):
+						return fmt.Errorf("the volume is %d GB already: enter a larger size", curSize)
+					case n > 65536:
+						return fmt.Errorf("an EBS volume holds at most 65536 GB")
+					}
+					return nil
+				})
+				if err != nil {
+					return err
+				}
+				n, _ := strconv.Atoi(v)
+				change.Size = awssdk.Int32(int32(n))
+			}
 			target := l.target()
 			cur := string(l.vol.VolumeType)
 			if change.Size != nil && *change.Size < awssdk.ToInt32(l.vol.Size) {

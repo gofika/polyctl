@@ -35,11 +35,47 @@ Inside the instance the volume shows up under its NVMe name (/dev/sdb is
 volume restored from a snapshot loads its blocks from S3 on first access,
 which makes the first reads slow.`,
 		Example: "  polyctl aws ec2 volume attach site-xz7-data --instance site-tmp --device /dev/sdb",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			if strings.TrimSpace(instance) == "" {
+			region := region
+			if strings.TrimSpace(instance) == "" && !rt.Interactive() {
 				return app.UsageErrf("attach needs --instance <name|id>")
+			}
+			if len(args) == 0 || strings.TrimSpace(instance) == "" {
+				// The interactive flow: an available volume, then a running
+				// or stopped instance of its account and zone.
+				var h volumeHit
+				if len(args) == 0 {
+					var err error
+					if h, err = pickVolume(ctx, rt, region, "available EBS volume", volumeStatesIn(volAvailable)); err != nil {
+						return err
+					}
+					args = []string{h.v.ID}
+				} else {
+					// The instances offered are those of the volume's zone.
+					l, err := resolveVolume(ctx, rt, args[0], region)
+					if err != nil {
+						return err
+					}
+					h = volumeHit{profile: l.profile, v: volumeFrom(l.region, l.vol)}
+				}
+				if strings.TrimSpace(instance) == "" {
+					what := "running or stopped AWS instance"
+					keep := statesIn(stateRunning, stateStopped)
+					if h.v.ID != "" {
+						what += " in " + h.v.AZ
+						keep = func(in instanceInfo) bool { return in.AZ == h.v.AZ && statesIn(stateRunning, stateStopped)(in) }
+					}
+					id, err := pickInstanceRef(ctx, rt, "--instance", h.profile, region, what, true, keep)
+					if err != nil {
+						return err
+					}
+					instance = id
+				}
+				if h.v.ID != "" {
+					region = h.v.Region
+				}
 			}
 			if device = strings.TrimSpace(device); device == "" {
 				return app.UsageErrf("--device must not be empty")
@@ -207,7 +243,7 @@ it only when a normal detach is stuck; it always needs --yes. detach waits
 until the volume is available (5 second polls, --timeout 5m; --no-wait
 returns at once).`,
 		Example: "  polyctl aws ec2 volume detach site-xz7-data --yes",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			if force && !rt.Flags.Yes {
@@ -216,6 +252,14 @@ returns at once).`,
 			wait, timeout, err := wf.Resolve(cmd)
 			if err != nil {
 				return err
+			}
+			region := region
+			if len(args) == 0 {
+				h, err := pickVolume(ctx, rt, region, "in-use EBS volume", volumeStatesIn(volInUse))
+				if err != nil {
+					return err
+				}
+				args, region = []string{h.v.ID}, ""
 			}
 			l, err := resolveVolume(ctx, rt, args[0], region)
 			if err != nil {
@@ -323,9 +367,18 @@ termination, the instance's data volumes stay in use until the instance is
 terminated). A volume being deleted, or one that is gone, is reported
 unchanged. Snapshots of the volume are kept.`,
 		Example: "  polyctl aws ec2 volume delete site-xz7-data --yes",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+			region := region
+			if len(args) == 0 {
+				// An attached volume cannot be deleted: available ones only.
+				h, err := pickVolume(ctx, rt, region, "available EBS volume", volumeStatesIn(volAvailable))
+				if err != nil {
+					return err
+				}
+				args, region = []string{h.v.ID}, ""
+			}
 			l, err := resolveVolume(ctx, rt, args[0], region)
 			if err != nil {
 				var gone *volumeGoneError

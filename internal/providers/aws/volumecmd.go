@@ -20,6 +20,7 @@ import (
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/output"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt"
 )
 
 // Defaults of the volume commands.
@@ -212,7 +213,9 @@ func pickVolumeHit(rt *app.Runtime, ref string, hits []volumeHit) (volumeHit, er
 	for _, h := range hits {
 		names = append(names, fmt.Sprintf("aws/%s/%s (%s, %s)", h.profile, h.v.Region, h.v.ID, h.v.State))
 	}
-	return volumeHit{}, &app.AmbiguousError{What: fmt.Sprintf("volume %q", ref), Candidates: names, Hint: "pass --profile <name> and/or --region <r> to choose"}
+	amb := &app.AmbiguousError{What: fmt.Sprintf("volume %q", ref), Candidates: names, Hint: "pass --profile <name> and/or --region <r> to choose"}
+	// The interactive flow asks which one.
+	return disambiguate(rt, amb, hits, func(h volumeHit) string { return volumeOptionLabel(h.profile, h.v) })
 }
 
 // volumeMatcher matches inventory volumes by id, or by Name tag; region,
@@ -330,7 +333,9 @@ func resolveVolume(ctx context.Context, rt *app.Runtime, ref, region string) (*l
 		if len(accts) == 1 {
 			hint = "the account holds several volumes with this name; pass the volume id"
 		}
-		return nil, &app.AmbiguousError{What: fmt.Sprintf("volume %q", ref), Candidates: names, Hint: hint}
+		amb := &app.AmbiguousError{What: fmt.Sprintf("volume %q", ref), Candidates: names, Hint: hint}
+		// The interactive flow asks which one.
+		return disambiguate(rt, amb, found, func(l *locatedVolume) string { return volumeOptionLabel(l.profile, volumeFrom(l.region, l.vol)) })
 	case failure != nil:
 		return nil, fmt.Errorf("cannot tell where volume %q is: %w", ref, failure)
 	}
@@ -643,9 +648,18 @@ type). AWS keeps only the latest modification of a volume, for a limited
 time. With --offline the inventory's copy is shown, without the
 modification.`,
 		Example: "  polyctl aws ec2 volume get vol-0222\n  polyctl aws ec2 volume get site-xz7-data -o json",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+			region := region
+			if len(args) == 0 {
+				h, err := pickVolume(ctx, rt, region, "EBS volume", nil)
+				if err != nil {
+					return err
+				}
+				// The id picked is found wherever the inventory has it.
+				args, region = []string{h.v.ID}, ""
+			}
 			if rt.Flags.Offline {
 				accounts, err := awsAccounts(rt)
 				if err != nil {
@@ -785,7 +799,7 @@ in the error state fails).`,
 			if err != nil {
 				return err
 			}
-			if snapshot == "" && size <= 0 {
+			if snapshot == "" && size <= 0 && !rt.Interactive() {
 				return app.UsageErrf("create needs --size <GB> for an empty volume, or --from-snapshot <snap-id>")
 			}
 			if cmd.Flags().Changed("size") && size <= 0 {
@@ -797,7 +811,7 @@ in the error state fails).`,
 			if az != "" && instance != "" {
 				return app.UsageErrf("--az and --instance are mutually exclusive: the volume goes to the zone of --instance")
 			}
-			if az == "" && instance == "" {
+			if az == "" && instance == "" && !rt.Interactive() {
 				return app.UsageErrf("create needs --az <zone>, or --instance <name|id> to use the instance's zone")
 			}
 			if !slices.Contains(volumeTypes, typ) {
@@ -818,6 +832,13 @@ in the error state fails).`,
 			}
 			var c *client
 			var profile string
+			if az == "" && instance == "" {
+				// The interactive flow: a zone of the region, or the zone of
+				// an instance.
+				if az, instance, err = pickVolumePlacement(ctx, rt, region); err != nil {
+					return err
+				}
+			}
 			if instance != "" {
 				l, err := resolveInstance(ctx, rt, instance, region, false)
 				if err != nil {
@@ -845,8 +866,17 @@ in the error state fails).`,
 				}
 			}
 			target := platform.Target{Platform: platform.AWS, Profile: profile, Region: region}
+			sizeSet := cmd.Flags().Changed("size")
+			if snapshot == "" && size <= 0 {
+				// The interactive flow: a completed snapshot of the region,
+				// or an empty volume of a size asked for.
+				if snapshot, size, err = pickVolumeSource(ctx, rt, c, region); err != nil {
+					return err
+				}
+				sizeSet = size > 0
+			}
 			spec := volumeSpec{AZ: az, Snapshot: snapshot, Type: typ, ClientToken: newClientToken()}
-			if cmd.Flags().Changed("size") {
+			if sizeSet {
 				spec.Size = size
 			}
 			switch typ {
@@ -936,4 +966,77 @@ in the error state fails).`,
 	cmd.Flags().StringVar(&region, "region", "", "region (default: the region of --az, or of --instance)")
 	app.AddWaitFlags(cmd, &wf, false, volumeWaitTimeout)
 	return cmd
+}
+
+// pickVolumePlacement asks where a new volume goes in the interactive flow:
+// an available zone of region (the profile's region by default), or "The
+// zone of an instance...", a running or stopped instance of the selected
+// accounts. It returns the zone or the instance id.
+func pickVolumePlacement(ctx context.Context, rt *app.Runtime, region string) (az, instance string, err error) {
+	profile, err := rt.ProfileFor(platform.AWS)
+	if err != nil {
+		return "", "", err
+	}
+	c, err := openProfile(ctx, rt, profile)
+	if err != nil {
+		return "", "", err
+	}
+	zones, err := c.availableZones(ctx, region)
+	if err != nil {
+		return "", "", err
+	}
+	var opts []prompt.Option
+	for _, z := range zones {
+		opts = append(opts, prompt.Option{Label: z, Value: z})
+	}
+	const instValue = "\x00instance:"
+	v, err := rt.Choose(app.Choice{Title: "Availability zone of the volume (it attaches only to instances of its zone)", Options: opts, Arg: "--az",
+		CreateLabel: "The zone of an instance...", Create: func() (string, error) {
+			id, err := pickInstanceRef(ctx, rt, "--instance", "", "", "running or stopped AWS instance", true, statesIn(stateRunning, stateStopped))
+			if err != nil {
+				return "", err
+			}
+			return instValue + id, nil
+		}})
+	if err != nil {
+		return "", "", err
+	}
+	if id, ok := strings.CutPrefix(v, instValue); ok {
+		return "", id, nil
+	}
+	return v, "", nil
+}
+
+// pickVolumeSource asks what a new volume holds in the interactive flow: a
+// completed snapshot of region (newest first), or "Empty volume..." with
+// its size in GB, checked as typed.
+func pickVolumeSource(ctx context.Context, rt *app.Runtime, c *client, region string) (snapshot string, size int32, err error) {
+	snaps, err := c.listSnapshots(ctx, region, snapshotFilters{State: string(ec2types.SnapshotStateCompleted)})
+	if err != nil {
+		return "", 0, err
+	}
+	var opts []prompt.Option
+	for _, sn := range snaps {
+		opts = append(opts, prompt.Option{Label: snapshotOptionLabel(sn), Value: awssdk.ToString(sn.SnapshotId)})
+	}
+	const sizeValue = "\x00size:"
+	v, err := rt.Choose(app.Choice{Title: "Source of the volume", Options: opts, Arg: "--size or --from-snapshot",
+		CreateLabel: "Empty volume (enter its size)...", Create: func() (string, error) {
+			v, err := rt.AskInput("--size", "Size of the empty volume in GB", "", func(s string) error {
+				n, err := strconv.Atoi(strings.TrimSpace(s))
+				if err != nil || n <= 0 || n > 65536 {
+					return fmt.Errorf("a whole number of GB from 1 to 65536 is required")
+				}
+				return nil
+			})
+			return sizeValue + v, err
+		}})
+	if err != nil {
+		return "", 0, err
+	}
+	if n, ok := strings.CutPrefix(v, sizeValue); ok {
+		i, _ := strconv.Atoi(n)
+		return "", int32(i), nil
+	}
+	return v, 0, nil
 }

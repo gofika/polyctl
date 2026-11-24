@@ -25,8 +25,11 @@ type fakeFind struct {
 	subnets   map[string]ec2types.Subnet
 	// vpcs are the VPCs per region.
 	vpcs map[string][]ec2types.Vpc
-	lbs  map[string][]elbtypes.LoadBalancer
-	dbs  map[string][]rdstypes.DBInstance
+	// zones are the availability zones per region; nil means <region>a
+	// and <region>b.
+	zones map[string][]ec2types.AvailabilityZone
+	lbs   map[string][]elbtypes.LoadBalancer
+	dbs   map[string][]rdstypes.DBInstance
 	// regionErr fails every call in a region.
 	regionErr map[string]error
 	// eniPage is the page length of DescribeNetworkInterfaces (0: all).
@@ -194,6 +197,40 @@ func (f *fakeEC2) DescribeVpcs(_ context.Context, in *ec2.DescribeVpcsInput, _ .
 		}
 		if ok {
 			out.Vpcs = append(out.Vpcs, v)
+		}
+	}
+	return out, nil
+}
+
+// DescribeAvailabilityZones lists the zones of the region, filtered on
+// state and zone-type.
+func (f *fakeEC2) DescribeAvailabilityZones(_ context.Context, in *ec2.DescribeAvailabilityZonesInput, _ ...func(*ec2.Options)) (*ec2.DescribeAvailabilityZonesOutput, error) {
+	if err := f.findCall("DescribeAvailabilityZones"); err != nil {
+		return nil, err
+	}
+	f.shared.mu.Lock()
+	defer f.shared.mu.Unlock()
+	zones, ok := f.shared.find.zones[f.region]
+	if !ok {
+		for _, l := range []string{"a", "b"} {
+			zones = append(zones, ec2types.AvailabilityZone{ZoneName: awssdk.String(f.region + l), State: ec2types.AvailabilityZoneStateAvailable, ZoneType: awssdk.String("availability-zone")})
+		}
+	}
+	out := &ec2.DescribeAvailabilityZonesOutput{}
+	for _, z := range zones {
+		ok := true
+		for _, flt := range in.Filters {
+			switch awssdk.ToString(flt.Name) {
+			case "state":
+				ok = ok && slices.Contains(flt.Values, string(z.State))
+			case "zone-type":
+				ok = ok && slices.Contains(flt.Values, awssdk.ToString(z.ZoneType))
+			default:
+				return nil, &fakeAPIError{"InvalidParameterValue", "unknown filter " + awssdk.ToString(flt.Name)}
+			}
+		}
+		if ok {
+			out.AvailabilityZones = append(out.AvailabilityZones, z)
 		}
 	}
 	return out, nil

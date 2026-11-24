@@ -161,9 +161,17 @@ one at a time per volume). --wait waits until the snapshot is completed (15
 second polls, --timeout 30m; large volumes take long; the error state
 fails).`,
 		Example: `  polyctl aws ec2 snapshot create vol-0222 --description "before resize" --wait`,
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+			region := region
+			if len(args) == 0 {
+				h, err := pickVolume(ctx, rt, region, "available or in-use EBS volume", volumeStatesIn(volAvailable, volInUse))
+				if err != nil {
+					return err
+				}
+				args, region = []string{h.v.ID}, ""
+			}
 			wait, timeout, err := wf.Resolve(cmd)
 			if err != nil {
 				return err

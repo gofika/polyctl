@@ -77,18 +77,18 @@ func notTerminated(in instanceInfo) bool {
 
 // pickInstanceRef asks for an instance of the selected AWS accounts in the
 // interactive flow, from the inventory (synced first when stale, never
-// with --offline): those in region when it is given, those keep accepts.
-// The value is the instance id, which resolveInstance finds again. what
-// names the candidates of an empty list ("stopped AWS instance"); arg is
-// the input for messages ("<name|id>", "--instance"). required turns an
-// empty list into a usage error naming arg (an input a command cannot do
-// without) instead of "nothing to do".
-func pickInstanceRef(ctx context.Context, rt *app.Runtime, arg, region, what string, required bool, keep func(instanceInfo) bool) (string, error) {
+// with --offline): those of profile and in region when they are given,
+// those keep accepts. The value is the instance id, which resolveInstance
+// finds again. what names the candidates of an empty list ("stopped AWS
+// instance"); arg is the input for messages ("<name|id>", "--instance").
+// required turns an empty list into a usage error naming arg (an input a
+// command cannot do without) instead of "nothing to do".
+func pickInstanceRef(ctx context.Context, rt *app.Runtime, arg, profile, region, what string, required bool, keep func(instanceInfo) bool) (string, error) {
 	return rt.PickResource(ctx, app.ResourcePick{Platform: platform.AWS, Kind: platform.ResInstance,
 		Title: "Instance", Arg: arg, What: what, Required: required,
 		Filter: func(r inventory.Resource) bool {
 			in := instanceInfoOf(r)
-			if region != "" && in.Region != region {
+			if (profile != "" && r.Profile != profile) || (region != "" && in.Region != region) {
 				return false
 			}
 			return keep == nil || keep(in)
@@ -103,7 +103,7 @@ func instanceArg(ctx context.Context, rt *app.Runtime, args []string, region, wh
 	if len(args) > 0 {
 		return args, nil
 	}
-	id, err := pickInstanceRef(ctx, rt, "<name|id>", region, what, false, keep)
+	id, err := pickInstanceRef(ctx, rt, "<name|id>", "", region, what, false, keep)
 	if err != nil {
 		return nil, err
 	}
@@ -399,4 +399,93 @@ func pickVPC(ctx context.Context, rt *app.Runtime, c *client, region string, mis
 		opts = append(opts, prompt.Option{Label: vpcLabel(v), Value: id})
 	}
 	return rt.Choose(app.Choice{Title: "VPC", Options: opts, Default: def, Arg: "--vpc", Required: true, What: "available VPC in " + c.regionOr(region)})
+}
+
+// volumeOptionLabel: "site-data  vol-0222  400 GB  gp3  in-use  ap-east-1a
+// i-0abc as /dev/sdb  aws/lab".
+func volumeOptionLabel(profile string, v volumeInfo) string {
+	att := ""
+	for _, a := range v.Attachments {
+		att = a.InstanceID + " as " + a.Device
+		break
+	}
+	return joinLabel(nameOr(v.Name, v.ID), v.ID, fmt.Sprintf("%d GB", v.Size), v.Type, v.State, v.AZ, att, "aws/"+profile)
+}
+
+// pickVolume asks for an EBS volume of the selected AWS accounts in the
+// interactive flow, from the inventory (synced first when stale): those in
+// region when it is given, those keep accepts. what names the candidates
+// of an empty list ("available EBS volume"), which is nothing to do. It
+// returns the volume chosen with its account.
+func pickVolume(ctx context.Context, rt *app.Runtime, region, what string, keep func(volumeInfo) bool) (volumeHit, error) {
+	seen := map[string]volumeHit{}
+	id, err := rt.PickResource(ctx, app.ResourcePick{Platform: platform.AWS, Kind: platform.ResVolume,
+		Title: "Volume", Arg: "<vol-id|name>", What: what,
+		Filter: func(r inventory.Resource) bool {
+			var v volumeInfo
+			if r.Decode(&v) != nil || v.ID == "" || (region != "" && v.Region != region) || (keep != nil && !keep(v)) {
+				return false
+			}
+			seen[v.ID] = volumeHit{profile: r.Profile, v: v}
+			return true
+		},
+		Label: func(r inventory.Resource) string {
+			var v volumeInfo
+			_ = r.Decode(&v)
+			return volumeOptionLabel(r.Profile, v)
+		}})
+	if err != nil {
+		return volumeHit{}, err
+	}
+	return seen[id], nil
+}
+
+// volumeStates keeps the volumes in one of the states.
+func volumeStatesIn(states ...string) func(volumeInfo) bool {
+	return func(v volumeInfo) bool { return slices.Contains(states, v.State) }
+}
+
+// volumeArg fills in a missing <vol-id|name> in the interactive flow with
+// pickVolume; with the argument given, args is returned as it is.
+func volumeArg(ctx context.Context, rt *app.Runtime, args []string, region, what string, keep func(volumeInfo) bool) ([]string, error) {
+	if len(args) > 0 {
+		return args, nil
+	}
+	h, err := pickVolume(ctx, rt, region, what, keep)
+	if err != nil {
+		return nil, err
+	}
+	return []string{h.v.ID}, nil
+}
+
+// availableZones lists the available availability zones of region (local
+// and wavelength zones left out), by name.
+func (c *client) availableZones(ctx context.Context, region string) ([]string, error) {
+	region = c.regionOr(region)
+	out, err := c.ec2For(region).DescribeAvailabilityZones(ctx, &ec2.DescribeAvailabilityZonesInput{Filters: []ec2types.Filter{
+		{Name: awssdk.String("state"), Values: []string{string(ec2types.AvailabilityZoneStateAvailable)}},
+		{Name: awssdk.String("zone-type"), Values: []string{"availability-zone"}},
+	}})
+	if err != nil {
+		return nil, ec2Err("DescribeAvailabilityZones", region, err)
+	}
+	var zones []string
+	for _, z := range out.AvailabilityZones {
+		if z.State == ec2types.AvailabilityZoneStateAvailable {
+			zones = append(zones, awssdk.ToString(z.ZoneName))
+		}
+	}
+	slices.Sort(zones)
+	return zones, nil
+}
+
+// snapshotOptionLabel: "site-data-20260102T0304Z  snap-0aaa  400 GB
+// 2026-01-02  description".
+func snapshotOptionLabel(sn ec2types.Snapshot) string {
+	start := ""
+	if sn.StartTime != nil {
+		start = sn.StartTime.UTC().Format("2006-01-02 15:04")
+	}
+	id := awssdk.ToString(sn.SnapshotId)
+	return joinLabel(nameOr(tagName(sn.Tags), id), id, fmt.Sprintf("%d GB", awssdk.ToInt32(sn.VolumeSize)), start, awssdk.ToString(sn.Description))
 }
