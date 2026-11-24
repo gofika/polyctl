@@ -34,10 +34,25 @@ listed with their network.`,
   polyctl find 10.0.1.100 --platform gcp,aws --detail
   polyctl find mydb.abc123.ap-east-1.rds.amazonaws.com -o json
   polyctl find 203.0.113.10 --refresh`,
-		Args: cobra.ExactArgs(1),
+		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if rt.Flags.Offline && detail {
 				return usageErr("--detail and --offline are mutually exclusive: --detail looks the subnets up on the platforms")
+			}
+			if len(args) == 0 {
+				// An address or a name cannot be listed: asked, and checked
+				// as it is typed.
+				v, err := rt.AskInput("<ip|dns-name>", "IP address or DNS name to find", "", func(s string) error {
+					_, err := platform.ParseFindQuery(strings.TrimSpace(s))
+					if err != nil {
+						return errors.New(strings.TrimPrefix(err.Error(), platform.ErrInvalidInput.Error()+": "))
+					}
+					return nil
+				})
+				if err != nil {
+					return err
+				}
+				args = []string{v}
 			}
 			q, err := platform.ParseFindQuery(args[0])
 			if err != nil {
