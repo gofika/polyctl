@@ -1223,7 +1223,7 @@ Running again.`,
 		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			if groupRef == "" && cert == "" {
+			if groupRef == "" && cert == "" && !rt.Interactive() {
 				return app.UsageErrf("nothing to change: pass --server-group and/or --cert")
 			}
 			if cert != "" {
@@ -1244,6 +1244,29 @@ Running again.`,
 			l, err := getListenerOrNotFound(ctx, sc, args[0])
 			if err != nil {
 				return err
+			}
+			if groupRef == "" && cert == "" {
+				// The interactive flow asks what to change, then offers the
+				// server groups or the certificates.
+				opts := []prompt.Option{{Label: "Server group (now " + orDash(strings.Join(l.ServerGroups, ",")) + ")", Value: "group"}}
+				if carriesCertificates(l.Protocol) {
+					opts = append(opts, prompt.Option{Label: "Certificate (now " + orDash(firstOr(l.Certificates, "")) + ")", Value: "cert"})
+				}
+				what, err := rt.Choose(app.Choice{Title: "Change what of listener " + l.ID + "?", Options: opts, Arg: "--server-group or --cert"})
+				if err != nil {
+					return err
+				}
+				if what == "cert" {
+					if cert, err = askCASCert(ctx, rt, sc.c, sc.region, firstOr(l.Certificates, ""), "--cert"); err != nil {
+						return err
+					}
+				} else {
+					picked, err := serverGroupArg(ctx, rt, sc, nil, "--server-group")
+					if err != nil {
+						return err
+					}
+					groupRef = picked[0]
+				}
 			}
 			var changes []string
 			groupID, certID := "", ""

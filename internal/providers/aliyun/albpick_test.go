@@ -146,3 +146,23 @@ func TestALBEnsureAsksDomainAndService(t *testing.T) {
 		t.Errorf("instance pick: %+v", a)
 	}
 }
+
+// listener update without <listener-id>, --server-group and --cert asks
+// for the listener, what to change, then the server group.
+func TestALBListenerUpdatePicks(t *testing.T) {
+	t.Setenv(app.EnvNonInteractive, "")
+	h, _, alb, _, _ := albHarness(t, app.Flags{DryRun: true})
+	alb.addLB("alb-1", "lb-1", "vpc-site", "Active")
+	alb.addGroup("sgp-1", "g1", "HTTP", "vpc-site")
+	alb.addGroup("sgp-2", "g2", "HTTP", "vpc-site")
+	alb.addListener("lsn-2", "alb-1", "HTTPS", 443, "sgp-1", "1234567")
+	p := prompttest.New(t, "alb-1", "lsn-2", "group", "sgp-2")
+	h.rt.Picker = p
+	if err := h.run("alb", "listener", "update"); err != nil {
+		t.Fatalf("update: %v\n%s", err, h.stderr.String())
+	}
+	p.Done()
+	if !strings.Contains(h.stdout.String(), `server group sgp-1 -\u003e sgp-2`) {
+		t.Errorf("stdout = %s", h.stdout.String())
+	}
+}
