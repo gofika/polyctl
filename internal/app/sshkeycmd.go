@@ -252,6 +252,20 @@ func (sc SSHKeyCommand) allowed() []string {
 	return platform.AnyKeyTypes
 }
 
+// keyUser is the user UserFromKey derives from key, "" when it derives
+// none or one that is not a valid user name (a comment is free text, and
+// the user ends up in a metadata line or a shell command).
+func (sc SSHKeyCommand) keyUser(key *platform.PublicKey) string {
+	if sc.UserFromKey == nil {
+		return ""
+	}
+	u := sc.UserFromKey(key)
+	if u == "" || sshremote.CheckUser(u, "user") != nil {
+		return ""
+	}
+	return u
+}
+
 // checkFlags validates the flags that need nothing read.
 func (sc SSHKeyCommand) checkFlags(f *sshKeyFlags) error {
 	if f.user != "" {
@@ -365,7 +379,7 @@ func sshKeyAddCommand(rt *Runtime, sc SSHKeyCommand) *cobra.Command {
 			} else if !rt.Interactive() {
 				return UsageErrf("a public key is required: pass --ssh-key-file <path> or --ssh-key <public key>")
 			}
-			if key != nil && f.user == "" && sc.UserFromKey != nil && sc.UserFromKey(key) == "" && !rt.Interactive() {
+			if key != nil && f.user == "" && sc.UserFromKey != nil && sc.keyUser(key) == "" && !rt.Interactive() {
 				return UsageErrf("--user is required: the key's comment ends with no user@host to take the user from")
 			}
 			if rt.Flags.Offline {
@@ -390,9 +404,7 @@ func sshKeyAddCommand(rt *Runtime, sc SSHKeyCommand) *cobra.Command {
 			}
 			user := s.user(f.user)
 			if user == "" {
-				if sc.UserFromKey != nil {
-					user = sc.UserFromKey(key)
-				}
+				user = sc.keyUser(key)
 				if user == "" {
 					if user, err = rt.AskInput("--user", "User the key logs in as", "", func(v string) error {
 						return inlineErr(sshremote.CheckUser(strings.TrimSpace(v), "user"))

@@ -491,6 +491,10 @@ func TestSSHKeyMetadataStore(t *testing.T) {
 	if err := r.runSpec(sc, "add", "web-1", "--ssh-key", nk.line("laptop")); !errors.Is(err, app.ErrUsage) || r.resolved != 0 {
 		t.Fatalf("no user: %v (resolved %d)", err, r.resolved)
 	}
+	// A comment whose user part is not a user name is not taken as one.
+	if err := r.runSpec(sc, "add", "web-1", "--ssh-key", nk.line("a:b@laptop")); !errors.Is(err, app.ErrUsage) || r.resolved != 0 {
+		t.Fatalf("invalid user from the comment: %v (resolved %d)", err, r.resolved)
+	}
 	if err := r.runSpec(sc, "add", "web-1", "--ssh-key", nk.line("alice@laptop")); err != nil {
 		t.Fatal(err)
 	}
