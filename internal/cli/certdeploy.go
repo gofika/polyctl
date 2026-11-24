@@ -13,9 +13,13 @@ import (
 	"github.com/gofika/polyctl/internal/config"
 	"github.com/gofika/polyctl/internal/output"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt"
 )
 
 // newCertDeployCmd is `cert deploy`.
+// deployAll is the value of the "--all" option of the cert deploy picker.
+const deployAll = "\x00all"
+
 func newCertDeployCmd(rt *app.Runtime) *cobra.Command {
 	var (
 		days      int
@@ -78,6 +82,31 @@ polyctl cert deploy --all --prune-expired --yes.`,
 		ValidArgsFunction: completeDomains(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+			if len(args) == 0 && !all && rt.Interactive() {
+				// The interactive flow offers every due certificate
+				// (--all) first, then each certificate of the store.
+				st, err := cert.OpenRuntimeStore(rt, false)
+				if err != nil {
+					return err
+				}
+				opts, err := certStoreOptions(st)
+				if err != nil {
+					return err
+				}
+				if len(opts) == 0 {
+					return nothingToDo("the store %s holds no certificate to deploy (run `polyctl cert ensure <domain>`)", st.Base)
+				}
+				opts = append([]prompt.Option{{Label: "Every certificate that is due (--all)", Value: deployAll}}, opts...)
+				v, err := rt.Choose(app.Choice{Title: "Deploy which certificate?", Options: opts, Default: deployAll, Arg: "<domain>"})
+				if err != nil {
+					return err
+				}
+				if v == deployAll {
+					all = true
+				} else {
+					args = []string{v}
+				}
+			}
 			switch {
 			case len(args) == 0 && !all:
 				return usageErr("name a domain or pass --all")

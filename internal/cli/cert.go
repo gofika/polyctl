@@ -13,6 +13,7 @@ import (
 
 	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/cert"
+	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/output"
 	"github.com/gofika/polyctl/internal/platform"
 	"github.com/gofika/polyctl/internal/prompt"
@@ -64,10 +65,17 @@ fails with exit code 2 without them.
 which cert deploy never reads. --dry-run checks the store, the routing and the
 nameservers and reports what would be done, writing nothing. A failed issuance
 is not retried. Typical cron use: polyctl cert ensure example.com.`,
-		Args:              cobra.ExactArgs(1),
+		Args:              app.ArgsOrInteractive(rt, 1, nil),
 		ValidArgsFunction: completeDomains(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := rt.Config()
+			if err != nil {
+				return err
+			}
+			// DNS-01 needs a zone: the indexed zones are offered, each with
+			// the state of its certificate in the store.
+			args, err = domainArgs(cmd, rt, args, app.DomainPick{Title: "Domain to certify", Kinds: zoneKinds, Required: true,
+				Label: func(d string, _ []inventory.IndexEntry) string { return certStoreLabel(rt, staging, d) }})
 			if err != nil {
 				return err
 			}
@@ -166,17 +174,29 @@ shown. --print fullchain|cert|chain|privkey writes that PEM file as it is to
 stdout instead, for redirecting into a file (privkey says so on stderr; protect
 the file yourself). A domain without a certificate is exit code 4. --staging
 reads the store of the staging CA.`,
-		Args:              cobra.ExactArgs(1),
+		Args:              app.ArgsOrInteractive(rt, 1, nil),
 		ValidArgsFunction: completeDomains(rt),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if print != "" && !slices.Contains(certPrintParts, print) {
 				return usageErr("--print: %q is not one of %s", print, strings.Join(certPrintParts, ", "))
 			}
-			root, err := cert.RootDomain(args[0])
+			st, err := cert.OpenRuntimeStore(rt, staging)
 			if err != nil {
 				return err
 			}
-			st, err := cert.OpenRuntimeStore(rt, staging)
+			if len(args) == 0 {
+				opts, err := certStoreOptions(st)
+				if err != nil {
+					return err
+				}
+				d, err := rt.Choose(app.Choice{Title: "Certificate", Options: opts, Arg: "<domain>",
+					Empty: app.NothingToDof("the store %s holds no certificate (run `polyctl cert ensure <domain>`)", st.Base)})
+				if err != nil {
+					return err
+				}
+				args = []string{d}
+			}
+			root, err := cert.RootDomain(args[0])
 			if err != nil {
 				return err
 			}
