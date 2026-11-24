@@ -79,3 +79,50 @@ func TestClientHonoursRetryAfter(t *testing.T) {
 		t.Errorf("cancelled wait = %v after %s", err, time.Since(start))
 	}
 }
+
+// The wait for Retry-After is not part of one request: the client's
+// per-request timeout must not cut a wait that is longer than it.
+func TestRetryAfterWaitOutlastsRequestTimeout(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if hits.Add(1) == 1 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+	c := New(srv.URL, nil)
+	c.HTTP.Timeout = 300 * time.Millisecond
+	c.MaxRetries = 0
+	var out struct {
+		OK bool `json:"ok"`
+	}
+	if err := c.Do(context.Background(), http.MethodDelete, "/x", nil, nil, &out); err != nil || !out.OK {
+		t.Fatalf("Do = %v, %+v; want success after waiting out Retry-After", err, out)
+	}
+	if hits.Load() != 2 {
+		t.Errorf("%d attempts, want 2", hits.Load())
+	}
+}
+
+// Announced waits are capped per call, so a server that keeps answering
+// 429 does not hold the command forever.
+func TestRetryAfterWaitsAreCapped(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Retry-After", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+	c := New(srv.URL, nil)
+	c.MaxRetries = 0
+	if err := c.Do(context.Background(), http.MethodGet, "/x", nil, nil, nil); err == nil {
+		t.Fatal("Do succeeded against a server that only answers 429")
+	}
+	if got := hits.Load(); got != 1+rateLimitRetries {
+		t.Errorf("%d attempts, want %d", got, 1+rateLimitRetries)
+	}
+}

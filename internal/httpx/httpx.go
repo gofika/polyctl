@@ -30,15 +30,15 @@ type Client struct {
 	MaxRetries int
 }
 
-// New returns a client with sane defaults. Its transport honours the
-// Retry-After / RateLimit-Reset delay of a 429 (see RateLimitTransport).
+// New returns a client with sane defaults. Do honours the Retry-After /
+// RateLimit-Reset delay of a 429 (see RetryDelay).
 func New(baseURL string, prepare func(*http.Request)) *Client {
 	return &Client{
 		BaseURL: strings.TrimRight(baseURL, "/"),
 		HTTP: &http.Client{
-			// 429 responses wait for the delay the server announces.
-			Transport: NewRateLimitTransport(nil),
-			Timeout:   60 * time.Second,
+			// Per request; a wait for a 429's announced delay happens
+			// between requests and is not limited by it.
+			Timeout: 60 * time.Second,
 			// REST APIs do not redirect; following one would resend the
 			// Authorization header (possibly over plain http) and turn a
 			// POST into a bodiless GET. Surface 3xx as an error instead.
@@ -95,6 +95,10 @@ var idempotentMethods = map[string]bool{
 //
 // 429 responses are retried for every method (the server did not process the
 // request); transport errors and 5xx responses only for idempotent methods.
+// A 429 that announces when to come back (Retry-After, RateLimit-Reset) is
+// retried after that delay, at most RateLimitMaxWait per wait and
+// rateLimitRetries waits per call, without using up MaxRetries; one without
+// a hint gets the short generic backoff.
 func (c *Client) Do(ctx context.Context, method, path string, query url.Values, in, out any) error {
 	var body []byte
 	if in != nil {
@@ -108,12 +112,21 @@ func (c *Client) Do(ctx context.Context, method, path string, query url.Values, 
 		u += "?" + query.Encode()
 	}
 	var lastErr error
+	var hintWait time.Duration
+	hinted := 0
 	for attempt := 0; attempt <= c.MaxRetries; attempt++ {
-		if attempt > 0 {
+		wait := hintWait
+		hintWait = 0
+		if wait == 0 && attempt > 0 {
+			wait = time.Duration(attempt*attempt) * 500 * time.Millisecond
+		}
+		if wait > 0 {
+			timer := time.NewTimer(wait)
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return ctx.Err()
-			case <-time.After(time.Duration(attempt*attempt) * 500 * time.Millisecond):
+			case <-timer.C:
 			}
 		}
 		req, err := http.NewRequestWithContext(ctx, method, u, bytes.NewReader(body))
@@ -148,6 +161,13 @@ func (c *Client) Do(ctx context.Context, method, path string, query url.Values, 
 		}
 		if resp.StatusCode == http.StatusTooManyRequests || (resp.StatusCode >= 500 && idempotent) {
 			lastErr = &Error{Status: resp.StatusCode, Method: method, URL: u, Body: string(rb), Header: resp.Header}
+			if resp.StatusCode == http.StatusTooManyRequests && hinted < rateLimitRetries {
+				if d := RetryDelay(resp.Header, time.Now()); d > 0 {
+					hinted++
+					hintWait = min(d, RateLimitMaxWait)
+					attempt-- // an announced wait does not use up MaxRetries
+				}
+			}
 			continue
 		}
 		if resp.StatusCode < 200 || resp.StatusCode > 299 {
