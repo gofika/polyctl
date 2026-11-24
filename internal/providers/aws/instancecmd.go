@@ -635,11 +635,13 @@ cannot be told apart later.
 
 The image is --ami, or the latest Amazon Linux 2023 image of the instance
 type's architecture (--arch, by default arm64 for Graviton types and x86_64
-otherwise; a size resolves to an x86_64 type): the SSM parameter
-al2023-ami-kernel-default-<arch> first; when the parameter cannot be read,
-the newest standard Amazon image named "al2023-ami-2023.*-kernel-*-<arch>"
-of any kernel line (highest release, then latest creation time; minimal
-images excluded), so the two may use different kernels. No such image is
+otherwise; a size resolves to an x86_64 type; polyctl never picks arm64
+by itself): the SSM parameter al2023-ami-kernel-default-<arch> first;
+when the parameter cannot be read or its image is not available, the
+newest standard Amazon image named "al2023-ami-2023.*-kernel-*-<arch>" of
+any kernel line (highest release, then latest creation time; minimal
+images excluded), so the two may use different kernels. A default image
+is always available and not deprecated. No such image is
 exit code 4; pass --ami <ami-id> for any other image. Mac types
 (x86_64_mac, arm64_mac) have no default image: they need --ami (exit code 7
 without it).
@@ -647,7 +649,8 @@ without it).
 --os windows takes the newest Windows Server English Full Base image
 (x86_64): the highest year among the public SSM parameters
 /aws/service/ami-windows-latest/Windows_Server-<year>-English-Full-Base,
-else, when they cannot be read, the newest Amazon image named
+else, when they cannot be read or that image is not available, the
+newest available, not deprecated Amazon image named
 Windows_Server-<year>-English-Full-Base-<date>. An arm64 type is exit code
 2, a Mac type exit code 7. An --ami whose platform is windows is a Windows
 instance too.

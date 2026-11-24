@@ -676,6 +676,21 @@ func TestLatestWindowsAMI(t *testing.T) {
 	if len(notes) != 1 || !strings.Contains(notes[0], windowsParamPath) {
 		t.Errorf("notes = %v", notes)
 	}
+	// A newer image that is deprecated or not available is never picked,
+	// nor an arm64 one.
+	h.ec2.mu.Lock()
+	depr := ec2types.Image{ImageId: awssdk.String("ami-0win2025depr"), Name: awssdk.String("Windows_Server-2025-English-Full-Base-2026.11.20"),
+		Architecture: "x86_64", Platform: ec2types.PlatformValuesWindows, CreationDate: awssdk.String("2026-11-20T00:00:00.000Z"),
+		DeprecationTime: awssdk.String("2026-11-21T00:00:00.000Z")}
+	off := depr
+	off.ImageId, off.Name, off.DeprecationTime, off.State = awssdk.String("ami-0win2025off"), awssdk.String("Windows_Server-2025-English-Full-Base-2026.11.21"), nil, ec2types.ImageStateDisabled
+	arm := off
+	arm.ImageId, arm.Name, arm.State, arm.Architecture = awssdk.String("ami-0win2025arm"), awssdk.String("Windows_Server-2025-English-Full-Base-2026.11.22"), "", "arm64"
+	h.ec2.inst.images["ap-east-1"] = append(h.ec2.inst.images["ap-east-1"], depr, off, arm)
+	h.ec2.mu.Unlock()
+	if img, err = c.latestWindowsAMI(context.Background(), "", nil); err != nil || img.ID != "ami-0win2025" {
+		t.Fatalf("fallback with unusable images = %+v, %v", img, err)
+	}
 	h.ec2.mu.Lock()
 	h.ec2.inst.images["ap-east-1"] = nil
 	h.ec2.mu.Unlock()

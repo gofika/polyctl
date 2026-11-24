@@ -349,9 +349,18 @@ func (c *client) typeOffered(ctx context.Context, region, typ, az string) (bool,
 	return offered, zones, nil
 }
 
+// archX8664 is the architecture of every image polyctl picks by itself
+// for a size or a Windows instance.
+const archX8664 = "x86_64"
+
 // imageInfo is what create needs to know of a machine image.
 type imageInfo struct {
 	ID, Name, Arch, RootDevice, Created string
+	// State is the image state ("available", "pending", "disabled", ...;
+	// "" when not reported).
+	State string
+	// Deprecated reports an image whose DeprecationTime has passed.
+	Deprecated bool
 	// Windows reports a Windows image (Platform "windows").
 	Windows bool
 }
@@ -359,7 +368,28 @@ type imageInfo struct {
 func imageFrom(im ec2types.Image) imageInfo {
 	return imageInfo{ID: awssdk.ToString(im.ImageId), Name: awssdk.ToString(im.Name), Arch: string(im.Architecture),
 		RootDevice: awssdk.ToString(im.RootDeviceName), Created: awssdk.ToString(im.CreationDate),
+		State: string(im.State), Deprecated: deprecatedAt(awssdk.ToString(im.DeprecationTime), time.Now()),
 		Windows: im.Platform == ec2types.PlatformValuesWindows}
+}
+
+// deprecatedAt reports whether a DeprecationTime (RFC 3339, "" for none)
+// is not after now.
+func deprecatedAt(when string, now time.Time) bool {
+	if when == "" {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, when)
+	return err == nil && !t.After(now)
+}
+
+// pickable reports whether polyctl may pick an image by itself (a default
+// image, never an --ami the user gives): available (or without a state),
+// not deprecated, and of arch (or without an architecture).
+func (i imageInfo) pickable(arch string) bool {
+	if i.State != "" && i.State != string(ec2types.ImageStateAvailable) {
+		return false
+	}
+	return !i.Deprecated && (i.Arch == "" || i.Arch == arch)
 }
 
 // describeImage reads one image by id.
@@ -427,8 +457,10 @@ func newerAL2023(a imageInfo, ra, ka string, b imageInfo, rb, kb string) bool {
 }
 
 // latestAL2023AMI returns the latest Amazon Linux 2023 image of arch: the
-// SSM public parameter first (deterministic), else, when it cannot be read
-// (no ssm:GetParameter permission, ...), the newest standard image named
+// SSM public parameter first (deterministic), when its image is available,
+// not deprecated and of arch; else, when it cannot be read (no
+// ssm:GetParameter permission, ...) or its image is not, the newest
+// available, not deprecated standard image named
 // al2023-ami-2023.*-kernel-*-<arch> owned by Amazon, of any kernel line
 // (highest release, then latest creation time). note receives a line
 // about the fallback.
@@ -436,7 +468,18 @@ func (c *client) latestAL2023AMI(ctx context.Context, region, arch string, note 
 	region = c.regionOr(region)
 	out, err := c.ssmFor(region).GetParameter(ctx, &ssm.GetParameterInput{Name: awssdk.String(al2023Parameter(arch))})
 	if err == nil && out.Parameter != nil && strings.HasPrefix(awssdk.ToString(out.Parameter.Value), "ami-") {
-		return c.describeImage(ctx, region, awssdk.ToString(out.Parameter.Value))
+		id := awssdk.ToString(out.Parameter.Value)
+		img, derr := c.describeImage(ctx, region, id)
+		switch {
+		case derr == nil && img.pickable(arch):
+			return img, nil
+		case derr == nil:
+			err = fmt.Errorf("its image %s is not an available %s image", id, arch)
+		case errors.Is(derr, platform.ErrNotFound):
+			err = fmt.Errorf("its image %s does not exist", id)
+		default:
+			return imageInfo{}, derr
+		}
 	}
 	if err == nil {
 		err = errors.New("the parameter holds no image id")
@@ -453,6 +496,7 @@ func (c *client) latestAL2023AMI(ctx context.Context, region, arch string, note 
 			{Name: awssdk.String("virtualization-type"), Values: []string{"hvm"}},
 			{Name: awssdk.String("root-device-type"), Values: []string{"ebs"}},
 		},
+		IncludeDeprecated: awssdk.Bool(false),
 	})
 	var best *imageInfo
 	var bestRel, bestKernel string
@@ -464,7 +508,7 @@ func (c *client) latestAL2023AMI(ctx context.Context, region, arch string, note 
 		for _, im := range page.Images {
 			info := imageFrom(im)
 			m := al2023ImageName.FindStringSubmatch(info.Name)
-			if m == nil || m[3] != arch || info.Arch != "" && info.Arch != arch {
+			if m == nil || m[3] != arch || !info.pickable(arch) {
 				continue
 			}
 			if best == nil || newerAL2023(info, m[1], m[2], *best, bestRel, bestKernel) {

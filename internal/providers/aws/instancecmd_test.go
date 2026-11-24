@@ -228,6 +228,12 @@ func TestInstanceCreateAMIFallback(t *testing.T) {
 		img("ami-min", "al2023-ami-minimal-2023.9.20251120.0-kernel-6.18-x86_64", "x86_64", "2026-11-21T00:00:00.000Z"),
 		img("ami-arm", "al2023-ami-2023.9.20251120.0-kernel-6.18-arm64", "arm64", "2026-11-21T00:00:00.000Z"),
 	}
+	// Newer releases that are deprecated or not available are never picked.
+	depr := img("ami-depr", "al2023-ami-2023.10.20251201.0-kernel-6.18-x86_64", "x86_64", "2026-12-01T00:00:00.000Z")
+	depr.DeprecationTime = awssdk.String("2026-01-01T00:00:00.000Z")
+	pending := img("ami-pending", "al2023-ami-2023.10.20251202.0-kernel-6.18-x86_64", "x86_64", "2026-12-02T00:00:00.000Z")
+	pending.State = ec2types.ImageStatePending
+	h.ec2.inst.images["ap-east-1"] = append(h.ec2.inst.images["ap-east-1"], depr, pending)
 	h.ec2.inst.imagePage = 1
 	if err := h.run("ec2", "instance", "create", "x", "--type", "t3.nano"); err != nil {
 		t.Fatal(err)
@@ -252,6 +258,32 @@ func TestInstanceCreateAMIFallback(t *testing.T) {
 	}
 	if w := h.writes(); len(w) != 0 {
 		t.Errorf("dry run wrote: %v", w)
+	}
+}
+
+// An SSM parameter whose image is deprecated or not available is passed
+// over for the newest available image, with a note; an --ami that is
+// deprecated is still the user's choice.
+func TestInstanceCreateAMIParameterNotPickable(t *testing.T) {
+	h := newInstanceHarness(t, app.Flags{DryRun: true})
+	h.ec2.inst.init()
+	imgs := h.ec2.inst.images["ap-east-1"]
+	imgs[0].DeprecationTime = awssdk.String("2026-01-01T00:00:00.000Z")
+	good := ec2types.Image{ImageId: awssdk.String("ami-0x86b"), Name: awssdk.String("al2023-ami-2023.9.20251020.0-kernel-6.12-x86_64"),
+		Architecture: "x86_64", State: ec2types.ImageStateAvailable, CreationDate: awssdk.String("2026-10-20T00:00:00.000Z")}
+	h.ec2.inst.images["ap-east-1"] = append(imgs, good)
+	if err := h.run("ec2", "instance", "create", "x", "--type", "t3.nano"); err != nil {
+		t.Fatal(err)
+	}
+	if rep := createReport(h); !strings.Contains(rep.Changes[0].Detail, "ami=ami-0x86b") || !strings.Contains(h.stderr.String(), "not an available x86_64 image") {
+		t.Errorf("deprecated parameter image = %+v / %s", rep, h.stderr.String())
+	}
+	h.stdout.Reset()
+	if err := h.run("ec2", "instance", "create", "x", "--type", "t3.nano", "--ami", "ami-0x86"); err != nil {
+		t.Fatal(err)
+	}
+	if rep := createReport(h); !strings.Contains(rep.Changes[0].Detail, "ami=ami-0x86") {
+		t.Errorf("explicit deprecated --ami = %+v", rep)
 	}
 }
 

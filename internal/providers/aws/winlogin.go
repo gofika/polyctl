@@ -59,20 +59,27 @@ var windowsImageName = regexp.MustCompile(`^Windows_Server-(\d{4})-English-Full-
 // latestWindowsAMI returns the image of the newest Windows Server English
 // Full Base: the public SSM parameters under windowsParamPath first, the
 // highest year among them (so a new Windows Server release is used as soon
-// as AWS publishes its parameter); when they cannot be read (no
-// ssm:GetParametersByPath permission, ...), the newest image owned by
-// Amazon named Windows_Server-<year>-English-Full-Base-<date> (highest
+// as AWS publishes its parameter), when its image is available, not
+// deprecated and x86_64; when they cannot be read (no
+// ssm:GetParametersByPath permission, ...) or that image is not, the
+// newest available, not deprecated x86_64 image owned by Amazon named Windows_Server-<year>-English-Full-Base-<date> (highest
 // year, then latest date). note receives a line about the fallback.
 func (c *client) latestWindowsAMI(ctx context.Context, region string, note func(string)) (imageInfo, error) {
 	region = c.regionOr(region)
 	best, _, err := c.windowsParameter(ctx, region)
 	if err == nil && best != "" {
-		img, err := c.describeImage(ctx, region, best)
-		if err != nil {
-			return imageInfo{}, err
+		img, derr := c.describeImage(ctx, region, best)
+		switch {
+		case derr == nil && img.pickable(archX8664):
+			img.Windows = true
+			return img, nil
+		case derr == nil:
+			err = fmt.Errorf("its image %s is not an available x86_64 image", best)
+		case errors.Is(derr, platform.ErrNotFound):
+			err = fmt.Errorf("its image %s does not exist", best)
+		default:
+			return imageInfo{}, derr
 		}
-		img.Windows = true
-		return img, nil
 	}
 	if err == nil {
 		err = errors.New("no Windows_Server-<year>-English-Full-Base parameter")
@@ -88,6 +95,7 @@ func (c *client) latestWindowsAMI(ctx context.Context, region string, note func(
 			{Name: awssdk.String("state"), Values: []string{"available"}},
 			{Name: awssdk.String("architecture"), Values: []string{"x86_64"}},
 		},
+		IncludeDeprecated: awssdk.Bool(false),
 	})
 	var pick *imageInfo
 	var pickYear, pickDate string
@@ -99,7 +107,7 @@ func (c *client) latestWindowsAMI(ctx context.Context, region string, note func(
 		for _, im := range page.Images {
 			info := imageFrom(im)
 			m := windowsImageName.FindStringSubmatch(info.Name)
-			if m == nil || info.Arch != "" && info.Arch != "x86_64" {
+			if m == nil || !info.pickable(archX8664) {
 				continue
 			}
 			if pick == nil || m[1] > pickYear || m[1] == pickYear && (m[2] > pickDate || m[2] == pickDate && info.Created > pick.Created) {
