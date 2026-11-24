@@ -163,3 +163,37 @@ func TestSettings(t *testing.T) {
 		t.Errorf("explicit name = %q", n)
 	}
 }
+
+// --offline never touches the network: no webhook, no shell hook (which
+// could), also for the failure --offline itself causes.
+func TestNotifyFailureOffline(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true }))
+	defer srv.Close()
+	rt, errb := hookRuntime(t, srv.URL)
+	rt.Flags.Offline = true
+	rt.NotifyFailure(context.Background(), Failure{Event: "cert.ensure.failed", Error: ErrOffline.Error()})
+	if called {
+		t.Error("the webhook was called with --offline")
+	}
+	out := filepath.Join(t.TempDir(), "hook.out")
+	rt, _ = hookRuntime(t, "echo ran > "+out)
+	rt.Flags.Offline = true
+	rt.NotifyFailure(context.Background(), Failure{Event: "x.failed", Error: "e"})
+	if _, err := os.Stat(out); err == nil {
+		t.Error("the shell hook ran with --offline")
+	}
+	if errb.Len() != 0 {
+		t.Errorf("stderr = %q", errb.String())
+	}
+}
+
+// On Windows the hook reaches cmd.exe as written: quotes around a path with
+// spaces are kept, not escaped as \" (which cmd does not understand).
+func TestShellCmdLineKeepsQuotes(t *testing.T) {
+	hook := `"C:\Program Files\notify\notify.exe" --channel ops`
+	want := `cmd /S /C ""C:\Program Files\notify\notify.exe" --channel ops"`
+	if got := shellCmdLine(hook); got != want {
+		t.Errorf("shellCmdLine = %s, want %s", got, want)
+	}
+}

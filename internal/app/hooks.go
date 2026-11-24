@@ -10,8 +10,6 @@ import (
 	"net/http"
 	neturl "net/url"
 	"os"
-	"os/exec"
-	"runtime"
 	"strings"
 	"time"
 
@@ -44,13 +42,15 @@ var hookHTTPClient = &http.Client{}
 // NotifyFailure calls hooks.on_failure, when it is set, with f. It is best
 // effort: a hook that fails or runs out of time is reported on stderr as a
 // warning and changes nothing else (the exit code stays the command's). A
-// dry run notifies nobody. The hook is a webhook when it starts with
+// dry run and an --offline run notify nobody: --offline never touches the
+// network, which a webhook (or a shell command) would, and a run stopped by
+// it (ErrOffline) did what the user asked. The hook is a webhook when it starts with
 // http:// or https:// (POST, JSON body), otherwise a shell command (sh -c,
-// cmd /C on Windows) that gets the event as JSON on stdin and in the
+// cmd /S /C on Windows, the command passed as written) that gets the event as JSON on stdin and in the
 // POLYCTL_EVENT, POLYCTL_PLATFORM, POLYCTL_PROFILE, POLYCTL_DEPLOYER,
 // POLYCTL_TARGET, POLYCTL_DOMAIN and POLYCTL_ERROR variables.
 func (rt *Runtime) NotifyFailure(ctx context.Context, f Failure) {
-	if rt.Flags.DryRun {
+	if rt.Flags.DryRun || rt.Flags.Offline {
 		return
 	}
 	cfg, err := rt.Config()
@@ -110,12 +110,7 @@ func postHook(ctx context.Context, url string, body []byte) error {
 }
 
 func runHook(ctx context.Context, command string, f Failure, body []byte, stderr io.Writer) error {
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, "cmd", "/C", command)
-	} else {
-		cmd = exec.CommandContext(ctx, "/bin/sh", "-c", command)
-	}
+	cmd := shellCommand(ctx, command)
 	cmd.Env = append(os.Environ(),
 		"POLYCTL_EVENT="+f.Event,
 		"POLYCTL_PLATFORM="+f.Platform,
