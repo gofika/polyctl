@@ -673,11 +673,18 @@ IP.`
 		Use:   verb + " <name|id>",
 		Short: title + " a Compute Engine instance",
 		Long:  long,
-		Args:  cobra.ExactArgs(1),
+		Args:  app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			wait, timeout, err := wf.Resolve(cmd)
 			if err != nil {
+				return err
+			}
+			what, keep := "stopped GCP instance", stoppedInstance
+			if verb == "stop" {
+				what, keep = "running GCP instance", statusIn(statusRunning)
+			}
+			if args, err = instanceArg(ctx, rt, args, zone, what, keep); err != nil {
 				return err
 			}
 			// The non-interactive flow without --yes is refused before any

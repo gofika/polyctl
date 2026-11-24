@@ -512,8 +512,8 @@ Deleting the instance with polyctl removes its stored credentials.`,
 		zone, _ := cmd.Flags().GetString("zone")
 		if len(args) == 0 {
 			// The interactive flow: --reset also works for an instance
-			// with nothing stored, so every instance is offered.
-			ref, err := rt.PickResource(cmd.Context(), app.ResourcePick{Platform: platform.GCP, Kind: platform.ResInstance, Title: "Instance", Arg: "<name|id>"})
+			// with nothing stored, so every running instance is offered.
+			ref, err := pickInstanceRef(cmd.Context(), rt, "<name|id>", zone, "running GCP instance", false, statusIn(statusRunning))
 			if err != nil {
 				return err
 			}

@@ -20,7 +20,6 @@ import (
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/output"
 	"github.com/gofika/polyctl/internal/platform"
-	"github.com/gofika/polyctl/internal/prompt"
 	"github.com/gofika/polyctl/internal/secrets"
 )
 
@@ -256,8 +255,8 @@ func resolveInstance(ctx context.Context, rt *app.Runtime, ref, zone string, all
 }
 
 // chooseHit settles several matches: the interactive flow asks which one
-// for an IP (several projects can share an internal range); otherwise the
-// matches are ambiguous.
+// (a name held in several zones or accounts, an IP that several projects
+// share); otherwise the matches are ambiguous (exit code 5).
 func chooseHit(rt *app.Runtime, what, ref string, hits []instanceHit) (instanceHit, error) {
 	sort.Slice(hits, func(i, j int) bool {
 		if hits[i].profile != hits[j].profile {
@@ -271,26 +270,12 @@ func chooseHit(rt *app.Runtime, what, ref string, hits []instanceHit) (instanceH
 		names = append(names, fmt.Sprintf("gcp/%s/%s/%s (%s, %s)", h.profile, h.inst.Zone, h.inst.Name, h.inst.ID, h.inst.Status))
 		profiles[h.profile] = true
 	}
-	if strings.HasSuffix(what, "IP") && rt.Interactive() {
-		opts := make([]prompt.Option, 0, len(hits))
-		for i, n := range names {
-			opts = append(opts, prompt.Option{Label: n, Value: strconv.Itoa(i)})
-		}
-		v, err := rt.Pick().Select(fmt.Sprintf("Several instances have IP %s; which one?", ref), opts, "")
-		if errors.Is(err, prompt.ErrAborted) {
-			return instanceHit{}, fmt.Errorf("%w: cancelled", platform.ErrNothingToDo)
-		}
-		if err != nil {
-			return instanceHit{}, err
-		}
-		i, _ := strconv.Atoi(v)
-		return hits[i], nil
-	}
 	hint := "pass --profile <name> or --zone <zone> to choose"
 	if len(profiles) == 1 {
 		hint = "pass --zone <zone>, or the instance id, to choose"
 	}
-	return instanceHit{}, &app.AmbiguousError{What: fmt.Sprintf("%s %q", what, ref), Candidates: names, Hint: hint}
+	amb := &app.AmbiguousError{What: fmt.Sprintf("%s %q", what, ref), Candidates: names, Hint: hint}
+	return disambiguate(rt, amb, hits, func(h instanceHit) string { return instanceOptionLabel(h.inst, h.profile) })
 }
 
 // storeInstance writes an instance to the inventory.
@@ -488,11 +473,15 @@ IP is exit code 1 with --field external-ip, with the reason on stderr and
 nothing on stdout.`,
 		Example: `  polyctl gcp compute instance get web-1
   polyctl gcp compute instance get web-1 --field external-ip`,
-		Args: cobra.ExactArgs(1),
+		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			if field != "" && !slices.Contains(getFields, field) {
 				return app.UsageErrf("unknown --field %q (one of %s)", field, strings.Join(getFields, ", "))
+			}
+			args, err := instanceArg(ctx, rt, args, zone, "GCP instance", nil)
+			if err != nil {
+				return err
 			}
 			l, err := resolveInstance(ctx, rt, args[0], zone, false)
 			if err != nil {
@@ -1237,11 +1226,14 @@ address another resource uses is skipped); it implies --wait. --wait waits
 until the instance is deleted (--timeout, 10m). Once the deletion is
 requested, the Windows login polyctl stored for the instance is removed.`,
 		Example: "  polyctl gcp compute instance delete tmp-1 --release-ips --yes",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			wait, timeout, err := wf.Resolve(cmd)
 			if err != nil {
+				return err
+			}
+			if args, err = instanceArg(ctx, rt, args, zone, "GCP instance", nil); err != nil {
 				return err
 			}
 			l, err := resolveInstance(ctx, rt, args[0], zone, false)
@@ -1359,11 +1351,14 @@ skips it, and the non-interactive flow needs --yes). --wait waits for the
 reset to complete (--timeout, 3m).`,
 		Example: `  polyctl gcp compute instance reboot web-1
   polyctl gcp compute instance reboot 203.0.113.10 --yes`,
-		Args: cobra.ExactArgs(1),
+		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			wait, timeout, err := wf.Resolve(cmd)
 			if err != nil {
+				return err
+			}
+			if args, err = instanceArg(ctx, rt, args, zone, "running GCP instance", statusIn(statusRunning)); err != nil {
 				return err
 			}
 			l, err := resolveInstance(ctx, rt, args[0], zone, true)
@@ -1424,17 +1419,31 @@ recreating it. --ip-forward[=false] switches IP forwarding (CanIpForward) on
 or off, running or stopped: the instance is sent back whole with that field
 changed, allowing at most a refresh (never a restart). A value that is
 already set is unchanged. Without any setting to change it is a usage
-error.`,
+error; on a terminal, IP forwarding on or off is asked instead (the current
+value marked).`,
 		Example: "  polyctl gcp compute instance update web-1 --ip-forward",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			if !cmd.Flags().Changed("ip-forward") {
+			askForward := !cmd.Flags().Changed("ip-forward")
+			if askForward && !rt.Interactive() {
 				return app.UsageErrf("nothing to update: pass --ip-forward or --ip-forward=false")
+			}
+			args, err := instanceArg(ctx, rt, args, zone, "GCP instance", nil)
+			if err != nil {
+				return err
 			}
 			l, err := resolveInstance(ctx, rt, args[0], zone, false)
 			if err != nil {
 				return err
+			}
+			if askForward {
+				cur := l.inst.CanIpForward
+				v, err := rt.PickOnOff("IP forwarding of "+l.name(), &cur)
+				if err != nil {
+					return err
+				}
+				ipForward = v == "on"
 			}
 			res := l.resource() + "/ip-forward"
 			cur := l.inst.CanIpForward

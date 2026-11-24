@@ -53,6 +53,11 @@ type fakeCompute struct {
 	// machineArch is the Architecture the fake reports for a machine type
 	// name (none by default, as the API leaves it out for some types).
 	machineArch map[string]string
+	// machineDeprecated is the Deprecated state of a machine type name.
+	machineDeprecated map[string]string
+	// zones and regions are listed by Zones.List and Regions.List.
+	zones   []*compute.Zone
+	regions []*compute.Region
 	networks    map[string]*compute.Network // project/name
 	subnets     map[string][]*compute.Subnetwork
 	projectMeta map[string]*compute.Metadata
@@ -90,7 +95,7 @@ type fakeCompute struct {
 func newFakeCompute(t *testing.T) *fakeCompute {
 	f := &fakeCompute{t: t,
 		instances: map[string]*compute.Instance{}, addresses: map[string]*compute.Address{}, disks: map[string]*compute.Disk{},
-		images: map[string][]*compute.Image{}, machineTypes: map[string]bool{}, machineArch: map[string]string{}, networks: map[string]*compute.Network{},
+		images: map[string][]*compute.Image{}, machineTypes: map[string]bool{}, machineArch: map[string]string{}, machineDeprecated: map[string]string{}, networks: map[string]*compute.Network{},
 		subnets: map[string][]*compute.Subnetwork{}, projectMeta: map[string]*compute.Metadata{}, ops: map[string]*compute.Operation{},
 		firewalls: map[string]*compute.Firewall{}, busy: map[string]string{},
 		fail: map[string]fakeErr{}, opFail: map[string]compute.OperationErrorErrors{}, stuck: map[string]string{},
@@ -105,6 +110,18 @@ func newFakeCompute(t *testing.T) *fakeCompute {
 		for _, p := range e2Presets {
 			f.machineTypes[z+"/"+p.Name] = true
 		}
+	}
+	f.zones = []*compute.Zone{
+		{Name: "europe-west1-b", Region: apiBase + "projects/proj/regions/europe-west1", Status: "UP"},
+		{Name: "us-central1-a", Region: apiBase + "projects/proj/regions/us-central1", Status: "UP"},
+		{Name: "us-central1-b", Region: apiBase + "projects/proj/regions/us-central1", Status: "UP"},
+		{Name: "us-central1-f", Region: apiBase + "projects/proj/regions/us-central1", Status: "DOWN"},
+		{Name: "us-east2-a", Region: apiBase + "projects/proj/regions/us-east2", Status: "UP", Deprecated: &compute.DeprecationStatus{State: "DEPRECATED"}},
+	}
+	f.regions = []*compute.Region{
+		{Name: "europe-west1", Status: "UP"},
+		{Name: "us-central1", Status: "UP"},
+		{Name: "us-east2", Status: "UP", Deprecated: &compute.DeprecationStatus{State: "DEPRECATED"}},
 	}
 	f.networks["proj/default"] = &compute.Network{Name: "default", AutoCreateSubnetworks: true}
 	f.subnets["proj/us-central1"] = []*compute.Subnetwork{{Name: "default", Network: apiBase + "projects/proj/global/networks/default", IpCidrRange: "10.128.0.0/20"}}
@@ -397,6 +414,29 @@ func (f *fakeCompute) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		op.Status = "DONE"
 		writeJSONStatus(w, 200, op)
+	case len(rest) == 1 && rest[0] == "zones":
+		writeJSONStatus(w, 200, &compute.ZoneList{Items: f.zones})
+	case len(rest) == 1 && rest[0] == "regions":
+		writeJSONStatus(w, 200, &compute.RegionList{Items: f.regions})
+	case len(rest) == 3 && rest[0] == "zones" && rest[2] == "machineTypes":
+		var names []string
+		for k := range f.machineTypes {
+			if z, n, ok := strings.Cut(k, "/"); ok && z == rest[1] {
+				names = append(names, n)
+			}
+		}
+		sort.Strings(names)
+		var items []*compute.MachineType
+		for _, n := range names {
+			cores, mem := fakeMachineShape(n)
+			mt := &compute.MachineType{Name: n, GuestCpus: int64(cores), MemoryMb: int64(mem), Architecture: f.machineArch[n],
+				IsSharedCpu: n == "e2-micro" || n == "e2-small" || n == "e2-medium"}
+			if st := f.machineDeprecated[n]; st != "" {
+				mt.Deprecated = &compute.DeprecationStatus{State: st}
+			}
+			items = append(items, mt)
+		}
+		writeJSONStatus(w, 200, &compute.MachineTypeList{Items: items})
 	case len(rest) == 4 && rest[0] == "zones" && rest[2] == "machineTypes":
 		if f.machineTypes[rest[1]+"/"+rest[3]] {
 			cores, mem := fakeMachineShape(rest[3])

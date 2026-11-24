@@ -81,16 +81,20 @@ too, never remembered), as create resolves it: an instance whose machine
 type already has that shape is unchanged; otherwise the predefined E2 type
 of exactly that shape, else an E2 custom type. The choice is printed on
 stderr and shown in the change report; no fit is exit code 4, a size of
-0 vCPUs or 0 GiB exit code 2.`,
+0 vCPUs or 0 GiB exit code 2.
+
+On a terminal, a missing instance is picked from the inventory and a
+missing --machine-type from the machine types of the instance's zone
+(x86_64, current families, not deprecated, the E2 presets first), or as a
+size <cores>H<memory>G.`,
 		Example: "  polyctl gcp compute instance resize web-1 --machine-type e2-standard-8 --yes",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			if typ == "" {
+			if typ == "" && !rt.Interactive() {
 				return app.UsageErrf("--machine-type is required")
 			}
-			size, isSize, err := platform.ParseTypeShorthand(typ)
-			if err != nil {
+			if _, _, err := platform.ParseTypeShorthand(typ); err != nil {
 				return err
 			}
 			if timeout <= 0 {
@@ -102,7 +106,25 @@ stderr and shown in the change report; no fit is exit code 4, a size of
 			if waitSSHFlag && port == 0 {
 				port = 22 // --wait-ssh is the old name of --wait-port 22
 			}
+			args, err := instanceArg(ctx, rt, args, zone, "GCP instance", nil)
+			if err != nil {
+				return err
+			}
 			l, err := resolveInstance(ctx, rt, args[0], zone, false)
+			if err != nil {
+				return err
+			}
+			if typ == "" {
+				cur := lastSegment(l.inst.MachineType)
+				mt, err := l.c.machineType(ctx, l.zone, cur)
+				if err != nil && !errors.Is(err, platform.ErrInvalidInput) {
+					return err
+				}
+				if typ, err = pickMachineType(ctx, rt, l.c, l.zone, cur, "", machineArch(mt) == archX86); err != nil {
+					return err
+				}
+			}
+			size, isSize, err := platform.ParseTypeShorthand(typ)
 			if err != nil {
 				return err
 			}
