@@ -194,3 +194,41 @@ func TestALBLoadBalancerArgPick(t *testing.T) {
 		t.Errorf("non-interactive delete without <name|id> = %v", err)
 	}
 }
+
+// server-group update without <name|id> or a change flag picks the group
+// and asks what to change; the non-interactive flow still needs both.
+func TestALBServerGroupUpdatePicks(t *testing.T) {
+	t.Setenv(app.EnvNonInteractive, "")
+	h, _, alb, _, _ := albHarness(t, app.Flags{DryRun: true})
+	alb.addGroup("sgp-1", "web", "HTTP", "vpc-site")
+	p := prompttest.New(t, "sgp-1", "health-check", "on", "healthz", "/healthz")
+	h.rt.Picker = p
+	if err := h.run("alb", "server-group", "update"); err != nil {
+		t.Fatalf("update: %v\n%s", err, h.stderr.String())
+	}
+	p.Done()
+	if out := h.stdout.String(); !strings.Contains(out, `health check false -\u003e true`) || !strings.Contains(out, "health check path /healthz") {
+		t.Errorf("stdout = %s", out)
+	}
+	p = prompttest.New(t, "sgp-1", "name", "sgp-x", "web", "api")
+	h.rt.Picker = p
+	if err := h.run("alb", "server-group", "update"); err != nil {
+		t.Fatalf("rename: %v\n%s", err, h.stderr.String())
+	}
+	p.Done()
+	if out := h.stdout.String(); !strings.Contains(out, `name web -\u003e api`) {
+		t.Errorf("stdout = %s", out)
+	}
+	h.rt.Picker = prompttest.New(t, "sgp-1", prompttest.Abort{})
+	if err := h.run("alb", "server-group", "update"); !errors.Is(err, prompt.ErrAborted) {
+		t.Errorf("abort = %v", err)
+	}
+	h.rt.Picker = nil
+	h.rt.Flags.NonInteractive = true
+	if err := h.run("alb", "server-group", "update", "web"); !errors.Is(err, app.ErrUsage) {
+		t.Errorf("non-interactive update without a change = %v", err)
+	}
+	if len(h.api.callsFor("UpdateServerGroupAttribute")) != 0 {
+		t.Error("a dry run or a cancelled update wrote")
+	}
+}

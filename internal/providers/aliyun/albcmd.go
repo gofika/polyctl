@@ -1715,13 +1715,24 @@ Wlc or Sch), --health-check[=false] switches the health check on or off,
 switched on by --health-check; an HTTP or HTTPS check), and
 --sticky-session[=false] switches session persistence on (the load balancer
 inserts the cookie) or off. Nothing else is changed. After a change the
-command waits up to a minute for the group to be Available again.`,
+command waits up to a minute for the group to be Available again. On a
+terminal a missing <name|id> is picked from the server groups of the
+region, and without any of these flags what to change is asked (the
+name, the scheduler, the health check with its path, or session
+persistence, each with its current value).`,
 		Example: "  polyctl aliyun alb server-group update site-a-http --health-check --health-check-path /healthz\n  polyctl aliyun alb server-group update sgp-0123456789 --scheduler Wlc --sticky-session=false",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			fl := cmd.Flags()
-			if !fl.Changed("name") && !fl.Changed("scheduler") && !fl.Changed("health-check") && !fl.Changed("health-check-path") && !fl.Changed("sticky-session") {
+			// changed is what the flags name; the interactive flow adds the
+			// change it asks for when they name none.
+			changed := map[string]bool{}
+			for _, f := range []string{"name", "scheduler", "health-check", "health-check-path", "sticky-session"} {
+				changed[f] = fl.Changed(f)
+			}
+			none := !changed["name"] && !changed["scheduler"] && !changed["health-check"] && !changed["health-check-path"] && !changed["sticky-session"]
+			if none && !rt.Interactive() {
 				return app.UsageErrf("nothing to update: pass --name, --scheduler, --health-check, --health-check-path or --sticky-session")
 			}
 			if fl.Changed("name") && (strings.TrimSpace(name) == "" || looksLikeServerGroupID(name)) {
@@ -1745,13 +1756,21 @@ command waits up to a minute for the group to be Available again.`,
 			if err != nil {
 				return err
 			}
+			if args, err = serverGroupArg(ctx, rt, sc, args, "<name|id>"); err != nil {
+				return err
+			}
 			g, err := resolveServerGroup(ctx, sc, args[0])
 			if err != nil {
 				return err
 			}
+			if none {
+				if err := askServerGroupChange(rt, g, changed, &name, &scheduler, &healthCheck, &path, &sticky); err != nil {
+					return err
+				}
+			}
 			var u albServerGroupUpdate
 			var changes []string
-			if fl.Changed("name") && name != g.Name {
+			if changed["name"] && name != g.Name {
 				found, err := sc.a.listServerGroups(ctx, []string{name}, nil)
 				if err != nil {
 					return err
@@ -1764,15 +1783,15 @@ command waits up to a minute for the group to be Available again.`,
 				u.Name = name
 				changes = append(changes, fmt.Sprintf("name %s -> %s", orDash(g.Name), name))
 			}
-			if fl.Changed("scheduler") && scheduler != g.Scheduler {
+			if changed["scheduler"] && scheduler != g.Scheduler {
 				u.Scheduler = scheduler
 				changes = append(changes, fmt.Sprintf("scheduler %s -> %s", orDash(g.Scheduler), scheduler))
 			}
 			hcOn := g.HealthCheck
-			if fl.Changed("health-check") {
+			if changed["health-check"] {
 				hcOn = healthCheck
 			}
-			if fl.Changed("health-check-path") {
+			if changed["health-check-path"] {
 				if !hcOn {
 					return app.UsageErrf("server group %s has the health check off: pass --health-check with --health-check-path", g.ID)
 				}
@@ -1780,11 +1799,11 @@ command waits up to a minute for the group to be Available again.`,
 					return app.UsageErrf("server group %s has a %s health check, which has no path", g.ID, g.HealthCheckProtocol)
 				}
 			}
-			if fl.Changed("health-check") && healthCheck != g.HealthCheck {
+			if changed["health-check"] && healthCheck != g.HealthCheck {
 				changes = append(changes, fmt.Sprintf("health check %t -> %t", g.HealthCheck, healthCheck))
 				u.HealthCheck = &hcOn
 			}
-			if fl.Changed("health-check-path") && (!g.HealthCheck || path != g.HealthCheckPath) {
+			if changed["health-check-path"] && (!g.HealthCheck || path != g.HealthCheckPath) {
 				if g.HealthCheck {
 					changes = append(changes, fmt.Sprintf("health check path %s -> %s", orDash(g.HealthCheckPath), path))
 				} else {
@@ -1792,7 +1811,7 @@ command waits up to a minute for the group to be Available again.`,
 				}
 				u.HealthCheck, u.HealthCheckPath = &hcOn, path
 			}
-			if fl.Changed("sticky-session") && sticky != g.StickySession {
+			if changed["sticky-session"] && sticky != g.StickySession {
 				v := sticky
 				u.StickySession = &v
 				changes = append(changes, fmt.Sprintf("sticky session %t -> %t", g.StickySession, sticky))
@@ -1823,6 +1842,93 @@ command waits up to a minute for the group to be Available again.`,
 	cmd.Flags().BoolVar(&sticky, "sticky-session", false, "turn session persistence on, with a cookie the load balancer inserts (--sticky-session=false turns it off)")
 	cmd.Flags().StringVar(&region, "region", "", "region id (default: the profile's region)")
 	return cmd
+}
+
+// askServerGroupChange asks what server-group update changes when no flag
+// names a change (the interactive flow): the name (checked as typed), the
+// scheduler, the health check (on with its path, or off) or session
+// persistence, each with its current value. The answer is recorded as the
+// matching flag would be.
+func askServerGroupChange(rt *app.Runtime, g *albServerGroup, changed map[string]bool, name, scheduler *string, healthCheck *bool, path *string, sticky *bool) error {
+	onOff := func(b bool) string {
+		if b {
+			return "on"
+		}
+		return "off"
+	}
+	hc := onOff(g.HealthCheck)
+	if g.HealthCheck && g.HealthCheckPath != "" {
+		hc += ", " + g.HealthCheckPath
+	}
+	what, err := rt.Choose(app.Choice{Title: "Change what of server group " + orID(g.Name, g.ID) + "?", Arg: "--name, --scheduler, --health-check, --health-check-path or --sticky-session",
+		Options: []prompt.Option{
+			{Label: "Name (now " + orDash(g.Name) + ")", Value: "name"},
+			{Label: "Scheduler (now " + orDash(g.Scheduler) + ")", Value: "scheduler"},
+			{Label: "Health check (now " + hc + ")", Value: "health-check"},
+			{Label: "Session persistence (now " + onOff(g.StickySession) + ")", Value: "sticky-session"},
+		}})
+	if err != nil {
+		return err
+	}
+	switch what {
+	case "name":
+		v, err := rt.AskInput("--name", "New name of server group "+orID(g.Name, g.ID), "", func(v string) error {
+			v = strings.TrimSpace(v)
+			switch {
+			case v == "":
+				return errors.New("the name is required")
+			case looksLikeServerGroupID(v):
+				return errors.New("a name starting with sgp- reads as an id")
+			case v == g.Name:
+				return errors.New("that is the current name")
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		*name = v
+	case "scheduler":
+		var opts []prompt.Option
+		for _, s := range albSchedulers {
+			opts = append(opts, prompt.Option{Label: s, Value: s})
+		}
+		v, err := rt.Choose(app.Choice{Title: "Scheduler", Options: opts, Default: g.Scheduler, Arg: "--scheduler"})
+		if err != nil {
+			return err
+		}
+		*scheduler = v
+	case "health-check":
+		v, err := rt.Choose(app.Choice{Title: "Health check", Options: []prompt.Option{{Label: "On", Value: "on"}, {Label: "Off", Value: "off"}},
+			Default: onOff(!g.HealthCheck), Arg: "--health-check"})
+		if err != nil {
+			return err
+		}
+		*healthCheck = v == "on"
+		if *healthCheck && (g.HealthCheckProtocol == "" || strings.EqualFold(g.HealthCheckProtocol, "HTTP") || strings.EqualFold(g.HealthCheckProtocol, "HTTPS")) {
+			def := g.HealthCheckPath
+			if def == "" {
+				def = "/"
+			}
+			p, err := rt.AskInput("--health-check-path", "Path of the health check", def, func(v string) error {
+				return inline(checkHealthCheckPath(strings.TrimSpace(v)))
+			})
+			if err != nil {
+				return err
+			}
+			*path = p
+			changed["health-check-path"] = true
+		}
+	case "sticky-session":
+		v, err := rt.Choose(app.Choice{Title: "Session persistence", Options: []prompt.Option{{Label: "On (the load balancer inserts a cookie)", Value: "on"}, {Label: "Off", Value: "off"}},
+			Default: onOff(!g.StickySession), Arg: "--sticky-session"})
+		if err != nil {
+			return err
+		}
+		*sticky = v == "on"
+	}
+	changed[what] = true
+	return nil
 }
 
 func albSGDeleteCmd(rt *app.Runtime) *cobra.Command {
