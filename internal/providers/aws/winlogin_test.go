@@ -328,6 +328,41 @@ func TestWindowsPasswordLater(t *testing.T) {
 	}
 }
 
+// Credentials detached by a logout before the password was generated are
+// fetched with the account now logged in under the profile, by instance id,
+// with a warning; they stay detached.
+func TestWindowsPasswordLaterDetached(t *testing.T) {
+	h := winHarness(t, app.Flags{})
+	h.ec2.inst.pwDelay = 1000
+	if err := h.run(append(winCreate, "--password-timeout", "1m")...); err != nil {
+		t.Fatalf("%v\n%s", err, h.stderr.String())
+	}
+	id := storedWin(t, h, "win-a")[0].InstanceID
+	db, err := h.rt.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.DetachSecrets(context.Background(), platform.AWS, "lab"); err != nil {
+		t.Fatal(err)
+	}
+	h.ec2.inst.pwDelay = 0
+	if err := h.run("ec2", "instance", "password", id); err != nil {
+		t.Fatalf("%v\n%s", err, h.stderr.String())
+	}
+	var login map[string]any
+	h.jsonOut(&login)
+	if login["password"] != winPassword {
+		t.Errorf("login = %v", login)
+	}
+	if !strings.Contains(h.stderr.String(), "logged out of profile lab") {
+		t.Errorf("no detached warning: %s", h.stderr.String())
+	}
+	got := storedWin(t, h, id)
+	if len(got) != 1 || !got[0].Detached || got[0].Password != winPassword {
+		t.Errorf("stored after retrieve = %+v", got)
+	}
+}
+
 // --no-wait waits for neither the instance nor the password.
 func TestWindowsCreateNoWait(t *testing.T) {
 	h := winHarness(t, app.Flags{})

@@ -524,8 +524,10 @@ func retrieveWindowsLogin(ctx context.Context, rt *app.Runtime, profile, locatio
 			return nil, fmt.Errorf("%w: the Windows password of instance %s is not stored and polyctl holds no private key to decrypt it (the key pair is yours): pass --key-file <the RSA private key of its key pair>",
 				platform.ErrNotFound, label)
 		}
+		// The profile asked for, not the stored row's: the row of an
+		// account that was logged out names a detached profile.
 		var err error
-		if c, err = openProfile(ctx, rt, cred.Profile); err != nil {
+		if c, err = openProfile(ctx, rt, profile); err != nil {
 			return nil, err
 		}
 	}
