@@ -290,7 +290,7 @@ Always read live, except `load-balancer list` (inventory, every region). A liste
 
 **Listeners**
 
-- Certificate ids: in `cn-hongkong` listeners need `<id>-ap-southeast-1`; elsewhere the bare id. `--cert` takes either form. `defaults.aliyun.cas_region` overrides the store.
+- Certificate ids: in `cn-hongkong` listeners need `<id>-ap-southeast-1`; elsewhere polyctl uses the bare id. `--cert` takes either form. `defaults.aliyun.cas_region` overrides the store. Only the `cn-hongkong` rule is verified: in another region outside the Chinese mainland (such as `ap-southeast-1` or `us-east-1`), if a listener reports the certificate not found or refuses it, set `defaults.aliyun.cas_region` to `ap-southeast-1`.
 - `list --lb` (required) shows `ID`, `PROTOCOL`, `PORT`, `STATUS`, `SERVER_GROUPS`; `get` adds certificates.
 - `create` needs `--lb`, `--listener` and `--server-group`; HTTPS needs `--cert`. A port already in use is exit code 1.
 - `update` changes `--server-group` and/or `--cert`. `cert set` sets the default certificate of an HTTPS listener. `delete` asks first.
@@ -308,7 +308,7 @@ Always read live, except `load-balancer list` (inventory, every region). A liste
 
 ## Certificates (CAS)
 
-An account has two separate certificate stores. polyctl uses the Singapore store (`cas.ap-southeast-1.aliyuncs.com`) for a `cn-hongkong` profile and the central store otherwise; override with `defaults.aliyun.cas_region` / `defaults.aliyun.cas_endpoint`. An endpoint that refuses every call is exit code 7. Only uploaded certificates are handled.
+An account has two separate certificate stores. polyctl uses the Singapore store (`cas.ap-southeast-1.aliyuncs.com`) for a `cn-hongkong` profile and the central store otherwise; override with `defaults.aliyun.cas_region` / `defaults.aliyun.cas_endpoint`. The Singapore store is verified for `cn-hongkong` only; Alibaba Cloud documents it as the store of certificates outside the Chinese mainland, so a profile of another region outside the mainland whose listeners cannot find its certificates should set `defaults.aliyun.cas_region: ap-southeast-1`. An endpoint that refuses every call is exit code 7. Only uploaded certificates are handled.
 
 - `list` shows `ID`, `NAME`, `COMMON_NAME`, `START`, `END`, `DAYS` (UTC). `--expired`, `--expires-within <days>` (includes expired) and `--name` filter. JSON: `{"id", "name", "common_name", "start_date", "end_date", "days_to_expire", "expired", "fingerprint_sha1", "sans"}`.
 - `upload <name> --cert <fullchain.pem> --key <privkey.pem>` (`-` reads stdin). An encrypted or mismatched key, or an expired certificate, is exit code 2. A certificate of the same name is reused as it is (`unchanged`). Name certificates `upload_<root domain>_<YYYY-MM-DD of expiry>` so a renewal is a new upload.

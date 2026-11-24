@@ -50,7 +50,10 @@ var casNow = time.Now
 // region: ap-southeast-1 for cn-hongkong (whose certificates live in the
 // Singapore store), "" (the central store, cn-hangzhou) otherwise. The same
 // value decides the CAS endpoint and the region suffix of the certificate
-// ids ALB listeners hold, so it is the one place of this rule.
+// ids ALB listeners hold, so it is the one place of this rule. Only
+// cn-hongkong is verified; other regions outside the Chinese mainland may
+// need the Singapore store too, which defaults.aliyun.cas_region selects
+// (the documentation says so).
 func casRegionFor(region string) string {
 	if strings.TrimSpace(region) == "cn-hongkong" {
 		return casRegionIntl
