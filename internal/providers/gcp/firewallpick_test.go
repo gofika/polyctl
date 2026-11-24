@@ -124,3 +124,23 @@ func TestNetworkGetPick(t *testing.T) {
 		t.Errorf("networks offered:\n%s", l)
 	}
 }
+
+// ensure of an existing rule refuses what ensure does not do (a disabled
+// rule, another --direction) before asking anything.
+func TestFirewallEnsureRefusesBeforeAsking(t *testing.T) {
+	h, _ := interactiveGCP(t, nil)
+	h.gce.addFirewall(&compute.Firewall{Name: "off", Network: "default", Direction: "INGRESS", Disabled: true, SourceRanges: []string{"10.0.0.0/8"},
+		Allowed: []*compute.FirewallAllowed{{IPProtocol: "tcp"}}})
+	h.gce.addFirewall(&compute.Firewall{Name: "web", Network: "default", Direction: "INGRESS", SourceRanges: []string{"10.0.0.0/8"},
+		Allowed: []*compute.FirewallAllowed{{IPProtocol: "tcp", Ports: []string{"80"}}}})
+	p := h.answer()
+	if err := h.run("compute", "firewall", "ensure", "off"); err == nil || !strings.Contains(err.Error(), "is disabled") {
+		t.Errorf("disabled = %v", err)
+	}
+	if err := h.run("compute", "firewall", "ensure", "web", "--direction", "egress"); err == nil || !strings.Contains(err.Error(), "not EGRESS") {
+		t.Errorf("direction = %v", err)
+	}
+	if len(p.Asked) != 0 {
+		t.Errorf("asked %d questions", len(p.Asked))
+	}
+}

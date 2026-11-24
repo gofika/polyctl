@@ -247,15 +247,8 @@ func (c *client) ensureFirewallStep(ctx context.Context, s firewallEnsureSpec) (
 		return platform.Step{Resource: res, Action: platform.Created, Desc: desc, Attrs: rangeAttrs(s.Direction, ranges),
 			Apply: apply(desc, func(ctx context.Context) error { return c.insertFirewall(ctx, body, s.Wait) })}, nil
 	}
-	switch {
-	case lastSegment(fw.Network) != s.Network:
-		return platform.Step{}, fmt.Errorf("firewall rule %s exists on network %s, not %s: polyctl does not move a rule to another network; delete it, or pass another rule name", s.Name, lastSegment(fw.Network), s.Network)
-	case fw.Direction != s.Direction:
-		return platform.Step{}, fmt.Errorf("firewall rule %s is an %s rule, not %s: polyctl does not change the direction of a rule; fix or delete it by hand", s.Name, fw.Direction, s.Direction)
-	case fw.Disabled:
-		return platform.Step{}, fmt.Errorf("firewall rule %s is disabled: polyctl does not enable a rule somebody disabled; enable it by hand (or delete it) and run ensure again", s.Name)
-	case len(fw.Denied) > 0:
-		return platform.Step{}, fmt.Errorf("firewall rule %s is a deny rule: polyctl does not turn it into an allow rule; delete it, or pass another rule name", s.Name)
+	if err := refuseEnsure(fw, s.Network, s.Direction); err != nil {
+		return platform.Step{}, err
 	}
 	have := fw.SourceRanges
 	if s.Direction == dirEgress {
@@ -667,6 +660,24 @@ submits them.`,
 	return cmd
 }
 
+// refuseEnsure reports what ensure does not do to the existing rule fw:
+// move it to another network or change its direction (an empty network
+// or direction is not checked), enable it, or turn a deny rule into an
+// allow rule.
+func refuseEnsure(fw *compute.Firewall, network, direction string) error {
+	switch {
+	case network != "" && lastSegment(fw.Network) != network:
+		return fmt.Errorf("firewall rule %s exists on network %s, not %s: polyctl does not move a rule to another network; delete it, or pass another rule name", fw.Name, lastSegment(fw.Network), network)
+	case direction != "" && fw.Direction != direction:
+		return fmt.Errorf("firewall rule %s is an %s rule, not %s: polyctl does not change the direction of a rule; fix or delete it by hand", fw.Name, fw.Direction, direction)
+	case fw.Disabled:
+		return fmt.Errorf("firewall rule %s is disabled: polyctl does not enable a rule somebody disabled; enable it by hand (or delete it) and run ensure again", fw.Name)
+	case len(fw.Denied) > 0:
+		return fmt.Errorf("firewall rule %s is a deny rule: polyctl does not turn it into an allow rule; delete it, or pass another rule name", fw.Name)
+	}
+	return nil
+}
+
 // runFirewallEnsure is the ensure of a rule given in full (no preset).
 func runFirewallEnsure(cmd *cobra.Command, rt *app.Runtime, rf *ruleFlags, name string, wait bool, timeout time.Duration, region, instance, zone string) error {
 	ctx := cmd.Context()
@@ -691,6 +702,20 @@ func runFirewallEnsure(cmd *cobra.Command, rt *app.Runtime, rf *ruleFlags, name 
 	if rt.Interactive() {
 		if have, err = c.findFirewall(ctx, name); err != nil {
 			return err
+		}
+		if have != nil {
+			// What ensure refuses is refused before anything is asked;
+			// the network and direction only when the flags name them
+			// (the existing rule's are used otherwise).
+			dir := ""
+			if fl.Changed("direction") {
+				if dir, err = parseDirection(rf.direction); err != nil {
+					return err
+				}
+			}
+			if err := refuseEnsure(have, lastSegment(rf.network), dir); err != nil {
+				return err
+			}
 		}
 	}
 	network := rf.network
