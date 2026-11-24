@@ -497,23 +497,27 @@ func TestExpiry(t *testing.T) {
 		t.Errorf("expires %v before synced %v", st.ExpiresAt, st.SyncedAt)
 	}
 
-	// Timestamps are stored with second precision, so a 1s TTL is the
-	// smallest window that is reliably fresh right after the sync.
-	mustReplace(t, db, set("a", platform.ResDomain), time.Second, domainRes("example.com"))
+	// Timestamps are stored with second precision (truncated), so a sync
+	// late in a second can lose almost a whole second of its window: a 1s
+	// TTL may already be stale when read back. 2s is the smallest window
+	// that is reliably fresh right after the sync.
+	mustReplace(t, db, set("a", platform.ResDomain), 2*time.Second, domainRes("example.com"))
 	st, err = db.GetState(ctx, set("a", platform.ResDomain))
 	if err != nil || st == nil {
 		t.Fatalf("GetState = %v, %v", st, err)
 	}
 	if !st.Fresh(time.Now()) {
-		t.Fatalf("1s ttl must be fresh right after sync: %+v (now %v)", st, time.Now())
+		t.Fatalf("2s ttl must be fresh right after sync: %+v (now %v)", st, time.Now())
+	}
+	if got := st.ExpiresAt.Sub(st.SyncedAt); got != 2*time.Second {
+		t.Errorf("window = %v, want 2s", got)
 	}
 	rows := mustList(t, db, inventory.Query{Type: platform.ResDomain})
 	if len(rows) != 1 || !rows[0].ExpiresAt.Equal(st.ExpiresAt) {
 		t.Errorf("row expiry %v does not match set expiry %v", rows, st.ExpiresAt)
 	}
-	time.Sleep(1100 * time.Millisecond)
-	if st.Fresh(time.Now()) {
-		t.Errorf("1s ttl must be stale after 1.1s: %+v (now %v)", st, time.Now())
+	if st.Fresh(st.ExpiresAt.Add(100 * time.Millisecond)) {
+		t.Errorf("2s ttl must be stale after its window: %+v", st)
 	}
 	// Freshness is a pure function of the stored window.
 	if !st.Fresh(st.SyncedAt) || st.Fresh(st.ExpiresAt) {
