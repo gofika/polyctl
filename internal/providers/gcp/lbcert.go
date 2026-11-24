@@ -473,13 +473,38 @@ func planCertSet(ctx context.Context, rt *app.Runtime, lb *lbRef, o lbCertOption
 			newDomain = platform.CertDomain(mat.Names(), mat.Leaf.Subject.CommonName)
 		}
 		want := normDomain(o.domain)
+		// A certificate of the domain is replaced only when the new one
+		// covers every name it holds (a narrower --cert-file would take
+		// the other names off the proxy); otherwise it stays beside the
+		// new one (SNI).
+		var kept []string
+		keptWhy := map[string]string{}
+		isOld := func(n string, f certFacts) bool {
+			if f.Domain == "" || (f.Domain != want && f.Domain != newDomain) {
+				return false
+			}
+			if mat != nil {
+				if missing := uncoveredNames(mat.Names(), f.Domains); len(missing) > 0 {
+					if _, ok := keptWhy[n]; !ok {
+						kept = append(kept, n)
+						keptWhy[n] = strings.Join(missing, ", ")
+					}
+					return false
+				}
+			}
+			return true
+		}
 		rp, err := ReplaceProxyCertificate(ctx, replaceSpec{scope: s, proxies: names, domain: o.domain, mat: mat, baseName: base,
-			description: description, keepOld: o.keepOld,
-			isOld: func(_ string, f certFacts) bool { return f.Domain != "" && (f.Domain == want || f.Domain == newDomain) }})
+			description: description, keepOld: o.keepOld, isOld: isOld})
 		if err != nil {
 			return nil, err
 		}
 		steps := rp.steps
+		for _, n := range kept {
+			steps = append(steps, platform.Step{Resource: "ssl-certificate/" + n, Action: platform.Skipped,
+				Desc:  "kept on the proxy beside the new certificate: the new certificate does not cover " + keptWhy[n],
+				Attrs: map[string]string{"scope": s.kind(), "old": n}})
+		}
 		if !s.global() {
 			// The :443 rule is checked for the first proxy only: two
 			// HTTPS proxies on one URL map would derive the same rule.

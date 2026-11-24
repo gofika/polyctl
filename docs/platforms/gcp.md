@@ -260,7 +260,7 @@ polyctl gcp compute load-balancer cert set lb-web-1 --domain www.example.com --c
 Puts the certificate of `--domain` on every HTTPS proxy of a load balancer. `<lb>` is a forwarding rule name or the load balancer (URL map) name.
 
 - Without files, the certificate comes from polyctl's store (`polyctl cert ensure`) and is issued or renewed first when it has `--days` (default `cert.renew_days`, 30) or fewer left. Given files must cover `--domain` (exit code 2).
-- Certificates of that domain on the proxy are replaced; old ones are deleted unless `--keep-old`. A second run writes nothing.
+- Certificates of that domain on the proxy are replaced; old ones are deleted unless `--keep-old`. A second run writes nothing. A certificate the new one does not fully cover (a wildcard-only certificate under an apex-only `--cert-file`, or one that also names another domain) is not replaced: it stays on the proxy beside the new one (SNI), reported `skipped` with the names it would lose.
 - A regional load balancer with only an HTTP proxy is upgraded: an HTTPS proxy and a `:443` forwarding rule are created on the same IP as the `:80` rule (an ephemeral IP is first reserved as `<lb>-ip`). `--new-ip` uses a new IP instead (DNS must change). Global load balancers are not upgraded (exit code 1).
 - `--no-wait` only affects the creation of a new `:443` rule.
 

@@ -294,6 +294,19 @@ func factsOf(sc *compute.SslCertificate) certFacts {
 	return f
 }
 
+// uncoveredNames returns the names of old that a certificate of names
+// does not cover (a wildcard is covered by the same wildcard only).
+func uncoveredNames(names, old []string) []string {
+	var out []string
+	for _, n := range old {
+		n = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(n)), ".")
+		if n != "" && !platform.CertCovers(names, n) && !slices.Contains(out, n) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 // daysLeft is the number of whole days until t, rounded down.
 func daysLeft(t, now time.Time) int { return int(math.Floor(t.Sub(now).Hours() / 24)) }
 

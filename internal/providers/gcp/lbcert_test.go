@@ -130,6 +130,35 @@ func TestLBCertSetReplacesFromStore(t *testing.T) {
 	}
 }
 
+func TestLBCertSetKeepsCertificatesTheNewOneDoesNotCover(t *testing.T) {
+	h := newGCPHarness(t, app.Flags{}, nil)
+	apex := newPair(t, []string{"example.com"}, 10)
+	wild := newPair(t, []string{"*.example.com"}, 90)
+	multi := newPair(t, []string{"example.com", "other.org"}, 90)
+	h.gce.addCert("us-central1", "apex-cert", apex.chain)
+	h.gce.addCert("us-central1", "wildcard-cert", wild.chain)
+	h.gce.addCert("us-central1", "multi-cert", multi.chain)
+	regionalLB(h.gce, "apex-cert", "wildcard-cert", "multi-cert")
+	nw := newPair(t, []string{"example.com"}, 90)
+	if err := h.run("compute", "load-balancer", "cert", "set", "lb-web-1", "--domain", "example.com", "--cert-file", nw.certFile, "--key-file", nw.keyFile); err != nil {
+		t.Fatal(err)
+	}
+	got := rows(h.report())
+	for _, w := range []string{
+		"target-https-proxy/proxy-https-web-1 updated certs: apex-cert -> example-com-cert-20260101",
+		"ssl-certificate/wildcard-cert skipped kept on the proxy beside the new certificate: the new certificate does not cover *.example.com",
+		"ssl-certificate/multi-cert skipped kept on the proxy beside the new certificate: the new certificate does not cover other.org",
+		"ssl-certificate/apex-cert deleted old, no longer referenced",
+	} {
+		if !slices.Contains(got, w) {
+			t.Errorf("missing %q in\n%s", w, strings.Join(got, "\n"))
+		}
+	}
+	if got := h.gce.proxyCerts("us-central1", "proxy-https-web-1"); !slices.Equal(got, []string{"wildcard-cert", "multi-cert", "example-com-cert-20260101"}) {
+		t.Errorf("certs = %v", got)
+	}
+}
+
 func TestLBCertSetResumes(t *testing.T) {
 	h := newGCPHarness(t, app.Flags{}, nil)
 	old := newPair(t, []string{"example.com"}, 10)
