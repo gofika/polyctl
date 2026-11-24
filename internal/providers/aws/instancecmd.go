@@ -1064,9 +1064,13 @@ key pair of yours is never deleted.`,
 			target := l.target()
 			if instanceState(l.inst) == stateTerminated {
 				changes := []platform.Change{{Resource: l.resource(), Action: platform.Unchanged, ID: l.id(), Detail: "already terminated"}}
-				if !rt.DryRun() {
+				kp := createdKeyPairOf(ctx, rt, l)
+				switch {
+				case rt.DryRun() && kp != "":
+					changes = append(changes, platform.Change{Resource: "key-pair/" + kp, Action: platform.Deleted.DryRun(), Detail: "created by polyctl for this instance"})
+				case !rt.DryRun():
 					dropInstance(ctx, rt, l.profile, l.id())
-					if ch := forgetLogin(ctx, rt, l, createdKeyPairOf(ctx, rt, l)); ch != nil {
+					if ch := forgetLogin(ctx, rt, l, kp); ch != nil {
 						changes = append(changes, *ch)
 					}
 				}

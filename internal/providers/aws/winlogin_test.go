@@ -709,6 +709,43 @@ func TestWindowsRunFailureDeletesTheKeyPair(t *testing.T) {
 	}
 }
 
+// Deleting an instance that is already terminated still forgets its login
+// and deletes the key pair polyctl created for it; a dry run only shows it.
+func TestWindowsDeleteTerminatedInstance(t *testing.T) {
+	h := winHarness(t, app.Flags{Yes: true})
+	if err := h.run(winCreate...); err != nil {
+		t.Fatalf("%v\n%s", err, h.stderr.String())
+	}
+	id := storedWin(t, h, "win-a")[0].InstanceID
+	h.ec2.mu.Lock()
+	h.ec2.inst.find("ap-east-1", id).state = stateTerminated
+	h.ec2.mu.Unlock()
+
+	h.rt.Flags.DryRun = true
+	if err := h.run("ec2", "instance", "delete", id); err != nil {
+		t.Fatal(err)
+	}
+	rep := h.report()
+	if len(rep.Changes) != 2 || rep.Changes[1].Resource != "key-pair/win-a-win" || rep.Changes[1].Action != platform.WouldDelete {
+		t.Errorf("dry run = %+v", rep.Changes)
+	}
+	if h.ec2.count("DeleteKeyPair") != 0 || len(storedWin(t, h, id)) != 1 {
+		t.Fatal("the dry run changed something")
+	}
+	h.rt.Flags.DryRun = false
+
+	if err := h.run("ec2", "instance", "delete", id); err != nil {
+		t.Fatalf("%v\n%s", err, h.stderr.String())
+	}
+	rep = h.report()
+	if len(rep.Changes) != 2 || rep.Changes[1].Action != platform.Deleted || strings.Join(h.ec2.deletedKeyPairs, ",") != "win-a-win" {
+		t.Errorf("report = %+v, deleted %v", rep.Changes, h.ec2.deletedKeyPairs)
+	}
+	if len(storedWin(t, h, id)) != 0 {
+		t.Error("the login survived the delete")
+	}
+}
+
 func TestParseWindowsKeyAndDecrypt(t *testing.T) {
 	rk, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
