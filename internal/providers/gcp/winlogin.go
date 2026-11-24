@@ -510,6 +510,15 @@ Deleting the instance with polyctl removes its stored credentials.`,
 			return show(cmd, args)
 		}
 		zone, _ := cmd.Flags().GetString("zone")
+		if len(args) == 0 {
+			// The interactive flow: --reset also works for an instance
+			// with nothing stored, so every instance is offered.
+			ref, err := rt.PickResource(cmd.Context(), app.ResourcePick{Platform: platform.GCP, Kind: platform.ResInstance, Title: "Instance", Arg: "<name|id>"})
+			if err != nil {
+				return err
+			}
+			args = []string{ref}
+		}
 		return runPasswordReset(cmd.Context(), rt, args[0], zone, user, limit)
 	}
 	cmd.Flags().BoolVar(&reset, "reset", false, "set a new password through the guest agent of the running instance, store and show it (asks first)")

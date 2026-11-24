@@ -86,6 +86,18 @@ func (d *DB) FindSecrets(ctx context.Context, p platform.ID, profile, location, 
 	return d.querySecrets(ctx, where, args...)
 }
 
+// ListSecrets returns the stored secrets of a profile's instances in
+// location ("" matches every location).
+func (d *DB) ListSecrets(ctx context.Context, p platform.ID, profile, location string) ([]SecretRow, error) {
+	where := `platform=? AND profile=?`
+	args := []any{string(p), profile}
+	if location != "" {
+		where += ` AND location=?`
+		args = append(args, location)
+	}
+	return d.querySecrets(ctx, where, args...)
+}
+
 // DeleteSecret removes the stored secret of an instance; a missing one is
 // not an error.
 func (d *DB) DeleteSecret(ctx context.Context, k SecretKey) error {
