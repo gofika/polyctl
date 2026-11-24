@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gofika/polyctl/internal/platform"
 	"github.com/gofika/polyctl/internal/prompt"
 	"github.com/gofika/polyctl/internal/prompt/prompttest"
 )
@@ -131,6 +132,13 @@ func TestDNSRecordDeleteSetConfirms(t *testing.T) {
 	h.rt.Stdin = strings.NewReader("y\n")
 	if err := h.run("dns", "record", "delete", "example-zone", "--name", "nope", "--type", "A"); exitClass(err) != "notfound" {
 		t.Errorf("missing set = %v", err)
+	}
+	// A routing-policy set cannot be deleted here: refused before the
+	// question, not after a "yes".
+	h.stderr.Reset()
+	h.rt.Stdin = strings.NewReader("y\n")
+	if err := h.run("dns", "record", "delete", "example-zone", "--name", "geo", "--type", "A"); !errors.Is(err, platform.ErrNotSupported) || strings.Contains(h.stderr.String(), "Delete the") {
+		t.Errorf("routing-policy set = %v, stderr %q", err, h.stderr.String())
 	}
 
 	h.nonInteractive()

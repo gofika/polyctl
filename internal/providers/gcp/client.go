@@ -436,7 +436,9 @@ func (c *client) DeleteRRSet(ctx context.Context, zoneID, fqdn, typ string) erro
 }
 
 // RRSetRecords returns the values of the record set of fqdn and typ, one
-// record each. A missing set is platform.ErrNotFound.
+// record each. A missing set is platform.ErrNotFound; a set with a routing
+// policy, which polyctl does not change, is platform.ErrNotSupported, so
+// that nothing is asked about a set that cannot be deleted.
 func (c *client) RRSetRecords(ctx context.Context, zoneID, fqdn, typ string) ([]platform.Record, error) {
 	rs, err := c.getRRSet(ctx, zoneID, dnsName(fqdn), strings.ToUpper(typ))
 	if err != nil {
@@ -444,6 +446,9 @@ func (c *client) RRSetRecords(ctx context.Context, zoneID, fqdn, typ string) ([]
 	}
 	if rs == nil {
 		return nil, fmt.Errorf("%w: %s %s", platform.ErrNotFound, fqdn, strings.ToUpper(typ))
+	}
+	if rs.RoutingPolicy != nil {
+		return nil, fmt.Errorf("%w: %s %s uses a routing policy; manage it with gcloud or the console", platform.ErrNotSupported, fqdn, strings.ToUpper(typ))
 	}
 	return recordsFromRRSet(zoneID, rs), nil
 }
