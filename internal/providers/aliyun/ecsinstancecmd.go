@@ -299,16 +299,32 @@ func (f *instanceFlags) typeLabel() string {
 	return f.typ + " " + f.choice.label()
 }
 
-// resolveImage returns --image, else the newest image of --os (a read-only
-// call, made in a dry run too).
-func (f *instanceFlags) resolveImage(ctx context.Context, s *ecsScope) (string, error) {
+// resolveImage returns --image, else the newest public image of --os for
+// the architecture of the instance type (read-only calls, made in a dry
+// run too). A size resolves to an x86 type; a type id is looked up.
+func (f *instanceFlags) resolveImage(ctx context.Context, rt *app.Runtime, s *ecsScope) (string, error) {
 	if f.image != "" {
 		return f.image, nil
 	}
-	im, err := s.c.latestImage(ctx, s.region, f.osName, archX86)
+	arch := archX86
+	if f.size == nil {
+		a, known, err := s.c.typeArch(ctx, s.region, f.typ)
+		if err != nil {
+			return "", err
+		}
+		if !known {
+			rt.Infof("note: %s does not list instance type %s: its image is picked for %s", s.where(), f.typ, archX86)
+		}
+		arch = a
+	}
+	if err := checkImageOS(f.osName, arch); err != nil {
+		return "", err
+	}
+	im, err := s.c.latestImage(ctx, s.region, f.osName, arch)
 	if err != nil {
 		return "", err
 	}
+	rt.Infof("image: %s (%s, %s, created %s)", im.ImageID, im.OSName, arch, im.CreationTime)
 	return im.ImageID, nil
 }
 
@@ -539,8 +555,10 @@ vSwitches and the security group as well.
   holds --ssh-key / --ssh-key-file, compared by fingerprint), else the key
   is imported under --key-pair (asked for on a terminal; no name is ever
   chosen for you).
-- The image is --image, else the newest image of --os (alibaba-cloud-linux).
-  The system disk is --disk GiB of --disk-category.
+- The image is --image (any image id: the way to use another system), else
+  the newest public image of --os (alibaba-cloud-linux; see image latest)
+  for the architecture of the type (a size resolves to an x86 type). The
+  system disk is --disk GiB of --disk-category.
 - The host name is the name with every character other than letters,
   digits, hyphens and dots replaced by a hyphen, cut to 64 characters.
 - An instance of the name in the region is exit code 1: use ensure.
@@ -609,7 +627,7 @@ vSwitches and the security group as well.
 			} else if len(found) > 0 {
 				return fmt.Errorf("instance %q already exists in %s (%s): use `polyctl aliyun ecs instance ensure %s` to reuse it", name, s.where(), found[0].ID, name)
 			}
-			image, err := f.resolveImage(ctx, s)
+			image, err := f.resolveImage(ctx, rt, s)
 			if err != nil {
 				return err
 			}

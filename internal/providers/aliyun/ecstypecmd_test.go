@@ -74,12 +74,26 @@ func TestInstanceCreateExactTypeResolvesNothing(t *testing.T) {
 	if err := h.run("ecs", "instance", "create", "site-a", "--type", "ecs.u1-c1m2.large", "--security-group", "sg-common", "--key-pair", "ops", "--no-wait"); err != nil {
 		t.Fatalf("%v\n%s", err, h.stderr.String())
 	}
-	for _, a := range []string{"DescribeAvailableResource", "DescribeInstanceTypes", "DescribePrice"} {
+	for _, a := range []string{"DescribeAvailableResource", "DescribePrice"} {
 		if n := len(h.api.callsFor(a)); n != 0 {
 			t.Errorf("%s called %d times", a, n)
 		}
 	}
+	// The one type query is the architecture of the type, for its image.
+	if q := h.api.callsFor("DescribeInstanceTypes"); len(q) != 1 || q[0].Get("InstanceTypes.1") != "ecs.u1-c1m2.large" || q[0].Get("CpuArchitecture") != "" {
+		t.Errorf("DescribeInstanceTypes = %v", q)
+	}
 	if run := h.api.callsFor("RunInstances")[0]; run.Get("InstanceType") != "ecs.u1-c1m2.large" || run.Get("VSwitchId") != "vsw-b" {
+		t.Errorf("RunInstances = %v", run)
+	}
+	// With --image nothing is looked up for the image.
+	if err := h.run("ecs", "instance", "create", "site-b", "--type", "ecs.u1-c1m2.large", "--image", "m-own", "--security-group", "sg-common", "--key-pair", "ops", "--no-wait"); err != nil {
+		t.Fatalf("%v\n%s", err, h.stderr.String())
+	}
+	if n, m := len(h.api.callsFor("DescribeInstanceTypes")), len(h.api.callsFor("DescribeImages")); n != 1 || m != 1 {
+		t.Errorf("--image: %d type and %d image queries in all, want 1 and 1", n, m)
+	}
+	if run := h.api.callsFor("RunInstances")[1]; run.Get("ImageId") != "m-own" {
 		t.Errorf("RunInstances = %v", run)
 	}
 }

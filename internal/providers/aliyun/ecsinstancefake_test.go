@@ -2,6 +2,7 @@ package aliyun
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"strconv"
 	"strings"
@@ -33,6 +34,7 @@ func newFakeCompute(t *testing.T, api *fakeAPI) *fakeECS {
 	api.on("RebootInstance", f.write(f.rebootInstance))
 	api.on("ModifyInstanceSpec", f.write(f.modifySpec))
 	api.on("DescribeDisks", f.describeDisks)
+	api.on("DescribeInstanceTypes", f.describeInstanceTypes)
 	api.on("AssociateEipAddress", f.write(f.associateEipFlaky))
 	return f
 }
@@ -257,4 +259,18 @@ func computeHarness(t *testing.T, flags app.Flags) (*harness, *fakeECS, *fakeSle
 	netWaitClock = clock
 	t.Cleanup(func() { netWaitClock = nil })
 	return h, f, clock
+}
+
+// describeInstanceTypes answers the architecture of the types in
+// typeArch (DescribeInstanceTypes values: X86, ARM); other types are not
+// listed.
+func (f *fakeECS) describeInstanceTypes(q url.Values) (int, any) {
+	var out []map[string]any
+	for i := 1; q.Get(fmt.Sprintf("InstanceTypes.%d", i)) != ""; i++ {
+		n := q.Get(fmt.Sprintf("InstanceTypes.%d", i))
+		if a, ok := f.typeArch[n]; ok {
+			out = append(out, map[string]any{"InstanceTypeId": n, "CpuArchitecture": a})
+		}
+	}
+	return 200, map[string]any{"RequestId": "r", "InstanceTypes": map[string]any{"InstanceType": out}}
 }

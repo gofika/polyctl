@@ -63,7 +63,8 @@ profile's), Running, with an EIP. Running it again changes nothing.
   running ensure again goes on from there.
 - The instance is --type (defaults.aliyun.ecs_instance_type, else
   ecs.u1-c1m1.large; a type id, or a size <cores>H<memory>G such as 2H4G,
-  see Instance sizes below), --image or the newest image of --os, a --disk GiB
+  see Instance sizes below), --image or the newest image of --os for the
+  type's architecture (as for create), a --disk GiB
   --disk-category system disk, pay as you go, without a public address of
   its own. It is waited for until Running (every 2 seconds, --timeout 10m);
   --no-wait returns at once and skips the EIP.
@@ -290,7 +291,7 @@ func (e *instanceEnsure) planNew(ctx context.Context, cmd *cobra.Command, host s
 	}
 	e.plan.Add(kpStep)
 
-	image, err := e.f.resolveImage(ctx, s)
+	image, err := e.f.resolveImage(ctx, rt, s)
 	if err != nil {
 		return err
 	}
