@@ -316,7 +316,7 @@ zone example.com via cloudflare/acme
 
 Registrar commands (`domain ns ...`) are not affected, since only name.com holds the registration. Two resources with the same name in one account (two Route 53 hosted zones called `example.com`) cannot be told apart this way; use the platform's own command with the resource id.
 
-**Resources addressed by name or id** (instances, load balancers, ...) are found the same way, so you do not need to name the profile. An id match wins over a name match. Several matches are exit code 5 (pass `--profile`, `--platform`, or the id). No match syncs that resource type once for accounts with a missing or expired cache, then reports not found (exit code 4).
+**Resources addressed by name or id** (instances, load balancers, ...) are found the same way, so you do not need to name the profile. An id match wins over a name match. Several matches are exit code 5 (pass `--profile`, `--platform`, or the id). No match syncs that resource type once for accounts with a missing or expired cache, then reports not found (exit code 4). A name found in the cache only tells the account and region: the name is then looked up live there, so a resource renamed since the last sync is never acted on in place of the one that holds the name now.
 
 `find` does not follow these rules: it lists every match instead of choosing one.
 

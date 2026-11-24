@@ -411,3 +411,42 @@ func TestInstanceCreateRequiresAKeyPair(t *testing.T) {
 		t.Errorf("writes %v, calls %d", f.writes, len(h.api.callsFor("DescribeInstances")))
 	}
 }
+
+// TestInstanceResolveRenamedSinceSync: the inventory holds a name the
+// instance it records no longer has. The name is looked up live, so the
+// renamed instance is never acted on.
+func TestInstanceResolveRenamedSinceSync(t *testing.T) {
+	h, f, _ := computeHarness(t, app.Flags{Yes: true})
+	old := f.addVM("i-1", "site-a", instStopped, "t", "vpc-1", "vsw-b")
+	if err := h.run("ecs", "instance", "get", "site-a"); err != nil { // the inventory: site-a -> i-1
+		t.Fatal(err)
+	}
+	old["InstanceName"] = "site-old"
+	// No instance holds the name now: not found, nothing written.
+	err := h.run("ecs", "instance", "delete", "site-a")
+	if !errors.Is(err, platform.ErrNotFound) || !strings.Contains(err.Error(), `named "site-old" now`) {
+		t.Errorf("err = %v", err)
+	}
+	if len(f.writes) != 0 {
+		t.Fatalf("writes = %v", f.writes)
+	}
+	// Another instance took the name: that one is deleted, i-1 is kept.
+	// The failed lookup refreshed the row to site-old; sync it back.
+	old["InstanceName"] = "site-a"
+	h.rt.Flags.Refresh = true
+	if err := h.run("ecs", "instance", "get", "site-a"); err != nil { // the inventory: site-a -> i-1 again
+		t.Fatal(err)
+	}
+	h.rt.Flags.Refresh = false
+	old["InstanceName"] = "site-old"
+	f.addVM("i-2", "site-a", instStopped, "t", "vpc-1", "vsw-b")
+	if err := h.run("ecs", "instance", "delete", "site-a"); err != nil {
+		t.Fatalf("%v\n%s", err, h.stderr.String())
+	}
+	if q := h.api.callsFor("DeleteInstance"); len(q) != 1 || q[0].Get("InstanceId") != "i-2" {
+		t.Errorf("DeleteInstance = %v", q)
+	}
+	if f.vm("i-1") == nil {
+		t.Error("the renamed instance i-1 was deleted")
+	}
+}

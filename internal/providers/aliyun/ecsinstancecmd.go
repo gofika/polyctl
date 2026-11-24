@@ -23,7 +23,8 @@ import (
 // the selected profile is asked directly in that region. Otherwise the
 // inventory tells which account and region hold it (one sync of the stale
 // accounts when none does; several matches are ambiguous, exit code 5),
-// and the instance is then read live by id. Names are compared
+// and the instance is then read live there: by id, or by name when the
+// ref is a name (the cached name may belong to another instance now). Names are compared
 // case-sensitively: Alibaba Cloud does not keep them unique, and its name
 // filter ignores case.
 func resolveECSInstance(ctx context.Context, rt *app.Runtime, ref, region string) (*ecsScope, *Instance, error) {
@@ -63,6 +64,29 @@ func resolveECSInstance(ctx context.Context, rt *app.Runtime, ref, region string
 		return nil, nil, err
 	}
 	s := &ecsScope{c: c, profile: res.Profile, region: c.regionOr(instRegion), rt: rt}
+	if res.ID != ref {
+		// Matched by name: the inventory only says where to look. The
+		// name is looked up live, so an instance renamed since the last
+		// sync is never taken for the one that holds the name now.
+		in, err := findInstanceIn(ctx, s, ref)
+		if errors.Is(err, platform.ErrNotFound) {
+			cur, derr := c.describeInstance(ctx, s.region, res.ID)
+			switch {
+			case errors.Is(derr, platform.ErrNotFound):
+				dropInstance(ctx, rt, res.Profile, res.ID)
+			case derr == nil:
+				storeInstance(ctx, rt, s.profile, *cur)
+				if cur.Name != ref {
+					return nil, nil, fmt.Errorf("%w (the local inventory had %s under that name; it is named %q now)", err, res.ID, cur.Name)
+				}
+			}
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+		storeInstance(ctx, rt, s.profile, *in)
+		return s, in, nil
+	}
 	in, err := c.describeInstance(ctx, s.region, res.ID)
 	if errors.Is(err, platform.ErrNotFound) {
 		dropInstance(ctx, rt, res.Profile, res.ID)

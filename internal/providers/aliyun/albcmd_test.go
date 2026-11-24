@@ -600,3 +600,34 @@ func TestALBServerGroupUpdate(t *testing.T) {
 		t.Errorf("ambiguous = %v", err)
 	}
 }
+
+// TestALBLoadBalancerRenamedSinceSync: the inventory holds a name the load
+// balancer it records no longer has. The name is looked up live, so the
+// renamed load balancer is never acted on.
+func TestALBLoadBalancerRenamedSinceSync(t *testing.T) {
+	h, _, alb, _, _ := albHarness(t, app.Flags{Yes: true})
+	alb.addLB("alb-1", "lb-old", "vpc-site", "Active")
+	set := inventory.Set{Platform: platform.Aliyun, Profile: "ali", Type: platform.ResLoadBalancer}
+	row := albLoadBalancer{ID: "alb-1", Name: "lb-x", Region: "cn-shanghai"}
+	if err := h.db().Upsert(context.Background(), set, row.resource(), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	err := h.run("alb", "load-balancer", "delete", "lb-x")
+	if !errors.Is(err, platform.ErrNotFound) || !strings.Contains(err.Error(), `named "lb-old" now`) {
+		t.Errorf("err = %v", err)
+	}
+	if len(alb.lbs) != 1 {
+		t.Fatal("a load balancer was deleted")
+	}
+	// The failed lookup refreshed the row to lb-old; put the stale row back.
+	if err := h.db().Upsert(context.Background(), set, row.resource(), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	alb.addLB("alb-2", "lb-x", "vpc-site", "Active")
+	if err := h.run("alb", "load-balancer", "delete", "lb-x"); err != nil {
+		t.Fatalf("%v\n%s", err, h.stderr.String())
+	}
+	if len(alb.lbs) != 1 || alb.lbs[0]["LoadBalancerId"] != "alb-1" {
+		t.Errorf("left = %v", alb.lbs)
+	}
+}

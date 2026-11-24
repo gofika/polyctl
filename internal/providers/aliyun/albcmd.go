@@ -296,7 +296,9 @@ func resolveLB(ctx context.Context, sc *albScope, ref string) (*albLB, error) {
 // lbScope finds a load balancer named by the user and opens its account:
 // with --region, the selected profile in that region; without, through the
 // inventory of every selected account (synced once when it does not know
-// the name).
+// the name), which only tells the account and region: a name is then
+// looked up live there, since the cached name may belong to another load
+// balancer now.
 func lbScope(ctx context.Context, rt *app.Runtime, ref, region string) (*albScope, *albLB, error) {
 	if region != "" {
 		sc, err := openALBScope(ctx, rt, region)
@@ -329,6 +331,28 @@ func lbScope(ctx context.Context, rt *app.Runtime, ref, region string) (*albScop
 	sc, err := albScopeOf(ctx, &ecsScope{c: c, profile: res.Profile, region: c.regionOr(lbRegion), rt: rt})
 	if err != nil {
 		return nil, nil, err
+	}
+	if res.ID != ref {
+		// Matched by name: the inventory only says where to look. The
+		// name is looked up live, so a load balancer renamed since the
+		// last sync is never taken for the one that holds the name now.
+		lb, err := resolveLB(ctx, sc, ref)
+		if errors.Is(err, platform.ErrNotFound) {
+			cur, gerr := sc.a.getLoadBalancer(ctx, res.ID)
+			switch {
+			case gerr == nil && cur == nil:
+				dropLB(ctx, rt, res.Profile, res.ID)
+			case gerr == nil:
+				storeLB(ctx, rt, res.Profile, *cur)
+				if cur.Name != ref {
+					return nil, nil, fmt.Errorf("%w (the local inventory had %s under that name; it is named %q now)", err, res.ID, cur.Name)
+				}
+			}
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+		return sc, lb, nil
 	}
 	lb, err := sc.a.getLoadBalancer(ctx, res.ID)
 	if err != nil {
