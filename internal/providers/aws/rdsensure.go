@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/gofika/polyctl/internal/app"
+	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/platform"
 )
 
@@ -208,9 +209,38 @@ at the first failure); the failures are listed at the end. Exit code: 0 when
 all are as asked, 4 when every failure is a missing instance, 1 otherwise.
 A failure is sent to hooks.on_failure.`,
 		Example: "  polyctl aws rds instance ensure db-test-01 db-test-02 --state stopped\n  polyctl aws rds instance ensure db-test-01 --state stopped --dry-run -o json",
-		Args:    cobra.MinimumNArgs(1),
+		Args:    app.MinArgsOrInteractive(rt, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+			if strings.TrimSpace(state) == "" && rt.Interactive() {
+				// The interactive flow: the state, then the instances.
+				var err error
+				if state, err = chooseOne(rt, "State to bring the instances to", "--state", []string{"stopped", "running"}, "stopped"); err != nil {
+					return err
+				}
+			}
+			if len(args) == 0 {
+				ids, err := rt.PickResources(ctx, app.ResourcePick{Platform: platform.AWS, Kind: platform.ResDBInstance,
+					Title: "RDS instances to bring to " + state, Arg: "<id|endpoint-dns>...", What: "AWS RDS instance (Aurora instances are managed by their cluster)",
+					Filter: func(r inventory.Resource) bool {
+						var d dbInstance
+						return r.Decode(&d) == nil && d.ID != "" && (region == "" || d.Region == region) && !strings.HasPrefix(d.Engine, "aurora") && !dbSkipStatus(d.Status)
+					},
+					Label: func(r inventory.Resource) string {
+						var d dbInstance
+						_ = r.Decode(&d)
+						return dbOptionLabel(r.Profile, d)
+					},
+					Value: func(r inventory.Resource) string {
+						var d dbInstance
+						_ = r.Decode(&d)
+						return d.ID
+					}})
+				if err != nil {
+					return err
+				}
+				args = ids
+			}
 			var running bool
 			switch strings.ToLower(strings.TrimSpace(state)) {
 			case "stopped":

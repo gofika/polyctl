@@ -258,7 +258,10 @@ func (f *fakeRDS) DescribeOrderableDBInstanceOptions(_ context.Context, in *rds.
 	}
 	var out []rdstypes.OrderableDBInstanceOption
 	for _, o := range f.state().orderable {
-		if awssdk.ToString(o.DBInstanceClass) == awssdk.ToString(in.DBInstanceClass) {
+		// No class asks for every class (of the engine version, when the
+		// option names one).
+		if in.DBInstanceClass == nil && (in.EngineVersion == nil || o.EngineVersion == nil || awssdk.ToString(o.EngineVersion) == awssdk.ToString(in.EngineVersion)) ||
+			awssdk.ToString(o.DBInstanceClass) == awssdk.ToString(in.DBInstanceClass) {
 			out = append(out, o)
 		}
 	}

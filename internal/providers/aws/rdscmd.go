@@ -268,7 +268,9 @@ func pickDBHit(rt *app.Runtime, ref string, hits []dbHit) (dbHit, error) {
 	for _, h := range hits {
 		names = append(names, fmt.Sprintf("aws/%s/%s (%s)", h.profile, h.d.Region, h.d.ID))
 	}
-	return dbHit{}, &app.AmbiguousError{What: fmt.Sprintf("RDS instance %q", ref), Candidates: names, Hint: "pass --profile <name> and/or --region <r> to choose"}
+	amb := &app.AmbiguousError{What: fmt.Sprintf("RDS instance %q", ref), Candidates: names, Hint: "pass --profile <name> and/or --region <r> to choose"}
+	// The interactive flow asks which one.
+	return disambiguate(rt, amb, hits, func(h dbHit) string { return dbOptionLabel(h.profile, h.d) })
 }
 
 // resolveDB finds the instance ref names (an identifier or an endpoint DNS
@@ -572,9 +574,13 @@ the instance; several matches are exit code 5: pass --profile and/or
 --region). The instance is read live; with --offline the inventory's copy is
 shown.`,
 		Example: "  polyctl aws rds instance get db-prod-01 -o json\n  polyctl aws rds instance get db-prod-01.abc123.eu-west-1.rds.amazonaws.com",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+			args, err := dbArg(ctx, rt, args, region, "AWS RDS instance", nil)
+			if err != nil {
+				return err
+			}
 			if rt.Flags.Offline {
 				accounts, err := awsAccounts(rt)
 				if err != nil {
@@ -750,7 +756,10 @@ func rdsCreateCmd(rt *app.Runtime) *cobra.Command {
 --region (or the profile's). --size (GB) and --az are required: put the
 instance in the availability zone of the instances that use it, as traffic
 across zones costs money. The master password comes from --password-stdin or
---password-env <VAR>, never from an argument.
+--password-env <VAR>, never from an argument. On a terminal a missing <id>,
+--size and --az are asked (the zones offering the class with the storage
+type), and without either password flag the password is typed twice without
+echo.
 
 The version is --engine-version, or with latest (the default) the newest
 available version of --major (default 8.0, defaults.aws.rds.default_major),
@@ -768,12 +777,15 @@ RDS_ENDPOINT=... and RDS_PORT=... lines, or {"id", "endpoint", "port",
 the instance.`,
 		Example: "  RDS_PW=... polyctl aws rds instance create db-test-01 --size 50 --az eu-west-1a --password-env RDS_PW --major 8.0 --class db.t3.medium\n" +
 			"  printf '%s\\n' \"$PW\" | polyctl aws rds instance create db-test-01 --size 20 --az eu-west-1a --password-stdin --dry-run",
-		Args: cobra.ExactArgs(1),
+		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			id := strings.TrimSpace(args[0])
-			if err := validDBIdentifier(id); err != nil {
-				return app.UsageErrf("RDS instance identifier %q: %v", id, err)
+			interactive := rt.Interactive()
+			id := strings.TrimSpace(app.Arg(args, 0))
+			if len(args) > 0 {
+				if err := validDBIdentifier(id); err != nil {
+					return app.UsageErrf("RDS instance identifier %q: %v", id, err)
+				}
 			}
 			id = strings.ToLower(id)
 			wait, timeout, err := wf.Resolve(cmd)
@@ -783,16 +795,17 @@ the instance.`,
 			if !strings.EqualFold(engine, rdsEngineMySQL) {
 				return fmt.Errorf("%w: --engine %s: only mysql can be created for now", platform.ErrNotSupported, engine)
 			}
-			if size <= 0 {
+			if size <= 0 && !interactive {
 				return app.UsageErrf("create needs --size <GB> (the allocated storage)")
 			}
-			if strings.TrimSpace(az) == "" {
+			az = strings.TrimSpace(az)
+			if az == "" && !interactive {
 				return app.UsageErrf("create needs --az <zone>: the availability zone of the instances that use the database")
 			}
 			if region != "" && !validRegionName(region) {
 				return app.UsageErrf("--region %q: expected a region name such as us-east-1", region)
 			}
-			if maxSize < 0 || maxSize > 0 && maxSize <= size {
+			if maxSize < 0 || maxSize > 0 && size > 0 && maxSize <= size {
 				return app.UsageErrf("--max-size %d must be greater than --size %d (or 0 to turn storage autoscaling off)", maxSize, size)
 			}
 			if retention < 0 {
@@ -828,7 +841,7 @@ the instance.`,
 			if !known {
 				return app.UsageErrf("--storage-type %q: expected one of gp2, gp3, io1, io2, standard", settings.storageType)
 			}
-			if size < minSize {
+			if size > 0 && size < minSize {
 				return app.UsageErrf("--size %d: %s storage needs at least %d GB", size, settings.storageType, minSize)
 			}
 			if cmd.Flags().Changed("subnet-group") {
@@ -851,15 +864,27 @@ the instance.`,
 			for k, v := range userTags {
 				allTags[k] = v
 			}
-			password, err := readPassword(ctx, rt, passwordStdin, passwordEnv)
-			if err != nil {
-				return err
+			// The interactive flow asks a missing password after the
+			// identifier, size and zone; a script's password is read first.
+			var password string
+			if passwordStdin || passwordEnv != "" || !interactive {
+				if password, err = readPassword(ctx, rt, passwordStdin, passwordEnv); err != nil {
+					return err
+				}
 			}
 			c, err := openProfile(ctx, rt, profile)
 			if err != nil {
 				return err
 			}
 			region = c.regionOr(region)
+			if err := askDBCreate(ctx, rt, c, region, &id, &size, &az, settings, maxSize); err != nil {
+				return err
+			}
+			if password == "" {
+				if password, err = askPassword(ctx, rt); err != nil {
+					return err
+				}
+			}
 			if latest {
 				if version, err = c.resolveLatestVersion(ctx, region, rdsEngineMySQL, settings.major); err != nil {
 					return err
@@ -975,11 +1000,14 @@ daily (cron) to keep it stopped.`
 		Short:   strings.ToUpper(verb[:1]) + verb[1:] + " an RDS instance",
 		Long:    long,
 		Example: "  polyctl aws rds instance " + verb + " db-test-01 --wait",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			wait, timeout, err := wf.Resolve(cmd)
 			if err != nil {
+				return err
+			}
+			if args, err = dbArg(ctx, rt, args, region, from+" AWS RDS instance", dbStatusIn(from)); err != nil {
 				return err
 			}
 			l, err := resolveDB(ctx, rt, args[0], region)
@@ -1070,15 +1098,18 @@ new class is in place and the instance is available again (15 second polls,
 --timeout 60m; --no-wait returns at once). AWS checks that the class fits the
 engine and storage.`,
 		Example: "  polyctl aws rds instance resize db-test-01 --class db.m5.xlarge",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			class = strings.TrimSpace(class)
-			if class == "" {
+			if class == "" && !rt.Interactive() {
 				return app.UsageErrf("resize needs --class <db.xxx>")
 			}
 			wait, timeout, err := wf.Resolve(cmd)
 			if err != nil {
+				return err
+			}
+			if args, err = dbArg(ctx, rt, args, region, "available AWS RDS instance", dbStatusIn(dbAvailable)); err != nil {
 				return err
 			}
 			l, err := resolveDB(ctx, rt, args[0], region)
@@ -1088,6 +1119,11 @@ engine and storage.`,
 			l.store(ctx, rt)
 			if err := l.aurora(); err != nil {
 				return err
+			}
+			if class == "" {
+				if class, err = pickDBClass(ctx, rt, l); err != nil {
+					return err
+				}
 			}
 			target := l.target()
 			pending := func() string {
@@ -1209,7 +1245,7 @@ deletion protection on, it is switched off first, unless --keep-protection
 (then exit code 1). An instance being deleted is reported unchanged. --wait
 waits until the instance is gone (30 second polls, --timeout 60m).`,
 		Example: "  polyctl aws rds instance delete db-test-01 --yes\n  polyctl aws rds instance delete db-test-01 --skip-final-snapshot --yes --wait",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			if skip && cmd.Flags().Changed("final-snapshot") {
@@ -1217,6 +1253,9 @@ waits until the instance is gone (30 second polls, --timeout 60m).`,
 			}
 			wait, timeout, err := wf.Resolve(cmd)
 			if err != nil {
+				return err
+			}
+			if args, err = dbArg(ctx, rt, args, region, "AWS RDS instance not being deleted", func(d dbInstance) bool { return d.Status != dbDeleting }); err != nil {
 				return err
 			}
 			l, err := resolveDB(ctx, rt, args[0], region)
@@ -1337,4 +1376,30 @@ waits until the instance is gone (30 second polls, --timeout 60m).`,
 	cmd.Flags().StringVar(&region, "region", "", "region of the instance (default: look it up in the inventory of every account)")
 	app.AddWaitFlags(cmd, &wf, false, rdsDeleteTimeout)
 	return cmd
+}
+
+// askPassword asks for the master password of a new instance in the
+// interactive flow: typed twice without echo, at least 8 characters.
+func askPassword(ctx context.Context, rt *app.Runtime) (string, error) {
+	p := rt.Prompt().WithContext(ctx)
+	for {
+		pw, err := p.RequiredSecret("Master password (at least 8 characters)")
+		if err != nil {
+			return "", err
+		}
+		pw = strings.TrimRight(pw, "\r\n")
+		if len(pw) < 8 {
+			rt.Infof("the master password must be at least 8 characters")
+			continue
+		}
+		again, err := p.RequiredSecret("Master password again")
+		if err != nil {
+			return "", err
+		}
+		if strings.TrimRight(again, "\r\n") != pw {
+			rt.Infof("the passwords differ; type them again")
+			continue
+		}
+		return pw, nil
+	}
 }

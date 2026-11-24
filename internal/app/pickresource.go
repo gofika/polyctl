@@ -47,9 +47,32 @@ func (rt *Runtime) PickResource(ctx context.Context, p ResourcePick) (string, er
 	if !rt.Interactive() {
 		return "", UsageErrf("%s is required", p.Arg)
 	}
-	rows, err := rt.resourceRows(ctx, p.Platform, p.Kind)
+	opts, what, err := rt.resourceOptions(ctx, p)
 	if err != nil {
 		return "", err
+	}
+	return rt.Choose(Choice{Title: p.Title, Options: opts, Arg: p.Arg, Required: p.Required, What: what})
+}
+
+// PickResources is PickResource for several resources (multiple choice);
+// ticking none is "nothing to do".
+func (rt *Runtime) PickResources(ctx context.Context, p ResourcePick) ([]string, error) {
+	if !rt.Interactive() {
+		return nil, UsageErrf("%s is required", p.Arg)
+	}
+	opts, what, err := rt.resourceOptions(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	return rt.ChooseMany(Choice{Title: p.Title, Options: opts, Arg: p.Arg, Required: p.Required, What: what})
+}
+
+// resourceOptions lists the rows of p as options, and what names them for
+// the message of an empty list.
+func (rt *Runtime) resourceOptions(ctx context.Context, p ResourcePick) ([]prompt.Option, string, error) {
+	rows, err := rt.resourceRows(ctx, p.Platform, p.Kind)
+	if err != nil {
+		return nil, "", err
 	}
 	var opts []prompt.Option
 	for _, r := range rows {
@@ -76,7 +99,7 @@ func (rt *Runtime) PickResource(ctx context.Context, p ResourcePick) (string, er
 	if p.What != "" {
 		what = p.What
 	}
-	return rt.Choose(Choice{Title: p.Title, Options: opts, Arg: p.Arg, Required: p.Required, What: what})
+	return opts, what, nil
 }
 
 // resourceRows lists the inventory rows of kind of the selected accounts,
