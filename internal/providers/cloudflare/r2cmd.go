@@ -503,9 +503,13 @@ func newR2DomainListCmd(rt *app.Runtime, jur *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list <bucket>",
 		Short: "List the custom domains of a bucket",
-		Args:  cobra.ExactArgs(1),
+		Args:  app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+			args, err := bucketArgs(ctx, rt, args)
+			if err != nil {
+				return err
+			}
 			bucket := args[0]
 			if rt.Flags.Offline {
 				return app.ErrOffline
@@ -563,13 +567,19 @@ func newR2DomainGetCmd(rt *app.Runtime, jur *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "get <bucket> <domain>",
 		Short: "Show one custom domain of a bucket",
-		Args:  cobra.ExactArgs(2),
+		Args:  app.ArgsOrInteractive(rt, 2, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			bucket := args[0]
-			domain, err := domainArg(args[1])
+			args, err := bucketArgs(ctx, rt, args)
 			if err != nil {
 				return err
+			}
+			bucket := args[0]
+			domain := ""
+			if len(args) > 1 {
+				if domain, err = domainArg(args[1]); err != nil {
+					return err
+				}
 			}
 			if rt.Flags.Offline {
 				return app.ErrOffline
@@ -577,6 +587,11 @@ func newR2DomainGetCmd(rt *app.Runtime, jur *string) *cobra.Command {
 			a, err := findBucket(ctx, rt, bucket, *jur)
 			if err != nil {
 				return err
+			}
+			if domain == "" {
+				if domain, err = pickBucketDomain(ctx, rt, a, bucket); err != nil {
+					return err
+				}
 			}
 			d, err := currentDomain(ctx, a, bucket, domain)
 			if err != nil {
@@ -884,13 +899,33 @@ ends in, among the zones of the bucket's account; it must be active. A domain
 that is bound already (to this bucket or another) is an error: use
 ` + "`r2 domain ensure`" + ` for a binding that may exist. So is an A, AAAA or CNAME record
 of the same name in the zone.`,
-		Args: cobra.ExactArgs(2),
+		Args: app.ArgsOrInteractive(rt, 2, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			bucket := args[0]
-			domain, err := domainArg(args[1])
+			args, err := bucketArgs(ctx, rt, args)
 			if err != nil {
 				return err
+			}
+			bucket := args[0]
+			domain := ""
+			if len(args) > 1 {
+				if domain, err = domainArg(args[1]); err != nil {
+					return err
+				}
+			}
+			if domain == "" {
+				// A new binding: the hostname cannot be listed, it is
+				// asked and checked as it is typed.
+				v, err := rt.AskInput("<domain>", "Custom domain to bind to "+bucket, "", func(s string) error {
+					_, err := domainArg(s)
+					return err
+				})
+				if err != nil {
+					return err
+				}
+				if domain, err = domainArg(v); err != nil {
+					return err
+				}
 			}
 			if err := minTLSFlag(minTLS); err != nil {
 				return err
@@ -945,13 +980,19 @@ func newR2DomainUpdateCmd(rt *app.Runtime, jur *string) *cobra.Command {
 or off (the = is required), --min-tls sets its minimum TLS version. At least
 one of them is required; what is not given keeps its value. A domain that is
 not bound to the bucket is not found (exit code 4).`,
-		Args: cobra.ExactArgs(2),
+		Args: app.ArgsOrInteractive(rt, 2, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			bucket := args[0]
-			domain, err := domainArg(args[1])
+			args, err := bucketArgs(ctx, rt, args)
 			if err != nil {
 				return err
+			}
+			bucket := args[0]
+			domain := ""
+			if len(args) > 1 {
+				if domain, err = domainArg(args[1]); err != nil {
+					return err
+				}
 			}
 			if err := minTLSFlag(minTLS); err != nil {
 				return err
@@ -961,7 +1002,7 @@ not bound to the bucket is not found (exit code 4).`,
 				e := enabled
 				want = &e
 			}
-			if want == nil && minTLS == "" {
+			if want == nil && minTLS == "" && !rt.Interactive() {
 				return app.UsageErrf("nothing to update: pass --enabled[=false] and/or --min-tls")
 			}
 			if rt.Flags.Offline {
@@ -971,11 +1012,22 @@ not bound to the bucket is not found (exit code 4).`,
 			if err != nil {
 				return err
 			}
+			if domain == "" {
+				if domain, err = pickBucketDomain(ctx, rt, a, bucket); err != nil {
+					return err
+				}
+			}
 			// The API answers 200 to an update of a domain that is not
 			// bound, so the domain is read first.
 			cur, err := currentDomain(ctx, a, bucket, domain)
 			if err != nil {
 				return err
+			}
+			if want == nil && minTLS == "" {
+				// The interactive flow asks what to change.
+				if want, minTLS, err = askDomainUpdate(rt, *cur); err != nil {
+					return err
+				}
 			}
 			run := &r2Run{rt: rt, target: platform.Target{Platform: platform.Cloudflare, Profile: a.profile, Zone: cur.ZoneName, Domain: domain}}
 			return run.finish(ctx, "", applyUpdate(ctx, rt, run, a, bucket, domain, *cur, want, minTLS))
@@ -995,13 +1047,19 @@ record it created for it. The interactive flow asks for confirmation (default
 no; --yes skips it). The non-interactive flow asks nothing: --yes is required,
 and without it the command is a usage error (exit code 2). A domain that is
 not bound to the bucket is not found (exit code 4).`,
-		Args: cobra.ExactArgs(2),
+		Args: app.ArgsOrInteractive(rt, 2, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			bucket := args[0]
-			domain, err := domainArg(args[1])
+			args, err := bucketArgs(ctx, rt, args)
 			if err != nil {
 				return err
+			}
+			bucket := args[0]
+			domain := ""
+			if len(args) > 1 {
+				if domain, err = domainArg(args[1]); err != nil {
+					return err
+				}
 			}
 			action := fmt.Sprintf("unbind %s from R2 bucket %s", domain, bucket)
 			if !rt.DryRun() {
@@ -1015,6 +1073,12 @@ not bound to the bucket is not found (exit code 4).`,
 			a, err := findBucket(ctx, rt, bucket, *jur)
 			if err != nil {
 				return err
+			}
+			if domain == "" {
+				if domain, err = pickBucketDomain(ctx, rt, a, bucket); err != nil {
+					return err
+				}
+				action = fmt.Sprintf("unbind %s from R2 bucket %s", domain, bucket)
 			}
 			// The API answers 200 to the removal of a domain that is not
 			// bound, so the domain is read first.
@@ -1060,13 +1124,33 @@ of --zone or the longest zone name <domain> ends in, in the bucket's account.
 A domain bound with another zone than --zone is an error: it is not
 unbound automatically. A domain bound to another bucket makes the creation
 fail. Running the command again changes nothing.`,
-		Args: cobra.ExactArgs(2),
+		Args: app.ArgsOrInteractive(rt, 2, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			bucket := args[0]
-			domain, err := domainArg(args[1])
+			args, err := bucketArgs(ctx, rt, args)
 			if err != nil {
 				return err
+			}
+			bucket := args[0]
+			domain := ""
+			if len(args) > 1 {
+				if domain, err = domainArg(args[1]); err != nil {
+					return err
+				}
+			}
+			if domain == "" {
+				// A new binding: the hostname cannot be listed, it is
+				// asked and checked as it is typed.
+				v, err := rt.AskInput("<domain>", "Custom domain to bind to "+bucket, "", func(s string) error {
+					_, err := domainArg(s)
+					return err
+				})
+				if err != nil {
+					return err
+				}
+				if domain, err = domainArg(v); err != nil {
+					return err
+				}
 			}
 			if err := minTLSFlag(minTLS); err != nil {
 				return err

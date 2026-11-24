@@ -152,3 +152,106 @@ func askSettingValue(rt *app.Runtime, name string, current any) (string, error) 
 	}
 	return rt.AskInput("<value>", "New value of "+name, cur, app.RequireValue("a value"))
 }
+
+// bucketArgs fills in a missing <bucket> in the interactive flow with a
+// bucket of the Cloudflare accounts the command may use (as the inventory
+// knows them, synced when stale), labelled with account and location.
+func bucketArgs(ctx context.Context, rt *app.Runtime, args []string) ([]string, error) {
+	if len(args) > 0 {
+		return args, nil
+	}
+	names, _, err := r2Profiles(rt)
+	if err != nil {
+		return nil, err
+	}
+	var opts []prompt.Option
+	seen := map[string]bool{}
+	for _, name := range names {
+		rows, _, err := cachedBuckets(ctx, rt, name)
+		if err != nil {
+			rt.Infof("warning: buckets of cloudflare/%s: %v", name, err)
+			continue
+		}
+		for _, r := range rows {
+			if seen[r.Name] {
+				continue // the same account in two profiles
+			}
+			seen[r.Name] = true
+			label := r.Name + "  cloudflare/" + name
+			if r.Location != "" {
+				label += "  " + r.Location
+			}
+			if r.StorageClass != "" {
+				label += "  " + r.StorageClass
+			}
+			opts = append(opts, prompt.Option{Label: label, Value: r.Name})
+		}
+	}
+	v, err := rt.Choose(app.Choice{Title: "R2 bucket", Options: opts, Arg: "<bucket>", What: "R2 bucket"})
+	if err != nil {
+		return nil, err
+	}
+	return []string{v}, nil
+}
+
+// pickBucketDomain asks for one of the custom domains bound to bucket.
+func pickBucketDomain(ctx context.Context, rt *app.Runtime, a *r2Acct, bucket string) (string, error) {
+	ds, err := a.api.listCustomDomains(ctx, a.account, bucket)
+	if err != nil {
+		return "", r2Err(err, a, bucket)
+	}
+	sort.SliceStable(ds, func(i, j int) bool { return ds[i].Domain < ds[j].Domain })
+	var opts []prompt.Option
+	for _, d := range ds {
+		label := d.Domain + "  disabled"
+		if d.Enabled {
+			label = d.Domain + "  enabled"
+		}
+		if d.MinTLS != "" {
+			label += "  tls " + d.MinTLS
+		}
+		if d.ZoneName != "" {
+			label += "  zone " + d.ZoneName
+		}
+		opts = append(opts, prompt.Option{Label: label, Value: d.Domain})
+	}
+	return rt.Choose(app.Choice{Title: "Custom domain of " + bucket, Options: opts, Arg: "<domain>", What: "custom domain of bucket " + bucket})
+}
+
+// askDomainUpdate asks what r2 domain update changes: switch the domain
+// on or off (the opposite of now), or its minimum TLS version (the current
+// one marked).
+func askDomainUpdate(rt *app.Runtime, cur r2CustomDomain) (*bool, string, error) {
+	toggle := "Disable the domain"
+	if !cur.Enabled {
+		toggle = "Enable the domain"
+	}
+	what, err := rt.Choose(app.Choice{Title: "Change what of " + cur.Domain + "?", Arg: "--enabled / --min-tls", Options: []prompt.Option{
+		{Label: toggle, Value: "toggle"},
+		{Label: "Minimum TLS version (now " + nonEmpty(cur.MinTLS, "default") + ")...", Value: "tls"},
+	}})
+	if err != nil {
+		return nil, "", err
+	}
+	if what == "toggle" {
+		on := !cur.Enabled
+		return &on, "", nil
+	}
+	var opts []prompt.Option
+	for _, v := range minTLSValues {
+		label := v
+		if v == cur.MinTLS {
+			label += "  (current)"
+		}
+		opts = append(opts, prompt.Option{Label: label, Value: v})
+	}
+	v, err := rt.Choose(app.Choice{Title: "Minimum TLS version", Options: opts, Default: cur.MinTLS, Arg: "--min-tls"})
+	return nil, v, err
+}
+
+func nonEmpty(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
+}
