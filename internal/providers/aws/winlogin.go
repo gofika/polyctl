@@ -348,10 +348,11 @@ const pendingInstancePrefix = "pending-"
 // pending stores the login of an instance whose RunInstances result is
 // unknown, under the client token of the request and the instance name,
 // so that the private key of the key pair polyctl created survives the
-// run. Nothing is shown: finish has no instance id.
+// run. Nothing is shown: finish has no instance id. A cancelled or timed
+// out run (one way the result becomes unknown) still stores it.
 func (w *windowsLogin) pending(ctx context.Context, token string) {
 	w.id = pendingInstancePrefix + token
-	w.put(ctx)
+	w.put(context.WithoutCancel(ctx))
 	if !w.stored {
 		w.rt.Infof("warning: the private key of key pair %s could not be stored: if instance %s exists, reset its Windows password in AWS", w.createdKeyPair, w.name)
 	} else {

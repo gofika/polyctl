@@ -941,3 +941,21 @@ func TestWindowsRunResultUnknown(t *testing.T) {
 		t.Errorf("stored after retrieve = %+v", got)
 	}
 }
+
+// A run cancelled while RunInstances was in flight (an unknown result)
+// still stores the private key of the key pair it keeps.
+func TestWindowsPendingCancelled(t *testing.T) {
+	h := winHarness(t, app.Flags{})
+	path, _ := writeRSAKey(t, t.TempDir())
+	k, err := loadWindowsKey(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := &windowsLogin{rt: h.rt, profile: "lab", region: "ap-east-1", name: "win-a", key: k, createdKeyPair: "win-a-win"}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	w.pending(ctx, "token-1")
+	if got := storedWin(t, h, "win-a"); len(got) != 1 || got[0].PrivateKey == "" || got[0].InstanceID != pendingInstancePrefix+"token-1" {
+		t.Errorf("stored = %+v\n%s", got, h.stderr.String())
+	}
+}

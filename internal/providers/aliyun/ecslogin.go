@@ -78,6 +78,8 @@ const pendingInstancePrefix = "pending-"
 // pending stores the password of an instance whose RunInstances result is
 // unknown, under the client token of the request and the instance name, so
 // that it survives the run. Nothing is shown: finish has no instance id.
+// A cancelled or timed out run (one way the result becomes unknown) still
+// stores it.
 func (w *windowsLogin) pending(ctx context.Context, token string) {
 	if w.password == "" {
 		return
@@ -85,7 +87,7 @@ func (w *windowsLogin) pending(ctx context.Context, token string) {
 	w.id = pendingInstancePrefix + token
 	st, err := w.rt.Secrets()
 	if err == nil {
-		err = st.Put(ctx, w.credentials())
+		err = st.Put(context.WithoutCancel(ctx), w.credentials())
 	}
 	w.id = ""
 	if err != nil {

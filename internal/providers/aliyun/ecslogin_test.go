@@ -490,3 +490,19 @@ func TestWindowsRunResultUnknown(t *testing.T) {
 		t.Errorf("login = %v", login)
 	}
 }
+
+// A run cancelled while RunInstances was in flight (an unknown result)
+// still stores the generated password.
+func TestWindowsPendingCancelled(t *testing.T) {
+	h, _ := winHarness(t, app.Flags{})
+	w := newWindowsLogin(h.rt, &ecsScope{c: h.api.client(), profile: "ali", region: "cn-shanghai"}, "win-a")
+	if _, err := w.generate(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	w.pending(ctx, "token-1")
+	if got := storedLogin(t, h, "win-a"); len(got) != 1 || got[0].Password == "" || got[0].InstanceID != pendingInstancePrefix+"token-1" {
+		t.Errorf("stored = %+v\n%s", got, h.stderr.String())
+	}
+}
