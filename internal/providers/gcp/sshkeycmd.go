@@ -2,10 +2,12 @@ package gcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/ssh"
@@ -38,7 +40,8 @@ metadata, keeping every other metadata item and every other line as it is
 meanwhile is read again and retried once). list also shows the
 project-wide keys (project metadata, read-only: they reach every instance
 of the project), marked ignored when the instance blocks them
-(block-project-ssh-keys=TRUE). When OS Login is enabled (enable-oslogin=TRUE
+(block-project-ssh-keys=TRUE); a key whose google-ssh expireOn has passed
+is listed ignored, and add puts it in again without an expiry. When OS Login is enabled (enable-oslogin=TRUE
 in the instance metadata, else in the project metadata), the guest ignores
 the ssh-keys metadata: list says so, and add and remove are refused with
 exit code 7 (OS Login keys belong to the Google account: gcloud compute
@@ -83,6 +86,31 @@ type metadataLine struct {
 	User    string
 	Key     ssh.PublicKey
 	Comment string
+	// Expired marks a key whose google-ssh expireOn has passed: it stays in
+	// the metadata but no longer logs in.
+	Expired bool
+}
+
+// googleSSHExpired reports whether a key comment `google-ssh {...}` names
+// an expireOn in the past. A comment that is not one, or a time that does
+// not parse, is not expired.
+func googleSSHExpired(comment string, now time.Time) bool {
+	rest, ok := strings.CutPrefix(comment, "google-ssh ")
+	if !ok {
+		return false
+	}
+	var v struct {
+		ExpireOn string `json:"expireOn"`
+	}
+	if json.Unmarshal([]byte(strings.TrimSpace(rest)), &v) != nil || v.ExpireOn == "" {
+		return false
+	}
+	for _, layout := range []string{"2006-01-02T15:04:05-0700", time.RFC3339} {
+		if t, err := time.Parse(layout, v.ExpireOn); err == nil {
+			return now.After(t)
+		}
+	}
+	return false
 }
 
 // parseMetadataLine parses a line of an ssh-keys (or legacy sshKeys) item;
@@ -96,7 +124,7 @@ func parseMetadataLine(line string) (metadataLine, bool) {
 	if err != nil {
 		return metadataLine{}, false
 	}
-	return metadataLine{User: user, Key: key, Comment: comment}, true
+	return metadataLine{User: user, Key: key, Comment: comment, Expired: googleSSHExpired(comment, time.Now())}, true
 }
 
 // metadataLines returns the keys of the ssh-keys and sshKeys items.
@@ -157,12 +185,22 @@ func (s *metadataKeyStore) List(ctx context.Context) (*app.SSHKeyListing, error)
 	}
 	osLogin, osWhere := effectiveBool(in.Metadata, pmd, osLoginItem)
 	blocked, blockWhere := effectiveBool(in.Metadata, pmd, blockProjectKeys)
+	expired := 0
 	for _, k := range metadataLines(in.Metadata) {
-		out.Keys = append(out.Keys, app.SSHKeyEntry{User: k.User, Key: k.Key, Comment: k.Comment, Source: sourceInstanceMetadata, Ignored: osLogin})
+		if k.Expired {
+			expired++
+		}
+		out.Keys = append(out.Keys, app.SSHKeyEntry{User: k.User, Key: k.Key, Comment: k.Comment, Source: sourceInstanceMetadata, Ignored: osLogin || k.Expired})
 	}
 	for _, k := range metadataLines(pmd) {
+		if k.Expired {
+			expired++
+		}
 		out.Keys = append(out.Keys, app.SSHKeyEntry{User: k.User, Key: k.Key, Comment: k.Comment, Source: sourceProjectMetadata,
-			ReadOnly: true, Ignored: osLogin || blocked})
+			ReadOnly: true, Ignored: osLogin || blocked || k.Expired})
+	}
+	if expired > 0 {
+		out.Notes = append(out.Notes, fmt.Sprintf("note: %d listed key(s) have expired (google-ssh expireOn in the past): they no longer log in, and add puts such a key in again without an expiry", expired))
 	}
 	if blocked {
 		out.Notes = append(out.Notes, fmt.Sprintf("note: instance %s blocks project-wide SSH keys (block-project-ssh-keys=TRUE in the %s metadata): the project metadata keys do not log in to it", name, blockWhere))
@@ -184,7 +222,7 @@ func (s *metadataKeyStore) Add(ctx context.Context, user string, key *platform.P
 	err := s.l.c.editInstanceMetadata(ctx, s.l.zone, s.l.inst.Name, func(md *compute.Metadata) bool {
 		added = false
 		for _, k := range metadataLines(md) {
-			if k.User == user && sshremote.SameKey(k.Key, key.Key) {
+			if k.User == user && !k.Expired && sshremote.SameKey(k.Key, key.Key) {
 				return false
 			}
 		}

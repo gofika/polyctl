@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 	"google.golang.org/api/compute/v1"
@@ -358,5 +359,52 @@ func TestSSHKeyInteractiveGCP(t *testing.T) {
 	h.answer(strconv.FormatUint(id, 10), []string{"frank " + keyFP(t, pub)})
 	if err := h.run("compute", "instance", "ssh-key", "remove"); exitClass(err) != "nothing" || len(h.gce.writes()) != 0 {
 		t.Fatalf("declined = %v, writes %v", err, h.gce.writes())
+	}
+}
+
+// A key whose google-ssh expireOn has passed no longer logs in: list marks
+// it ignored with a note, and add puts it in again (a new line, the expired
+// one kept).
+func TestSSHKeyExpiredGCP(t *testing.T) {
+	h := newGCPHarness(t, app.Flags{}, nil)
+	keyInstance(t, h)
+	old := testPublicKey(t, `google-ssh {"userName":"gina@example.com","expireOn":"2001-01-01T00:00:00+0000"}`)
+	in := h.gce.instance("us-central1-a", "web-1")
+	h.gce.mu.Lock()
+	v, _ := metadataValue(in.Metadata, sshKeysItem)
+	setMetadataItem(h.gce.instances["proj/us-central1-a/web-1"].Metadata, sshKeysItem, v+"\ngina:"+old)
+	h.gce.mu.Unlock()
+
+	if err := h.run("compute", "instance", "ssh-key", "list", "web-1", "--user", "gina"); err != nil {
+		t.Fatal(err)
+	}
+	if got := rowSummary(sshKeyRows(t, h)); !slices.Equal(got, []string{"gina instance metadata ignored"}) || !strings.Contains(h.stderr.String(), "expired") {
+		t.Errorf("rows = %v, stderr %s", got, h.stderr.String())
+	}
+	blob := strings.Join(strings.Fields(old)[:2], " ")
+	if err := h.run("compute", "instance", "ssh-key", "add", "web-1", "--ssh-key", blob, "--user", "gina"); err != nil {
+		t.Fatal(err)
+	}
+	if r := rows(h.report()); len(r) != 1 || !strings.Contains(r[0], " created") {
+		t.Errorf("rows = %v", r)
+	}
+	if v, _ := metadataItem(t, h, sshKeysItem); !strings.HasSuffix(v, "\ngina:"+old+"\ngina:"+blob) {
+		t.Errorf("ssh-keys = %q", v)
+	}
+}
+
+func TestGoogleSSHExpired(t *testing.T) {
+	now := time.Date(2026, 11, 24, 0, 0, 0, 0, time.UTC)
+	for c, want := range map[string]bool{
+		`google-ssh {"userName":"a@b","expireOn":"2026-11-23T00:00:00+0000"}`: true,
+		`google-ssh {"userName":"a@b","expireOn":"2026-11-23T00:00:00Z"}`:     true,
+		`google-ssh {"userName":"a@b","expireOn":"2026-11-25T00:00:00+0000"}`: false,
+		`google-ssh {"userName":"a@b","expireOn":"tomorrow"}`:                 false,
+		`google-ssh not json`: false,
+		`alice@laptop`:        false,
+	} {
+		if got := googleSSHExpired(c, now); got != want {
+			t.Errorf("%s = %v", c, got)
+		}
 	}
 }
