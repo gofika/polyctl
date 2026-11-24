@@ -130,8 +130,8 @@ func lbBaseName(instance, name, lbPrefix, protocol string) string {
 	return base
 }
 
-// deriveNames computes the component names (section "names" of the
-// README): prefixes from naming.gcp_*_prefix, the protocol inserted for
+// deriveNames computes the component names (the naming keys in
+// docs/configuration.md): prefixes from naming.gcp_*_prefix, the protocol inserted for
 // the components a protocol owns.
 func (e *lbEnsure) deriveNames(name, checkName string) error {
 	cfg, err := e.rt.Config()

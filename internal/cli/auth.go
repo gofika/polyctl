@@ -95,10 +95,10 @@ func newAuthLoginCmd(rt *app.Runtime) *cobra.Command {
 			"or choice that is still missing is a usage error (exit code 2) naming the\n" +
 			"--set key to pass.\n\n" +
 			"Login flows:\n" + loginHelp() +
-			"\nPlatform-specific options are passed with --set key=value (see each platform's\n" +
-			"section in the README); a key the platform does not know is a usage error\n" +
-			"listing the valid ones. Any option may be given as --set key=- to read its\n" +
-			"value from stdin instead of argv, which secrets (token, api_secret,\n" +
+			"\nPlatform-specific options are passed with --set key=value (see \"Login flows\n" +
+			"per platform\" in docs/accounts.md); a key the platform does not know is a\n" +
+			"usage error listing the valid ones. Any option may be given as --set key=- to\n" +
+			"read its value from stdin instead of argv, which secrets (token, api_secret,\n" +
 			"client_secret, ...) should: each one reads one line, in the order given.",
 		Args:              oneArgOrInteractive(rt, errPlatformRequired),
 		ValidArgsFunction: completePlatforms,

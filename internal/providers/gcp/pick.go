@@ -20,7 +20,7 @@ import (
 // The interactive picks of the gcp commands: what a resource is (name, id)
 // and the facts that tell candidates apart (zone, status, type, CIDR,
 // account). Every list holds only usable candidates (x86 only, available
-// only, not deprecated); see README "Interactive and non-interactive use".
+// only, not deprecated); see docs/interactive.md.
 
 // otherValue is the value of the "Other ..." option of a pick.
 const otherValue = "\x00other"

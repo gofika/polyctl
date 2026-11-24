@@ -20,8 +20,8 @@ import (
 
 // The interactive picks of the aws commands: what a resource is (name, id)
 // and the facts that tell candidates apart (zone, state, type, CIDR,
-// account). Every list holds only usable candidates; see README
-// "Interactive and non-interactive use".
+// account). Every list holds only usable candidates; see
+// docs/interactive.md.
 
 // joinLabel joins the non-empty parts of a label with two spaces.
 func joinLabel(parts ...string) string {

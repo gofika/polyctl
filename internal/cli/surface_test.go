@@ -584,22 +584,22 @@ func TestWhoamiShape(t *testing.T) {
 	}
 }
 
-// Every command that asks for a confirmation is in the README's one list of
-// them (the Confirmations section), and every command of that list exists.
-// A command that starts to call rt.Confirm belongs in this table and in the
-// README.
-func TestReadmeListsConfirmingCommands(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "README.md"))
+// Every command that asks for a confirmation is in the one list of them (the
+// Confirmations section of docs/interactive.md), and every command of that
+// list exists. A command that starts to call rt.Confirm belongs in this table
+// and in that list.
+func TestDocsListConfirmingCommands(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "interactive.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	// A Windows checkout (core.autocrlf) has CRLF line endings.
-	readme := strings.ReplaceAll(string(data), "\r\n", "\n")
-	start := strings.Index(readme, "### Confirmations\n")
+	doc := strings.ReplaceAll(string(data), "\r\n", "\n")
+	start := strings.Index(doc, "### Confirmations\n")
 	if start < 0 {
-		t.Fatal("README has no Confirmations section")
+		t.Fatal("docs/interactive.md has no Confirmations section")
 	}
-	section := readme[start:]
+	section := doc[start:]
 	if end := strings.Index(section[1:], "\n#"); end >= 0 {
 		section = section[:end+1]
 	}
@@ -663,7 +663,7 @@ func TestReadmeListsConfirmingCommands(t *testing.T) {
 			t.Errorf("confirming command %q does not exist", c.path)
 		}
 		if line := bullet(c.label); line != "" && !strings.Contains(line, c.token) {
-			t.Errorf("README Confirmations, %s: %s is missing (%s)", c.label, c.token, c.path)
+			t.Errorf("docs/interactive.md Confirmations, %s: %s is missing (%s)", c.label, c.token, c.path)
 		}
 	}
 }

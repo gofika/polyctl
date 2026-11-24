@@ -12,8 +12,8 @@ import (
 )
 
 // The interactive flow never fails on a missing input whose valid values can
-// be listed: it lists them and lets the user pick (see README "Interactive
-// and non-interactive use"). The helpers of this file are the one way
+// be listed: it lists them and lets the user pick (see docs/interactive.md,
+// "Interactive and non-interactive use"). The helpers of this file are the one way
 // commands do that, so every command behaves the same:
 //
 //   - The non-interactive flow never asks: a missing input is a usage error
