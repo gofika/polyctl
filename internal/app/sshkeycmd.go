@@ -182,7 +182,7 @@ func SSHKeyCommands(rt *Runtime, sc SSHKeyCommand) *cobra.Command {
 func sshKeyMechanism(sc SSHKeyCommand) string {
 	if sc.Metadata {
 		s := "The keys are the instance's ssh-keys metadata (lines user:key), written\n" +
-			"through the platform API; the instance needs not be running."
+			"through the platform API; the instance need not be running."
 		if sc.Detail != "" {
 			s += "\n\n" + sc.Detail
 		}
@@ -612,7 +612,7 @@ func sshKeyRemoveCommand(rt *Runtime, sc SSHKeyCommand) *cobra.Command {
 		},
 	}
 	AddPublicKeyFlags(cmd, &f.keys)
-	cmd.Flags().StringArrayVar(&f.fingerprints, "fingerprint", nil, "SHA256 fingerprint of a key to remove (as `ssh-key list` shows it); repeatable")
+	cmd.Flags().StringArrayVar(&f.fingerprints, "fingerprint", nil, "SHA256 fingerprint of a key to remove, as ssh-key list shows it; repeatable")
 	cmd.Flags().StringVar(&f.user, "user", "", sc.removeUserHelp())
 	sc.addFlags(cmd, f)
 	return cmd
