@@ -476,6 +476,7 @@ A Windows instance logs in with a user name and a password. polyctl keeps the on
 <tree> ssh-key add <name|id> (--ssh-key <public key> | --ssh-key-file <path>) [--user <name>] [--dry-run]
 <tree> ssh-key remove <name|id> (--fingerprint SHA256:... | --ssh-key <public key> | --ssh-key-file <path>) [--user <name>] [--yes] [--dry-run]
        # over SSH also: [--address <ip>] [--port 22] [--identity-file <private key>] [--login-user <name>] [--accept-new-host-key]
+       # AWS also: [--instance-connect]
 ```
 
 - **add** is an ensure: it reads first, and a key the user already has (compared by key type and key data, not by comment or options) is reported `unchanged` without a write. The change report names the key `key/<user>/<SHA256 fingerprint>`; `--dry-run` reads (it logs in over SSH) and reports `would create`. The key takes the same flags and checks as `instance create`; on a terminal, without one, the `~/.ssh/*.pub` keys are offered (one already on the instance marked), with another file and typing the key. In the non-interactive flow a missing key is exit code 2 before anything is read.
@@ -489,6 +490,11 @@ On Compute Engine (`gcp compute instance ssh-key ... [--zone <z>]`, no SSH login
 - **User**: `--user`, else the user of the `user@host` that ends the key's comment (the rule of `instance create`); on a terminal it is asked, and the non-interactive flow is exit code 2 before anything is read. remove without `--user` removes the key for every user that has it.
 - **Project-wide keys** (the project's `ssh-keys` metadata) reach every instance of the project: list shows them `read-only` (`SOURCE` `project metadata`), add reports a key already there for the user `unchanged`, and remove never changes them (`gcp compute instance create` and the console manage them). An instance that blocks them (`block-project-ssh-keys=TRUE` in its metadata, else in the project's) lists them `ignored`, with a note, and add then puts such a key into the instance metadata. When the account may not read the project metadata, list says so and shows the instance keys only.
 - **OS Login**: with `enable-oslogin=TRUE` in the instance metadata, or in the project metadata when the instance does not set it, the guest ignores the `ssh-keys` metadata and logs in with the keys of the user's Google account. list still works, marks every key `ignored` and says so; add and remove are refused with exit code 7 and point at `gcloud compute os-login ssh-keys add`. An organization policy that forces OS Login (`compute.requireOsLogin`) is not detected.
+
+On AWS EC2 (`aws ec2 instance ssh-key ... [--region <r>]`, over SSH; the instance must be running):
+
+- **Login users** come from the instance's image (`ec2:DescribeImages`), matched by its name and description (AWS has no field that names the default user) and by its `PlatformDetails` billing label, with the defaults AWS documents: `ec2-user` for Amazon Linux (2023, 2 and the first one), Oracle Linux, FreeBSD and macOS; `ubuntu` for Ubuntu (and Ubuntu Pro); `admin` for Debian; `centos`, then `ec2-user`, for CentOS; `fedora`, then `ec2-user`, for Fedora; `ec2-user`, then `root`, for Red Hat Enterprise Linux and SUSE; `rocky` for Rocky Linux; `bitnami` for Bitnami images. An image of another family (AlmaLinux, a custom image) gets `ec2-user`, `ubuntu`, `admin`, `centos`, `rocky`, `fedora`, `bitnami` and `root` tried in that order, with a note; an image that cannot be read (deregistered, private to another account, no `ec2:DescribeImages`) falls back to the instance's `PlatformDetails` (Red Hat, SUSE, Ubuntu Pro), else to that list, with a note. `--login-user` skips all of this. The users tried and why each failed are listed when none logs in.
+- **EC2 Instance Connect** (`--instance-connect`): when no local key logs in, polyctl generates a key in memory for that run (never stored or printed), pushes its public half for each login user in turn with `ec2-instance-connect:SendSSHPublicKey` (valid for 60 seconds; the IAM action is needed on the instance, a denial is exit code 3) and logs in with it to make the change. It works only on images with EC2 Instance Connect installed: the standard Amazon Linux 2023 image, Amazon Linux 2 since 2019-06-18 and Ubuntu 20.04 or later ship it, while minimal and ECS-optimized Amazon Linux images, Debian, RHEL, SUSE and most others need it installed first. A terminal offers it (default no) for the images known to ship it; otherwise only the flag uses it. The push goes to the AWS API, the login still goes to the instance's SSH port, so the security group must let polyctl in either way.
 
 Over SSH:
 
@@ -1297,6 +1303,9 @@ aws ec2 instance create <name> [--type <type|size>] [--ami <ami-id> | --os al202
                         [--key-file <rsa private key>] [--password-timeout 20m]          # Windows only
                         [--region <r>] [--no-wait] [--timeout 5m]
 aws ec2 instance password <name|id> [--key-file <path>] [--region <r>]                 # Windows user name and password
+aws ec2 instance ssh-key list <name|id> [--user <name>] [--region <r>]                 # over SSH: authorized_keys
+aws ec2 instance ssh-key add <name|id> (--ssh-key <public key> | --ssh-key-file <path>) [--user <name>] [--instance-connect] [--region <r>]
+aws ec2 instance ssh-key remove <name|id> (--fingerprint SHA256:... | --ssh-key <key> | --ssh-key-file <path>) [--user <name>] [--yes] [--region <r>]
 aws ec2 instance delete <name|id> [--yes] [--wait [--timeout 5m]] [--region <r>]       # alias: terminate
 aws ec2 instance reboot <name|id> [--wait [--timeout 5m]] [--region <r>]               # starts a stopped instance
 aws ec2 instance resize <name|id> --type <type|size> [--start[=false]] [--yes] [--timeout 5m] [--wait-port <n>] [--region <r>]
