@@ -1305,3 +1305,25 @@ func TestAuthLoginOffline(t *testing.T) {
 		t.Errorf("online login: %v, %d Login call(s) (stderr %q)", err, loginCalls(), stderr)
 	}
 }
+
+// auth rename without arguments asks for the profile and the new name,
+// which is checked as it is typed.
+func TestAuthRenameAsks(t *testing.T) {
+	_, cfgPath := setup(t, true)
+	_, _, err, p := runPick(t, cfgPath, []any{"a", "a", "acme"}, "auth", "rename")
+	if err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	if a := p.Find(`New name for profile "a"`); a.Default != "" {
+		t.Errorf("a default name was offered: %q", a.Default)
+	}
+	cfg, _ := config.Load(cfgPath)
+	if _, ok := cfg.Profiles["acme"]; !ok {
+		t.Errorf("profiles after rename: %v", cfg.ProfileNames())
+	}
+	// Leaving the question renames nothing.
+	_, stderr, err, _ := runPick(t, cfgPath, []any{abort{}}, "auth", "rename", "acme")
+	if err != nil || stderr != "cancelled\n" {
+		t.Errorf("abort: %v, %q", err, stderr)
+	}
+}

@@ -288,16 +288,37 @@ func newAuthRenameCmd(rt *app.Runtime) *cobra.Command {
 		Long: "Rename a profile. Its accounts, their stored credentials and their cached\n" +
 			"resources move to the new name; when the profile was current, the new name\n" +
 			"becomes current.",
-		Args: cobra.ExactArgs(2),
+		Args: app.ArgsOrInteractive(rt, 2, nil),
 		ValidArgsFunction: func(cmd *cobra.Command, args []string, tc string) ([]string, cobra.ShellCompDirective) {
 			if len(args) > 0 {
 				return nil, cobra.ShellCompDirectiveNoFileComp
 			}
 			return completeProfiles(rt)(cmd, args, tc)
 		},
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: quietAbort(rt, func(cmd *cobra.Command, args []string) error {
+			// The interactive flow asks for what is missing: the profile
+			// (current one preselected), then the new name, checked as it
+			// is typed.
+			if len(args) == 0 {
+				old, err := pickProfile(rt, "Rename which profile?")
+				if err != nil {
+					return err
+				}
+				args = []string{old}
+			}
+			if len(args) == 1 {
+				cfg, err := rt.Config()
+				if err != nil {
+					return err
+				}
+				newName, err := rt.AskInput("<new>", fmt.Sprintf("New name for profile %q", args[0]), "", func(s string) error { return checkNewProfileName(cfg, s) })
+				if err != nil {
+					return err
+				}
+				args = append(args, newName)
+			}
 			return renameProfile(cmd.Context(), rt, args[0], args[1])
-		},
+		}),
 	}
 }
 
