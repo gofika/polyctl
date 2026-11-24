@@ -483,6 +483,13 @@ A Windows instance logs in with a user name and a password. polyctl keeps the on
 - **list** prints one row per key: `USER`, `TYPE`, `FINGERPRINT` (SHA256), `COMMENT` and `SOURCE` (`authorized_keys`, `instance metadata`, `project metadata`); the key the command logged in with is marked `in use`, keys `remove` does not change (project-wide keys) `read-only`, and listed keys the instance does not accept (project-wide keys it blocks) `ignored`. `-o json` / `-o yaml` give `user`, `type`, `fingerprint`, `comment`, `source`, `in_use`, `read_only` and `ignored`.
 - **Windows** instances log in with a password, not a key: the commands refuse them with exit code 7 and point at `<tree> password`.
 
+On Compute Engine (`gcp compute instance ssh-key ... [--zone <z>]`, no SSH login; the instance may be stopped):
+
+- **add** and **remove** edit only the instance's own `ssh-keys` metadata item (lines `user:key comment`). Every other metadata item, and every line they do not add or remove (comments, other users' keys, expiring `google-ssh {...}` keys, CRLF endings), is kept as it is; the whole metadata goes back with the fingerprint as read, and a fingerprint that changed meanwhile is read again and the edit retried once. The legacy `sshKeys` item is read too: a key there counts as present, and remove deletes its lines as well (an item left without any key is dropped).
+- **User**: `--user`, else the user of the `user@host` that ends the key's comment (the rule of `instance create`); on a terminal it is asked, and the non-interactive flow is exit code 2 before anything is read. remove without `--user` removes the key for every user that has it.
+- **Project-wide keys** (the project's `ssh-keys` metadata) reach every instance of the project: list shows them `read-only` (`SOURCE` `project metadata`), add reports a key already there for the user `unchanged`, and remove never changes them (`gcp compute instance create` and the console manage them). An instance that blocks them (`block-project-ssh-keys=TRUE` in its metadata, else in the project's) lists them `ignored`, with a note, and add then puts such a key into the instance metadata. When the account may not read the project metadata, list says so and shows the instance keys only.
+- **OS Login**: with `enable-oslogin=TRUE` in the instance metadata, or in the project metadata when the instance does not set it, the guest ignores the `ssh-keys` metadata and logs in with the keys of the user's Google account. list still works, marks every key `ignored` and says so; add and remove are refused with exit code 7 and point at `gcloud compute os-login ssh-keys add`. An organization policy that forces OS Login (`compute.requireOsLogin`) is not detected.
+
 Over SSH:
 
 - **Address**: the instance's public IP, else its private IP (with a note: polyctl must then reach the private network); `--address` and `--port` (default 22) override.
@@ -1491,6 +1498,9 @@ gcp compute instance delete <name|id> [--zone <z>] [--release-ips] [--yes] [--wa
 gcp compute instance resize <name|id> --machine-type <type|size> [--zone <z>] [--start[=false]] [--yes] [--wait-port <n>] [--timeout 10m]
 gcp compute instance reboot <name|id|ip> [--zone <z>] [--yes] [--wait [--timeout 3m]]
 gcp compute instance update <name|id> --ip-forward[=false] [--zone <z>]
+gcp compute instance ssh-key list <name|id> [--zone <z>] [--user <name>]                    # instance and project metadata keys
+gcp compute instance ssh-key add <name|id> (--ssh-key <public key> | --ssh-key-file <path>) [--user <name>] [--zone <z>]
+gcp compute instance ssh-key remove <name|id> (--fingerprint SHA256:... | --ssh-key <key> | --ssh-key-file <path>) [--user <name>] [--zone <z>] [--yes]
 gcp compute firewall list [--network <n>]          gcp compute firewall get <name>
 gcp compute firewall create <name> --allow <proto[:ports]>... [--network <n>] [--source-range <cidr>]... [--destination-range <cidr>]...
                             [--target-tag <tag>]... [--direction ingress|egress] [--priority 1000] [--description <text>] [--no-wait] [--timeout 10m]
