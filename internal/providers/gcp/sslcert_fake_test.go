@@ -29,6 +29,9 @@ type lbFake struct {
 	// inUseFails makes the next n certificate deletes fail as in use
 	// whatever the references.
 	inUseFails int
+	// afterCertInsert runs (under the lock) after a certificate is
+	// created: a change made by someone else meanwhile.
+	afterCertInsert func(lb *lbFake)
 }
 
 func (f *fakeCompute) lb() *lbFake {
@@ -370,6 +373,9 @@ func (f *fakeCompute) handleCerts(w http.ResponseWriter, r *http.Request, projec
 			op := f.op("insertSslCertificate", sc.SelfLink)
 			if op.Error == nil {
 				lb.certs[prefix+sc.Name] = &sc
+				if lb.afterCertInsert != nil {
+					lb.afterCertInsert(lb)
+				}
 			}
 			writeJSONStatus(w, 200, op)
 		default:

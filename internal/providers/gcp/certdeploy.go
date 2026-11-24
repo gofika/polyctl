@@ -413,7 +413,7 @@ func (d lbDeployer) PlanBatch(ctx context.Context, acct *platform.DeployAccount,
 	steps = append(steps, platform.Step{Resource: res, Action: platform.Updated, ID: proxy, Desc: desc,
 		Attrs: map[string]string{"proxy": proxy, "old": strings.Join(olds, ","), "cert_name": strings.Join(added, ",")},
 		Apply: func(ctx context.Context) (platform.Change, error) {
-			return platform.Change{}, s.setProxyCerts(ctx, proxy, urls)
+			return platform.Change{}, s.switchProxyCerts(ctx, proxy, replace, added, true)
 		}})
 	for _, old := range olds {
 		name := old

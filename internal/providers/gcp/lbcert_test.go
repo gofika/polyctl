@@ -159,6 +159,28 @@ func TestLBCertSetKeepsCertificatesTheNewOneDoesNotCover(t *testing.T) {
 	}
 }
 
+func TestLBCertSetKeepsACertificateAddedWhileTheNewOneIsCreated(t *testing.T) {
+	h := newGCPHarness(t, app.Flags{}, nil)
+	old := newPair(t, []string{"example.com", "*.example.com"}, 10)
+	late := newPair(t, []string{"late.org"}, 90)
+	h.gce.addCert("us-central1", "example-com-old", old.chain)
+	h.gce.addCert("us-central1", "late-cert", late.chain)
+	regionalLB(h.gce, "example-com-old")
+	h.gce.mu.Lock()
+	h.gce.lb().afterCertInsert = func(lb *lbFake) {
+		p := lb.httpsProxies["proj/us-central1/proxy-https-web-1"]
+		p.SslCertificates = append(p.SslCertificates, selfLink("proj", "us-central1", "sslCertificates", "late-cert"))
+	}
+	h.gce.mu.Unlock()
+	nw := newPair(t, []string{"example.com", "*.example.com"}, 90)
+	if err := h.run("compute", "load-balancer", "cert", "set", "lb-web-1", "--domain", "example.com", "--cert-file", nw.certFile, "--key-file", nw.keyFile); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.gce.proxyCerts("us-central1", "proxy-https-web-1"); !slices.Equal(got, []string{"late-cert", "example-com-cert-20260101"}) {
+		t.Errorf("certs = %v", got)
+	}
+}
+
 func TestLBCertSetResumes(t *testing.T) {
 	h := newGCPHarness(t, app.Flags{}, nil)
 	old := newPair(t, []string{"example.com"}, 10)

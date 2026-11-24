@@ -238,6 +238,48 @@ func (s certScope) setProxyCerts(ctx context.Context, proxy string, urls []strin
 	return s.wait(ctx, op)
 }
 
+// switchProxyCerts puts new certificates in the place of old ones on a
+// proxy. The list is read again right before the write, so that a
+// certificate added or removed meanwhile (the creation of the new
+// certificate takes a while) is kept as it is: every old certificate of
+// replace (old name -> new name) gives way to its successor, every name of
+// ensure ends up on the proxy, and the others stay. inPlace puts a
+// successor where its old certificate was, else at the end.
+func (s certScope) switchProxyCerts(ctx context.Context, proxy string, replace map[string]string, ensure []string, inPlace bool) error {
+	p, err := s.getProxy(ctx, proxy)
+	if err != nil {
+		return fmt.Errorf("target HTTPS proxy %s (%s): %w", proxy, s.label(), err)
+	}
+	var urls, names, pending []string
+	for _, u := range p.SslCertificates {
+		n := lastSegment(u)
+		if nw, ok := replace[n]; ok {
+			if inPlace && !slices.Contains(names, nw) {
+				names = append(names, nw)
+				urls = append(urls, s.certURL(nw))
+			} else if !inPlace {
+				pending = append(pending, nw)
+			}
+			continue
+		}
+		if slices.Contains(names, n) {
+			continue
+		}
+		names = append(names, n)
+		urls = append(urls, u)
+	}
+	for _, n := range append(pending, ensure...) {
+		if !slices.Contains(names, n) {
+			names = append(names, n)
+			urls = append(urls, s.certURL(n))
+		}
+	}
+	if len(urls) > maxProxyCerts {
+		return fmt.Errorf("target HTTPS proxy %s would hold %d certificates; a proxy takes at most %d: remove certificates it no longer needs first", proxy, len(urls), maxProxyCerts)
+	}
+	return s.setProxyCerts(ctx, proxy, urls)
+}
+
 // usersOf lists the proxies of the scope whose certificates hold name.
 func (s certScope) usersOf(ctx context.Context, name string) ([]string, error) {
 	proxies, err := s.listProxies(ctx)
@@ -581,11 +623,15 @@ func ReplaceProxyCertificate(ctx context.Context, spec replaceSpec) (*replacePla
 		for _, o := range st.olds {
 			addOld(o)
 		}
-		proxy := st.name
+		proxy, newName := st.name, rp.newName
+		replace := map[string]string{}
+		for _, o := range st.olds {
+			replace[o] = newName
+		}
 		rp.steps = append(rp.steps, platform.Step{Resource: res, Action: platform.Updated, Desc: desc,
 			Attrs: attrs("proxy", proxy, "old", oldLabel, "new", rp.newName),
 			Apply: func(ctx context.Context) (platform.Change, error) {
-				return platform.Change{}, s.setProxyCerts(ctx, proxy, urls)
+				return platform.Change{}, s.switchProxyCerts(ctx, proxy, replace, []string{newName}, false)
 			}})
 	}
 	// A proxy left unchanged (it holds the new leaf already) keeps its

@@ -243,6 +243,30 @@ func TestGCPDeployerKeepsTheCertificateOfAnotherKeyType(t *testing.T) {
 	}
 }
 
+func TestGCPDeployerKeepsACertificateAddedWhileTheNewOneIsCreated(t *testing.T) {
+	d := newGCPDeploy(t)
+	g := d.h.gce
+	old := newPair(t, []string{"example.com", "*.example.com"}, 10)
+	late := newPair(t, []string{"late.org"}, 90)
+	g.addCert("us-central1", "example-com-old", old.chain)
+	g.addCert("us-central1", "late-cert", late.chain)
+	g.addHTTPSProxy("us-central1", "proxy-web", "lb-web", "example-com-old")
+	g.addRule("us-central1", "fr-web", "targetHttpsProxies/proxy-web", "34.1.2.3", "443", nil)
+	g.mu.Lock()
+	g.lb().afterCertInsert = func(lb *lbFake) {
+		p := lb.httpsProxies["proj/us-central1/proxy-web"]
+		p.SslCertificates = append([]string{selfLink("proj", "us-central1", "sslCertificates", "late-cert")}, p.SslCertificates...)
+	}
+	g.mu.Unlock()
+	d.bundle("example.com", 90)
+	if rep, err := d.run(cert.DeployOptions{}); err != nil {
+		t.Fatalf("deploy: %v\n%s", err, strings.Join(reportRows(rep), "\n"))
+	}
+	if certs := g.proxyCerts("us-central1", "proxy-web"); !slices.Equal(certs, []string{"late-cert", "cert-example-com-20260401"}) {
+		t.Errorf("proxy certificates = %v", certs)
+	}
+}
+
 func TestGCPDeployerNamesAndFailures(t *testing.T) {
 	d := newGCPDeploy(t)
 	g := d.h.gce
