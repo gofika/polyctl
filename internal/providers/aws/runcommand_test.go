@@ -58,3 +58,15 @@ func TestSSMManagedLinuxInvalidInstanceID(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+// A command whose result cannot be read was sent all the same: the error
+// says it may have run, and keeps the authorization failure it wraps.
+func TestRunShellCommandResultUnknown(t *testing.T) {
+	cl, st := runCommandClient(t, fakeRunCommand{getErr: &fakeAPIError{"AccessDeniedException", "not authorized to perform ssm:GetCommandInvocation"}})
+	st.run.manage("i-1", ssmtypes.PingStatusOnline)
+	st.run.exec = func(string, string) (string, string, int) { return "", "", 0 }
+	_, _, _, err := cl.runShellCommand(t.Context(), "r", "i-1", "true")
+	if !errors.Is(err, platform.ErrUnauthorized) || !strings.Contains(err.Error(), "was sent, but its result is unknown") {
+		t.Errorf("err = %v", err)
+	}
+}

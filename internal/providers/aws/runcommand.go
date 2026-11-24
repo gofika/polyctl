@@ -140,7 +140,12 @@ func (c *client) runShellCommand(ctx context.Context, region, id, command string
 			return platform.WaitDone, string(out.Status), nil
 		})
 	if err != nil {
-		return nil, nil, 0, err
+		if ctx.Err() != nil {
+			return nil, nil, 0, err
+		}
+		// The command went out: say so, or a write that ran would read as
+		// one that never happened.
+		return nil, nil, 0, fmt.Errorf("Run Command %s on instance %s was sent, but its result is unknown (it may have run): %w", cmdID, id, err)
 	}
 	detail := awssdk.ToString(res.StatusDetails)
 	if detail == "" {
