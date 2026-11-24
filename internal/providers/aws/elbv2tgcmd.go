@@ -163,9 +163,13 @@ func tgGetCmd(rt *app.Runtime) *cobra.Command {
 		Use:     "get <name|arn>",
 		Short:   "Show a target group, its health check and its targets with their health",
 		Example: "  polyctl aws elbv2 target-group get site-xz7-80-target -o json",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+			args, err := tgArg(ctx, rt, args, region)
+			if err != nil {
+				return err
+			}
 			s, tg, err := openTG(ctx, rt, args[0], region)
 			if err != nil {
 				return err
@@ -231,25 +235,33 @@ port, VPC and target type cannot be changed later. The group is tagged
 polyctl:managed=true and with the tags of defaults.aws.tags.`,
 		Example: `  polyctl aws elbv2 target-group create db-30001-target --protocol TCP --port 3306 --target-type ip \
     --health-check-interval 300 --target 10.0.1.25 --vpc vpc-0abc`,
-		Args: cobra.ExactArgs(1),
+		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			name = args[0]
-			if err := checkELBName("target group", name, false); err != nil {
-				return err
+			name = app.Arg(args, 0)
+			if name != "" {
+				if err := checkELBName("target group", name, false); err != nil {
+					return err
+				}
 			}
-			if protocol == "" {
+			interactive := rt.Interactive()
+			if protocol == "" && !interactive {
 				return app.UsageErrf("--protocol is required (%s)", strings.Join(elbProtocols, ", "))
 			}
 			var err error
-			if protocol, err = oneOf("protocol", protocol, elbProtocols); err != nil {
-				return err
+			if protocol != "" {
+				if protocol, err = oneOf("protocol", protocol, elbProtocols); err != nil {
+					return err
+				}
 			}
-			if !cmd.Flags().Changed("port") {
+			portGiven := cmd.Flags().Changed("port")
+			if !portGiven && !interactive {
 				return app.UsageErrf("--port is required")
 			}
-			if err := checkPort("port", port); err != nil {
-				return err
+			if portGiven {
+				if err := checkPort("port", port); err != nil {
+					return err
+				}
 			}
 			if targetType, err = oneOf("target-type", targetType, tgTargetTypes); err != nil {
 				return err
@@ -257,16 +269,44 @@ polyctl:managed=true and with the tags of defaults.aws.tags.`,
 			if err := hf.check(cmd); err != nil {
 				return err
 			}
-			targets, err := parseGroupTargets("target", targetSpecs, targetType, int32(port))
-			if err != nil {
+			if _, err := platform.ParseTargets(targetSpecs); err != nil {
 				return err
 			}
 			s, err := openELBScope(ctx, rt, region, "")
 			if err != nil {
 				return err
 			}
-			if vpc, err = rt.RequireSetting(s.profile, platform.AWS, "vpc_id", "vpc", vpc); err != nil {
+			// The interactive flow asks a missing name (checked as typed),
+			// protocol, port and VPC.
+			if name == "" {
+				if name, err = askELBName(ctx, rt, s, "target group", false); err != nil {
+					return err
+				}
+			}
+			if protocol == "" {
+				if protocol, err = chooseOne(rt, "Protocol of the target group", "--protocol", elbProtocols, "TCP"); err != nil {
+					return err
+				}
+			}
+			if !portGiven {
+				if port, err = askPort(rt, "--port", "Port the targets receive traffic on", ""); err != nil {
+					return err
+				}
+			}
+			targets, err := parseGroupTargets("target", targetSpecs, targetType, int32(port))
+			if err != nil {
 				return err
+			}
+			if vpc, err = rt.Setting(s.profile, platform.AWS, "vpc_id", vpc); err != nil {
+				return err
+			}
+			if vpc == "" {
+				if vpc, err = pickVPC(ctx, rt, s.c, s.region, func() error {
+					_, err := rt.RequireSetting(s.profile, platform.AWS, "vpc_id", "vpc", "")
+					return err
+				}); err != nil {
+					return err
+				}
 			}
 			if tg, err := s.c.FindTargetGroup(ctx, s.region, name); err != nil {
 				return err
@@ -350,12 +390,17 @@ is the group's port).
   check (when they differ). Protocol, port, VPC and target type cannot be
   changed.`,
 		Example: "  polyctl aws elbv2 target-group update site-xz7-80-target --set-target i-0123456789abcdef0\n  polyctl aws elbv2 target-group update db-target --health-check-interval 300",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			fl := cmd.Flags()
-			if len(add) == 0 && len(remove) == 0 && len(set) == 0 && !fl.Changed("health-check-protocol") && !fl.Changed("health-check-interval") {
+			nothing := len(add) == 0 && len(remove) == 0 && len(set) == 0 && !fl.Changed("health-check-protocol") && !fl.Changed("health-check-interval")
+			if nothing && !rt.Interactive() {
 				return app.UsageErrf("nothing to update: pass --add-target, --remove-target, --set-target, --health-check-protocol or --health-check-interval")
+			}
+			args, err := tgArg(ctx, rt, args, region)
+			if err != nil {
+				return err
 			}
 			if len(set) > 0 && (len(add) > 0 || len(remove) > 0) {
 				return app.UsageErrf("--set-target cannot be combined with --add-target or --remove-target")
@@ -371,6 +416,13 @@ is the group's port).
 			s, tg, err := openTG(ctx, rt, args[0], region)
 			if err != nil {
 				return err
+			}
+			if nothing {
+				// The interactive flow: register running instances of the
+				// group's VPC, or deregister registered targets.
+				if add, remove, err = askTargets(ctx, rt, s, tg); err != nil {
+					return err
+				}
 			}
 			addT, err := parseGroupTargets("add-target", add, tg.TargetType, tg.Port)
 			if err != nil {
@@ -471,9 +523,13 @@ the non-interactive flow needs --yes). A group a listener or rule still
 forwards to is exit code 1 (ResourceInUse): change or delete the listener
 first.`,
 		Example: "  polyctl aws elbv2 target-group delete site-xz7-443-target --yes",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+			args, err := tgArg(ctx, rt, args, region)
+			if err != nil {
+				return err
+			}
 			s, tg, err := openTG(ctx, rt, args[0], region)
 			if err != nil {
 				return err

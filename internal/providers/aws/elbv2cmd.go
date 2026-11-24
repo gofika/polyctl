@@ -221,7 +221,15 @@ func resolveLB(ctx context.Context, rt *app.Runtime, ref, region string) (*lbSco
 	if len(profiles) == 1 {
 		hint = "the account holds load balancers of this name in several regions; pass --region or the ARN"
 	}
-	return nil, nil, &app.AmbiguousError{What: fmt.Sprintf("load balancer %q", ref), Candidates: names, Hint: hint}
+	amb := &app.AmbiguousError{What: fmt.Sprintf("load balancer %q", ref), Candidates: names, Hint: hint}
+	// The interactive flow asks which one.
+	f, err := disambiguate(rt, amb, found, func(f lbCandidate) string {
+		return joinLabel(f.lb.Name, f.lb.Type, f.lb.Scheme, f.lb.State, f.lb.VPC, f.lb.DNSName, f.s.where())
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return f.s, &f.lb, nil
 }
 
 // lbInventoryHits returns the accounts and regions whose cached load
@@ -662,9 +670,13 @@ attached to it, with the health of every target (healthy, unhealthy,
 initial, draining, unused, unavailable). The load balancer is named by its
 name, ARN or DNS name.`,
 		Example: "  polyctl aws elbv2 load-balancer get site-xz7-lb -o json\n  polyctl aws elbv2 load-balancer get site-xz7-lb-0123456789abcdef.elb.ap-east-1.amazonaws.com",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+			args, err := lbArg(ctx, rt, args, "<name|arn|dns-name>", region, "AWS load balancer", false, nil)
+			if err != nil {
+				return err
+			}
 			s, lb, err := resolveLB(ctx, rt, args[0], region)
 			if err != nil {
 				return err
@@ -711,19 +723,23 @@ get any. A load balancer of that name in the region is an error (exit code
 1): use ensure. The load balancer is tagged polyctl:managed=true and with the
 tags of defaults.aws.tags. --wait waits until it is active.`,
 		Example: "  polyctl aws elbv2 load-balancer create site-lb --type network --subnet subnet-0abc --sg sg-0123456789abcdef0 --wait",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			name := args[0]
-			if err := checkELBName("load balancer", name, true); err != nil {
-				return err
+			name := app.Arg(args, 0)
+			if name != "" {
+				if err := checkELBName("load balancer", name, true); err != nil {
+					return err
+				}
 			}
-			if typ == "" {
+			if typ == "" && !rt.Interactive() {
 				return app.UsageErrf("--type is required (network or application)")
 			}
 			var err error
-			if typ, err = oneOf("type", typ, lbTypes); err != nil {
-				return err
+			if typ != "" {
+				if typ, err = oneOf("type", typ, lbTypes); err != nil {
+					return err
+				}
 			}
 			if scheme, err = oneOf("scheme", scheme, lbSchemes); err != nil {
 				return err
@@ -731,7 +747,7 @@ tags of defaults.aws.tags. --wait waits until it is active.`,
 			if ipType, err = oneOf("ip-address-type", ipType, lbIPAddressTypes); err != nil {
 				return err
 			}
-			if len(subnets) == 0 {
+			if len(subnets) == 0 && !rt.Interactive() {
 				return app.UsageErrf("--subnet is required (one subnet per availability zone)")
 			}
 			if err := checkSubnetIDs(subnets); err != nil {
@@ -746,6 +762,9 @@ tags of defaults.aws.tags. --wait waits until it is active.`,
 			}
 			s, err := openELBScope(ctx, rt, region, "")
 			if err != nil {
+				return err
+			}
+			if err := askLBCreate(ctx, rt, s, &name, &typ, &subnets, &sgs, cmd.Flags().Changed("sg")); err != nil {
 				return err
 			}
 			if lb, err := s.c.FindLoadBalancer(ctx, s.region, name); err != nil {
@@ -809,12 +828,21 @@ the list cannot be emptied), --subnet replaces the subnets, --ip-address-type
 sets ipv4 or dualstack (dualstack needs subnets with an IPv6 block),
 --deletion-protection[=false] and --cross-zone[=false] set the attributes.`,
 		Example: "  polyctl aws elbv2 load-balancer update site-xz7-lb --deletion-protection\n  polyctl aws elbv2 load-balancer update site-xz7-lb --cross-zone=false --sg sg-0123456789abcdef0",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			fl := cmd.Flags()
-			if !fl.Changed("sg") && !fl.Changed("subnet") && !fl.Changed("ip-address-type") && !fl.Changed("deletion-protection") && !fl.Changed("cross-zone") {
+			changed := map[string]bool{}
+			for _, f := range []string{"sg", "subnet", "ip-address-type", "deletion-protection", "cross-zone"} {
+				changed[f] = fl.Changed(f)
+			}
+			nothing := !changed["sg"] && !changed["subnet"] && !changed["ip-address-type"] && !changed["deletion-protection"] && !changed["cross-zone"]
+			if nothing && !rt.Interactive() {
 				return app.UsageErrf("nothing to update: pass --sg, --subnet, --ip-address-type, --deletion-protection or --cross-zone")
+			}
+			args, err := lbArg(ctx, rt, args, "<name|arn>", region, "AWS load balancer", false, nil)
+			if err != nil {
+				return err
 			}
 			if fl.Changed("sg") {
 				if err := checkSGIDs(sgs); err != nil {
@@ -836,12 +864,21 @@ sets ipv4 or dualstack (dualstack needs subnets with an IPv6 block),
 			if err != nil {
 				return err
 			}
-			if fl.Changed("sg") && len(lb.SecurityGroups) == 0 && lb.Type == "network" {
+			if nothing {
+				// The interactive flow: what to change, then its value.
+				u := lbUpdateAnswers{sgs: &sgs, subnets: &subnets, ipType: &ipType, deletionProtection: &deletionProtection, crossZone: &crossZone}
+				key, err := askLBUpdate(ctx, rt, s, lb, u)
+				if err != nil {
+					return err
+				}
+				changed[key] = true
+			}
+			if changed["sg"] && len(lb.SecurityGroups) == 0 && lb.Type == "network" {
 				return fmt.Errorf("load balancer %s is a Network Load Balancer created without security groups: AWS cannot add any to it (InvalidConfigurationRequest); delete it and create it again with --sg", lb.Name)
 			}
 			res := "load-balancer/" + lb.Name
 			var plan platform.Plan
-			if fl.Changed("sg") {
+			if changed["sg"] {
 				if sameSet(sgs, lb.SecurityGroups) {
 					plan.Add(platform.Step{Resource: res + "/security-groups", Desc: strings.Join(lb.SecurityGroups, ",")})
 				} else {
@@ -852,7 +889,7 @@ sets ipv4 or dualstack (dualstack needs subnets with an IPv6 block),
 						}})
 				}
 			}
-			if fl.Changed("subnet") {
+			if changed["subnet"] {
 				if sameSet(subnets, lb.Subnets()) {
 					plan.Add(platform.Step{Resource: res + "/subnets", Desc: strings.Join(lb.Subnets(), ",")})
 				} else {
@@ -863,7 +900,7 @@ sets ipv4 or dualstack (dualstack needs subnets with an IPv6 block),
 						}})
 				}
 			}
-			if fl.Changed("ip-address-type") {
+			if changed["ip-address-type"] {
 				if ipType == lb.IPAddressType {
 					plan.Add(platform.Step{Resource: res + "/ip-address-type", Desc: ipType})
 				} else {
@@ -873,7 +910,7 @@ sets ipv4 or dualstack (dualstack needs subnets with an IPv6 block),
 						}})
 				}
 			}
-			if fl.Changed("deletion-protection") || fl.Changed("cross-zone") {
+			if changed["deletion-protection"] || changed["cross-zone"] {
 				attrs, err := s.c.LoadBalancerAttributes(ctx, s.region, lb.ID)
 				if err != nil {
 					return err
@@ -891,10 +928,10 @@ sets ipv4 or dualstack (dualstack needs subnets with an IPv6 block),
 							return platform.Change{}, s.c.ModifyLoadBalancerAttributes(ctx, s.region, lb.ID, ch)
 						}})
 				}
-				if fl.Changed("deletion-protection") {
+				if changed["deletion-protection"] {
 					attr("deletion-protection", attrs.DeletionProtection, deletionProtection, func(c *platform.LoadBalancerAttributeChange, v *bool) { c.DeletionProtection = v })
 				}
-				if fl.Changed("cross-zone") {
+				if changed["cross-zone"] {
 					attr("cross-zone", attrs.CrossZone, crossZone, func(c *platform.LoadBalancerAttributeChange, v *bool) { c.CrossZone = v })
 				}
 			}
@@ -936,11 +973,14 @@ protection is exit code 1: turn it off first with
 update --deletion-protection=false (polyctl never does it for you). --wait
 waits until the load balancer is no longer listed.`,
 		Example: "  polyctl aws elbv2 load-balancer delete site-xz7-lb --cascade --yes",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			wait, timeout, err := wf.Resolve(cmd)
 			if err != nil {
+				return err
+			}
+			if args, err = lbArg(ctx, rt, args, "<name|arn>", region, "AWS load balancer", false, nil); err != nil {
 				return err
 			}
 			s, lb, err := resolveLB(ctx, rt, args[0], region)

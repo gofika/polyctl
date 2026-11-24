@@ -124,9 +124,13 @@ func listenerListCmd(rt *app.Runtime) *cobra.Command {
 		Short:   "List the listeners of a load balancer",
 		Long:    "List the listeners of a load balancer (name, ARN or DNS name), by port, with the target groups they forward to.",
 		Example: "  polyctl aws elbv2 listener list site-xz7-lb",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+			args, err := lbArg(ctx, rt, args, "<lb>", region, "AWS load balancer", false, nil)
+			if err != nil {
+				return err
+			}
 			s, lb, err := resolveLB(ctx, rt, args[0], region)
 			if err != nil {
 				return err
@@ -155,8 +159,12 @@ func listenerGetCmd(rt *app.Runtime) *cobra.Command {
 		Use:     "get <listener-arn|lb:port>",
 		Short:   "Show a listener",
 		Example: "  polyctl aws elbv2 listener get site-xz7-lb:443 -o json",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			args, err := listenerArg(cmd.Context(), rt, args, region, nil)
+			if err != nil {
+				return err
+			}
 			_, l, err := resolveListener(cmd.Context(), rt, args[0], region)
 			if err != nil {
 				return err
@@ -181,36 +189,86 @@ load balancer's region). TLS and HTTPS need --cert (the ARN of an ACM
 certificate, see aws acm); the other protocols take none. A listener on the
 port already is an error (exit code 1): use listener update.`,
 		Example: "  polyctl aws elbv2 listener create site-xz7-lb --protocol TCP --port 30001 --target-group db-30001-target",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			if protocol == "" {
+			interactive := rt.Interactive()
+			if protocol == "" && !interactive {
 				return app.UsageErrf("--protocol is required (%s)", strings.Join(elbProtocols, ", "))
 			}
 			var err error
-			if protocol, err = oneOf("protocol", protocol, elbProtocols); err != nil {
-				return err
+			if protocol != "" {
+				if protocol, err = oneOf("protocol", protocol, elbProtocols); err != nil {
+					return err
+				}
 			}
-			if !cmd.Flags().Changed("port") {
+			portGiven := cmd.Flags().Changed("port")
+			if !portGiven && !interactive {
 				return app.UsageErrf("--port is required")
 			}
-			if err := checkPort("port", port); err != nil {
-				return err
+			if portGiven {
+				if err := checkPort("port", port); err != nil {
+					return err
+				}
 			}
-			if tgRef == "" {
+			if tgRef == "" && !interactive {
 				return app.UsageErrf("--target-group is required")
 			}
-			switch {
-			case needsCert(protocol) && cert == "":
-				return app.UsageErrf("a %s listener needs a certificate: pass --cert <acm-certificate-arn>", protocol)
-			case !needsCert(protocol) && cert != "":
-				return app.UsageErrf("--cert applies to TLS and HTTPS listeners only, not %s", protocol)
-			case cert != "" && !strings.HasPrefix(cert, "arn:"):
+			if protocol != "" {
+				switch {
+				case needsCert(protocol) && cert == "" && !interactive:
+					return app.UsageErrf("a %s listener needs a certificate: pass --cert <acm-certificate-arn>", protocol)
+				case !needsCert(protocol) && cert != "":
+					return app.UsageErrf("--cert applies to TLS and HTTPS listeners only, not %s", protocol)
+				}
+			}
+			if cert != "" && !strings.HasPrefix(cert, "arn:") {
 				return app.UsageErrf("--cert %q: expected the ARN of an ACM certificate", cert)
+			}
+			// The interactive flow picks a missing load balancer among the
+			// active ones: a listener needs one to be created on.
+			if args, err = lbArg(ctx, rt, args, "<lb>", region, "active AWS load balancer", true, activeLB); err != nil {
+				return err
 			}
 			s, lb, err := resolveLB(ctx, rt, args[0], region)
 			if err != nil {
 				return err
+			}
+			if protocol == "" {
+				if protocol, err = chooseOne(rt, "Protocol of the listener", "--protocol", listenerProtocols(lb.Type), listenerProtocols(lb.Type)[0]); err != nil {
+					return err
+				}
+			}
+			if !needsCert(protocol) && cert != "" {
+				return app.UsageErrf("--cert applies to TLS and HTTPS listeners only, not %s", protocol)
+			}
+			if !portGiven || tgRef == "" || (needsCert(protocol) && cert == "") {
+				used, err := s.c.ListListeners(ctx, s.region, lb.ID)
+				if err != nil {
+					return err
+				}
+				if !portGiven {
+					def := ""
+					switch protocol {
+					case "HTTP":
+						def = "80"
+					case "HTTPS", "TLS":
+						def = "443"
+					}
+					if port, err = askListenerPort(rt, used, def); err != nil {
+						return err
+					}
+				}
+				if tgRef == "" {
+					if tgRef, err = pickTG(ctx, rt, s, "--target-group", "target group of "+lb.VPC+" that fits a "+lb.Type+" load balancer", true, tgFits(*lb)); err != nil {
+						return err
+					}
+				}
+				if needsCert(protocol) && cert == "" {
+					if cert, err = pickCert(ctx, rt, s); err != nil {
+						return err
+					}
+				}
 			}
 			if a, ok := parseELBARN(tgRef); ok && a.Region != s.region {
 				return app.UsageErrf("target group %s is in %s, the load balancer in %s", tgRef, a.Region, s.region)
@@ -261,13 +319,16 @@ again. Values that are already set are reported unchanged. Switching to TLS
 or HTTPS needs a certificate the listener does not have: delete it and
 create it again with --cert.`,
 		Example: "  polyctl aws elbv2 listener update site-xz7-lb:80 --target-group site-xz7-80-target",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			if protocol == "" && tgRef == "" {
+			if protocol == "" && tgRef == "" && !rt.Interactive() {
 				return app.UsageErrf("nothing to update: pass --target-group or --protocol")
 			}
-			var err error
+			args, err := listenerArg(ctx, rt, args, region, nil)
+			if err != nil {
+				return err
+			}
 			if protocol != "" {
 				if protocol, err = oneOf("protocol", protocol, elbProtocols); err != nil {
 					return err
@@ -279,6 +340,24 @@ create it again with --cert.`,
 			s, l, err := resolveListener(ctx, rt, args[0], region)
 			if err != nil {
 				return err
+			}
+			if protocol == "" && tgRef == "" {
+				// The interactive flow: the target group to forward to,
+				// from those that fit the load balancer (the current one
+				// left out).
+				lb, err := s.c.FindLoadBalancer(ctx, s.region, l.LoadBalancer)
+				if err != nil {
+					return err
+				}
+				if lb == nil {
+					return fmt.Errorf("%w: load balancer %s of %s", platform.ErrNotFound, l.LoadBalancer, listenerName(*l))
+				}
+				fits := tgFits(*lb)
+				if tgRef, err = pickTG(ctx, rt, s, "--target-group", "other target group that fits "+lb.Name, false, func(g platform.LBTargetGroup) bool {
+					return fits(g) && !l.ForwardsTo(g.ID)
+				}); err != nil {
+					return err
+				}
 			}
 			if protocol != "" && needsCert(protocol) && len(l.Certificates) == 0 {
 				return app.UsageErrf("a %s listener needs a certificate, and %s has none: delete it and create it again with --cert", protocol, listenerName(*l))
@@ -327,9 +406,13 @@ func listenerDeleteCmd(rt *app.Runtime) *cobra.Command {
 no; --yes skips it, and the non-interactive flow needs --yes). The target
 group it forwards to stays.`,
 		Example: "  polyctl aws elbv2 listener delete site-xz7-lb:443 --yes",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
+			args, err := listenerArg(ctx, rt, args, region, nil)
+			if err != nil {
+				return err
+			}
 			s, l, err := resolveListener(ctx, rt, args[0], region)
 			if err != nil {
 				return err

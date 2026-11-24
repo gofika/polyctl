@@ -139,11 +139,11 @@ to are printed.
 		Example: `  polyctl aws elbv2 load-balancer ensure site-xz7 --instance site-xz7 --dry-run
   polyctl aws elbv2 load-balancer ensure site-xz7 --instance site-xz7 --listener tcp:80 --listener tcp:443
   polyctl aws elbv2 load-balancer ensure site-xz7 --instance site-xz7 --skip-https`,
-		Args: cobra.ExactArgs(1),
+		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			name := strings.TrimSpace(args[0])
-			if name == "" {
+			name := strings.TrimSpace(app.Arg(args, 0))
+			if len(args) > 0 && name == "" {
 				return app.UsageErrf("the name is empty")
 			}
 			var err error
@@ -184,7 +184,19 @@ to are printed.
 				return app.UsageErrf("--wait-healthy needs the wait: drop --no-wait")
 			}
 			if strings.TrimSpace(instance) == "" {
-				return app.UsageErrf("--instance is required: the instance the load balancer forwards to (Name tag or id)")
+				if !rt.Interactive() {
+					return app.UsageErrf("--instance is required: the instance the load balancer forwards to (Name tag or id)")
+				}
+				if instance, err = pickInstanceRef(ctx, rt, "--instance", "", region, "running AWS instance", true, statesIn(stateRunning)); err != nil {
+					return err
+				}
+			}
+			if name == "" {
+				// The interactive flow: the main name, the instance's name
+				// proposed, checked as typed against the naming templates.
+				if name, err = askEnsureName(ctx, rt, instance, region, ports); err != nil {
+					return err
+				}
 			}
 			e := &lbEnsure{rt: rt, targetType: targetType, wait: wait, timeout: timeout}
 			if err := e.observe(ctx, name, instance, region, ports, subnets, sgs); err != nil {
