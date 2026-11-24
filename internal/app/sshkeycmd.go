@@ -527,7 +527,7 @@ func sshKeyRemoveCommand(rt *Runtime, sc SSHKeyCommand) *cobra.Command {
 			for _, w := range want {
 				var hit []SSHKeyEntry
 				for _, e := range entries {
-					if (listUser == "" || e.User == listUser) && !e.ReadOnly && w.matches(e.Key) {
+					if (listUser == "" || e.User == listUser) && !e.ReadOnly && w.matches(e.User, e.Key) {
 						hit = append(hit, e)
 					}
 				}
@@ -625,14 +625,20 @@ func (sc SSHKeyCommand) removeUserHelp() string {
 	return "user whose authorized_keys to edit (default: the login user; another user needs sudo)"
 }
 
-// sshKeyMatch is a key to remove: by public key or by SHA256 fingerprint.
+// sshKeyMatch is a key to remove: by public key or by SHA256 fingerprint,
+// of user when it is set (a key picked from the list is the entry of one
+// user, not the same key of every user).
 type sshKeyMatch struct {
 	label       string
 	key         ssh.PublicKey
 	fingerprint string
+	user        string
 }
 
-func (m sshKeyMatch) matches(k ssh.PublicKey) bool {
+func (m sshKeyMatch) matches(user string, k ssh.PublicKey) bool {
+	if m.user != "" && m.user != user {
+		return false
+	}
 	if m.key != nil {
 		return sshremote.SameKey(m.key, k)
 	}
@@ -897,7 +903,7 @@ func (s *sshKeySession) pickRemovals(entries []SSHKeyEntry) ([]sshKeyMatch, erro
 		if _, ok := byValue[v]; ok {
 			continue
 		}
-		byValue[v] = sshKeyMatch{label: fp, key: e.Key}
+		byValue[v] = sshKeyMatch{label: fp, key: e.Key, user: e.User}
 		label := e.User + "  " + keyEntrySummary(e) + "  [" + e.Source + "]"
 		opts = append(opts, prompt.Option{Label: label, Value: v})
 	}

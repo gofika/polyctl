@@ -332,6 +332,10 @@ func TestSSHKeyInteractiveGCP(t *testing.T) {
 		t.Errorf("unanswered %v", p.Answers)
 	}
 
+	// deploy holds alice's key too: picking alice's entry removes only it.
+	if err := h.run("compute", "instance", "ssh-key", "add", "web-1", "--ssh-key", alice, "--user", "deploy"); err != nil {
+		t.Fatal(err)
+	}
 	p = h.answer(strconv.FormatUint(id, 10), []string{"alice " + keyFP(t, alice)})
 	if err := h.run("compute", "instance", "ssh-key", "remove", "--yes"); err != nil {
 		t.Fatalf("%v\n%s", err, h.stderr.String())
@@ -345,7 +349,7 @@ func TestSSHKeyInteractiveGCP(t *testing.T) {
 			}
 		}
 	}
-	if v, _ := metadataItem(t, h, sshKeysItem); strings.Contains(v, alice) {
+	if v, _ := metadataItem(t, h, sshKeysItem); strings.Contains(v, "alice:"+alice) || !strings.Contains(v, "\ndeploy:"+alice) {
 		t.Errorf("ssh-keys = %q", v)
 	}
 
