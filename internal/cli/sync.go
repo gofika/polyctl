@@ -226,15 +226,25 @@ as on sync: repeat the flag or separate the values with commas.`,
 	cmd.AddCommand(&cobra.Command{
 		Use:   "path",
 		Short: "Print the inventory database path",
-		Args:  cobra.NoArgs,
+		Long: "Print the inventory database path. The table output is the bare path, for\n" +
+			"$(polyctl inventory path); -o json and -o yaml print {\"path\": \"...\"}.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path, err := rt.InventoryPath()
 			if err != nil {
 				return err
 			}
-			fmt.Fprintln(rt.Stdout, path)
-			return nil
+			if rt.Format() == output.Table {
+				fmt.Fprintln(rt.Stdout, path)
+				return nil
+			}
+			return rt.Render(inventoryPath{Path: path}, nil)
 		},
 	})
 	return cmd
+}
+
+// inventoryPath is the json/yaml output of `inventory path`.
+type inventoryPath struct {
+	Path string `json:"path" yaml:"path"`
 }

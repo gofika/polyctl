@@ -83,6 +83,13 @@ func TestConfigDirFlagBeatsEnvironment(t *testing.T) {
 	if out, err := run("inventory", "path"); err != nil || strings.TrimSpace(out) != filepath.Join(envDir, "inventory.db") {
 		t.Errorf("inventory path = %q, %v", out, err)
 	}
+	// json and yaml output carry the path in a field, like every command.
+	if out, err := run("inventory", "path", "-o", "json"); err != nil || !jsonPathIs(out, filepath.Join(envDir, "inventory.db")) {
+		t.Errorf("inventory path -o json = %q, %v", out, err)
+	}
+	if out, err := run("inventory", "path", "-o", "yaml"); err != nil || !strings.HasPrefix(strings.TrimSpace(out), "path: ") {
+		t.Errorf("inventory path -o yaml = %q, %v", out, err)
+	}
 	// With the flag everything moves: the other directory has no profile,
 	// and the login below writes config, credentials and (later) the
 	// inventory there.
@@ -666,4 +673,12 @@ func TestDocsListConfirmingCommands(t *testing.T) {
 			t.Errorf("docs/interactive.md Confirmations, %s: %s is missing (%s)", c.label, c.token, c.path)
 		}
 	}
+}
+
+// jsonPathIs reports whether out is a JSON object whose "path" is want.
+func jsonPathIs(out, want string) bool {
+	var v struct {
+		Path string `json:"path"`
+	}
+	return json.Unmarshal([]byte(out), &v) == nil && v.Path == want
 }
