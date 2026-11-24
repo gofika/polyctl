@@ -175,6 +175,7 @@ func (c *Config) CertSettings() Cert {
 var DefaultNaming = map[string]string{
 	"aws_elbv2_load_balancer":    "{name}-lb",
 	"aws_elbv2_target_group":     "{name}-{port}-target",
+	"aws_windows_key_pair":       "{name}-win",
 	"aliyun_alb_load_balancer":   "lb-{name}",
 	"aliyun_alb_server_group":    "{service}-{protocol}",
 	"aliyun_vpc":                 "{region}-vpc",

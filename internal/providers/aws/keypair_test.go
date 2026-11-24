@@ -8,6 +8,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -37,6 +38,7 @@ type fakeKeyPair struct {
 	hidePublicKey              bool   // DescribeKeyPairs never returns the key
 	created                    time.Time
 	tags                       []ec2types.Tag
+	priv                       *rsa.PrivateKey // the private key of a key pair CreateKeyPair made
 }
 
 // fakeEC2 is the key pair part of the EC2 API, per region, with the
@@ -109,6 +111,67 @@ func (f *fakeEC2) ImportKeyPair(_ context.Context, in *ec2.ImportKeyPairInput, _
 	return &ec2.ImportKeyPairOutput{KeyName: awssdk.String(name), KeyPairId: awssdk.String(kp.id), KeyFingerprint: awssdk.String(kp.fingerprint)}, nil
 }
 
+// CreateKeyPair makes an RSA key pair and returns its private key (PEM,
+// PKCS #1), as AWS does with KeyType rsa and KeyFormat pem.
+func (f *fakeEC2) CreateKeyPair(_ context.Context, in *ec2.CreateKeyPairInput, _ ...func(*ec2.Options)) (*ec2.CreateKeyPairOutput, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("CreateKeyPair")
+	f.shared.creates = append(f.shared.creates, in)
+	if err := f.shared.inst.errs["CreateKeyPair"]; err != nil {
+		return nil, err
+	}
+	name := awssdk.ToString(in.KeyName)
+	for _, kp := range f.regions[f.region] {
+		if kp.name == name {
+			return nil, &fakeAPIError{"InvalidKeyPair.Duplicate", "The keypair already exists"}
+		}
+	}
+	if in.KeyType != ec2types.KeyTypeRsa || in.KeyFormat != ec2types.KeyFormatPem {
+		return nil, &fakeAPIError{"InvalidParameterValue", "unexpected key type or format"}
+	}
+	rk, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, err
+	}
+	pub, err := ssh.NewPublicKey(&rk.PublicKey)
+	if err != nil {
+		return nil, err
+	}
+	f.nextID++
+	kp := newFakeKeyPair(name, pub)
+	kp.id, kp.priv, kp.fingerprint = "key-0gen"+string(rune('0'+f.nextID)), rk, "1f:51:ae:28:bf:89:e9:d8:1f:25:5d:37:2d:7d:b8:ca:9f:f5:f1:6f"
+	for _, s := range in.TagSpecifications {
+		kp.tags = append(kp.tags, s.Tags...)
+	}
+	f.regions[f.region] = append(f.regions[f.region], kp)
+	material := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(rk)}))
+	return &ec2.CreateKeyPairOutput{KeyName: awssdk.String(name), KeyPairId: awssdk.String(kp.id), KeyFingerprint: awssdk.String(kp.fingerprint), KeyMaterial: awssdk.String(material)}, nil
+}
+
+// DeleteKeyPair removes a key pair by name; a missing one is no error, as
+// on AWS.
+func (f *fakeEC2) DeleteKeyPair(_ context.Context, in *ec2.DeleteKeyPairInput, _ ...func(*ec2.Options)) (*ec2.DeleteKeyPairOutput, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("DeleteKeyPair")
+	f.shared.deletedKeyPairs = append(f.shared.deletedKeyPairs, awssdk.ToString(in.KeyName))
+	if err := f.shared.inst.errs["DeleteKeyPair"]; err != nil {
+		return nil, err
+	}
+	out := &ec2.DeleteKeyPairOutput{Return: awssdk.Bool(true)}
+	kept := f.regions[f.region][:0]
+	for _, kp := range f.regions[f.region] {
+		if kp.name == awssdk.ToString(in.KeyName) {
+			out.KeyPairId = awssdk.String(kp.id)
+			continue
+		}
+		kept = append(kept, kp)
+	}
+	f.regions[f.region] = kept
+	return out, nil
+}
+
 // newFakeKeyPair is a key pair as AWS stores an imported key.
 func newFakeKeyPair(name string, k ssh.PublicKey) *fakeKeyPair {
 	pk := &platform.PublicKey{Key: k}
@@ -136,6 +199,10 @@ type fakeEC2s struct {
 	acm     fakeACMs
 	rds     fakeRDSs
 	ebs     fakeEBS
+	// creates are the CreateKeyPair requests, deletedKeyPairs the names
+	// DeleteKeyPair was asked to delete.
+	creates         []*ec2.CreateKeyPairInput
+	deletedKeyPairs []string
 }
 
 func (s *fakeEC2s) calls() []string {

@@ -618,15 +618,16 @@ func createDesc(spec platform.CreateSpec, size *typeChoice) string {
 }
 
 func ec2CreateCmd(rt *app.Runtime) *cobra.Command {
-	var typ, ami, osName, arch, subnet, region string
+	var typ, ami, osName, arch, subnet, region, keyFile string
 	var sgs, tagArgs []string
 	var keys app.KeyFlags
 	var disk diskFlags
 	var publicIP bool
 	var wf app.WaitFlags
+	var pwTimeout time.Duration
 	cmd := &cobra.Command{
 		Use:   "create <name>",
-		Short: "Create an EC2 instance (Amazon Linux 2023 by default)",
+		Short: "Create an EC2 instance (Amazon Linux 2023 by default, or Windows Server)",
 		Long: `Create an EC2 instance named <name> (its Name tag) in the profile's region, or
 --region. An instance of that name that is not terminated is an error (exit
 code 1): AWS does not keep names unique, and two instances of one name
@@ -642,6 +643,14 @@ images excluded), so the two may use different kernels. No such image is
 exit code 4; pass --ami <ami-id> for any other image. Mac types
 (x86_64_mac, arm64_mac) have no default image: they need --ami (exit code 7
 without it).
+
+--os windows takes the newest Windows Server English Full Base image
+(x86_64): the highest year among the public SSM parameters
+/aws/service/ami-windows-latest/Windows_Server-<year>-English-Full-Base,
+else, when they cannot be read, the newest Amazon image named
+Windows_Server-<year>-English-Full-Base-<date>. An arm64 type is exit code
+2, a Mac type exit code 7. An --ami whose platform is windows is a Windows
+instance too.
 
 --type, --subnet, --sg and --key-pair default to defaults.aws.instance_type,
 subnet_id, security_group_ids and key_name in config.yaml; a missing type
@@ -662,7 +671,26 @@ under --key-pair when none does. A key pair is required: Linux instances
 log in with a key only, and polyctl never sets or enables a password.
 Without --key-pair, --ssh-key, --ssh-key-file or defaults.aws.key_name (an
 existing key pair) a terminal asks for a public key file, and the
-non-interactive flow is exit code 2 before anything is created.
+non-interactive flow is exit code 2 before anything is created (with --ami,
+once the image is read and is not a Windows image).
+
+A Windows instance logs in as Administrator with the password the instance
+generates at its first boot, which AWS encrypts with the public key of the
+instance's RSA key pair (ED25519 key pairs cannot be used for Windows).
+Without --key-file polyctl creates the RSA key pair itself
+(naming.aws_windows_key_pair, {name}-win; one of that name already is exit
+code 2) and stores its private key encrypted in polyctl's database, never
+printed; --key-file <path> (an unencrypted RSA private key) uses the key
+pair that holds its public key instead, importing it under --key-pair when
+none does, and is never stored. --key-pair without --key-file, --ssh-key
+and --ssh-key-file are exit code 2 with Windows, and defaults.aws.key_name
+is not used. Once the instance runs, create waits for the password
+(GetPasswordData every 15 seconds, up to --password-timeout, 20 minutes by
+default), decrypts it and stores user and password encrypted: an
+interactive create prints them at the end, a non-interactive one prints a
+note naming "polyctl aws ec2 instance password <id>". A password not ready
+in time (or --no-wait) leaves the create successful, with a note: the
+password command fetches it later. A dry run creates and stores nothing.
 
 --disk adds a data disk (/dev/sdb, gp3, 3000 IOPS, 125 MiB/s by default)
 that is kept when the instance is deleted; encryption follows the
@@ -672,6 +700,7 @@ on every platform; --no-wait returns at once) until the instance is
 running and prints its addresses.`,
 		Example: `  polyctl aws ec2 instance create site-new --type c6a.xlarge --disk 400 --dry-run
   polyctl aws ec2 instance create site-new --type 2H4G --dry-run
+  polyctl aws ec2 instance create win-1 --os windows --type t3.large
   polyctl aws ec2 instance create site-new --type t4g.small --ssh-key-file ~/.ssh/id_ed25519.pub --key-pair ops`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -687,11 +716,32 @@ running and prints its addresses.`,
 			if ami != "" && cmd.Flags().Changed("os") {
 				return app.UsageErrf("--ami and --os are mutually exclusive")
 			}
-			if osName != "al2023" {
-				return app.UsageErrf("--os %q: only al2023 is supported; pass --ami <ami-id> for another system", osName)
+			if osName != "al2023" && osName != "windows" {
+				return app.UsageErrf("--os %q: expected al2023 or windows; pass --ami <ami-id> for another system", osName)
 			}
 			if arch != "" && arch != "x86_64" && arch != "arm64" {
 				return app.UsageErrf("--arch %q: expected x86_64 or arm64", arch)
+			}
+			if pwTimeout <= 0 {
+				return app.UsageErrf("--password-timeout must be a positive duration, got %s", pwTimeout)
+			}
+			windowsOS := osName == "windows" && ami == ""
+			if ami == "" && !windowsOS && keyFile != "" {
+				return app.UsageErrf("--key-file applies to Windows instances only (--os windows): Linux instances log in with their key pair, whose private key polyctl never needs")
+			}
+			if windowsOS {
+				if err := windowsKeyFlags(keys, keyFile); err != nil {
+					return err
+				}
+				if arch == "arm64" {
+					return app.UsageErrf("--os windows with --arch arm64: Windows Server images are x86_64 only")
+				}
+			}
+			var winKey *windowsKey
+			if keyFile != "" {
+				if winKey, err = loadWindowsKey(keyFile); err != nil {
+					return err
+				}
 			}
 			diskSpec, err := disk.spec(cmd)
 			if err != nil {
@@ -734,10 +784,11 @@ running and prints its addresses.`,
 			if err != nil {
 				return err
 			}
-			if !keys.Given() && defaultKey == "" && !rt.Interactive() {
+			if !windowsOS && ami == "" && !keys.Given() && defaultKey == "" && !rt.Interactive() {
 				// Before anything is read: an instance without a key pair is
-				// one nobody can log in to.
-				return app.UsageErrf("a key pair is required (Linux instances log in with a key only, never a password): pass --key-pair <name> (an existing key pair), --ssh-key-file <path> / --ssh-key <public key> with --key-pair <name> to import one, or set defaults.aws.key_name")
+				// one nobody can log in to. With --ami the image tells
+				// Windows (which gets a key pair of polyctl's) from Linux.
+				return errLinuxKeyRequired()
 			}
 			tags, err := keyPairTags(rt, profile)
 			if err != nil {
@@ -789,7 +840,12 @@ running and prints its addresses.`,
 			if err != nil {
 				return err
 			}
-			if arch == "" {
+			if windowsOS {
+				if err := windowsArchCheck(typ, archs); err != nil {
+					return err
+				}
+				arch = "x86_64"
+			} else if arch == "" {
 				arch = archFor(archs)
 				if ami == "" && !slices.Contains(archs, arch) {
 					// Mac types (x86_64_mac, arm64_mac) run no Amazon Linux image.
@@ -811,8 +867,26 @@ running and prints its addresses.`,
 					// The image decides; --arch only picks a default image.
 					arch = img.Arch
 				}
+			} else if windowsOS {
+				if img, err = c.latestWindowsAMI(ctx, region, func(s string) { rt.Infof("%s", s) }); err != nil {
+					return err
+				}
 			} else if img, err = c.latestAL2023AMI(ctx, region, arch, func(s string) { rt.Infof("%s", s) }); err != nil {
 				return err
+			}
+			windows := windowsOS || img.Windows
+			switch {
+			case windows && ami != "":
+				if err := windowsKeyFlags(keys, keyFile); err != nil {
+					return err
+				}
+				if err := windowsArchCheck(typ, archs); err != nil {
+					return err
+				}
+			case !windows && keyFile != "":
+				return app.UsageErrf("--key-file applies to Windows instances only: image %s is not a Windows image, and Linux instances log in with their key pair", img.ID)
+			case !windows && !keys.Given() && defaultKey == "" && !rt.Interactive():
+				return errLinuxKeyRequired()
 			}
 			if diskSpec != nil && img.RootDevice != "" && diskSpec.Device == img.RootDevice {
 				return app.UsageErrf("--disk-device %s is the root device of image %s; choose another one", diskSpec.Device, img.ID)
@@ -824,8 +898,18 @@ running and prints its addresses.`,
 			// Linux instances log in with a key only, and polyctl never
 			// sets a password: an instance without a key pair is one nobody
 			// can log in to, so a key pair is always resolved (asked for on
-			// a terminal, a usage error otherwise).
-			{
+			// a terminal, a usage error otherwise). A Windows instance gets
+			// an RSA key pair whose private key decrypts its password.
+			var win *windowsLogin
+			if windows {
+				win = &windowsLogin{rt: rt, c: c, profile: prof.Name, region: region, name: name, key: winKey}
+				kpName, step, err := windowsKeyPairStep(ctx, rt, c, prof.Name, region, name, keys.KeyPair, keyFile, win)
+				if err != nil {
+					return err
+				}
+				spec.KeyPair = kpName
+				plan.Add(step)
+			} else {
 				kp, err := platform.ResolveKeyPair(ctx, &keyPairLister{c: c, region: region}, keyIn)
 				if err != nil {
 					return err
@@ -853,6 +937,9 @@ running and prints its addresses.`,
 				rt.Infof("note: no security group given (--sg or defaults.aws.security_group_ids): the VPC's default security group is used")
 			}
 			desc := createDesc(spec, choice)
+			if windows {
+				desc += " login=" + windowsUser + "(password generated by the instance)"
+			}
 			var sizeAttrs map[string]string
 			if choice != nil {
 				sizeAttrs = choice.attrs()
@@ -860,13 +947,28 @@ running and prints its addresses.`,
 			plan.Add(platform.Step{Resource: "instance/" + name, Action: platform.Created, Desc: desc, Attrs: sizeAttrs, Apply: func(ctx context.Context) (platform.Change, error) {
 				id, err := c.CreateInstance(ctx, spec)
 				if err != nil {
+					if win != nil && win.createdKeyPair != "" {
+						// Nobody else holds its private key: it would only
+						// be in the way of the next try.
+						if _, derr := c.deleteKeyPair(ctx, region, win.createdKeyPair); derr != nil {
+							rt.Infof("warning: the key pair %s created for the instance was not deleted: %v", win.createdKeyPair, derr)
+						} else {
+							rt.Infof("key pair %s, created for the instance, deleted again", win.createdKeyPair)
+						}
+					}
 					return platform.Change{}, err
 				}
 				storeInstance(ctx, rt, prof.Name, c, region, ec2types.Instance{InstanceId: awssdk.String(id), InstanceType: ec2types.InstanceType(typ),
 					State: &ec2types.InstanceState{Name: ec2types.InstanceStateNamePending}, Tags: sortedTags(tags)})
+				if win != nil {
+					win.created(ctx, id)
+				}
 				ch := platform.Change{ID: id, Detail: desc}
 				if !wait {
 					rt.Infof("instance %s (%s) is starting; `polyctl aws ec2 instance get %s` shows its addresses once it runs", name, id, id)
+					if win != nil {
+						ch.Detail += "; Windows password not waited for"
+					}
 					return ch, nil
 				}
 				in, err := c.waitInstanceState(ctx, region, id, name, stateRunning, timeout)
@@ -881,18 +983,35 @@ running and prints its addresses.`,
 					ch.Attrs[k] = v
 				}
 				rt.Infof("instance %s (%s) is running: public ip %s, private ip %s", name, id, orNone(pub), orNone(priv))
+				if win != nil {
+					rt.Infof("waiting for the Windows password of instance %s (AWS generates it a few minutes after launch; up to %s)...", name, pwTimeout)
+					ch.Detail += "; " + win.wait(ctx, pwTimeout)
+				}
 				return ch, nil
 			}})
-			return rt.Ensure(ctx, "aws.ec2.instance.create", target, &plan)
+			if win != nil {
+				// Before the first write: a login that cannot be stored
+				// would be lost once the instance exists.
+				if err := rt.PrepareSecrets(); err != nil {
+					return fmt.Errorf("the Windows login could not be stored, nothing was created: %w", err)
+				}
+			}
+			err = rt.Ensure(ctx, "aws.ec2.instance.create", target, &plan)
+			if werr := win.finish(ctx); werr != nil {
+				err = errors.Join(err, werr)
+			}
+			return err
 		},
 	}
 	cmd.Flags().StringVar(&typ, "type", "", "instance type such as c6a.xlarge, or a size <cores>H<memory>G such as 2H4G (default: defaults.aws.instance_type)")
 	cmd.Flags().StringVar(&ami, "ami", "", "image id (default: the latest image of --os)")
-	cmd.Flags().StringVar(&osName, "os", "al2023", "system whose latest image is used when --ami is not given (al2023 only)")
+	cmd.Flags().StringVar(&osName, "os", "al2023", "system whose latest image is used when --ami is not given: al2023 or windows (Windows Server English Full Base, newest year)")
 	cmd.Flags().StringVar(&arch, "arch", "", "image architecture, x86_64 or arm64 (default: from the instance type)")
 	cmd.Flags().StringVar(&subnet, "subnet", "", "subnet id (default: defaults.aws.subnet_id)")
 	cmd.Flags().StringArrayVar(&sgs, "sg", nil, "security group id (repeatable; default: defaults.aws.security_group_ids)")
 	app.AddKeyFlags(cmd, &keys)
+	cmd.Flags().StringVar(&keyFile, "key-file", "", "Windows only: RSA private key (unencrypted PEM or OpenSSH; ~ is expanded) of the key pair to launch with, to decrypt the password; never stored (default: polyctl creates an RSA key pair)")
+	cmd.Flags().DurationVar(&pwTimeout, "password-timeout", defaultPasswordTimeout, "Windows only: upper bound of the wait for the generated password once the instance runs")
 	cmd.Flags().Int32Var(&disk.size, "disk", 0, "add a data disk of this size in GB (kept when the instance is deleted)")
 	cmd.Flags().StringVar(&disk.device, "disk-device", "/dev/sdb", "device name of the data disk")
 	cmd.Flags().StringVar(&disk.typ, "disk-type", "gp3", "volume type of the data disk ("+strings.Join(diskTypes, ", ")+")")
@@ -921,7 +1040,12 @@ root volume is deleted with the instance; data volumes created by create
 are kept and keep costing money until deleted, as do Elastic IPs and
 snapshots. An instance with termination protection is not terminated
 (exit code 1): switch the protection off in AWS first. A terminated
-instance is reported unchanged. --wait waits until it is terminated.`,
+instance is reported unchanged. --wait waits until it is terminated.
+
+Once the termination is requested, the Windows login polyctl stored for
+the instance is removed, and the RSA key pair polyctl created for it (and
+recorded with that login) is deleted, when the instance still uses it; a
+key pair of yours is never deleted.`,
 		Example: "  polyctl aws ec2 instance delete site-old --yes --wait",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -936,10 +1060,15 @@ instance is reported unchanged. --wait waits until it is terminated.`,
 			}
 			target := l.target()
 			if instanceState(l.inst) == stateTerminated {
-				dropInstance(ctx, rt, l.profile, l.id())
+				changes := []platform.Change{{Resource: l.resource(), Action: platform.Unchanged, ID: l.id(), Detail: "already terminated"}}
+				if !rt.DryRun() {
+					dropInstance(ctx, rt, l.profile, l.id())
+					if ch := forgetLogin(ctx, rt, l, createdKeyPairOf(ctx, rt, l)); ch != nil {
+						changes = append(changes, *ch)
+					}
+				}
 				rt.Infof("instance %s is already terminated", instanceLabel(l.inst))
-				return rt.RenderReport(platform.Report{Target: target, DryRun: rt.DryRun(), Changes: []platform.Change{
-					{Resource: l.resource(), Action: platform.Unchanged, ID: l.id(), Detail: "already terminated"}}})
+				return rt.RenderReport(platform.Report{Target: target, DryRun: rt.DryRun(), Changes: changes})
 			}
 			vols, verr := l.c.instanceVolumes(ctx, l.region, l.inst)
 			if verr != nil {
@@ -962,9 +1091,17 @@ instance is reported unchanged. --wait waits until it is terminated.`,
 					rt.Infof("              volume %s will be kept and has to be deleted separately", v.VolumeID)
 				}
 			}
+			kp := createdKeyPairOf(ctx, rt, l)
+			if kp != "" {
+				rt.Infof("  key pair    %s, created by polyctl for this instance, will be deleted", kp)
+			}
 			rt.Infof("This cannot be undone! The instance and its root volume will be permanently deleted!")
 			change := platform.Change{Resource: l.resource(), Action: platform.Updated, ID: l.id(), Detail: "terminate"}
-			if done, err := rt.WouldWrite(target, change); done || err != nil {
+			would := []platform.Change{change}
+			if kp != "" {
+				would = append(would, platform.Change{Resource: "key-pair/" + kp, Action: platform.Deleted, Detail: "created by polyctl for this instance"})
+			}
+			if done, err := rt.WouldWrite(target, would...); done || err != nil {
 				return err
 			}
 			ok, err := rt.Confirm(ctx, fmt.Sprintf("Terminate instance %s?", instanceLabel(l.inst)), false)
@@ -977,6 +1114,7 @@ instance is reported unchanged. --wait waits until it is terminated.`,
 			if err := l.c.DeleteInstance(ctx, l.region, l.id()); err != nil {
 				return err
 			}
+			kpChange := forgetLogin(ctx, rt, l, kp)
 			if wait {
 				if _, err := l.c.waitInstanceState(ctx, l.region, l.id(), l.name(), stateTerminated, timeout); err != nil {
 					return fmt.Errorf("termination of %s was requested: %w", instanceLabel(l.inst), err)
@@ -991,7 +1129,11 @@ instance is reported unchanged. --wait waits until it is terminated.`,
 				rt.Infof("left behind: data volume(s) %s, now available and still billed; delete them separately when no longer needed", strings.Join(kept, ", "))
 			}
 			rt.Infof("note: Elastic IPs and snapshots of the instance are not deleted")
-			return rt.RenderReport(platform.Report{Target: target, Changes: []platform.Change{change}})
+			changes := []platform.Change{change}
+			if kpChange != nil {
+				changes = append(changes, *kpChange)
+			}
+			return rt.RenderReport(platform.Report{Target: target, Changes: changes})
 		},
 	}
 	cmd.Flags().StringVar(&region, "region", "", "region of the instance (default: look it up in the inventory of every account)")

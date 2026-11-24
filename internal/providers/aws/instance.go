@@ -352,11 +352,14 @@ func (c *client) typeOffered(ctx context.Context, region, typ, az string) (bool,
 // imageInfo is what create needs to know of a machine image.
 type imageInfo struct {
 	ID, Name, Arch, RootDevice, Created string
+	// Windows reports a Windows image (Platform "windows").
+	Windows bool
 }
 
 func imageFrom(im ec2types.Image) imageInfo {
 	return imageInfo{ID: awssdk.ToString(im.ImageId), Name: awssdk.ToString(im.Name), Arch: string(im.Architecture),
-		RootDevice: awssdk.ToString(im.RootDeviceName), Created: awssdk.ToString(im.CreationDate)}
+		RootDevice: awssdk.ToString(im.RootDeviceName), Created: awssdk.ToString(im.CreationDate),
+		Windows: im.Platform == ec2types.PlatformValuesWindows}
 }
 
 // describeImage reads one image by id.

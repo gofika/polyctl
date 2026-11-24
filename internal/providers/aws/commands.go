@@ -717,10 +717,11 @@ tag or its id in every selected AWS account, the way domains are routed:
 the inventory tells which account holds it (synced once when it does not
 know), and the account is asked live, so that a terminated instance of the
 same name is never picked. Several live instances of one name are ambiguous
-(exit code 5). --region looks in another region of the profile's account.`,
+(exit code 5). --region looks in another region of the profile's account.
+password shows the Windows login create --os windows stored.`,
 	}
 	instance.AddCommand(ec2ListCmd(rt), ec2GetCmd(rt), ec2CreateCmd(rt), ec2DeleteCmd(rt), ec2RebootCmd(rt), ec2ResizeCmd(rt),
-		ec2StateCmd(rt, "start"), ec2StateCmd(rt, "stop"))
+		ec2StateCmd(rt, "start"), ec2StateCmd(rt, "stop"), ec2PasswordCmd(rt))
 	cmd.AddCommand(instance, keyPairCmd(rt), securityGroupCmd(rt), volumeCmd(rt), snapshotCmd(rt))
 	return cmd
 }

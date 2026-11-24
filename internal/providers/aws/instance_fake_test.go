@@ -2,6 +2,9 @@ package aws
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"path"
@@ -16,6 +19,7 @@ import (
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
+	"golang.org/x/crypto/ssh"
 
 	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/config"
@@ -63,13 +67,22 @@ type fakeInstances struct {
 	imageCalls int
 	ssmValue   map[string]string // parameter -> value
 	ssmErr     error
-	volErr     error
-	errs       map[string]error // call -> error of that call
-	runs       []*ec2.RunInstancesInput
-	filters    [][]ec2types.Filter
-	pageSize   int
-	nextIP     int
-	nextID     int
+	// ssmPathErr fails GetParametersByPath; ssmPathCalls counts its calls.
+	ssmPathErr   error
+	ssmPathCalls int
+	// winPassword is the password every instance generates (""
+	// none); GetPasswordData returns nothing for the first pwDelay calls
+	// of an instance. pwCalls counts them per instance.
+	winPassword string
+	pwDelay     int
+	pwCalls     map[string]int
+	volErr      error
+	errs        map[string]error // call -> error of that call
+	runs        []*ec2.RunInstancesInput
+	filters     [][]ec2types.Filter
+	pageSize    int
+	nextIP      int
+	nextID      int
 }
 
 func (fi *fakeInstances) init() {
@@ -347,7 +360,13 @@ func (f *fakeEC2) RunInstances(_ context.Context, in *ec2.RunInstancesInput, _ .
 	fi.runs = append(fi.runs, in)
 	fi.nextID++
 	inst := &fakeInstance{id: fmt.Sprintf("i-0000000000000%04d", fi.nextID), typ: string(in.InstanceType), state: statePending,
-		next: []string{statePending, stateRunning}, az: "ap-east-1a", arch: "x86_64", priv: "10.0.1." + strconv.Itoa(fi.nextID), rootDevice: "/dev/xvda"}
+		next: []string{statePending, stateRunning}, az: "ap-east-1a", arch: "x86_64", priv: "10.0.1." + strconv.Itoa(fi.nextID), rootDevice: "/dev/xvda",
+		keyName: awssdk.ToString(in.KeyName)}
+	for _, im := range fi.images[f.region] {
+		if awssdk.ToString(im.ImageId) == awssdk.ToString(in.ImageId) && im.Platform == ec2types.PlatformValuesWindows {
+			inst.platform, inst.rootDevice = "windows", "/dev/sda1"
+		}
+	}
 	for _, ts := range in.TagSpecifications {
 		if ts.ResourceType == ec2types.ResourceTypeInstance {
 			for _, t := range ts.Tags {
@@ -567,6 +586,54 @@ func (f *fakeEC2) DescribeImages(_ context.Context, in *ec2.DescribeImagesInput,
 	return out, nil
 }
 
+// GetPasswordData returns the Windows password of an instance encrypted
+// with the public key of its key pair (base64 over two lines), or "" while
+// it is not generated yet.
+func (f *fakeEC2) GetPasswordData(_ context.Context, in *ec2.GetPasswordDataInput, _ ...func(*ec2.Options)) (*ec2.GetPasswordDataOutput, error) {
+	f.mu.Lock()
+	err := f.callErr("GetPasswordData")
+	f.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	s := f.shared
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fi := &s.inst
+	fi.init()
+	id := awssdk.ToString(in.InstanceId)
+	inst := fi.find(f.region, id)
+	if inst == nil {
+		return nil, &fakeAPIError{"InvalidInstanceID.NotFound", "The instance ID '" + id + "' does not exist"}
+	}
+	if fi.pwCalls == nil {
+		fi.pwCalls = map[string]int{}
+	}
+	fi.pwCalls[id]++
+	out := &ec2.GetPasswordDataOutput{InstanceId: in.InstanceId, PasswordData: awssdk.String("")}
+	if inst.platform != "windows" || fi.winPassword == "" || fi.pwCalls[id] <= fi.pwDelay {
+		return out, nil
+	}
+	for _, kp := range s.regions[f.region] {
+		if kp.name != inst.keyName {
+			continue
+		}
+		k, _, _, _, err := ssh.ParseAuthorizedKey([]byte(kp.publicKey))
+		if err != nil {
+			return nil, err
+		}
+		pub := k.(ssh.CryptoPublicKey).CryptoPublicKey().(*rsa.PublicKey)
+		ct, err := rsa.EncryptPKCS1v15(rand.Reader, pub, []byte(fi.winPassword))
+		if err != nil {
+			return nil, err
+		}
+		b := base64.StdEncoding.EncodeToString(ct)
+		out.PasswordData = awssdk.String("\r\n" + b[:40] + "\r\n" + b[40:] + "\r\n")
+		return out, nil
+	}
+	return nil, &fakeAPIError{"InvalidParameterValue", "the instance has no key pair"}
+}
+
 // fakeSSM serves the public AMI parameters.
 type fakeSSM struct {
 	shared *fakeEC2s
@@ -585,6 +652,44 @@ func (s *fakeSSM) GetParameter(_ context.Context, in *ssm.GetParameterInput, _ .
 		return nil, &fakeAPIError{"ParameterNotFound", "not found"}
 	}
 	return &ssm.GetParameterOutput{Parameter: &ssmtypes.Parameter{Name: in.Name, Value: awssdk.String(v)}}, nil
+}
+
+// GetParametersByPath lists the parameters directly under a path, sorted,
+// MaxResults (10 by default) a page.
+func (s *fakeSSM) GetParametersByPath(_ context.Context, in *ssm.GetParametersByPathInput, _ ...func(*ssm.Options)) (*ssm.GetParametersByPathOutput, error) {
+	s.shared.mu.Lock()
+	defer s.shared.mu.Unlock()
+	fi := &s.shared.inst
+	fi.init()
+	fi.ssmPathCalls++
+	if fi.ssmPathErr != nil {
+		return nil, fi.ssmPathErr
+	}
+	path := awssdk.ToString(in.Path)
+	var names []string
+	for k := range fi.ssmValue {
+		if rest, ok := strings.CutPrefix(k, path); ok && rest != "" && !strings.Contains(rest, "/") {
+			names = append(names, k)
+		}
+	}
+	sort.Strings(names)
+	n := 10
+	if in.MaxResults != nil {
+		n = int(*in.MaxResults)
+	}
+	start := 0
+	if in.NextToken != nil {
+		start, _ = strconv.Atoi(*in.NextToken)
+	}
+	end := min(start+n, len(names))
+	out := &ssm.GetParametersByPathOutput{}
+	if end < len(names) {
+		out.NextToken = awssdk.String(strconv.Itoa(end))
+	}
+	for _, k := range names[start:end] {
+		out.Parameters = append(out.Parameters, ssmtypes.Parameter{Name: awssdk.String(k), Value: awssdk.String(fi.ssmValue[k])})
+	}
+	return out, nil
 }
 
 // fakeClock advances instantly.
@@ -660,7 +765,7 @@ func (h *awsHarness) writes() []string {
 	for _, c := range h.ec2.calls() {
 		_, call, _ := strings.Cut(c, ":")
 		switch call {
-		case "RunInstances", "TerminateInstances", "RebootInstances", "StartInstances", "StopInstances", "ModifyInstanceAttribute", "ImportKeyPair",
+		case "RunInstances", "TerminateInstances", "RebootInstances", "StartInstances", "StopInstances", "ModifyInstanceAttribute", "ImportKeyPair", "CreateKeyPair", "DeleteKeyPair",
 			"CreateSecurityGroup", "DeleteSecurityGroup", "AuthorizeSecurityGroupIngress", "RevokeSecurityGroupIngress":
 			out = append(out, call)
 		}
