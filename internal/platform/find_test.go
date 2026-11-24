@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -100,6 +101,47 @@ func TestSyncRegions(t *testing.T) {
 		"a": fmt.Errorf("%w: denied", ErrUnauthorized), "b": fmt.Errorf("%w: denied", ErrUnauthorized)}))
 	if res != nil || !errors.Is(err, ErrUnauthorized) || AsRegionSyncError(err) != nil {
 		t.Fatalf("all failed = %v, %v", res, err)
+	}
+}
+
+// A region fn read in part (resources with a RegionSyncError) counts as
+// one that worked: its resources are returned and its failures reported.
+// A failure that is not Partial is reported under the region fn ran for,
+// so the stored rows of that region are kept.
+func TestSyncRegionsPartialRegion(t *testing.T) {
+	ctx := context.Background()
+	partial := func(_ context.Context, r string) ([]Resource, error) {
+		return []Resource{{Type: ResInstance, ID: "i-" + r, ParentID: r}},
+			&RegionSyncError{Failures: []RegionError{{Region: r + " (network interfaces)", Err: errors.New("denied"), Partial: true}}}
+	}
+	res, err := SyncRegions(ctx, []string{"a", "b"}, 2, func(ctx context.Context, r string) ([]Resource, error) {
+		if r == "a" {
+			return partial(ctx, r)
+		}
+		return []Resource{{Type: ResInstance, ID: "i-b", ParentID: "b"}}, nil
+	})
+	rse := AsRegionSyncError(err)
+	if len(res) != 2 || rse == nil || len(rse.Failures) != 1 || rse.Failures[0].Region != "a (network interfaces)" || !rse.Failures[0].Partial {
+		t.Fatalf("one partial region = %v, %v", res, err)
+	}
+
+	// Every region read in part: not "every region failed".
+	res, err = SyncRegions(ctx, []string{"a", "b"}, 2, partial)
+	rse = AsRegionSyncError(err)
+	if len(res) != 2 || rse == nil || len(rse.Failures) != 2 || strings.Contains(err.Error(), "every region failed") {
+		t.Fatalf("every region partial = %v, %v", res, err)
+	}
+
+	// Some resources of a region could not be read: the region is the
+	// failure (its rows are kept), under its own name.
+	res, err = SyncRegions(ctx, []string{"a", "b"}, 2, func(_ context.Context, r string) ([]Resource, error) {
+		return []Resource{{Type: ResLoadBalancer, ID: "lb-" + r, ParentID: r}},
+			&RegionSyncError{Failures: []RegionError{{Region: "lb-x" + r, Err: errors.New("throttled")}}}
+	})
+	rse = AsRegionSyncError(err)
+	if len(res) != 2 || rse == nil || len(rse.Failures) != 2 || rse.Failures[0].Region != "a" || rse.Failures[0].Partial ||
+		!strings.Contains(rse.Failures[0].Err.Error(), "lb-xa: throttled") {
+		t.Fatalf("partly read regions = %v, %v", res, err)
 	}
 }
 

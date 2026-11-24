@@ -9,6 +9,7 @@ import (
 
 	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/config"
+	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/platform"
 )
 
@@ -205,5 +206,52 @@ func TestAliyunInstanceAddresses(t *testing.T) {
 	m := &platform.FindMatch{Type: platform.ResInstance, Data: b, Matched: "10.1.2.0/28"}
 	if err := (&provider{}).DescribeMatch(nil, m); err != nil || m.Region != "cn-hangzhou" || len(m.ExternalIPs) != 2 {
 		t.Errorf("match = %+v, %v", m, err)
+	}
+}
+
+// A RAM user that cannot read network interfaces still gets the instances
+// DescribeInstances lists: a region whose interfaces failed is replaced
+// with its new instances (a new one appears, a deleted one goes), not kept
+// as it was, and the missing interfaces are reported.
+func TestFindAliyunSyncWithoutNetworkInterfaces(t *testing.T) {
+	h := newHarness(t, app.Flags{})
+	findFake(t, h)
+	ctx := context.Background()
+	ref := config.AccountRef{Profile: "ali", Platform: platform.Aliyun}
+	if _, err := h.rt.SyncAccount(ctx, ref, []platform.ResourceType{platform.ResInstance}); err != nil {
+		t.Fatal(err)
+	}
+	h.api.on("DescribeInstances", func(q url.Values) (int, any) {
+		if q.Get("RegionId") != "cn-hongkong" {
+			return 200, map[string]any{"TotalCount": 0, "Instances": map[string]any{"Instance": []any{}}}
+		}
+		list := []map[string]any{{"InstanceId": "i-hk2", "InstanceName": "api", "Status": "Running", "RegionId": "cn-hongkong", "ZoneId": "cn-hongkong-b",
+			"VpcAttributes": map[string]any{"VpcId": "vpc-hk", "VSwitchId": "vsw-hk-b", "PrivateIpAddress": map[string]any{"IpAddress": []string{"172.16.0.20"}}}}}
+		return 200, map[string]any{"TotalCount": len(list), "Instances": map[string]any{"Instance": list}}
+	})
+	h.api.on("DescribeNetworkInterfaces", func(q url.Values) (int, any) {
+		return 403, map[string]any{"Code": "Forbidden.RAM", "Message": "not authorized"}
+	})
+	reports, err := h.rt.SyncAccount(ctx, ref, []platform.ResourceType{platform.ResInstance})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != 1 || reports[0].Count != 1 {
+		t.Fatalf("reports = %+v", reports)
+	}
+	rse := platform.AsRegionSyncError(reports[0].Err)
+	if rse == nil || len(rse.Failures) != 1 || rse.Failures[0].Region != "cn-hongkong (network interfaces)" || !rse.Failures[0].Partial {
+		t.Fatalf("err = %v, want the network interfaces of cn-hongkong reported", reports[0].Err)
+	}
+	rows, err := h.db().List(ctx, inventory.Query{Platform: platform.Aliyun, Profile: "ali", Type: platform.ResInstance})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, r := range rows {
+		ids = append(ids, r.ID)
+	}
+	if strings.Join(ids, ",") != "i-hk2" {
+		t.Errorf("rows = %v, want i-hk2 only (i-hk1 and i-sh1 are gone)", ids)
 	}
 }

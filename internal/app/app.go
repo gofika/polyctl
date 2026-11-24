@@ -958,15 +958,19 @@ func (rt *Runtime) SyncClient(ctx context.Context, p platform.Profile, client pl
 }
 
 // failedRegions returns the regions of a sync that failed in some regions
-// only, whose stored rows are kept (nil for any other error or none).
+// only, whose stored rows are kept (nil for any other error or none). A
+// partial failure (the region's resources were read, some of their
+// details were not) keeps nothing: the new rows replace the old ones.
 func failedRegions(err error) []string {
 	rse := platform.AsRegionSyncError(err)
 	if rse == nil {
 		return nil
 	}
-	out := make([]string, 0, len(rse.Failures))
+	var out []string
 	for _, f := range rse.Failures {
-		out = append(out, f.Region)
+		if !f.Partial {
+			out = append(out, f.Region)
+		}
 	}
 	return out
 }

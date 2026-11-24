@@ -222,7 +222,7 @@ func (c *client) instanceResources(ctx context.Context, region string) ([]platfo
 	}
 	enis, err := c.networkInterfaces(ctx, region)
 	if err != nil {
-		return res, &platform.RegionSyncError{Failures: []platform.RegionError{{Region: region + " (network interfaces)", Err: err}}}
+		return res, &platform.RegionSyncError{Failures: []platform.RegionError{{Region: region + " (network interfaces)", Err: err, Partial: true}}}
 	}
 	byInstance := map[string][]netIface{}
 	for _, e := range enis {
@@ -347,7 +347,12 @@ func (c *client) albResources(ctx context.Context, region string) ([]platform.Re
 	if err != nil && platform.AsRegionSyncError(err) == nil {
 		return nil, err
 	}
-	partial := err
+	// Load balancers that could not be read are a failure of the region
+	// (its stored rows are kept); missing interfaces lose addresses only.
+	var failures []platform.RegionError
+	if err != nil {
+		failures = append(failures, platform.RegionError{Region: region, Err: err})
+	}
 	byName := map[string]int{}
 	lbs := make([]albLoadBalancer, 0, len(got))
 	for i, r := range got {
@@ -369,17 +374,15 @@ func (c *client) albResources(ctx context.Context, region string) ([]platform.Re
 			lbs[i].Private = appendNew(lbs[i].Private, n.IPv6...)
 			lbs[i].Public = appendNew(lbs[i].Public, n.Public...)
 		}
-	} else if partial == nil {
-		partial = &platform.RegionSyncError{Failures: []platform.RegionError{{Region: region + " (network interfaces)", Err: err}}}
+	} else {
+		failures = append(failures, platform.RegionError{Region: region + " (network interfaces)", Err: err, Partial: true})
 	}
 	out := make([]platform.Resource, 0, len(lbs))
 	for _, l := range lbs {
 		out = append(out, l.resource())
 	}
-	if partial != nil {
-		// The load balancers that could not be read are a failure of the
-		// region; the others are stored.
-		return out, &platform.RegionSyncError{Failures: []platform.RegionError{{Region: region, Err: partial}}}
+	if len(failures) > 0 {
+		return out, &platform.RegionSyncError{Failures: failures}
 	}
 	return out, nil
 }

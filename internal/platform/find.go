@@ -319,6 +319,11 @@ type DetailProvider interface {
 type RegionError struct {
 	Region string
 	Err    error
+	// Partial marks a failure that lost details only: the resources of
+	// the region were read and returned (without, say, their secondary
+	// addresses), so the stored rows of the region are replaced by them
+	// instead of kept.
+	Partial bool
 }
 
 // RegionSyncError is returned by Client.Sync, together with the resources
@@ -342,6 +347,12 @@ func (e *RegionSyncError) Error() string {
 // what the others found and a *RegionSyncError; when every region fails,
 // no resources and the failures, wrapping the first one (so an
 // authentication failure keeps its exit code).
+//
+// fn may itself return resources with a *RegionSyncError (a region read in
+// part): the resources are kept, the region counts as one that worked, and
+// its failures are reported. A failure of it that is not Partial is
+// reported under the region fn ran for, so the stored rows of that region
+// are kept.
 func SyncRegions(ctx context.Context, regions []string, concurrency int, fn func(ctx context.Context, region string) ([]Resource, error)) ([]Resource, error) {
 	if concurrency < 1 {
 		concurrency = 1
@@ -373,18 +384,32 @@ func SyncRegions(ctx context.Context, regions []string, concurrency int, fn func
 	}
 	var out []Resource
 	var failures []RegionError
+	failed := 0
 	for i, r := range results {
-		if r.err != nil {
+		var rse *RegionSyncError
+		if r.err != nil && !errors.As(r.err, &rse) {
+			failed++
 			failures = append(failures, RegionError{Region: regions[i], Err: r.err})
 			continue
 		}
 		out = append(out, r.res...)
+		if rse == nil {
+			continue
+		}
+		for _, f := range rse.Failures {
+			if !f.Partial && f.Region != regions[i] {
+				f = RegionError{Region: regions[i], Err: fmt.Errorf("%s: %w", f.Region, f.Err)}
+			}
+			failures = append(failures, f)
+		}
 	}
 	if len(failures) == 0 {
 		return out, nil
 	}
-	sort.Slice(failures, func(i, j int) bool { return failures[i].Region < failures[j].Region })
-	if len(failures) == len(regions) {
+	sort.SliceStable(failures, func(i, j int) bool { return failures[i].Region < failures[j].Region })
+	if failed == len(regions) {
+		// Every failure is a whole region's, none a RegionSyncError: the
+		// error is not one either, so no stored row is kept by region.
 		e := &RegionSyncError{Failures: failures}
 		return nil, fmt.Errorf("every region failed (%s): %w", e.Error(), failures[0].Err)
 	}
