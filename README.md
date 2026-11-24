@@ -85,7 +85,7 @@ polyctl completion fish > ~/.config/fish/completions/polyctl.fish
 polyctl completion powershell | Out-String | Invoke-Expression
 ```
 
-Completion knows your profiles (`--profile`, `auth use`, `auth rename`), platform names (`auth login`, `auth logout`, `--platform`) and the indexed domains (the `<domain>` argument of `dns`, `domain` and `cert`).
+Completion knows your profiles (`--profile`, `auth use`, `auth rename`), platform names (`auth login`, `auth logout`, `--platform`) and the indexed domains (the `<domain>` argument of `dns`, `domain` and `cert`). A bad setting (an unknown `POLYCTL_OUTPUT`, a broken `config.yaml`) does not break it: the script is still printed, and only the candidates read from the configuration are left out.
 
 ## Quick start
 

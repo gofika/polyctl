@@ -563,3 +563,43 @@ func TestSetWarningOnlyForSecrets(t *testing.T) {
 		t.Errorf("--set api_secret=<value>: %v, stderr %q; want a warning for api_secret only", r.err, r.stderr)
 	}
 }
+
+// Shell completion needs no output format and loads the configuration only
+// when a completion function needs it: an invalid POLYCTL_OUTPUT, a broken
+// config.yaml or --refresh with --offline do not break it, and printing the
+// completion script creates no config directory.
+func TestCompletionIgnoresBadSettings(t *testing.T) {
+	_, cfgPath := setupMulti(t)
+	dir := filepath.Dir(cfgPath)
+	scripts := [][]string{{"completion", "zsh"}, {"completion", "bash"}}
+	requests := [][]string{{cobra.ShellCompRequestCmd, "auth", "use", ""}, {cobra.ShellCompNoDescRequestCmd, "dns", "list", ""}}
+	check := func(what string, extra ...string) {
+		t.Helper()
+		for _, args := range append(scripts, requests...) {
+			var out, errb bytes.Buffer
+			code := Main(append(append([]string{"--config-dir", dir}, extra...), args...), strings.NewReader(""), &out, &errb)
+			if code != ExitOK || out.Len() == 0 {
+				t.Errorf("%s: %v: exit %d, stdout %d bytes (stderr %q)", what, args, code, out.Len(), errb.String())
+			}
+		}
+	}
+	t.Setenv(app.EnvOutput, "xml")
+	check("POLYCTL_OUTPUT=xml")
+	t.Setenv(app.EnvOutput, "")
+	check("--refresh --offline", "--refresh", "--offline")
+	if err := os.WriteFile(cfgPath, []byte("output: ["), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	check("broken config.yaml")
+
+	fresh := filepath.Join(t.TempDir(), "new", "x")
+	for _, args := range scripts {
+		var out, errb bytes.Buffer
+		if code := Main(append([]string{"--config-dir", fresh}, args...), strings.NewReader(""), &out, &errb); code != ExitOK {
+			t.Errorf("%v: exit %d (stderr %q)", args, code, errb.String())
+		}
+	}
+	if _, err := os.Stat(fresh); !os.IsNotExist(err) {
+		t.Errorf("completion created the config directory %s (%v)", fresh, err)
+	}
+}

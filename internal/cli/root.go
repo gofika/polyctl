@@ -318,8 +318,17 @@ POLYCTL_NON_INTERACTIVE is set.`,
 			if rt.Flags.DryRun && cmd.Annotations[noDryRunAnnotation] != "" {
 				return usageErr("%s does not support --dry-run: it changes local configuration only, which a dry run does not cover", cmd.CommandPath())
 			}
-			rt.SkipNonInteractiveEnvCheck = asksNothing(cmd)
-			rt.NoPrompt = asksNothing(cmd)
+			if asksNothing(cmd) {
+				// Shell completion (and help) needs no output format and
+				// must not be broken by a bad setting or config file:
+				// `source <(polyctl completion zsh)` runs in every new
+				// shell. The completion functions load the configuration
+				// themselves when they need it, and offer nothing when
+				// it cannot be loaded.
+				rt.SkipNonInteractiveEnvCheck = true
+				rt.NoPrompt = true
+				return nil
+			}
 			// Init tells a bad setting (a usage error) from a config
 			// directory or file it cannot create or read (exit code 1).
 			return rt.Init()
