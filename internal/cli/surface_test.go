@@ -665,6 +665,7 @@ func TestDocsListConfirmingCommands(t *testing.T) {
 		{"cloudflare cache rule set", "Cloudflare", "`cache rule set --replace`"},
 		{"cloudflare redirect rule set", "Cloudflare", "`redirect rule set --replace`"},
 		{"godaddy dns delete", "GoDaddy", "`dns delete`"},
+		{"aws route53 record delete", "AWS", "`route53 record delete`"},
 	} {
 		if find(root, c.path) == nil {
 			t.Errorf("confirming command %q does not exist", c.path)

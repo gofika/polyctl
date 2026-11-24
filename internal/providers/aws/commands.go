@@ -398,7 +398,7 @@ func syncRecordRows(ctx context.Context, rt *app.Runtime, prof string, z *platfo
 }
 
 func recordUpsertCmd(rt *app.Runtime) *cobra.Command {
-	var typ, name string
+	var typ, name, setID string
 	var values []string
 	var ttl, priority int
 	cmd := &cobra.Command{
@@ -407,7 +407,11 @@ func recordUpsertCmd(rt *app.Runtime) *cobra.Command {
 		Long: `Create or replace the record set identified by --name and --type. Every
 --value becomes one value of the set; existing values that are not repeated
 are removed. MX and SRV values take their priority from --priority, or as a
-leading number inside the value ("10 mail.example.com").`,
+leading number inside the value ("10 mail.example.com").
+
+A routing-policy set (weighted, latency, failover, geolocation...) is
+chosen with --set-identifier and keeps its policy. Without it, a name and
+type that hold only routing-policy sets are ambiguous (exit code 5).`,
 		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if (typ == "" || len(values) == 0) && !rt.Interactive() {
@@ -464,7 +468,7 @@ leading number inside the value ("10 mail.example.com").`,
 			if done, err := rt.WouldWrite(platform.Target{Platform: platform.AWS, Profile: prof.Name, Domain: z.Name}, platform.Change{Resource: app.RecordResource(fqdn, typ), Action: platform.Updated, Detail: "set to " + strings.Join(values, ",")}); done || err != nil {
 				return err
 			}
-			recs, err := c.ReplaceSet(cmd.Context(), z.ID, fqdn, typ, values, ttl)
+			recs, err := c.ReplaceSet(cmd.Context(), z.ID, fqdn, typ, setID, values, ttl)
 			if err != nil {
 				return err
 			}
@@ -478,18 +482,40 @@ leading number inside the value ("10 mail.example.com").`,
 	cmd.Flags().StringArrayVar(&values, "value", nil, "record value (repeatable; replaces the whole set)")
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 = keep existing, or 300 for a new set)")
 	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX/SRV values that do not start with one")
+	cmd.Flags().StringVar(&setID, "set-identifier", "", "set identifier of a routing-policy record set (weighted, latency, failover...)")
 	return cmd
 }
 
 func recordDeleteCmd(rt *app.Runtime) *cobra.Command {
-	var typ, name string
+	var typ, name, setID string
 	cmd := &cobra.Command{
 		Use:   "delete <zone>",
 		Short: "Delete a whole record set (name + type)",
-		Args:  app.ArgsOrInteractive(rt, 1, nil),
+		Long: `Delete the record set identified by --name and --type, with every value in
+it. A routing-policy set (weighted, latency, failover, geolocation...) is
+chosen with --set-identifier; without it, a name and type that hold only
+routing-policy sets are ambiguous (exit code 5) and the identifiers are
+listed.
+
+The values to delete are listed, then one yes/no question is asked (default
+no; --yes skips it). The non-interactive flow asks nothing: --yes is required
+(exit code 2 without it, before anything is read). Declining changes nothing.
+A missing set is not found (exit code 4) before the question. --dry-run
+reports what would be deleted and asks nothing.`,
+		Example: "  polyctl aws route53 record delete example.com --type TXT --name _acme-challenge\n  polyctl aws route53 record delete example.com --type A --name www --set-identifier eu --yes",
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if typ == "" && !rt.Interactive() {
 				return app.UsageErrf("--type is required")
+			}
+			if !rt.Flags.DryRun {
+				what := "delete the picked record set"
+				if typ != "" {
+					what = fmt.Sprintf("delete the %s record set of %s", strings.ToUpper(typ), nameOrApex(name))
+				}
+				if err := rt.CanConfirm(what); err != nil {
+					return err
+				}
 			}
 			if rt.Flags.Offline {
 				return app.ErrOffline
@@ -513,14 +539,33 @@ func recordDeleteCmd(rt *app.Runtime) *cobra.Command {
 			if typ == "" {
 				// The interactive flow: the record set, from those of the
 				// zone (of --name when given; the apex NS and SOA left out).
-				if fqdn, typ, err = pickRecordSet(cmd.Context(), rt, c, z, name); err != nil {
+				if fqdn, typ, setID, err = pickRecordSet(cmd.Context(), rt, c, z, name); err != nil {
 					return err
 				}
 			}
-			if done, err := rt.WouldWrite(platform.Target{Platform: platform.AWS, Profile: prof.Name, Domain: z.Name}, platform.Change{Resource: app.RecordResource(fqdn, typ), Action: platform.Deleted, Detail: "the whole record set"}); done || err != nil {
+			rs, err := c.LookupSet(cmd.Context(), z.ID, fqdn, typ, setID)
+			if err != nil {
 				return err
 			}
-			recs, err := c.DeleteSet(cmd.Context(), z.ID, fqdn, typ)
+			detail := "the whole record set"
+			if setID != "" {
+				detail += " (set identifier " + setID + ")"
+			}
+			if done, err := rt.WouldWrite(platform.Target{Platform: platform.AWS, Profile: prof.Name, Domain: z.Name}, platform.Change{Resource: app.RecordResource(fqdn, typ), Action: platform.Deleted, Detail: detail}); done || err != nil {
+				return err
+			}
+			if !rt.Flags.Yes {
+				recs := recordsFromSet(zoneID(z.ID), *rs)
+				_ = output.RenderGrid(rt.Stderr, recordGrid(recs))
+				ok, err := rt.Confirm(cmd.Context(), fmt.Sprintf("Delete the %s record set of %s (%d value(s))?", strings.ToUpper(typ), platform.NormalizeDomain(fqdn), len(recs)), false)
+				if err != nil {
+					return err
+				}
+				if !ok {
+					return app.NothingToDof("cancelled, no record was deleted")
+				}
+			}
+			recs, err := c.DeleteSet(cmd.Context(), z.ID, fqdn, typ, setID)
 			if err != nil {
 				return err
 			}
@@ -531,7 +576,16 @@ func recordDeleteCmd(rt *app.Runtime) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&typ, "type", "", "record type")
 	cmd.Flags().StringVar(&name, "name", "", "record name relative to the zone (www, @); default: the zone apex")
+	cmd.Flags().StringVar(&setID, "set-identifier", "", "set identifier of a routing-policy record set (weighted, latency, failover...)")
 	return cmd
+}
+
+// nameOrApex names --name for a message: the zone apex when it is empty.
+func nameOrApex(name string) string {
+	if name == "" || name == "@" {
+		return "the zone apex"
+	}
+	return name
 }
 
 // ----------------------------------------------------- route53domains
@@ -1001,13 +1055,14 @@ shutdown of the operating system.`
 }
 
 // pickRecordSet asks for the record set record delete deletes, from the
-// sets of the zone (one option per name and type, with its values and TTL;
-// those of name only when it is given; the apex NS and SOA, which the zone
-// cannot do without, left out). None is nothing to do.
-func pickRecordSet(ctx context.Context, rt *app.Runtime, c *client, z *platform.Zone, name string) (string, string, error) {
+// sets of the zone (one option per name, type and set identifier, with its
+// values and TTL; those of name only when it is given; the apex NS and SOA,
+// which the zone cannot do without, left out). It returns the name, type
+// and set identifier. None is nothing to do.
+func pickRecordSet(ctx context.Context, rt *app.Runtime, c *client, z *platform.Zone, name string) (string, string, string, error) {
 	recs, err := c.ListRecords(ctx, z.ID)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	apex := platform.NormalizeDomain(z.Name)
 	want := ""
@@ -1015,9 +1070,9 @@ func pickRecordSet(ctx context.Context, rt *app.Runtime, c *client, z *platform.
 		want = platform.NormalizeDomain(platform.FQDN(name, z.Name))
 	}
 	type set struct {
-		name, typ string
-		values    []string
-		ttl       int
+		name, typ, setID string
+		values           []string
+		ttl              int
 	}
 	var sets []*set
 	byKey := map[string]*set{}
@@ -1026,10 +1081,11 @@ func pickRecordSet(ctx context.Context, rt *app.Runtime, c *client, z *platform.
 		if (n == apex && (r.Type == "NS" || r.Type == "SOA")) || (want != "" && n != want) {
 			continue
 		}
-		key := n + "|" + r.Type
+		setID := extraString(r.Extra, "set_identifier")
+		key := n + "|" + r.Type + "|" + setID
 		s := byKey[key]
 		if s == nil {
-			s = &set{name: r.Name, typ: r.Type, ttl: r.TTL}
+			s = &set{name: r.Name, typ: r.Type, setID: setID, ttl: r.TTL}
 			byKey[key] = s
 			sets = append(sets, s)
 		}
@@ -1037,17 +1093,23 @@ func pickRecordSet(ctx context.Context, rt *app.Runtime, c *client, z *platform.
 	}
 	var opts []prompt.Option
 	for _, s := range sets {
-		ttl := ""
+		ttl, id := "", ""
 		if s.ttl > 0 {
 			ttl = fmt.Sprintf("ttl %d", s.ttl)
 		}
-		opts = append(opts, prompt.Option{Label: joinLabel(s.name, s.typ, strings.Join(s.values, ", "), ttl), Value: s.name + "\x00" + s.typ})
+		if s.setID != "" {
+			id = "set " + s.setID
+		}
+		opts = append(opts, prompt.Option{Label: joinLabel(s.name, s.typ, id, strings.Join(s.values, ", "), ttl), Value: s.name + "\x00" + s.typ + "\x00" + s.setID})
 	}
 	v, err := rt.Choose(app.Choice{Title: "Record set to delete from " + z.Name, Options: opts, Arg: "--type",
 		Empty: app.NothingToDof("zone %s has no record set to delete", z.Name)})
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
-	n, t, _ := strings.Cut(v, "\x00")
-	return platform.FQDN(n, z.Name), t, nil
+	parts := strings.SplitN(v, "\x00", 3)
+	for len(parts) < 3 {
+		parts = append(parts, "")
+	}
+	return platform.FQDN(parts[0], z.Name), parts[1], parts[2], nil
 }

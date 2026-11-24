@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/route53"
 	r53types "github.com/aws/aws-sdk-go-v2/service/route53/types"
 
+	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/platform"
 )
 
@@ -757,11 +758,62 @@ func (c *client) DeleteRecord(ctx context.Context, zone, recordID string) error 
 	return c.change(ctx, zone, upsert(buildSet(rs, name, typ, setID, ttlFor(0, rs), remaining)))
 }
 
-// ReplaceSet replaces the whole value set of (name, type) with values
-// (used by the native `route53 record upsert` command).
-func (c *client) ReplaceSet(ctx context.Context, zone, fqdn, typ string, values []string, ttl int) ([]platform.Record, error) {
+// recordSets returns the record sets of (name, type): the simple set, or
+// one per set identifier for routing-policy sets (weighted, latency,
+// failover, geolocation...).
+func (c *client) recordSets(ctx context.Context, zone, fqdn, typ string) ([]r53types.ResourceRecordSet, error) {
+	fqdn = platform.NormalizeDomain(fqdn)
+	typ = strings.ToUpper(typ)
+	var out []r53types.ResourceRecordSet
+	err := c.listSets(ctx, zone, fqdn, typ, func(rs r53types.ResourceRecordSet) bool {
+		if unescapeRRName(awssdk.ToString(rs.Name)) != fqdn || string(rs.Type) != typ {
+			return false
+		}
+		out = append(out, rs)
+		return true
+	})
+	return out, err
+}
+
+// LookupSet returns the record set of (name, type) with the set identifier
+// setID ("" for a simple set). A missing set is platform.ErrNotFound; no
+// setID while the name and type hold only routing-policy sets is
+// ambiguous, naming their identifiers.
+func (c *client) LookupSet(ctx context.Context, zone, fqdn, typ, setID string) (*r53types.ResourceRecordSet, error) {
 	zone = zoneID(zone)
-	existing, err := c.findSet(ctx, zone, fqdn, typ, "")
+	sets, err := c.recordSets(ctx, zone, fqdn, typ)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for i := range sets {
+		id := awssdk.ToString(sets[i].SetIdentifier)
+		if id == setID {
+			return &sets[i], nil
+		}
+		ids = append(ids, id)
+	}
+	name, upper := platform.NormalizeDomain(fqdn), strings.ToUpper(typ)
+	if setID == "" && len(ids) > 0 {
+		return nil, &app.AmbiguousError{What: fmt.Sprintf("record set %s %s", name, upper), Candidates: ids,
+			Hint: "pass --set-identifier <id> to choose"}
+	}
+	if setID != "" {
+		return nil, fmt.Errorf("%w: record set %s %s with set identifier %q in zone %s", platform.ErrNotFound, name, upper, setID, zone)
+	}
+	return nil, fmt.Errorf("%w: record set %s %s in zone %s", platform.ErrNotFound, name, upper, zone)
+}
+
+// ReplaceSet replaces the whole value set of (name, type) and set
+// identifier setID ("" for a simple set) with values (used by the native
+// `route53 record upsert` command). An existing set keeps its routing
+// policy.
+func (c *client) ReplaceSet(ctx context.Context, zone, fqdn, typ, setID string, values []string, ttl int) ([]platform.Record, error) {
+	zone = zoneID(zone)
+	existing, err := c.LookupSet(ctx, zone, fqdn, typ, setID)
+	if errors.Is(err, platform.ErrNotFound) {
+		existing, err = nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -772,22 +824,20 @@ func (c *client) ReplaceSet(ctx context.Context, zone, fqdn, typ string, values 
 	for _, v := range values {
 		quoted = append(quoted, quoteTXT(typ, v))
 	}
-	rs := buildSet(existing, fqdn, typ, "", ttlFor(ttl, existing), quoted)
+	rs := buildSet(existing, fqdn, typ, setID, ttlFor(ttl, existing), quoted)
 	if err := c.change(ctx, zone, upsert(rs)); err != nil {
 		return nil, err
 	}
 	return recordsFromSet(zone, rs), nil
 }
 
-// DeleteSet deletes the whole record set of (name, type).
-func (c *client) DeleteSet(ctx context.Context, zone, fqdn, typ string) ([]platform.Record, error) {
+// DeleteSet deletes the whole record set of (name, type) and set
+// identifier setID ("" for a simple set).
+func (c *client) DeleteSet(ctx context.Context, zone, fqdn, typ, setID string) ([]platform.Record, error) {
 	zone = zoneID(zone)
-	existing, err := c.findSet(ctx, zone, fqdn, typ, "")
+	existing, err := c.LookupSet(ctx, zone, fqdn, typ, setID)
 	if err != nil {
 		return nil, err
-	}
-	if existing == nil {
-		return nil, fmt.Errorf("%w: record set %s %s in zone %s", platform.ErrNotFound, platform.NormalizeDomain(fqdn), strings.ToUpper(typ), zone)
 	}
 	if err := c.change(ctx, zone, deletion(*existing)); err != nil {
 		return nil, err

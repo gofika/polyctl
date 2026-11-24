@@ -84,6 +84,7 @@ func TestRoute53RecordAsks(t *testing.T) {
 
 	p = prompttest.New(t, prompttest.Label("www.other.org  A"))
 	h.rt.Picker = p
+	h.rt.Stdin = strings.NewReader("y\n") // the confirmation
 	if err := h.run("route53", "record", "delete", "other.org"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}

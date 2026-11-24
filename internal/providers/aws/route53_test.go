@@ -285,7 +285,7 @@ func TestTXTQuoting(t *testing.T) {
 	if got := f.values("Z1", "example.com.", "TXT"); got != nil {
 		t.Fatalf("TXT set should be gone: %v", got)
 	}
-	replaced, err := c.ReplaceSet(ctx, "Z1", "_dmarc.example.com", "txt", []string{"v=DMARC1; p=none", `"pre-quoted"`}, 0)
+	replaced, err := c.ReplaceSet(ctx, "Z1", "_dmarc.example.com", "txt", "", []string{"v=DMARC1; p=none", `"pre-quoted"`}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -641,18 +641,18 @@ func TestReplaceAndDeleteSet(t *testing.T) {
 	f := newFakeRoute53()
 	f.sets["Z1"] = []r53types.ResourceRecordSet{valueSet("www.example.com.", "A", 600, "1.1.1.1", "2.2.2.2")}
 	c := testClient(f)
-	recs, err := c.ReplaceSet(context.Background(), "Z1", "www.example.com", "a", []string{"3.3.3.3"}, 0)
+	recs, err := c.ReplaceSet(context.Background(), "Z1", "www.example.com", "a", "", []string{"3.3.3.3"}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(recs) != 1 || recs[0].Value != "3.3.3.3" || recs[0].TTL != 600 {
 		t.Fatalf("unexpected replaced set %+v", recs)
 	}
-	deleted, err := c.DeleteSet(context.Background(), "Z1", "www.example.com", "A")
+	deleted, err := c.DeleteSet(context.Background(), "Z1", "www.example.com", "A", "")
 	if err != nil || len(deleted) != 1 || len(f.sets["Z1"]) != 0 {
 		t.Fatalf("delete set: %v %+v %+v", err, deleted, f.sets["Z1"])
 	}
-	if _, err := c.DeleteSet(context.Background(), "Z1", "www.example.com", "A"); !errors.Is(err, platform.ErrNotFound) {
+	if _, err := c.DeleteSet(context.Background(), "Z1", "www.example.com", "A", ""); !errors.Is(err, platform.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
