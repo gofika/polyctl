@@ -12,6 +12,9 @@ import (
 	"time"
 
 	"github.com/gofika/polyctl/internal/cert"
+	"github.com/gofika/polyctl/internal/cert/certtest"
+	"github.com/gofika/polyctl/internal/config"
+	"github.com/gofika/polyctl/internal/dnstest"
 	"github.com/gofika/polyctl/internal/platform"
 )
 
@@ -211,5 +214,60 @@ func TestCertDeployUsage(t *testing.T) {
 	}
 	if out, stderr, err := run(t, cfgPath, "cert", "deploy", "--all", "-o", "json"); err != nil || !strings.Contains(out, `"changes": []`) || !strings.Contains(stderr, "nothing to deploy") {
 		t.Errorf("skipped account = %q %q %v", out, stderr, err)
+	}
+}
+
+// A root domain whose zone two DNS accounts hold: cert deploy points at
+// cert.dns_accounts (its --profile / --platform select deploy accounts),
+// and cert.dns_accounts routes the renewal to the account it names.
+func TestCertDeployDNSAccountsPicksTheDNSAccount(t *testing.T) {
+	dir, cfgPath := setupMulti(t)
+	const zoneName = "both.example"
+	zones := []platform.Zone{{ID: "z-" + zoneName, Name: zoneName}}
+	seedZone(t, dir, config.AccountRef{Profile: "a", Platform: fakePlatform}, zoneName)
+	seedZone(t, dir, config.AccountRef{Profile: "a", Platform: fakePlatform2}, zoneName)
+	cf, gd := client("a"), clientOn("a", fakePlatform2)
+	cf.zones, gd.zones = zones, zones
+	resolver := dnstest.Start(t, nil)
+	cfg := loadConfig(t, cfgPath)
+	cfg.Cert.DNS.Resolvers, cfg.Cert.DNS.MinResolvers = []string{resolver.Addr}, 1
+	cfg.Cert.Email, cfg.Cert.AgreeTOS = "ops@example.net", true
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	iss := &cliIssuer{ca: certtest.New("Fake R1"), accounts: map[string]string{}}
+	old := cert.NewIssuer
+	cert.NewIssuer = func(string, func(string, ...any)) cert.Issuer { return iss }
+	t.Cleanup(func() { cert.NewIssuer = old })
+	d := &cliDeployer{targets: map[string]*cliTarget{
+		"lb-1": {domain: zoneName, notAfter: time.Now().Add(5 * 24 * time.Hour), serial: "01"},
+	}, order: []string{"lb-1"}}
+	t.Cleanup(platform.OverrideDeployer(d))
+
+	out, _, err := run(t, cfgPath, "cert", "deploy", zoneName, "--deployer", "fake-lb", "-o", "json")
+	if ExitCodeFor(err) != ExitError || !strings.Contains(out, "set cert.dns_accounts: {both.example: ") ||
+		strings.Contains(out, "pass --platform") || len(d.writes) != 0 {
+		t.Fatalf("ambiguous: %v %s (writes %v)", err, out, d.writes)
+	}
+
+	cfg = loadConfig(t, cfgPath)
+	cfg.Cert.DNSAccounts = map[string]string{zoneName: string(fakePlatform2) + "/a"}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, err := run(t, cfgPath, "cert", "deploy", zoneName, "--deployer", "fake-lb"); err != nil {
+		t.Fatalf("pinned: %v (%s)", err, stderr)
+	}
+	if writes(cf) != 0 || gd.count("CreateRecord") != 2 || !slices.Equal(d.writes, []string{"bind lb-1"}) {
+		t.Errorf("cf %v, gd %v, writes %v", cf.calls, gd.calls, d.writes)
+	}
+
+	// An entry that is not "profile" or "platform/profile" is a usage error.
+	cfg.Cert.DNSAccounts = map[string]string{"www." + zoneName: "a"}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := run(t, cfgPath, "cert", "deploy", zoneName, "--deployer", "fake-lb"); ExitCodeFor(err) != ExitUsage || !strings.Contains(err.Error(), "is not a root domain") {
+		t.Errorf("bad key: %v", err)
 	}
 }

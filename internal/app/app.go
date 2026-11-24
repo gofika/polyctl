@@ -773,7 +773,12 @@ func (rt *Runtime) peers(ctx context.Context, self string, id platform.ID) ([]pl
 // with those flags, while the DNS account that issues a certificate is
 // found among every account. rt keeps owning what they share: the copy is
 // never closed.
-func (rt *Runtime) Unselected() (*Runtime, error) {
+func (rt *Runtime) Unselected() (*Runtime, error) { return rt.Pinned("", "") }
+
+// Pinned returns a runtime like Unselected whose --profile and --platform
+// are profile and id instead (either may be empty): cert.dns_accounts
+// routes a root domain to the DNS account it names this way.
+func (rt *Runtime) Pinned(profile string, id platform.ID) (*Runtime, error) {
 	if _, err := rt.Config(); err != nil {
 		return nil, err
 	}
@@ -784,7 +789,7 @@ func (rt *Runtime) Unselected() (*Runtime, error) {
 		return nil, err
 	}
 	c := *rt
-	c.Flags.Profile, c.Flags.Platform = "", ""
+	c.Flags.Profile, c.Flags.Platform = profile, string(id)
 	return &c, nil
 }
 

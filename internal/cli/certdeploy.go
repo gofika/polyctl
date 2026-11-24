@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -289,7 +290,8 @@ func certDeployEnv(rt *app.Runtime, cfg *config.Config, accounts []config.Accoun
 		Ensure: func(ctx context.Context, root string, days int) (*cert.Result, error) {
 			o := base
 			o.Domain, o.Days = root, days
-			return cert.Ensure(ctx, certEnv, o)
+			res, err := cert.Ensure(ctx, certEnv, o)
+			return res, deployDNSHint(err, root)
 		},
 		Stored: func(root string) *cert.Bundle {
 			b, err := certEnv.Store.Load(root, false)
@@ -325,4 +327,15 @@ func certDeployEnv(rt *app.Runtime, cfg *config.Config, accounts []config.Accoun
 		}
 	}
 	return env, nil
+}
+
+// deployDNSHint points an ambiguous DNS account of root at
+// cert.dns_accounts: the --profile / --platform of cert deploy select the
+// accounts it deploys to, not the DNS account.
+func deployDNSHint(err error, root string) error {
+	var amb *app.AmbiguousError
+	if errors.As(err, &amb) {
+		amb.Hint = fmt.Sprintf("set cert.dns_accounts: {%s: <platform>/<profile>} in the configuration to choose (--profile and --platform of cert deploy select the accounts it deploys to)", root)
+	}
+	return err
 }

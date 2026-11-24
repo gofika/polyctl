@@ -98,7 +98,24 @@ func NewEnv(rt *app.Runtime, staging bool) (*Env, error) {
 		Infof:       rt.Infof,
 		Verbosef:    rt.Verbosef,
 	}
-	env.Route = func(ctx context.Context, root string) (*Route, error) { return route(ctx, rt, root) }
+	pins, err := ParseDNSAccounts(s.DNSAccounts)
+	if err != nil {
+		return nil, usage("cert.dns_accounts: %v", err)
+	}
+	env.Route = func(ctx context.Context, root string) (*Route, error) {
+		r := rt
+		// --profile / --platform of cert ensure win over the pin.
+		if pin, ok := pins[root]; ok && rt.Flags.Profile == "" && rt.Flags.Platform == "" {
+			if _, err := cfg.Profile(pin.Profile); err != nil {
+				return nil, usage("cert.dns_accounts: %s: %v", root, err)
+			}
+			if r, err = rt.Pinned(pin.Profile, pin.Platform); err != nil {
+				return nil, err
+			}
+			rt.Verbosef("DNS account of %s: %s (cert.dns_accounts)", root, pin)
+		}
+		return route(ctx, r, root)
+	}
 	env.LiveNS = func(ctx context.Context, root string) []string {
 		r := platform.LiveNS(ctx, root, resolvers, cfg.NSTimeout())
 		if r.Kind != platform.NSOK {
@@ -129,6 +146,51 @@ func NewEnv(rt *app.Runtime, staging bool) (*Env, error) {
 	}
 	env.Remember = func(ctx context.Context, b *Bundle) { remember(ctx, rt, cfg, b) }
 	return env, nil
+}
+
+// DNSPin is the DNS account cert.dns_accounts names for a root domain.
+type DNSPin struct {
+	Profile string
+	// Platform is empty when the entry names the profile only.
+	Platform platform.ID
+}
+
+func (p DNSPin) String() string {
+	if p.Platform == "" {
+		return p.Profile
+	}
+	return string(p.Platform) + "/" + p.Profile
+}
+
+// ParseDNSAccounts parses cert.dns_accounts: root domain -> "profile" or
+// "platform/profile". A key must be a root domain.
+func ParseDNSAccounts(m map[string]string) (map[string]DNSPin, error) {
+	out := make(map[string]DNSPin, len(m))
+	for k, v := range m {
+		root, err := RootDomain(k)
+		if err != nil {
+			return nil, fmt.Errorf("%q: %v", k, err)
+		}
+		if key := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(k)), "."); key != root {
+			return nil, fmt.Errorf("%q is not a root domain (use %s)", k, root)
+		}
+		v = strings.TrimSpace(v)
+		var pin DNSPin
+		if plat, prof, found := strings.Cut(v, "/"); found {
+			id, err := platform.Parse(plat)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %q: %v", root, v, err)
+			}
+			pin = DNSPin{Profile: strings.TrimSpace(prof), Platform: id}
+		} else {
+			pin = DNSPin{Profile: v}
+		}
+		if pin.Profile == "" || strings.Contains(pin.Profile, "/") {
+			return nil, fmt.Errorf("%s: %q is not \"profile\" or \"platform/profile\"", root, v)
+		}
+		out[root] = pin
+	}
+	return out, nil
 }
 
 // validEmail is the check of the e-mail question.

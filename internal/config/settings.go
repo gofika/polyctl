@@ -95,18 +95,21 @@ type CertRegions struct {
 
 // Cert configures the certificate commands.
 type Cert struct {
-	Email         string      `yaml:"email,omitempty"`
-	AgreeTOS      bool        `yaml:"agree_tos,omitempty"`
-	Dir           string      `yaml:"dir,omitempty"`
-	ACMEDirectory string      `yaml:"acme_directory,omitempty"`
-	KeyType       string      `yaml:"key_type,omitempty"`
-	ReuseKey      bool        `yaml:"reuse_key,omitempty"`
-	RenewDays     int         `yaml:"renew_days,omitempty"`
-	NameTemplate  string      `yaml:"name_template,omitempty"`
-	SkipAccounts  []string    `yaml:"skip_accounts,omitempty"`
-	DNS           CertDNS     `yaml:"dns,omitempty"`
-	AWS           CertRegions `yaml:"aws,omitempty"`
-	Aliyun        CertRegions `yaml:"aliyun,omitempty"`
+	Email         string   `yaml:"email,omitempty"`
+	AgreeTOS      bool     `yaml:"agree_tos,omitempty"`
+	Dir           string   `yaml:"dir,omitempty"`
+	ACMEDirectory string   `yaml:"acme_directory,omitempty"`
+	KeyType       string   `yaml:"key_type,omitempty"`
+	ReuseKey      bool     `yaml:"reuse_key,omitempty"`
+	RenewDays     int      `yaml:"renew_days,omitempty"`
+	NameTemplate  string   `yaml:"name_template,omitempty"`
+	SkipAccounts  []string `yaml:"skip_accounts,omitempty"`
+	// DNSAccounts names the DNS account of a root domain ("profile" or
+	// "platform/profile") when several accounts host its zone.
+	DNSAccounts map[string]string `yaml:"dns_accounts,omitempty"`
+	DNS         CertDNS           `yaml:"dns,omitempty"`
+	AWS         CertRegions       `yaml:"aws,omitempty"`
+	Aliyun      CertRegions       `yaml:"aliyun,omitempty"`
 }
 
 // Built-in defaults of the cert keys.

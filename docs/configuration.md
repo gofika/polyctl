@@ -201,6 +201,7 @@ cert:
   renew_days: 30                  # default of --days
   name_template: "upload_{name}_{not_after}"
   skip_accounts: []               # profiles (name) or deployers (name:aliyun-alb) cert deploy skips
+  dns_accounts: {}                # root domain -> DNS account (profile or platform/profile) when several host its zone
   dns:
     resolvers: ["1.1.1.1:53", "8.8.8.8:53", "223.5.5.5:53", "114.114.114.114:53"]
     min_resolvers: 2
