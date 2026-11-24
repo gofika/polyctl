@@ -289,12 +289,24 @@ func TestInstanceCreateDryRun(t *testing.T) {
 		"address/web-1-external-ip would_create EXTERNAL PREMIUM",
 		"address/web-1-internal-ip would_create INTERNAL subnet default",
 		"instance/web-1 would_create e2-small, boot 10GB pd-balanced, data 100GB, tags lb-health-check, ip-forward false",
+		"instance/web-1/status would_create RUNNING",
 	}
 	if got := rows(rep); !slices.Equal(got, want) {
 		t.Errorf("rows = %v\nwant %v", got, want)
 	}
 	if rep.Changes[1].ID != platform.Pending {
 		t.Errorf("pending id = %q", rep.Changes[1].ID)
+	}
+
+	// --no-wait plans no wait for RUNNING, as a real run reports none.
+	h = newGCPHarness(t, app.Flags{DryRun: true}, defaultsUS())
+	if err := h.run("compute", "instance", "create", "web-1", "--no-wait"); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows(h.report()) {
+		if strings.HasPrefix(r, "instance/web-1/status") {
+			t.Errorf("--no-wait dry run plans %q", r)
+		}
 	}
 }
 

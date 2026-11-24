@@ -431,7 +431,7 @@ func TestWindowsCreateDryRun(t *testing.T) {
 		t.Fatalf("dry run wrote %v", w)
 	}
 	r := rows(h.report())
-	if len(r) != 3 || !strings.HasPrefix(r[2], "instance/win-1/windows-login would_create user polyctl-admin") {
+	if len(r) != 4 || r[2] != "instance/win-1/status would_create RUNNING" || !strings.HasPrefix(r[3], "instance/win-1/windows-login would_create user polyctl-admin") {
 		t.Errorf("rows = %v", r)
 	}
 	if hasDataKey(t, h) {

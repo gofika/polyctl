@@ -1142,7 +1142,7 @@ func runCreate(cmd *cobra.Command, rt *app.Runtime, o *createOptions, name strin
 		}
 		return platform.Change{Detail: desc}, nil
 	}})
-	if wait && !rt.DryRun() {
+	if wait {
 		plan.Add(platform.Step{Resource: "instance/" + name + "/status", Action: platform.Created, Desc: statusRunning, Apply: func(ctx context.Context) (platform.Change, error) {
 			in, err := c.waitStatus(ctx, zone, name, statusRunning, timeout)
 			if in != nil {
