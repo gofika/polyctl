@@ -19,6 +19,7 @@ import (
 	"github.com/gofika/polyctl/internal/output"
 	"github.com/gofika/polyctl/internal/platform"
 	"github.com/gofika/polyctl/internal/prompt"
+	"github.com/gofika/polyctl/internal/secrets"
 )
 
 // Flags are the global CLI flags.
@@ -96,6 +97,7 @@ type Runtime struct {
 	cfg       *config.Config
 	store     *creds.Multi
 	db        *inventory.DB
+	secrets   *secrets.Store
 	format    output.Format
 	warned    bool
 	configDir string

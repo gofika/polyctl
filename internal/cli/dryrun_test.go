@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/secrets"
 )
 
 func decodeReport(t *testing.T, out string) platform.Report {
@@ -136,6 +137,9 @@ func TestExitCodesOfSharedSentinels(t *testing.T) {
 		// The first failure's own code does not leak out of a batch.
 		&platform.PartialError{First: fmt.Errorf("x: %w", platform.ErrNotFound)}:  ExitError,
 		&platform.PartialError{First: fmt.Errorf("x: %w", platform.ErrForbidden)}: ExitError,
+		// Stored instance credentials whose data key is gone: a failure,
+		// not "not found".
+		fmt.Errorf("x: %w", secrets.ErrKeyLost): ExitError,
 	} {
 		if got := ExitCodeFor(err); got != want {
 			t.Errorf("ExitCodeFor(%v) = %d, want %d", err, got, want)
