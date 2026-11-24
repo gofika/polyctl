@@ -11,6 +11,7 @@ import (
 	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/platform"
 	"github.com/gofika/polyctl/internal/prompt"
+	"github.com/gofika/polyctl/internal/prompt/prompttest"
 )
 
 func siteLogin(t *testing.T, in platform.LoginInput) (*platform.LoginResult, string, error) {
@@ -102,7 +103,7 @@ func TestLoginAsksTheSiteFromAList(t *testing.T) {
 	t.Setenv(envKeyID, "")
 	t.Setenv(envKeySecret, "")
 	p := &sitePicker{answer: "cn"}
-	res, stderr, err := siteLogin(t, platform.LoginInput{Interactive: true, Picker: p, Options: map[string]string{"access_key_id": "a", "access_key_secret": "b"}, Stdin: strings.NewReader("\n"), NoBrowser: true})
+	res, stderr, err := siteLogin(t, platform.LoginInput{Interactive: true, Picker: p, Options: map[string]string{"access_key_id": "a", "access_key_secret": "b", "region": "cn-hangzhou"}, Stdin: strings.NewReader("\n"), NoBrowser: true})
 	if err != nil || res.Metadata[metaSite] != siteCN || len(p.titles) != 1 || !strings.Contains(stderr, "usually belongs to one of them") {
 		t.Errorf("picked site = %+v, %v, %v (stderr %q)", res, err, p.titles, stderr)
 	}
@@ -166,4 +167,35 @@ func TestVerifyReportsTheSite(t *testing.T) {
 	if err != nil || id.Extra["site"] != siteIntl {
 		t.Errorf("Verify = %+v, %v", id, err)
 	}
+}
+
+// With the arrow-key picker the region is chosen from the regions of the
+// account, after the AccessKey is verified, the previous one preselected;
+// unavailable regions are not offered.
+func TestLoginPicksTheRegion(t *testing.T) {
+	f := newFakeAPI(t)
+	withFakeEndpoint(t, f)
+	f.on("GetCallerIdentity", func(q url.Values) (int, any) {
+		return 200, map[string]any{"AccountId": "42", "Arn": "acs:ram::42:user/dev", "IdentityType": "RAMUser"}
+	})
+	f.on("DescribeRegions", func(q url.Values) (int, any) {
+		return 200, map[string]any{"Regions": map[string]any{"Region": []map[string]any{
+			{"RegionId": "cn-shanghai", "LocalName": "China (Shanghai)", "Status": "available"},
+			{"RegionId": "cn-hangzhou", "LocalName": "China (Hangzhou)", "Status": "available"},
+			{"RegionId": "cn-old", "LocalName": "Retired", "Status": "soldOut"},
+		}}}
+	})
+	t.Setenv(envKeyID, "")
+	t.Setenv(envKeySecret, "")
+	p := prompttest.New(t, "cn-shanghai")
+	res, _, err := siteLogin(t, platform.LoginInput{Interactive: true, Picker: p, Existing: map[string]string{metaRegion: "cn-hangzhou"},
+		Options: map[string]string{"access_key_id": "a", "access_key_secret": "b", "site": "cn"}, Stdin: strings.NewReader(""), NoBrowser: true})
+	if err != nil || res.Metadata[metaRegion] != "cn-shanghai" {
+		t.Fatalf("login = %+v, %v", res, err)
+	}
+	a := p.Find("Default region of the profile")
+	if a.Default != "cn-hangzhou" || prompttest.Values(a.Options) != "cn-hangzhou cn-shanghai" || a.Options[0].Label != "cn-hangzhou  China (Hangzhou)" {
+		t.Errorf("region options (default %q): %+v", a.Default, a.Options)
+	}
+	p.Done()
 }

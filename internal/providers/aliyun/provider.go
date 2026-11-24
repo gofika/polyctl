@@ -30,10 +30,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+
+	"github.com/aliyun/alibaba-cloud-sdk-go/services/ecs"
 
 	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt"
 )
 
 func init() { platform.Register(&provider{}) }
@@ -165,11 +169,18 @@ func (p *provider) Login(ctx context.Context, in platform.LoginInput) (*platform
 			}
 		}
 	}
+	// With the arrow-key picker the region is chosen from the regions of
+	// the account once the AccessKey is verified (below).
+	pickRegion := region == "" && in.Interactive && in.Picker != nil
+	regionDef := in.Existing[metaRegion]
+	if regionDef == "" {
+		regionDef = DefaultRegion
+	}
+	if pickRegion {
+		region = regionDef
+	}
 	if region == "" {
-		def := in.Existing[metaRegion]
-		if def == "" {
-			def = DefaultRegion
-		}
+		def := regionDef
 		if in.Interactive {
 			if region, err = io.Line("Region id", def); err != nil {
 				return nil, err
@@ -189,6 +200,12 @@ func (p *provider) Login(ctx context.Context, in platform.LoginInput) (*platform
 		return nil, fmt.Errorf("verify AccessKey: %w", err)
 	}
 	c.checkSite(ctx, id.Extra["identity_type"], site, io.Err)
+	if pickRegion {
+		if region, err = c.chooseRegion(ctx, in, io, regionDef); err != nil {
+			return nil, err
+		}
+		c.region = region
+	}
 	meta := map[string]string{
 		metaMethod:    "access_key",
 		metaRegion:    region,
@@ -311,4 +328,49 @@ func loadCLIProfile(path, name string) (*cliProfile, error) {
 		return cp, nil
 	}
 	return nil, fmt.Errorf("%w: aliyun CLI profile %q in %s (available: %s)", platform.ErrNotFound, name, path, strings.Join(names, ", "))
+}
+
+// chooseRegion asks for the default region of the profile among the
+// regions of the account (ECS DescribeRegions), labelled with their local
+// names, def preselected. When they cannot be listed the region id is
+// asked as a line.
+func (c *client) chooseRegion(ctx context.Context, in platform.LoginInput, io *prompt.IO, def string) (string, error) {
+	opts, err := c.regionOptions(ctx)
+	if err != nil || len(opts) == 0 {
+		if err != nil {
+			fmt.Fprintf(io.Err, "note: could not list the regions (%v); enter the region id\n", err)
+		}
+		r, err := io.Line("Region id", def)
+		return strings.TrimSpace(r), err
+	}
+	return in.Select(io, "Default region of the profile", opts, def)
+}
+
+// regionOptions lists the regions of the account as picker options
+// ("cn-hangzhou  China (Hangzhou)"), sorted by id.
+func (c *client) regionOptions(ctx context.Context) ([]prompt.Option, error) {
+	cl, err := c.ecsClient(ctx, c.region)
+	if err != nil {
+		return nil, err
+	}
+	req := ecs.CreateDescribeRegionsRequest()
+	c.route(req, endpointECS)
+	req.RegionId = c.region
+	resp, err := cl.DescribeRegions(req)
+	if err != nil {
+		return nil, wrapErr("ecs DescribeRegions", err)
+	}
+	var opts []prompt.Option
+	for _, r := range resp.Regions.Region {
+		if r.RegionId == "" || (r.Status != "" && r.Status != "available") {
+			continue
+		}
+		label := r.RegionId
+		if r.LocalName != "" {
+			label += "  " + r.LocalName
+		}
+		opts = append(opts, prompt.Option{Label: label, Value: r.RegionId})
+	}
+	sort.Slice(opts, func(i, j int) bool { return opts[i].Value < opts[j].Value })
+	return opts, nil
 }
