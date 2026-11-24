@@ -426,6 +426,47 @@ func TestSSHKeyInstanceConnect(t *testing.T) {
 	}
 }
 
+// The interactive flow offers EC2 Instance Connect (default no) only for an
+// image known to ship it; for another image the hint names the flag with a
+// condition and nothing is pushed.
+func TestSSHKeyInstanceConnectOffer(t *testing.T) {
+	r := newKeyRig(t, "ec2-user")
+	stranger := sshtest.New(t)
+	stranger.System = r.sys
+	r.srv = stranger
+	var pushed []string
+	r.inst.InstanceConnect = func(ctx context.Context, user string, key ssh.PublicKey) error {
+		pushed = append(pushed, user)
+		stranger.Authorize(user, key)
+		return nil
+	}
+	sc := r.spec()
+	sc.InstanceConnect = true
+	nk := newSSHTestKey(t)
+
+	p := prompttest.New(t, true) // the host key only
+	r.h.rt.Picker = p
+	err := r.runSpec(sc, "add", "web-1", "--ssh-key", nk.line("k"))
+	p.Done()
+	if err == nil || !strings.Contains(err.Error(), "--instance-connect when EC2 Instance Connect is installed") || len(pushed) != 0 {
+		t.Fatalf("not offered: %v (pushed %v)", err, pushed)
+	}
+
+	r.inst.InstanceConnectOffer = true
+	p = prompttest.New(t, true)
+	r.h.rt.Picker = p
+	if err := r.runSpec(sc, "add", "web-1", "--ssh-key", nk.line("k")); err != nil {
+		t.Fatal(err)
+	}
+	p.Done()
+	if a := p.Find("Log in with a one-time key pushed by EC2 Instance Connect (needs ec2-instance-connect:SendSSHPublicKey)?"); a.Default != "false" {
+		t.Errorf("offer default %q", a.Default)
+	}
+	if len(pushed) != 1 || r.file("ec2-user") != nk.line("k")+"\n" {
+		t.Errorf("pushed %v, file %q", pushed, r.file("ec2-user"))
+	}
+}
+
 // fakeStore is a metadata store (Compute Engine).
 type fakeStore struct {
 	keys     []app.SSHKeyEntry

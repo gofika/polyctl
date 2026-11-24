@@ -79,11 +79,18 @@ type SSHKeyInstance struct {
 	// for notes.
 	LoginUsers     []string
 	LoginUsersFrom string
+	// LoginUsersNote is printed when LoginUsers are tried (not with
+	// --login-user): an image whose default user is unknown, say.
+	LoginUsersNote string
 	// InstanceConnect, when set, makes key a valid login of user for 60
 	// seconds (EC2 Instance Connect SendSSHPublicKey). It is offered when
 	// no local key logs in: with --instance-connect, or asked (default
 	// No) in the interactive flow.
 	InstanceConnect func(ctx context.Context, user string, key ssh.PublicKey) error
+	// InstanceConnectOffer says the image is known to ship EC2 Instance
+	// Connect: only then does the interactive flow offer it; otherwise it
+	// runs with --instance-connect only.
+	InstanceConnectOffer bool
 }
 
 // label names the instance in messages: "name (id)".
@@ -955,6 +962,8 @@ func (sc SSHKeyCommand) open(ctx context.Context, rt *Runtime, f *sshKeyFlags, a
 	users := inst.LoginUsers
 	if f.loginUser != "" {
 		users = []string{f.loginUser}
+	} else if inst.LoginUsersNote != "" {
+		rt.Infof("%s", inst.LoginUsersNote)
 	}
 	if len(users) == 0 {
 		u, err := rt.AskInput("--login-user", "User to log in to "+inst.label()+" as", "", func(v string) error {
@@ -1007,7 +1016,11 @@ func (sc SSHKeyCommand) open(ctx context.Context, rt *Runtime, f *sshKeyFlags, a
 			hint += ", or name the user with --login-user"
 		}
 		if inst.InstanceConnect != nil && !f.connect {
-			hint += ", or use --instance-connect"
+			if inst.InstanceConnectOffer {
+				hint += ", or use --instance-connect"
+			} else {
+				hint += ", or use --instance-connect when EC2 Instance Connect is installed on the image"
+			}
 		}
 		return nil, fmt.Errorf("%w; %s", err, hint)
 	}
@@ -1028,10 +1041,11 @@ func (sc SSHKeyCommand) open(ctx context.Context, rt *Runtime, f *sshKeyFlags, a
 // instanceConnect is the EC2 Instance Connect fallback: when no local key
 // logged in, a one-time key generated in memory is pushed for each login
 // user in turn and used within its 60 seconds. It runs with
-// --instance-connect, or when the interactive flow says yes.
+// --instance-connect, or when the interactive flow says yes (asked only
+// for an image known to ship EC2 Instance Connect).
 func (s *sshKeySession) instanceConnect(ctx context.Context, f *sshKeyFlags, o sshremote.Options, ae *sshremote.AuthError) (*sshremote.Client, error) {
 	if !f.connect {
-		if !s.rt.Interactive() {
+		if !s.rt.Interactive() || !s.inst.InstanceConnectOffer {
 			return nil, ae
 		}
 		s.rt.Infof("%v", ae)
