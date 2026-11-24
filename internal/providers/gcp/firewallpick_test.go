@@ -111,3 +111,16 @@ func TestFirewallEnsurePicks(t *testing.T) {
 		t.Errorf("non-interactive = %v", err)
 	}
 }
+
+// network get without <name> offers the networks of the project.
+func TestNetworkGetPick(t *testing.T) {
+	h, _ := interactiveGCP(t, nil)
+	h.gce.networks["proj/prod"] = &compute.Network{Name: "prod"}
+	p := h.answer("prod")
+	if err := h.run("compute", "network", "get"); err != nil || !strings.Contains(h.stdout.String(), `"prod"`) {
+		t.Fatalf("get = %v", err)
+	}
+	if l := prompttest.Labels(p.Find("VPC network").Options); l != "default  auto  0 subnets\nprod  custom  0 subnets" {
+		t.Errorf("networks offered:\n%s", l)
+	}
+}

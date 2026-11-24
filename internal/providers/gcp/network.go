@@ -13,6 +13,7 @@ import (
 	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/output"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt"
 )
 
 // VPC networks and subnetworks are read live: they are few, change often
@@ -327,14 +328,30 @@ func networkGetCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "get <name>",
 		Short: "Show a VPC network with its subnetworks in every region",
-		Args:  cobra.ExactArgs(1),
+		Long:  "Show a VPC network with its subnetworks in every region. On a terminal,\nwithout <name> the networks of the project are offered.",
+		Args:  app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			c, profile, err := openGCP(ctx, rt)
 			if err != nil {
 				return err
 			}
-			n, err := c.network(ctx, args[0])
+			name := app.Arg(args, 0)
+			if name == "" {
+				nets, err := c.listNetworks(ctx)
+				if err != nil {
+					return err
+				}
+				sort.Slice(nets, func(i, j int) bool { return nets[i].Name < nets[j].Name })
+				var opts []prompt.Option
+				for _, n := range nets {
+					opts = append(opts, prompt.Option{Label: networkLabel(n), Value: n.Name})
+				}
+				if name, err = rt.Choose(app.Choice{Title: "VPC network", Options: opts, Arg: "<name>", What: "VPC network in gcp/" + profile}); err != nil {
+					return err
+				}
+			}
+			n, err := c.network(ctx, name)
 			if err != nil {
 				return fmt.Errorf("%w (gcp/%s)", err, profile)
 			}
