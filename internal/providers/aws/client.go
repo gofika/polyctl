@@ -105,6 +105,7 @@ type client struct {
 	elbFor func(region string) elbAPI
 	rdsFor func(region string) rdsAPI
 	acmFor func(region string) acmAPI
+	icFor  func(region string) ec2icAPI
 }
 
 var (
@@ -129,6 +130,7 @@ func newClient(cfg awssdk.Config, region string) *client {
 		elbFor: func(r string) elbAPI { return newELB(regional(r)) },
 		rdsFor: func(r string) rdsAPI { return newRDS(regional(r)) },
 		acmFor: func(r string) acmAPI { return newACM(regional(r)) },
+		icFor:  func(r string) ec2icAPI { return newEC2IC(regional(r)) },
 	}
 }
 

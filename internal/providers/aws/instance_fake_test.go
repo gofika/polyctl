@@ -47,6 +47,7 @@ type fakeInstance struct {
 	vpc                                      string   // "" is vpc-0abc
 	sgs                                      []string // nil is [sg-0aaa]
 	nics                                     int      // network interfaces; 0 is 1
+	image, platformDetails                   string   // ImageId and PlatformDetails
 }
 
 // fakeInstances is the instance part of the shared fake state.
@@ -169,6 +170,12 @@ func (in *fakeInstance) ec2() ec2types.Instance {
 	}
 	if in.platform == "windows" {
 		out.Platform = ec2types.PlatformValuesWindows
+	}
+	if in.image != "" {
+		out.ImageId = awssdk.String(in.image)
+	}
+	if in.platformDetails != "" {
+		out.PlatformDetails = awssdk.String(in.platformDetails)
 	}
 	if in.pub != "" {
 		out.PublicIpAddress = awssdk.String(in.pub)
