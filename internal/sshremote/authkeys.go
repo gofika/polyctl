@@ -32,9 +32,12 @@ const (
 	exitBadUsage = 8
 )
 
-// script is the POSIX sh program run on the instance, as the login user or,
-// for another user, through `sudo -n`. Its arguments are the operation and
-// the target user:
+// script is the POSIX sh program run on the instance as the target user:
+// the login user, or another user through `sudo -n -u <user>`. It never
+// runs as root on the files of another user, so a user who controls their
+// home directory cannot make it write elsewhere (a symbolic link swapped in
+// for ~/.ssh or for the temporary file). Its arguments are the operation
+// and the target user:
 //
 //	list <user>                         prints the file after a header
 //	apply <user> <sum> <lines> <line>   deletes the line numbers <lines>
@@ -42,19 +45,19 @@ const (
 //	                                    (when not empty), provided the file
 //	                                    still has the checksum <sum>
 //
-// apply writes a temporary file in ~/.ssh, gives it the mode and owner of
-// the file it replaces (0600 and the user for a new file), and renames it
-// over authorized_keys: the change is atomic, and every line it does not
-// delete is kept byte for byte (a last line without a newline gets one).
-// ~/.ssh (0700) and authorized_keys are created, owned by the user, when
-// missing. A symbolic link is never replaced.
+// apply writes a temporary file in ~/.ssh, gives it the mode of the file it
+// replaces (0600 for a new file), and renames it over authorized_keys: the
+// change is atomic, and every line it does not delete is kept byte for byte
+// (a last line without a newline gets one). ~/.ssh (0700) and
+// authorized_keys are created, owned by the user, when missing. A symbolic
+// link is never replaced.
 const script = `set -u
 die() { c=$1; shift; echo "polyctl-error: $*" >&2; exit "$c"; }
 [ $# -ge 2 ] || die 8 "usage: list|apply <user> ..."
 op=$1; user=$2
 umask 077
 uid=$(id -u "$user" 2>/dev/null) || die 3 "there is no user $user on the instance"
-gid=$(id -g "$user" 2>/dev/null) || die 3 "there is no user $user on the instance"
+[ "$(id -u)" = "$uid" ] || die 8 "the key script runs as $(id -un), not as $user"
 home=$(getent passwd "$user" 2>/dev/null | cut -d: -f6)
 [ -n "$home" ] || home=$(awk -F: -v u="$user" '$1 == u { print $6; exit }' /etc/passwd 2>/dev/null)
 [ -n "$home" ] || { [ "$(id -un)" = "$user" ] && home=${HOME:-}; }
@@ -81,20 +84,15 @@ apply)
 	export DEL ADD
 	[ "$(sum)" = "$want" ] || die 4 "$f changed while polyctl was reading it"
 	[ -L "$f" ] && die 5 "$f is a symbolic link; polyctl does not replace it"
-	root=no
-	[ "$(id -u)" = 0 ] && root=yes
 	if [ ! -d "$dir" ]; then
 		mkdir -m 700 "$dir" || die 6 "cannot create $dir"
-		[ $root = yes ] && { chown "$uid:$gid" "$dir" || die 6 "cannot give $dir to $user"; }
 	fi
 	if [ -f "$f" ]; then
 		src=$f
 		mode=$(ls -ln "$f" | awk '{ p = substr($1, 2, 9); m = 0; for (i = 1; i <= 9; i++) { m = m * 2; if (substr(p, i, 1) != "-") m++ } printf "%o", m }')
-		owner=$(ls -ln "$f" | awk '{ print $3 ":" $4 }')
 	else
 		src=/dev/null
 		mode=600
-		owner=$uid:$gid
 	fi
 	tmp=$(mktemp "$dir/.authorized_keys.XXXXXX" 2>/dev/null) || {
 		tmp=$dir/.authorized_keys.polyctl.$$
@@ -102,7 +100,6 @@ apply)
 	}
 	awk 'BEGIN { d = " " ENVIRON["DEL"] " " } index(d, " " NR " ") == 0 { print } END { if (ENVIRON["ADD"] != "") print ENVIRON["ADD"] }' "$src" > "$tmp" || { rm -f "$tmp"; die 6 "cannot write $tmp"; }
 	chmod "$mode" "$tmp" || { rm -f "$tmp"; die 6 "cannot set the mode of $tmp"; }
-	if [ $root = yes ]; then chown "$owner" "$tmp" || { rm -f "$tmp"; die 6 "cannot set the owner of $tmp"; }; fi
 	[ "$(sum)" = "$want" ] || { rm -f "$tmp"; die 4 "$f changed while polyctl was writing it"; }
 	mv -f "$tmp" "$f" || { rm -f "$tmp"; die 6 "cannot replace $f"; }
 	command -v restorecon > /dev/null 2>&1 && restorecon "$dir" "$f" > /dev/null 2>&1
@@ -136,14 +133,15 @@ func CheckUser(user, flag string) error {
 }
 
 // NeedsSudo reports whether editing the keys of user needs sudo: it is not
-// the login user, and the login user is not root.
-func (c *Client) NeedsSudo(user string) bool { return user != c.User && c.User != "root" }
+// the login user. root goes through `sudo -u` too, so that the script runs
+// as the owner of the files it writes.
+func (c *Client) NeedsSudo(user string) bool { return user != c.User }
 
 // command is the shell command that runs the script for user with args.
 func (c *Client) command(user string, args ...string) string {
 	var b strings.Builder
 	if c.NeedsSudo(user) {
-		b.WriteString("sudo -n ")
+		b.WriteString("sudo -n -u " + shellQuote(user) + " ")
 	}
 	prog := strings.NewReplacer("@HEADER@", shellQuote(header), "@SSHD_CONFIG@", shellQuote(SSHDConfig)).Replace(script)
 	b.WriteString("sh -c ")
@@ -225,10 +223,16 @@ func (c *Client) scriptError(user string, stdout, stderr []byte, code int) error
 			msg = m
 		}
 	}
+	sudoFailed := msg == "" && c.NeedsSudo(user) && bytes.Contains(stderr, []byte("sudo"))
 	switch {
-	case msg == "" && c.NeedsSudo(user) && bytes.Contains(stderr, []byte("sudo")):
+	case sudoFailed && bytes.Contains(stderr, []byte("unknown user")):
+		return fmt.Errorf("%w: there is no user %s on the instance", platform.ErrNotFound, user)
+	case sudoFailed && bytes.Contains(stderr, []byte("password")):
 		return fmt.Errorf("editing the keys of %s needs sudo, and sudo on the instance asks %s for a password (%s); polyctl only runs `sudo -n`: log in as %s (--login-user %s), or allow %s passwordless sudo",
 			user, c.User, firstLine(string(stderr)), user, user, c.User)
+	case sudoFailed:
+		return fmt.Errorf("editing the keys of %s runs `sudo -n -u %s` as %s, which failed (%s): log in as %s (--login-user %s), or allow %s to run commands as %s with sudo",
+			user, user, c.User, firstLine(string(stderr)), user, user, c.User, user)
 	case code == exitNoUser:
 		return fmt.Errorf("%w: %s", platform.ErrNotFound, msg)
 	case code == exitChanged:

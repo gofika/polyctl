@@ -248,9 +248,12 @@ awk -F: -v u="$2" '$1 == u { print; found = 1 } END { exit !found }' "$FAKE_PASS
 `)
 	write("sudo", `[ "$1" = -n ] || { echo "fake sudo: -n expected" >&2; exit 2; }
 shift
+to=root
+if [ "${1:-}" = -u ]; then to=$2; shift 2; fi
 if [ -n "${FAKE_SUDO_PASSWORD:-}" ]; then echo "sudo: a password is required" >&2; exit 1; fi
-FAKE_USER=root
-HOME=$(awk -F: '$1 == "root" { print $6 }' "$FAKE_PASSWD")
+HOME=$(awk -F: -v u="$to" '$1 == u { print $6 }' "$FAKE_PASSWD")
+[ -n "$HOME" ] || { echo "sudo: unknown user $to" >&2; echo "sudo: error initializing audit plugin sudoers_audit" >&2; exit 1; }
+FAKE_USER=$to
 export FAKE_USER HOME
 exec "$@"
 `)

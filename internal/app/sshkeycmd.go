@@ -201,7 +201,7 @@ func sshKeyMechanism(sc SSHKeyCommand) string {
 		"refused (exit code 1) and never replaced; an unknown host is asked about on\n" +
 		"a terminal (default no), and needs --accept-new-host-key otherwise (exit\n" +
 		"code 2). No password is ever used or enabled. Keys of another user than the\n" +
-		"login user (--user) are edited through `sudo -n`."
+		"login user (--user) are edited as that user through `sudo -n -u`."
 	if sc.Detail != "" {
 		s += "\n\n" + sc.Detail
 	}

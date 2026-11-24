@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -182,8 +181,9 @@ func TestRemoveGuard(t *testing.T) {
 	}
 }
 
-// Another user's keys are edited through sudo -n; the new directory and
-// file are given to that user. A sudo that wants a password is explained.
+// Another user's keys are edited through sudo -n -u <user>, so the script
+// runs as that user and no chown is needed. A sudo that wants a password,
+// or that refuses for another reason, is explained.
 func TestOtherUserThroughSudo(t *testing.T) {
 	k := newKey(t)
 	srv, sys := scriptServer(t, k, "ec2-user", "deploy")
@@ -199,20 +199,17 @@ func TestOtherUserThroughSudo(t *testing.T) {
 	if string(data) != line(nk.pub, "ci")+"\n" {
 		t.Errorf("deploy's file %q", data)
 	}
-	log, _ := os.ReadFile(sys.ChownLog)
-	uid := sys.Users["deploy"]
-	want := strconv.Itoa(uid.UID) + ":" + strconv.Itoa(uid.GID)
-	if strings.Count(string(log), want) != 2 {
-		t.Errorf("chown log %q, want the directory and the file given to %s", log, want)
+	if _, err := os.Stat(sys.ChownLog); !os.IsNotExist(err) {
+		t.Errorf("chown called: %v", err)
 	}
 	var sawSudo bool
 	for _, cmd := range srv.Commands() {
-		if strings.HasPrefix(cmd.Cmd, "sudo -n sh -c ") {
+		if strings.HasPrefix(cmd.Cmd, "sudo -n -u 'deploy' sh -c ") {
 			sawSudo = true
 		}
 	}
 	if !sawSudo {
-		t.Error("no sudo -n command")
+		t.Error("no sudo -n -u deploy command")
 	}
 
 	sys.SudoPassword = true
@@ -227,24 +224,48 @@ func TestOtherUserThroughSudo(t *testing.T) {
 	}
 }
 
-// root edits another user's keys without sudo.
-func TestRootNeedsNoSudo(t *testing.T) {
+// root edits another user's keys through sudo -u as well: the script never
+// writes the files of another user as root.
+func TestRootUsesSudoForOtherUsers(t *testing.T) {
 	k := newKey(t)
 	srv, sys := scriptServer(t, k, "root", "ecs-user")
 	c := login(t, srv, k, "root")
-	if c.NeedsSudo("ecs-user") {
-		t.Error("root needs sudo")
+	if !c.NeedsSudo("ecs-user") || c.NeedsSudo("root") {
+		t.Error("NeedsSudo")
 	}
 	if _, err := c.AddKey(t.Context(), "ecs-user", newKey(t).pub, ""); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := c.AddKey(t.Context(), "root", newKey(t).pub, ""); err != nil {
+		t.Fatal(err)
+	}
+	var viaSudo, direct int
 	for _, cmd := range srv.Commands() {
-		if strings.Contains(cmd.Cmd, "sudo") {
-			t.Errorf("sudo used by root: %s", cmd.Cmd)
+		switch {
+		case strings.HasPrefix(cmd.Cmd, "sudo -n -u 'ecs-user' sh -c "):
+			viaSudo++
+		case strings.HasPrefix(cmd.Cmd, "sh -c "):
+			direct++
 		}
 	}
-	if log, _ := os.ReadFile(sys.ChownLog); !strings.Contains(string(log), strconv.Itoa(sys.Users["ecs-user"].UID)) {
-		t.Errorf("chown log %q", log)
+	if viaSudo == 0 || direct == 0 {
+		t.Errorf("commands: %d through sudo -u ecs-user, %d direct", viaSudo, direct)
+	}
+	if _, err := os.Stat(sys.ChownLog); !os.IsNotExist(err) {
+		t.Errorf("chown called: %v", err)
+	}
+}
+
+// The script refuses to run as another user than the target (a sudo that
+// did not switch users).
+func TestScriptRunsAsTargetUser(t *testing.T) {
+	k := newKey(t)
+	srv, _ := scriptServer(t, k, "alice", "bob")
+	c := login(t, srv, k, "alice")
+	c.User = "bob" // pretend bob logged in, so no sudo is used
+	_, err := c.ListKeys(t.Context(), "bob")
+	if err == nil || !strings.Contains(err.Error(), "runs as alice, not as bob") {
+		t.Fatalf("list as the wrong user: %v", err)
 	}
 }
 
