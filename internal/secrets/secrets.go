@@ -76,7 +76,11 @@ type Credentials struct {
 	// instance (an AWS Windows instance launched without a key of the
 	// user's), so that deleting the instance deletes it too; "" when the
 	// key pair is the user's, which polyctl never deletes.
-	KeyPair   string    `json:"-" yaml:"-"`
+	KeyPair string `json:"-" yaml:"-"`
+	// Detached says the credentials were stored for an account that was
+	// logged out of the profile (inventory.DetachSecrets): the account now
+	// under the profile's name may be another one.
+	Detached  bool      `json:"-" yaml:"-"`
 	CreatedAt time.Time `json:"created_at" yaml:"created_at"`
 	UpdatedAt time.Time `json:"updated_at" yaml:"updated_at"`
 }
@@ -354,11 +358,20 @@ func (s *Store) Get(ctx context.Context, r Ref) (*Credentials, error) {
 
 // Find returns the credentials stored for the instances of a profile whose
 // id or name is ref, in location ("" for every location). Nothing stored
-// is an empty list, not an error.
+// is an empty list, not an error. When nothing of the profile matches, the
+// credentials of instance id ref detached from the profile by a logout are
+// returned, marked Detached; a name never matches those.
 func (s *Store) Find(ctx context.Context, p platform.ID, profile, location, ref string) ([]Credentials, error) {
 	rows, err := s.db.FindSecrets(ctx, p, profile, location, ref)
 	if err != nil {
 		return nil, err
+	}
+	detached := false
+	if len(rows) == 0 {
+		if rows, err = s.db.FindDetachedSecret(ctx, p, profile, location, ref); err != nil {
+			return nil, err
+		}
+		detached = len(rows) > 0
 	}
 	// An id match wins over name matches: ids are unique, names are not.
 	for _, r := range rows {
@@ -373,6 +386,7 @@ func (s *Store) Find(ctx context.Context, p platform.ID, profile, location, ref 
 		if err != nil {
 			return nil, err
 		}
+		c.Detached = detached
 		out = append(out, c)
 	}
 	return out, nil

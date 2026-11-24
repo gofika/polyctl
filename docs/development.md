@@ -117,7 +117,7 @@ CREATE TABLE sync_state (              -- freshness of each synced set
 - `domain_index` is rebuilt from `zone` and `domain` resources on every sync. DNS records are not indexed; they are looked up through their zone.
 - `ip_index` is written with every resource that carries addresses (all interface, secondary and alias addresses of an instance, load balancer addresses and DNS names, elastic / static addresses, database endpoints). A prefix matches every address it contains. Older databases get the table on first use and fill it on the next sync.
 - Everything except `instance_secrets` is a cache: deleting the file is safe, polyctl re-fetches on demand.
-- `instance_secrets` is not a cache. Sync, `auth logout` and `--refresh` leave it alone, `auth rename` moves its rows, and deleting the file loses stored Windows passwords, which no platform can show again.
+- `instance_secrets` is not a cache. Sync and `--refresh` leave it alone, `auth rename` moves its rows, `auth logout` detaches them (profile column set to `<profile>/detached`, readable by instance id only), and deleting the file loses stored Windows passwords, which no platform can show again.
 
 ## Local CI
 

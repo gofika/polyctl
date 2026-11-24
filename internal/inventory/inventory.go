@@ -535,7 +535,8 @@ func (d *DB) IndexEntries(ctx context.Context) ([]IndexEntry, error) {
 }
 
 // Purge removes everything cached for a profile (used by logout). The
-// instance secrets stay: they cannot be fetched again.
+// instance secrets stay, as they cannot be fetched again; logout detaches
+// them (DetachSecrets).
 func (d *DB) Purge(ctx context.Context, p platform.ID, profile string) error {
 	for _, t := range []string{"resources", "domain_index", "ip_index", "sync_state"} {
 		if _, err := d.sql.ExecContext(ctx, `DELETE FROM `+t+` WHERE platform=? AND profile=?`, string(p), profile); err != nil {
@@ -565,13 +566,49 @@ func (d *DB) RenameProfile(ctx context.Context, p platform.ID, oldName, newName 
 			return err
 		}
 	}
-	// Instance secrets cannot be fetched again, so rows already under the
-	// new name are kept, except a row of the same instance, which the moved
-	// one replaces.
+	// Instance secrets cannot be fetched again. Rows already under the new
+	// name belong to an account that was logged out there (left by a
+	// release that kept them in place): they are detached, not merged into
+	// the renamed account, and a rename undone by renaming back moves only
+	// the rows this one moved.
+	if err := detachSecrets(ctx, tx, p, newName); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE OR REPLACE instance_secrets SET profile=? WHERE platform=? AND profile=?`, newName, string(p), oldName); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// DetachedSuffix is appended to the profile of the instance secrets of an
+// account that was logged out. Profile names cannot contain a slash, so a
+// detached row never matches a profile.
+const DetachedSuffix = "/detached"
+
+// DetachedProfile is the profile column of the detached instance secrets of
+// profile.
+func DetachedProfile(profile string) string { return profile + DetachedSuffix }
+
+// DetachSecrets moves the instance secrets of an account (used by logout)
+// out of the profile: an account logged in later under the same name, which
+// may be another one, does not see them as its own. They stay readable by
+// instance id (FindDetachedSecret). A row of the same instance detached
+// before is replaced.
+func (d *DB) DetachSecrets(ctx context.Context, p platform.ID, profile string) error {
+	tx, err := d.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := detachSecrets(ctx, tx, p, profile); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func detachSecrets(ctx context.Context, tx *sql.Tx, p platform.ID, profile string) error {
+	_, err := tx.ExecContext(ctx, `UPDATE OR REPLACE instance_secrets SET profile=? WHERE platform=? AND profile=?`, DetachedProfile(profile), string(p), profile)
+	return err
 }
 
 // Stats summarises the inventory per profile and type.

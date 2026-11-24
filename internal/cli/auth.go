@@ -781,14 +781,20 @@ func removeAccount(ctx context.Context, rt *app.Runtime, ref config.AccountRef, 
 	// Order matters: the inventory first, the secret next and
 	// the config entry right after it, so that as little as possible can
 	// fail between removing the secret and the account that names it.
+	db, err := rt.DB()
+	if err != nil {
+		return err
+	}
 	if !keepInventory {
-		db, err := rt.DB()
-		if err != nil {
-			return err
-		}
 		if err := db.Purge(ctx, id, name); err != nil {
 			return err
 		}
+	}
+	// The stored Windows passwords stay (no platform shows them again),
+	// but leave the profile: an account logged in later under this name
+	// may be another one, which must not take them for its own.
+	if err := db.DetachSecrets(ctx, id, name); err != nil {
+		return err
 	}
 	// While the secret is still there: it is what the platform is told with.
 	revokeAuthorization(ctx, rt, ref)

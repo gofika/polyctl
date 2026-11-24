@@ -361,3 +361,24 @@ func TestRowsSealedWithEitherForkedKeyOpen(t *testing.T) {
 		}
 	}
 }
+
+// After a logout the credentials are found by instance id only, marked as
+// detached; the name no longer matches.
+func TestFindDetachedByIDOnly(t *testing.T) {
+	ctx := context.Background()
+	db, _ := openDB(t)
+	s := New(db, newMemKeys())
+	if err := s.Put(ctx, Credentials{Ref: ref, Name: "win-1", User: "Administrator", Password: "pw"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.DetachSecrets(ctx, ref.Platform, ref.Profile); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.Find(ctx, ref.Platform, ref.Profile, "", "win-1"); err != nil || len(got) != 0 {
+		t.Errorf("Find by name = %+v, %v; want nothing", got, err)
+	}
+	got, err := s.Find(ctx, ref.Platform, ref.Profile, "", ref.InstanceID)
+	if err != nil || len(got) != 1 || !got[0].Detached || got[0].Password != "pw" {
+		t.Errorf("Find by id = %+v, %v; want the detached credentials", got, err)
+	}
+}

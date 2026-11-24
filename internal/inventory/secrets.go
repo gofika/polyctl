@@ -86,6 +86,19 @@ func (d *DB) FindSecrets(ctx context.Context, p platform.ID, profile, location, 
 	return d.querySecrets(ctx, where, args...)
 }
 
+// FindDetachedSecret returns the secrets of instance id that were detached
+// from profile when its account was logged out, in location ("" matches
+// every location).
+func (d *DB) FindDetachedSecret(ctx context.Context, p platform.ID, profile, location, id string) ([]SecretRow, error) {
+	where := `platform=? AND profile=? AND instance_id=?`
+	args := []any{string(p), DetachedProfile(profile), id}
+	if location != "" {
+		where += ` AND location=?`
+		args = append(args, location)
+	}
+	return d.querySecrets(ctx, where, args...)
+}
+
 // ListSecrets returns the stored secrets of a profile's instances in
 // location ("" matches every location).
 func (d *DB) ListSecrets(ctx context.Context, p platform.ID, profile, location string) ([]SecretRow, error) {

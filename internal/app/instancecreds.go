@@ -377,6 +377,9 @@ func InstancePasswordCommand(rt *Runtime, pc PasswordCommand) *cobra.Command {
 				return fmt.Errorf("%w: no Windows credentials stored for instance %q in profile %s: polyctl stores them when it creates an instance with --os windows; %s",
 					platform.ErrNotFound, ref, profile, hint)
 			}
+			if cur.Detached {
+				rt.Infof("warning: these credentials of instance %s were stored for the %s account that was logged out of profile %s; the account now logged in there may be another one", cur.InstanceID, pc.Platform, profile)
+			}
 			if cur.Password == "" {
 				return fmt.Errorf("%w: the Windows password of instance %s is not available yet (the instance generates it a few minutes after launch); run the command again later",
 					platform.ErrNotFound, label(*cur))
