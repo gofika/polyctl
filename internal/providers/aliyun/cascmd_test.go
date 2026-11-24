@@ -16,6 +16,8 @@ import (
 	"github.com/gofika/polyctl/internal/config"
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt"
+	"github.com/gofika/polyctl/internal/prompt/prompttest"
 )
 
 // casHarness is the aliyun harness with a CAS store and ALB listeners.
@@ -489,5 +491,41 @@ func TestCASDeleteExpired(t *testing.T) {
 	}
 	if rep := reportOf(t, h); len(rep.Changes) != 0 || !strings.Contains(h.stderr.String(), "note: no expired uploaded certificates") {
 		t.Errorf("nothing expired = %+v, %q", rep, h.stderr.String())
+	}
+}
+
+// upload without <name>, --cert and --key asks for the two files (each
+// checked as typed: a missing file and a key of another certificate are
+// asked again) and the name, upload_<root>_<date> proposed.
+func TestCASUploadAsks(t *testing.T) {
+	t.Setenv(app.EnvNonInteractive, "")
+	h, _, _ := casHarness(t, app.Flags{DryRun: true})
+	certPath, keyPath, notAfter := writePEM(t, 90, false)
+	_, otherKey, _ := writePEM(t, 90, true)
+	p := prompttest.New(t, "/nonexistent/fullchain.pem", certPath, otherKey, keyPath, prompttest.KeepDefault{})
+	h.rt.Picker = p
+	if err := h.run("cas", "certificate", "upload"); err != nil {
+		t.Fatalf("upload: %v\n%s", err, h.stderr.String())
+	}
+	p.Done()
+	want := "upload_example.com_" + notAfter.UTC().Format("2006-01-02")
+	if a := p.Asked[len(p.Asked)-1]; a.Default != want {
+		t.Errorf("name proposed %q, want %q", a.Default, want)
+	}
+	if !strings.Contains(h.stdout.String(), want) {
+		t.Errorf("stdout = %s", h.stdout.String())
+	}
+	if len(h.api.callsFor("UploadUserCertificate")) != 0 {
+		t.Error("the dry run uploaded")
+	}
+
+	h.rt.Picker = prompttest.New(t, prompttest.Abort{})
+	if err := h.run("cas", "certificate", "upload", "x"); !errors.Is(err, prompt.ErrAborted) {
+		t.Errorf("abort = %v", err)
+	}
+	h.rt.Picker = nil
+	h.rt.Flags.NonInteractive = true
+	if err := h.run("cas", "certificate", "upload", "x"); !errors.Is(err, app.ErrUsage) {
+		t.Errorf("non-interactive without --cert / --key = %v", err)
 	}
 }

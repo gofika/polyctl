@@ -266,19 +266,34 @@ another name.
 
 The upload is synchronous: the id can be used by ALB listeners at once.
 -o json prints the change report; --dry-run checks the files, reads the
-list and reports what it would do.`,
+list and reports what it would do.
+
+On a terminal a missing --cert and --key are asked for as file paths, each
+checked as it is typed (the key against the certificate), and a missing
+<name> is asked for with upload_<root domain>_<YYYY-MM-DD> of the
+certificate proposed.`,
 		Example: `  polyctl aliyun cas certificate upload upload_example.com_2027-02-01 --cert fullchain.pem --key privkey.pem --dry-run
   polyctl aliyun cas certificate upload upload_example.com_2027-02-01 --cert fullchain.pem --key privkey.pem -o json`,
-		Args: cobra.ExactArgs(1),
+		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			name := strings.TrimSpace(args[0])
-			if name == "" {
+			name := strings.TrimSpace(app.Arg(args, 0))
+			if len(args) > 0 && name == "" {
 				return app.UsageErrf("the certificate name is empty")
+			}
+			if rt.Interactive() && (certFile == "" || keyFile == "") {
+				if err := askCASFiles(rt, &certFile, &keyFile); err != nil {
+					return err
+				}
 			}
 			mat, err := readCASMaterial(rt, certFile, keyFile)
 			if err != nil {
 				return err
+			}
+			if name == "" {
+				if name, err = askCASName(rt, mat); err != nil {
+					return err
+				}
 			}
 			c, p, err := openClient(rt, ctx)
 			if err != nil {
@@ -320,6 +335,75 @@ list and reports what it would do.`,
 	cmd.Flags().StringVar(&certFile, "cert", "", "PEM certificate chain, leaf first (fullchain.pem); - reads stdin")
 	cmd.Flags().StringVar(&keyFile, "key", "", "unencrypted PEM private key; - reads stdin")
 	return cmd
+}
+
+// askCASFiles asks for the --cert and --key that upload misses in the
+// interactive flow, as paths (~ expanded), each checked as it is typed:
+// the chain must hold a PEM certificate, and the key must be an
+// unencrypted PEM key of its first certificate. Standard input is the
+// terminal here, so "-" is refused.
+func askCASFiles(rt *app.Runtime, certFile, keyFile *string) error {
+	readPath := func(v string) ([]byte, error) {
+		v = strings.TrimSpace(v)
+		switch v {
+		case "":
+			return nil, errors.New("a file path is required")
+		case "-":
+			return nil, errors.New("standard input is the terminal: give a file path")
+		}
+		return os.ReadFile(platform.ExpandHome(v))
+	}
+	var chain []byte
+	if *certFile == "" {
+		v, err := rt.AskInput("--cert", "Certificate chain file (PEM, leaf first: fullchain.pem)", "", func(v string) error {
+			b, err := readPath(v)
+			if err != nil {
+				return err
+			}
+			if !strings.Contains(string(b), "-----BEGIN CERTIFICATE-----") {
+				return errors.New("no PEM certificate in the file")
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		*certFile = platform.ExpandHome(v)
+	}
+	if *certFile != "-" {
+		chain, _ = os.ReadFile(*certFile)
+	}
+	if *keyFile == "" {
+		v, err := rt.AskInput("--key", "Private key file (unencrypted PEM: privkey.pem)", "", func(v string) error {
+			b, err := readPath(v)
+			if err != nil {
+				return err
+			}
+			if chain == nil {
+				return nil
+			}
+			_, err = platform.ParseCertMaterial(chain, b, casNow())
+			return inline(err)
+		})
+		if err != nil {
+			return err
+		}
+		*keyFile = platform.ExpandHome(v)
+	}
+	return nil
+}
+
+// askCASName asks for the <name> of upload in the interactive flow, with
+// upload_<root domain>_<YYYY-MM-DD of NotAfter> of the certificate proposed
+// (when its first name has a registered domain).
+func askCASName(rt *app.Runtime, mat *platform.CertMaterial) (string, error) {
+	proposal := ""
+	if names := mat.Names(); len(names) > 0 {
+		if root, err := platform.RegisteredDomain(strings.TrimPrefix(names[0], "*.")); err == nil {
+			proposal = casCertName(root, mat.Leaf.NotAfter)
+		}
+	}
+	return rt.AskInput("<name>", "Name of the certificate (an uploaded certificate of the name is reused)", proposal, app.RequireValue("the name"))
 }
 
 // casByName returns the uploaded certificate of the name (exact match), or
