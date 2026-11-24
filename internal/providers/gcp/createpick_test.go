@@ -74,6 +74,19 @@ func TestInstanceCreateInteractive(t *testing.T) {
 	if err := h.run("compute", "instance", "create", "web-9", "--machine-type", "e2-small", "--zone", "us-central1-a"); exitClass(err) != "usage" || !strings.Contains(err.Error(), "no SSH key given") {
 		t.Errorf("non-interactive without a key = %v", err)
 	}
+	// A malformed size is a usage error, with no request made.
+	h.gce.mu.Lock()
+	h.gce.calls = nil
+	h.gce.mu.Unlock()
+	if err := h.run("compute", "instance", "create", "web-9", "--machine-type", "0H1G", "--zone", "us-central1-a"); exitClass(err) != "usage" || !strings.Contains(err.Error(), "vCPUs") {
+		t.Errorf("non-interactive malformed size = %v", err)
+	}
+	h.gce.mu.Lock()
+	calls := h.gce.calls
+	h.gce.mu.Unlock()
+	if len(calls) != 0 {
+		t.Errorf("malformed size made requests: %v", calls)
+	}
 }
 
 // Several ordinary subnetworks of the network in the zone's region are a

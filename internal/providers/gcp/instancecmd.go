@@ -867,6 +867,12 @@ func runCreate(cmd *cobra.Command, rt *app.Runtime, o *createOptions, name strin
 			return err
 		}
 	}
+	// A malformed size is refused before the client opens.
+	if o.machineType != "" {
+		if _, _, err := platform.ParseTypeShorthand(o.machineType); err != nil {
+			return err
+		}
+	}
 	if o.network, err = rt.Setting(profile, platform.GCP, "network", o.network); err != nil {
 		return err
 	}
