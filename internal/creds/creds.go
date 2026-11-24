@@ -378,6 +378,18 @@ func (m *Multi) Lacks(backend, key string) bool {
 	return asked
 }
 
+// GetEach returns the secret stored under key by each backend that holds
+// one, primary first. Backends that fail to answer are skipped.
+func (m *Multi) GetEach(key string) []map[string]string {
+	var out []map[string]string
+	for _, s := range m.stores() {
+		if v, err := s.Get(key); err == nil {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 // Backend returns the name of the backend a Get of key is served from, or ""
 // when no backend holds it (or it cannot be read).
 func (m *Multi) Backend(key string) string {

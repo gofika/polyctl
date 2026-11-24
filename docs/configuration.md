@@ -247,7 +247,7 @@ Without a reachable keyring (headless servers, containers, no D-Bus session) pol
 
 Force a backend with `credential_store: file|keyring` or `POLYCTL_CREDENTIAL_STORE`.
 
-The store also holds `/instance-secrets`, the data key that encrypts Windows instance passwords in `inventory.db`. `auth logout` leaves it alone.
+The store also holds `/instance-secrets`, the data key that encrypts Windows instance passwords in `inventory.db`. `auth logout` leaves it alone. Unlike account secrets, it is never created anew while instance passwords are stored and a backend is out of reach (see [Instances](instances.md)).
 
 ## Caching
 

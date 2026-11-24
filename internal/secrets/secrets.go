@@ -11,6 +11,7 @@
 package secrets
 
 import (
+	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -92,11 +93,32 @@ type sealed struct {
 // is a general failure (exit code 1), not "not found".
 var ErrKeyLost = errors.New("the data key of the stored instance secrets is missing or has changed")
 
+// Optional parts of a KeyStore (*creds.Multi has them).
+type (
+	// lacker reports whether it is certain that no backend holds key:
+	// every backend polyctl has is within reach and says so.
+	lacker interface {
+		Lacks(backend, key string) bool
+	}
+	// eacher returns the copy of key held by each backend.
+	eacher interface {
+		GetEach(key string) []map[string]string
+	}
+	// haser reports whether a backend is part of the store.
+	haser interface {
+		Has(backend string) bool
+	}
+)
+
 // Store reads and writes sealed instance credentials.
 type Store struct {
 	db   *inventory.DB
 	keys KeyStore
 	key  []byte
+	// others are the data keys other backends hold, when they differ
+	// from key (a store forked by an earlier release); nil until a row
+	// fails to open with key.
+	others [][]byte
 }
 
 // New returns a store on db, whose data key lives in keys.
@@ -114,9 +136,9 @@ func (s *Store) dataKey(create bool) ([]byte, error) {
 		if err != nil {
 			return err
 		}
-		k, err := base64.StdEncoding.DecodeString(m[dataKeyField])
-		if err != nil || len(k) != dataKeyBytes {
-			return fmt.Errorf("%w: the entry %q in the credential store is not a %d-byte key", ErrKeyLost, DataKeyName, dataKeyBytes)
+		k, err := decodeKey(m)
+		if err != nil {
+			return err
 		}
 		key = k
 		return nil
@@ -128,6 +150,9 @@ func (s *Store) dataKey(create bool) ([]byte, error) {
 		err = s.keys.Locked(func() error {
 			// Another process may have created it meanwhile.
 			if err := read(); !errors.Is(err, creds.ErrNotFound) {
+				return err
+			}
+			if err := s.mayCreateKey(); err != nil {
 				return err
 			}
 			k := make([]byte, dataKeyBytes)
@@ -144,12 +169,70 @@ func (s *Store) dataKey(create bool) ([]byte, error) {
 			return nil, err
 		}
 	case errors.Is(err, creds.ErrNotFound):
-		return nil, fmt.Errorf("%w: no entry %q in the credential store (%s)", ErrKeyLost, DataKeyName, s.keys.Name())
+		return nil, fmt.Errorf("%w: no entry %q in the credential store (%s)%s", ErrKeyLost, DataKeyName, s.keys.Name(), s.keyringHint())
 	default:
 		return nil, err
 	}
 	s.key = key
 	return key, nil
+}
+
+func decodeKey(m map[string]string) ([]byte, error) {
+	k, err := base64.StdEncoding.DecodeString(m[dataKeyField])
+	if err != nil || len(k) != dataKeyBytes {
+		return nil, fmt.Errorf("%w: the entry %q in the credential store is not a %d-byte key", ErrKeyLost, DataKeyName, dataKeyBytes)
+	}
+	return k, nil
+}
+
+// mayCreateKey reports, as an error, why a new data key must not be
+// generated. A missing key may be created when no secret is stored yet, or
+// when every backend polyctl has is within reach and none holds it (the key
+// is lost; a new one at least serves new secrets). Otherwise the key may well
+// be in a backend this run cannot reach, such as a keyring that is locked or
+// missing in an SSH or cron session: a second key would leave the stored
+// secrets split between two keys, each readable in one kind of session only.
+func (s *Store) mayCreateKey() error {
+	n, err := s.db.CountSecrets(context.Background())
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return nil
+	}
+	if l, ok := s.keys.(lacker); ok && l.Lacks("", DataKeyName) {
+		return nil
+	}
+	return fmt.Errorf("%w: %d instance secrets are stored, but the credential store this run can reach (%s) has no entry %q, and no new key is created while it may be in a backend out of reach%s",
+		ErrKeyLost, n, s.keys.Name(), DataKeyName, s.keyringHint())
+}
+
+// keyringHint is the advice added to a missing data key error when the
+// system keyring is not part of the store in this run.
+func (s *Store) keyringHint() string {
+	if h, ok := s.keys.(haser); ok && !h.Has(creds.Keyring{}.Name()) {
+		return "; the system keyring is not available in this run: run polyctl where it is (a desktop session), or set credential_store / POLYCTL_CREDENTIAL_STORE to the store that holds the key"
+	}
+	return ""
+}
+
+// otherKeys returns the data keys held by backends other than the one key
+// was read from, when they differ from it.
+func (s *Store) otherKeys() [][]byte {
+	if s.others != nil {
+		return s.others
+	}
+	s.others = [][]byte{}
+	e, ok := s.keys.(eacher)
+	if !ok {
+		return s.others
+	}
+	for _, m := range e.GetEach(DataKeyName) {
+		if k, err := decodeKey(m); err == nil && !bytes.Equal(k, s.key) {
+			s.others = append(s.others, k)
+		}
+	}
+	return s.others
 }
 
 func aad(r Ref, user string) []byte {
@@ -228,6 +311,17 @@ func (s *Store) open(row inventory.SecretRow) (Credentials, error) {
 		return c, fmt.Errorf("cannot read the stored credentials of instance %s: the stored nonce is malformed", row.InstanceID)
 	}
 	plain, err := aead.Open(nil, row.Nonce, row.Sealed, aad(ref, row.User))
+	if err != nil {
+		// Sealed with the key another backend holds: a store forked by an
+		// earlier release while the keyring was out of reach.
+		for _, k := range s.otherKeys() {
+			if a, gerr := gcm(k); gerr == nil {
+				if plain, err = a.Open(nil, row.Nonce, row.Sealed, aad(ref, row.User)); err == nil {
+					break
+				}
+			}
+		}
+	}
 	if err != nil {
 		return c, fmt.Errorf("cannot decrypt the stored credentials of instance %s: %w (they were sealed with another data key, or the row was altered)", row.InstanceID, ErrKeyLost)
 	}

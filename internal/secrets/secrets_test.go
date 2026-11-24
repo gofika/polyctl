@@ -3,6 +3,7 @@ package secrets
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
@@ -252,6 +253,111 @@ func TestGeneratePassword(t *testing.T) {
 	for _, p := range []string{"", "short", "-Abcdefghijk2345678x", "abcdefghijkmnopqrst2", "ABCDEFGHJKLMNPQRS2:x" + "y"} {
 		if ValidPassword(p) {
 			t.Errorf("ValidPassword(%q) = true", p)
+		}
+	}
+}
+
+// fakeKeyring is an in-memory store standing in for the system keyring.
+type fakeKeyring struct{ *memKeys }
+
+func (fakeKeyring) Name() string { return "keyring" }
+func (k fakeKeyring) Delete(key string) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	delete(k.m, key)
+	return nil
+}
+
+// A run without the keyring (SSH, cron) sees only credentials.json. While
+// secrets are stored, it must not create a second data key there: the key is
+// probably in the keyring it cannot reach.
+func TestNoSecondDataKeyWhileTheKeyringIsOutOfReach(t *testing.T) {
+	ctx := context.Background()
+	db, _ := openDB(t)
+	kr := fakeKeyring{newMemKeys()}
+	file := creds.NewFile(t.TempDir())
+	desktop := &creds.Multi{Primary: kr, Others: []creds.Store{file}}
+	headless := &creds.Multi{Primary: file}
+	if err := New(db, desktop).Put(ctx, Credentials{Ref: ref, User: "Administrator", Password: "old"}); err != nil {
+		t.Fatal(err)
+	}
+	ref2 := ref
+	ref2.InstanceID = "i-2"
+	err := New(db, headless).Put(ctx, Credentials{Ref: ref2, User: "Administrator", Password: "new"})
+	if !errors.Is(err, ErrKeyLost) || !strings.Contains(err.Error(), "keyring is not available") {
+		t.Fatalf("headless Put = %v, want a refusal naming the keyring", err)
+	}
+	if err := New(db, headless).Ready(); !errors.Is(err, ErrKeyLost) {
+		t.Errorf("headless Ready = %v, want a refusal", err)
+	}
+	if _, err := file.Get(DataKeyName); !errors.Is(err, creds.ErrNotFound) {
+		t.Errorf("a second data key was written to the file: %v", err)
+	}
+	if got, err := New(db, desktop).Get(ctx, ref); err != nil || got.Password != "old" {
+		t.Errorf("desktop Get = %+v, %v", got, err)
+	}
+}
+
+// With no secret stored yet, a run without the keyring may create the key in
+// the file; with both backends within reach and neither holding it, the key
+// is lost and a new one is created for new secrets.
+func TestDataKeyCreatedWhenNothingCanBeSplit(t *testing.T) {
+	ctx := context.Background()
+	db, _ := openDB(t)
+	file := creds.NewFile(t.TempDir())
+	if err := New(db, &creds.Multi{Primary: file}).Put(ctx, Credentials{Ref: ref, User: "u", Password: "p"}); err != nil {
+		t.Fatalf("first Put without keyring = %v", err)
+	}
+	db2, _ := openDB(t)
+	kr := fakeKeyring{newMemKeys()}
+	file2 := creds.NewFile(t.TempDir())
+	both := &creds.Multi{Primary: kr, Others: []creds.Store{file2}}
+	if err := New(db2, both).Put(ctx, Credentials{Ref: ref, User: "u", Password: "p"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := kr.Delete(DataKeyName); err != nil {
+		t.Fatal(err)
+	}
+	ref2 := ref
+	ref2.InstanceID = "i-2"
+	if err := New(db2, both).Put(ctx, Credentials{Ref: ref2, User: "u", Password: "p"}); err != nil {
+		t.Errorf("Put after the key is lost everywhere = %v, want a new key", err)
+	}
+}
+
+// A store forked by an earlier release (one key in the keyring, another in
+// the file) still reads every row, whichever backend's key sealed it.
+func TestRowsSealedWithEitherForkedKeyOpen(t *testing.T) {
+	ctx := context.Background()
+	db, _ := openDB(t)
+	kr := fakeKeyring{newMemKeys()}
+	file := creds.NewFile(t.TempDir())
+	ref2 := ref
+	ref2.InstanceID = "i-2"
+	// Seal i-2 with a key in the file alone, then i-1 with a key in the
+	// keyring alone, as two kinds of session did before.
+	if err := New(db, &creds.Multi{Primary: file}).Put(ctx, Credentials{Ref: ref2, User: "u", Password: "file"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := New(db, &creds.Multi{Primary: kr}).Ready(); err == nil {
+		t.Fatal("a keyring-only store created a key while secrets are stored")
+	}
+	k := make([]byte, dataKeyBytes)
+	k[0] = 1
+	if err := kr.Set(DataKeyName, map[string]string{dataKeyField: base64.StdEncoding.EncodeToString(k), dataKeyVersion: dataKeyV1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := New(db, &creds.Multi{Primary: kr}).Put(ctx, Credentials{Ref: ref, User: "u", Password: "keyring"}); err != nil {
+		t.Fatal(err)
+	}
+	desktop := New(db, &creds.Multi{Primary: kr, Others: []creds.Store{file}})
+	for _, c := range []struct {
+		r    Ref
+		want string
+	}{{ref, "keyring"}, {ref2, "file"}} {
+		got, err := desktop.Get(ctx, c.r)
+		if err != nil || got.Password != c.want {
+			t.Errorf("Get(%s) = %+v, %v; want %q", c.r.InstanceID, got, err, c.want)
 		}
 	}
 }
