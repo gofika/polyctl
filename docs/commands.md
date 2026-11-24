@@ -1,0 +1,342 @@
+# Commands
+
+Platform-neutral commands that take a domain (or an address) and find the account that holds it for you, and the conventions shared by the platform-specific commands.
+
+- [Choosing the account](#choosing-the-account)
+- [DNS](#dns)
+- [Domains](#domains)
+- [Certificates](#certificates)
+- [Deploying certificates](#deploying-certificates)
+- [Finding resources by IP or DNS name](#finding-resources-by-ip-or-dns-name)
+- [Routing rules](#routing-rules)
+- [Platform-specific commands](#platform-specific-commands)
+
+## Choosing the account
+
+`dns`, `domain` and `cert ensure` route a domain to the account (platform + profile) that owns it; see [Routing rules](#routing-rules). Narrow the choice with:
+
+- `--profile <name>` / `-p`: only the accounts of that profile.
+- `--platform <platform>`: only the account on that platform. Takes the same names and aliases as `auth login`.
+
+`cert deploy` uses the same two flags to select the accounts it deploys to. `find` searches every account; its `--platform` takes a comma-separated list, as on `sync`.
+
+The status line on stderr always names the account used, for example `zone example.com via cloudflare/acme (local inventory)`.
+
+## DNS
+
+```text
+polyctl dns list   <domain> [--type A] [--name www]
+polyctl dns set    <domain> --type <T> --value <V> [--name www|@] [--ttl 300] [--priority 10] [--proxied[=false]]
+polyctl dns add    <domain> --type <T> --value <V> [--name www|@] [--ttl 300] [--priority 10] [--proxied[=false]]
+polyctl dns ensure <domain> (-r <name:type:value[:ttl[:proxied]]>... | -f records.yaml) [--prune-duplicates]
+polyctl dns delete <domain> (--type <T> [--name www|@] [--value <V>] | --id <record-id>) [-y]
+polyctl dns delete <domain> --all [--type <T>[,<T>...]]... [--keep-bound] [-y]
+```
+
+Every `dns` command also takes `--profile` and `--platform`.
+
+**Names and values**
+
+- `<domain>` may be the zone apex or any name under it: `www.example.com` resolves to the `example.com` zone.
+- `--name` is relative to the zone (`www`, `@`). Without it, the record name is `<domain>` itself. `dns list --name` also accepts a full name.
+- A record's data is its **value** everywhere: the `--value` flag, the `VALUE` column and the `value` field of `-o json` / `-o yaml`. What one command prints can be passed to another.
+- `--ttl` is in seconds; `0` or no flag means the platform default (`dns set` keeps the existing TTL).
+- In tables, special TTLs are shown by name: `auto` (Cloudflare automatic, `1` in the API), `alias` (Route 53 alias records) and `default` (a GoDaddy record written without `--ttl`). JSON and YAML keep the raw value.
+- `--proxied` is Cloudflare only. `--proxied` turns the proxy on, `--proxied=false` turns it off (the `=` is required). Without it, `dns set` keeps the current setting and `dns add` uses Cloudflare's default. The `PROXIED` column appears for Cloudflare zones.
+- After a write, the inventory is updated, so the next `dns list` shows the change without `--refresh`.
+
+### dns set and dns add
+
+- `dns set` creates or updates one record, keyed on name + type. One existing record is updated (TTL, priority and proxy status are kept unless given); none means create. Several existing records are an error that changes nothing: use `dns add` or `dns delete`.
+- `dns add` always creates one more record and leaves the others alone. Use it to build round-robin `A` records or several `TXT` / `MX` records.
+
+### dns ensure
+
+Brings a set of records of one zone to the desired state. Safe to run again and again.
+
+```sh
+polyctl dns ensure example.com -r www:A:203.0.113.10:300:true -r '@:MX:10 mail.example.com'
+polyctl dns ensure example.com -f records.yaml --dry-run
+```
+
+```yaml
+records:
+  - name: www
+    type: A
+    value: 203.0.113.10
+    ttl: 300          # optional; a number or auto
+    proxied: true     # optional, Cloudflare only
+  - name: "@"
+    type: MX
+    value: mail.example.com
+    priority: 10      # MX only
+```
+
+- `--record` / `-r` (repeatable) and `--file` / `-f` can be combined. Each record is matched on name + type: already as desired is `unchanged` (not written), different is updated in place, missing is created. Records you do not name are never touched.
+- Names are relative (`www`, `@`, `a.b`) or full names in the zone (`www.example.com`, with or without the trailing dot). A name outside the zone (`www.other.com`) is a usage error.
+- TTL (seconds or `auto`) and proxied (`true` / `false`) are optional. Left out, an existing record keeps its value and a new one gets the platform default (Cloudflare: automatic TTL, not proxied). `auto` and `0` mean automatic on Cloudflare; elsewhere `auto` equals leaving the TTL out and `0` is refused.
+- Values are compared as the platform stores them (host names without case or trailing dot, compressed IPv6, TXT unquoted and joined), so an equivalent value is `unchanged`.
+- MX: put the priority in front of the value (`@:MX:10 mail.example.com`) or in `priority`. A new MX record needs one. SRV values are `<priority> <weight> <port> <target>`.
+- Inline, a value ending in `:<number>` or an IPv6 address that could be read with a TTL is refused as ambiguous: use the file.
+- Several records with the same name and type form a set: missing values are created, nothing is updated.
+- One desired record against several existing ones of that name and type: fine if one already matches (the others are left alone). Otherwise the command stops before writing (exit code 5), unless `--prune-duplicates` keeps one (updating the oldest) and deletes the rest, without asking.
+- `proxied=true` on a platform other than Cloudflare is reported `skipped`; `proxied=false` there is ignored. On a proxied Cloudflare record the TTL is not compared.
+- Usage errors (exit code 2), found before the zone is read: unknown fields, a record given twice, two CNAMEs of one name, a CNAME next to an A / AAAA record, `proxied` on types other than A / AAAA / CNAME, and `SOA`. A type the platform cannot write is exit code 7. A CNAME whose name already has A / AAAA records (or the reverse) fails before anything is written.
+- The zone is always read live, so `--offline` is refused (exit code 6).
+- The first failed write stops the run. Run the command again to continue from there.
+- Report rows are `dns-record/<name>/<TYPE>`. An update lists its changed fields (`value a -> b; ttl 300 -> 600`); in JSON, `attrs.changed` holds the old and new `value`, `ttl`, `proxied` and `priority`.
+
+### dns delete
+
+```sh
+polyctl dns delete example.com --name www --type A          # one record, or asks when several match
+polyctl dns delete example.com --id 372e67954025e0ba6aaa6d586b9e0b59
+polyctl dns delete example.com --all --type TXT --dry-run
+```
+
+- `--value` narrows the match; `--id` deletes exactly one record by platform id.
+- A selector that matches several records shows them and asks first (`-y` skips the question). Answering no deletes nothing and exits with code 0 (`nothing to do: no record was deleted`).
+- Non-interactive: nothing is asked or deleted without `-y`; the command exits with code 2 (`confirmation required: pass --yes to proceed ...`).
+- No matching record is exit code 4.
+- A record that fails to delete does not stop the others; the command ends with `N of M step(s) failed; first error: ...` (exit code 1).
+
+**`--all`** deletes every record of the zone, for retiring a domain or emptying it before a move.
+
+- `--type` (repeatable or comma-separated, any case) limits it to those types across the zone. Without `--all`, `--type` takes a single type.
+- Cannot be combined with `--name`, `--value` or `--id` (exit code 2).
+- Clears only the account the domain routes to. A zone held by several accounts is exit code 5 until `--profile` / `--platform` picks one.
+- Never deleted: the SOA and the NS records of the zone apex (reported `skipped`, also with `--type NS`). NS records below the apex (delegations) are deleted. The zone itself stays.
+- Records owned by another service (Cloudflare R2 custom domains) are removed by unbinding them; `--keep-bound` skips them instead.
+- Interactive: prints a summary per type and asks `delete N records in zone <domain> (y/N)`. Non-interactive: requires `--yes` (exit code 2 otherwise). `--dry-run` needs neither.
+- The zone is read live, so `--offline` is refused (exit code 6).
+- A record that cannot be deleted is `failed` and the rest continue (exit code 1). Nothing to delete prints `no records to clean up` (exit code 0).
+- In JSON, each deleted record keeps its full data in `attrs` (`value`, `ttl`, `priority`, `proxied`), so it can be restored with `dns ensure`; `summary` counts `deleted`, `skipped` and `failed`.
+
+**Cloudflare R2 custom domains.** The CNAME Cloudflare creates for an R2 bucket's custom domain cannot be deleted through the DNS API. `dns delete` (and `cloudflare dns delete`) removes it by unbinding the domain from its bucket; the question and the dry run say so. The bucket is looked up in the zone's account first, then in the other Cloudflare profiles. Without R2 permission, with R2 not enabled or with no bucket named in the record, the record stays and the command fails.
+
+## Domains
+
+```text
+polyctl domain info  <domain>
+polyctl domain ns get <domain>
+polyctl domain ns set <domain> <nameserver>...
+polyctl domain ns check <domain> [--resolver <ip>[,<ip>...]] [--timeout 5s] [--no-registrar] [--no-zone]
+polyctl domain which <domain>
+polyctl domain index
+polyctl domain list  [--refresh]
+```
+
+All take `--profile` and `--platform`.
+
+- **`domain info`** shows the registrar view (status, expiry, auto-renew, lock, privacy, nameservers) and the DNS zone that serves the domain with its nameservers. Either part may be missing if only one kind of account knows the domain. With `--platform`, a part held on another platform is mentioned on stderr.
+- **`domain ns get` / `ns set`** read and write the nameservers **at the registrar** (name.com, GoDaddy, Route 53 Domains, Alibaba Cloud Domains). `ns set` takes at least one nameserver; each argument may be a comma-separated list:
+
+  ```sh
+  polyctl domain ns set example.com ns1.example.net ns2.example.net
+  ```
+
+- **`domain which`** lists every index entry for the domain and its parents: kind (`zone` or `domain`), platform, profile, resource id, index time. Use it when routing surprises you. With `--profile` / `--platform` the list is narrowed; no owner under the selection is exit code 4.
+- **`domain index`** rebuilds the domain index from every domain-capable account (narrowed by `--profile` / `--platform`). **`domain list`** prints the index; `--refresh` re-indexes first. An unknown `--profile` is exit code 4. A selection with no domain-capable account is not an error: empty output, a `nothing to do: ...` note, exit code 0.
+
+### domain ns check
+
+Answers "who serves this domain, and is the delegation in place?" by comparing three sets of nameservers:
+
+| Side | Source |
+|------|--------|
+| `registrar` | set at the registrar |
+| `zone` | assigned to the hosted zone (Cloudflare, Alibaba Cloud DNS, Route 53, Cloud DNS, ...) |
+| `live` | what public resolvers return now |
+
+```sh
+polyctl domain ns check example.com
+polyctl domain ns check www.example.com -o json
+polyctl domain ns check example.com --resolver 223.5.5.5,114.114.114.114
+```
+
+- A subdomain is checked as its registered domain (`www.example.com` → `example.com`; `example.co.uk` stays itself). Internationalized names are checked in punycode. A URL, a name with a port, or a name without a registered domain (`localhost`, an IP, `co.uk`) is a usage error (exit code 2).
+- `--resolver`: IP or IP:port, comma-separated or repeated (default `1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4`, or `dns.resolvers`). The system resolver is never used. `--timeout` per query (default `5s`, or `dns.timeout`).
+- Registrar and zone sides are read live; the index is refreshed first if it has no entry (or with `--refresh`). Every hosted zone is listed in `zones` with `live_match` (`equal`, `partial`, `none`); the one the live nameservers point to is compared. Private zones are left out.
+- `--no-registrar` / `--no-zone` skip a side (not both).
+- `status`:
+  - `ok`: live equals the zone (and the registrar, when known)
+  - `partial`: some overlap, or the registrar lists others
+  - `mismatch`: no overlap
+  - `no-zone`: no account hosts the domain
+  - `no-live`: resolvers return NXDOMAIN, NODATA or SERVFAIL (SERVFAIL comes with a DNSSEC / DS hint)
+  - `unknown`: a needed side was skipped or unreadable
+- JSON also has `match` (pairwise comparisons), `provider_guess` (`cloudflare`, `aliyun`, `aws`, `gcp`, `mixed`, `unknown`; a hint), `message` (what to do) and, for an unavailable side, `available: false` with a `reason`.
+- It is a report: every status exits with code 0, so scripts read `status` from `-o json`. Exit code 1 only when every requested side failed, 3 when the selected accounts cannot authenticate, 4 when `--platform` holds the domain neither as registration nor as zone, 7 when that platform cannot read the requested sides, 6 under `--offline`.
+
+## Certificates
+
+```text
+polyctl cert ensure <domain> [--days 30] [--force] [--staging] [--email <addr>] [--agree-tos]
+                             [--key-type ec256|ec384|rsa2048|rsa4096] [--timeout 15m]
+                             [--profile <name>] [--platform <platform>]
+polyctl cert get    <domain> [--print fullchain|cert|chain|privkey] [--staging]
+polyctl cert deploy (<domain> | --all) [--days 30] [--force] [--region <r>]... [--deployer <id>]...
+                             [--prune-expired] [--no-wait] [--timeout 10m]
+                             [--profile <name>] [--platform <platform>]
+```
+
+`cert ensure` keeps a Let's Encrypt certificate for a domain and its wildcard in the local store; `cert get` shows it; `cert deploy` puts it on cloud load balancers and certificate stores. Run it daily from cron:
+
+```sh
+polyctl cert ensure example.com            # issues when missing, renews at 30 days left or fewer, else does nothing
+polyctl cert ensure example.com --dry-run  # what it would do, writing nothing
+polyctl cert get www.example.com --print fullchain > fullchain.pem
+polyctl cert get example.com --print privkey > privkey.pem && chmod 600 privkey.pem
+```
+
+### cert ensure
+
+- **Names.** Every certificate covers a root domain and its wildcard (`example.com` and `*.example.com`). `www.example.com`, `*.example.com` and `example.com` all mean the certificate of `example.com`. The root is the registered domain (`a.b.example.co.uk` → `example.co.uk`). A name without a registered domain (`com`, `localhost`, an IP) is exit code 2.
+- **When it issues.** Nothing happens (`unchanged`) while the certificate has more than `--days` whole days left (default `cert.renew_days`, 30), holds both names and has the `--key-type` key (default `cert.key_type`, `ec256`). Otherwise it is issued (`created`) or renewed (`updated`). `--force` always renews; mind the CA's rate limits.
+- **Validation (DNS-01).** polyctl writes TXT records `_acme-challenge.<root>` in the zone the root domain routes to, so no separate DNS credentials are needed. No hosting account is exit code 4; several are exit code 5 until `--profile` / `--platform` picks one. It warns when the public nameservers do not match the hosting zone, and refuses a CNAME at `_acme-challenge.<root>` (delegated validation is not supported). Its own records are deleted afterwards.
+- **Propagation.** The CA is asked to validate once `cert.dns.min_resolvers` (default 2) of `cert.dns.resolvers` (default `1.1.1.1`, `8.8.8.8`, `223.5.5.5`, `114.114.114.114`) see the record, checked every `poll_interval` (10s) for up to `propagation_timeout` (5m), plus `settle_delay` (20s). `-v` shows each resolver's answer.
+- **ACME account.** The first issuance needs an e-mail (`--email` or `cert.email`) and agreement to the CA's terms (`--agree-tos` or `cert.agree_tos: true`). Interactive runs ask for what is missing; non-interactive runs fail with exit code 2 before writing anything.
+- **Private keys.** Each issuance gets a new key; `cert.reuse_key: true` keeps the current one.
+- **Failures** are never retried automatically. The error includes the CA's detail and, on a rate limit, its `Retry-After`. Exit code 1, 3 when the DNS account's credentials are rejected, 7 when its platform cannot write TXT records. Failures are sent to `hooks.on_failure` as `{"event": "cert.ensure.failed", "domain", "error", "time"}`.
+- `--timeout` (default 15m) bounds the whole run, including waiting for the per-domain lock held by another run.
+- `--dry-run` checks routing, nameservers and the challenge name and reports `would create` / `would update`; it writes nothing. `--offline` is exit code 6 when a certificate would have to be issued.
+- `--staging` uses the Let's Encrypt staging CA (untrusted certificates, for testing) with a separate store; it cannot be combined with a custom `cert.acme_directory`.
+- Report rows: `acme-account/<ca>` and `cert/<root>` (`names=... not_after=YYYY-MM-DD days_left=N`). Issued certificates also appear in `inventory list --type certificate` (platform `local`).
+
+### cert get
+
+Reads the store only: names, subject, issuer, serial, validity, days left, key type, SHA-256 fingerprint and directory. It never shows the private key unless `--print privkey` writes it to stdout. `--print` writes one PEM file (`fullchain`, `cert`, `chain`, `privkey`). No certificate is exit code 4.
+
+### The certificate store
+
+`cert.dir` (default `<config dir>/certs`) uses certbot's `live/<domain>/` layout. To move a certbot certificate in, copy its `fullchain.pem` and `privkey.pem` into `live/<root>/`.
+
+```text
+<cert.dir>/                          0700
+  accounts/<CA host>/<id>/           account.key (0600), account.json
+  live/<root>/                       fullchain.pem  cert.pem  chain.pem  privkey.pem (0600, PKCS#8)  meta.json
+  archive/<root>/<UTC time>/         the last 3 previous bundles
+  pending/<root>/privkey.pem         the key of an issuance in progress
+  locks/<root>.lock
+  history.log                        one JSON line per certificate created, updated or deployed
+  ca/<host>/...                      store of any other CA (staging)
+```
+
+Replacements are atomic. A private key readable by others is reported and fixed to `0600` by `cert ensure`.
+
+## Deploying certificates
+
+`cert deploy` finds, live, every place in your cloud accounts that serves a certificate and puts the store's certificate on those that need it. It renews the local certificate first when needed.
+
+```cron
+17 3 * * *  /usr/local/bin/polyctl cert deploy --all --prune-expired --yes -o json >> /var/log/polyctl-cert.log 2>&1
+```
+
+cron has a minimal environment: set `PATH` and `HOME` (or `POLYCTL_CONFIG_DIR`), and use `credential_store: file` when no login keyring is available.
+
+```sh
+polyctl cert deploy example.com                       # every target of example.com without the current certificate
+polyctl cert deploy example.com --dry-run -o json
+polyctl cert deploy --all --platform aliyun --profile acme --deployer aliyun-alb --dry-run
+polyctl cert deploy example.com --deployer gcp-lb --region asia-east2
+```
+
+**Deployers** (`--deployer`, repeatable; default all):
+
+| Deployer | Targets | Notes |
+|----------|---------|-------|
+| `aliyun-alb` | HTTPS listeners of Alibaba Cloud ALB (default certificate) | Uploads to the region's CAS store as `cert.name_template` (default `upload_<root>_<YYYY-MM-DD of expiry>`) and waits for each listener to be `Running` again. Stopped listeners and SNI certificates are left alone. |
+| `gcp-lb` | Target HTTPS proxies of global and regional forwarding rules | Creates `cert-<root with hyphens>-<YYYYMMDD>` and deletes the old self-managed certificate. Google-managed certificates and certificate maps are `skipped`. |
+| `aws-acm` | Imported ACM certificates | Re-imports under the same ARN, so load balancers and CloudFront need no change. A different key type is imported as a new certificate (tag `polyctl:domain=<root>`): set the new ARN where the old one was used. Amazon-issued certificates are `skipped`. Never imports a certificate for the first time (use `aws acm certificate import`). |
+
+**Options**
+
+- `--all`: update targets with `--days` whole days left or fewer (default `cert.renew_days`, 30). `<domain>`: update every target of that root domain that does not hold the store's current certificate, whatever its expiry. `--force`: every matching target.
+- The local certificate is ensured with `--days` + 5 before deploying. A root domain no DNS account hosts is `skipped` (managed elsewhere).
+- Accounts: every account with a deployer, narrowed by `--profile`, `--platform` and `--deployer`. `cert.skip_accounts` leaves out a profile (`name`) or one deployer of it (`name:aliyun-alb`).
+- Regions: `--region` (repeatable) replaces `cert.aws.regions` / `cert.aliyun.regions` (default: the profile's region; CloudFront certificates are in `us-east-1`, list it). GCP scans every region unless `--region` is given (`global` for global proxies).
+- `--no-wait` returns once a change is requested (`--wait` is the default). `--timeout` (default 10m) bounds each wait.
+- `--prune-expired` also deletes expired certificates nothing uses. It asks once (default no); non-interactive runs need `--yes`.
+- `--dry-run` does every read and reports `would create` / `would update` / `would delete`. `--offline` is exit code 6.
+
+**Failures** are handled per target and the run goes on. Each is sent to `hooks.on_failure` as `{"event": "cert.deploy.failed", "platform", "profile", "deployer", "target", "domain", "error", "time"}`. Exit code 1 when anything failed, 3 when every failure was a credential or permission error, 0 otherwise (no targets at all is 0). Nothing is rolled back; the next run finishes the job.
+
+**Report rows**: `<deployer>/<profile>/<target>` (for example `aliyun-alb/acme/lb-example(HTTPS:443)`, `gcp-lb/acme/global/proxy-web`, `aws-acm/acme/us-east-1/<arn>`). Each JSON row's `attrs` holds `deployer`, `platform`, `profile`, `region`, `domain`, `old_cert_id`, `old_days_left`, `new_not_after` and `cert_name`.
+
+## Finding resources by IP or DNS name
+
+```text
+polyctl find <ip|dns-name> [--platform <p>[,<p>...]] [--profile <name>] [--detail]
+                           [--refresh | --offline] [-o table|json|yaml]
+```
+
+```text
+$ polyctl find 203.0.113.10
+PLATFORM  PROFILE  TYPE           NAME      REGION/ZONE   INTERNAL    EXTERNAL      STATE    NETWORK
+gcp       acme     instance       web-1     asia-east1-a  10.140.0.5  203.0.113.10  RUNNING  default
+gcp       acme     load_balancer  fr-web-1  asia-east1    -           203.0.113.10  -        -
+matched 2 resource(s) (local inventory, synced 4m ago)
+```
+
+- The argument is an IPv4 / IPv6 address or a DNS name (load balancer, instance public or private name, database endpoint). Anything else is exit code 2.
+- Searches `instance`, `load_balancer`, `eip` and `db_instance` of every account on AWS, GCP and Alibaba Cloud. Every address counts: all network interfaces, secondary and alias addresses, IPv6 prefixes, public and elastic addresses, load balancer addresses.
+- **Reads the local inventory only** and never syncs on its own. `--refresh` syncs those four types for the selected accounts first (`find.concurrency` accounts at a time). `--offline` cannot be combined with `--refresh` or `--detail`.
+- Several matches are normal (the same private address exists in many networks): all are listed, exit code 0.
+- `--detail` looks up each matched instance's VPC and subnet on its platform (each within `find.detail_timeout`). The table shows console links with `-v` or `--detail`.
+- Nothing found is exit code 4; the message tells you to run `polyctl find <query> --refresh` or `polyctl sync --type instance,load_balancer,eip,db_instance`. Stale results are shown with a note on stderr.
+- With `--refresh`, an account that cannot be synced is listed in `errors` and the others are still searched. Exit code 1 only when every account fails and nothing matches.
+
+Platform coverage:
+
+- **AWS**: EC2 instances, ELBv2 load balancers, elastic IPs and unattached network interfaces (NAT gateways, ...), RDS instances. Every enabled region is synced.
+- **GCP**: instances, forwarding rules (regional and global), reserved addresses.
+- **Alibaba Cloud**: ECS instances, ALB load balancers, EIPs. Every region is synced; a failing region is reported and the others are kept.
+
+`-o json` fields: `query`, `kind` (`ip` / `dns`), `cached`, `synced_at`, `matches` and `errors`. Each match has `platform`, `profile`, `type`, `id`, `name`, `region`, `zone`, `state`, `matched_field`, `internal_ips`, `external_ips`, `network`, `url` and, where they apply, `dns_names`, `subnet`, `note`, `addresses` and `detail`.
+
+## Routing rules
+
+1. Without `--profile` / `--platform`, every account is searched. Each flag narrows the search; together they name one account.
+2. polyctl looks up the domain and its parents (`a.b.example.com`, `b.example.com`, `example.com`) in the domain index, for the kind the command needs (`zone` for `dns`, `domain` for registrar operations). **The longest match wins**, so a delegated sub-zone beats its parent.
+3. A match held by several accounts is exit code 5. The error lists the candidates as `platform/profile` and names the flag that tells them apart.
+4. No match: polyctl indexes the accounts automatically the first time, or with `--refresh`, then retries. Otherwise: "domain not found in local index" (exit code 4); run `polyctl domain index` or pass `--refresh`.
+5. With `--offline` nothing is indexed; an unknown domain is an error.
+6. An unknown `--profile`, or a `--profile` / `--platform` pair with no suitable account, is exit code 4.
+
+The usual ambiguity is within one profile: a registrar (name.com, GoDaddy) lists every domain it holds as a zone too. If `acme` registers `example.com` at name.com and serves its DNS from Cloudflare, pass `--platform`:
+
+```text
+$ polyctl dns list example.com
+error: ambiguous owner of zone "example.com": candidates are [cloudflare/acme (zone 9a1...) namecom/acme (zone example.com)]; pass --platform <platform> to choose
+
+$ polyctl dns list example.com --platform cloudflare
+zone example.com via cloudflare/acme
+...
+```
+
+Registrar commands (`domain ns ...`) are not affected, since only name.com holds the registration. Two resources with the same name in one account (two Route 53 hosted zones called `example.com`) cannot be told apart this way; use the platform's own command with the resource id.
+
+**Resources addressed by name or id** (instances, load balancers, ...) are found the same way, so you do not need to name the profile. An id match wins over a name match. Several matches are exit code 5 (pass `--profile`, `--platform`, or the id). No match syncs that resource type once for accounts with a missing or expired cache, then reports not found (exit code 4).
+
+`find` does not follow these rules: it lists every match instead of choosing one.
+
+## Platform-specific commands
+
+Each platform has its own subtree: `cloudflare` (alias `cf`), `namecom`, `godaddy`, `aws`, `gcp`, `aliyun`. The commands and flags of each are on its page: [Cloudflare](platforms/cloudflare.md), [name.com](platforms/namecom.md), [GoDaddy](platforms/godaddy.md), [AWS](platforms/aws.md), [GCP](platforms/gcp.md), [Alibaba Cloud](platforms/aliyun.md).
+
+- **Account**: `--profile` (it must have an account on that platform, otherwise exit code 3) > `current_profile` (if it has one) > the only profile that has one > an error listing the candidates (exit code 5).
+- **Cache**: list commands honour `--refresh` / `--offline` as the neutral commands do; writes always go to the platform.
+- **`<platform> whoami`** checks the credentials against the platform and prints `profile`, `platform` and `identity` (`account`, `user`, `extra`). It needs the network (exit code 6 with `--offline`); credentials that no longer work are exit code 3.
+
+The same operation has the same verb and shape on every platform:
+
+| Kind | Commands |
+| --- | --- |
+| Registrar groups | `list`, `get <domain>`, `ns get <domain>`, `ns set <domain> <nameserver>...` |
+| Records with an id (Cloudflare, name.com, Alibaba Cloud) | `create`, `update <zone-or-domain> <record-id>`, `delete <zone-or-domain> <record-id>` |
+| Records by name and type (Route 53, Cloud DNS, GoDaddy) | `upsert` sets the whole record set; `delete --name --type`, with `--id` as an optional way to pick one record |
+| Compute services | `<service> instance list\|start\|stop ...` |
+
+- **`create`** makes one new resource and fails when it exists. **`set` / `upsert`** set one object (a record, a record set) and never create anything else.
+- **`ensure`** converges a group of related resources: it reads what exists, changes only what differs, reports `unchanged` for what matches, and never deletes resources it was not told about. Any command that creates dependencies you did not name one by one (a VPC, a security group, a certificate, a listener) is an `ensure` command. Exit code 0 includes "everything was unchanged". It prints a [change report](configuration.md#dry-runs-and-change-reports).
+- **Waiting**: asynchronous changes take `--wait` (wait until the change has completed; the default of `ensure` commands and of every `instance create`), `--no-wait` (return once the change was requested; accepted by every command that has `--wait`) and `--timeout <duration>` (upper bound of the wait, default `10m`). A wait that runs out of time is exit code 1 and names the resource and its last status.
