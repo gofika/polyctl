@@ -110,11 +110,16 @@ func assistantProgram(command string) (prog, mark string) {
 
 // splitAssistantOutput splits the output of assistantProgram into the
 // command's standard output and standard error; ok is false when the
-// marker is missing (the output is not the program's whole output).
+// marker is missing (the output is not the program's whole output). An
+// output that ends with the marker, its newline trimmed away, has no
+// standard error.
 func splitAssistantOutput(out, mark string) (stdout, stderr []byte, ok bool) {
 	sep := "\n" + mark + "\n"
 	i := strings.LastIndex(out, sep)
 	if i < 0 {
+		if strings.HasSuffix(out, sep[:len(sep)-1]) {
+			return []byte(out[:len(out)-len(sep)+1]), []byte{}, true
+		}
 		return nil, nil, false
 	}
 	return []byte(out[:i]), []byte(out[i+len(sep):]), true

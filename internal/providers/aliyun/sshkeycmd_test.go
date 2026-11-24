@@ -434,6 +434,14 @@ func TestAssistantProgramSplitsOutput(t *testing.T) {
 	if _, _, ok := splitAssistantOutput("cut", mark); ok {
 		t.Error("output without the marker accepted")
 	}
+	// An output whose last newline was trimmed (no standard error) still
+	// splits, standard output exactly.
+	prog, mark = assistantProgram(`printf 'a\nb\n'`)
+	out, errb, _ = sys.Run("root", prog, "")
+	so, se, ok = splitAssistantOutput(strings.TrimRight(out+errb, "\n"), mark)
+	if !ok || string(so) != "a\nb\n" || len(se) != 0 {
+		t.Errorf("trimmed output: stdout %q stderr %q ok %v", so, se, ok)
+	}
 }
 
 // The bound key pair is matched by the public key DescribeKeyPairs returns
