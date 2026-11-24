@@ -1039,8 +1039,18 @@ running and prints its addresses.`,
 				sizeAttrs = choice.attrs()
 			}
 			plan.Add(platform.Step{Resource: "instance/" + name, Action: platform.Created, Desc: desc, Attrs: sizeAttrs, Apply: func(ctx context.Context) (platform.Change, error) {
-				id, err := c.CreateInstance(ctx, spec)
+				id, err := createInstanceKnown(ctx, rt, c, spec)
 				if err != nil {
+					if platform.OutcomeUnknown(err) {
+						err = fmt.Errorf("RunInstances result is unknown, the instance may already exist (look for instance %s before trying again): %w", name, err)
+						if win != nil && win.createdKeyPair != "" {
+							// The instance may run with the key pair: keep
+							// it, and its private key, which only polyctl
+							// holds.
+							win.pending(ctx, spec.ClientToken)
+						}
+						return platform.Change{}, err
+					}
 					if win != nil && win.createdKeyPair != "" {
 						// Nobody else holds its private key: it would only
 						// be in the way of the next try.
@@ -1570,4 +1580,26 @@ c6a.2xlarge, c6a.4xlarge; burstable t3 types can stall under steady load.`,
 	cmd.Flags().IntVar(&waitPort, "wait-port", 0, "after the start, wait until this TCP port accepts connections (22 for SSH, 3389 for RDP)")
 	cmd.Flags().StringVar(&region, "region", "", "region of the instance (default: look it up in the inventory of every account)")
 	return cmd
+}
+
+// createInstanceKnown runs CreateInstance and, when its outcome is
+// unknown (a transport failure after every SDK retry, a server-side
+// failure), asks again a few times with the same client token: AWS answers
+// the instance an earlier attempt launched, or launches it now. An error it
+// returns may still be of unknown outcome (platform.OutcomeUnknown).
+func createInstanceKnown(ctx context.Context, rt *app.Runtime, c *client, spec platform.CreateSpec) (string, error) {
+	id, err := c.CreateInstance(ctx, spec)
+	if err == nil || !platform.OutcomeUnknown(err) || ctx.Err() != nil || spec.ClientToken == "" {
+		return id, err
+	}
+	rt.Infof("note: the result of RunInstances is unknown (%v); asking again with the same client token", err)
+	err = platform.Retry(ctx, platform.RetryPolicy{
+		Match:   func(err error) bool { return platform.OutcomeUnknown(err) && ctx.Err() == nil },
+		Initial: 2 * time.Second, Max: 8 * time.Second, MaxAttempts: 3, Clock: instanceClock,
+	}, func(ctx context.Context) error {
+		var rerr error
+		id, rerr = c.CreateInstance(ctx, spec)
+		return rerr
+	})
+	return id, err
 }

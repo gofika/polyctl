@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -24,5 +25,18 @@ func TestErrorCodeMatchesWholeCodes(t *testing.T) {
 	}
 	if ErrorCode(errors.New("plain")) != "" || HasErrorCode(nil, "") {
 		t.Error("an error without a code has none")
+	}
+}
+
+func TestOutcomeUnknown(t *testing.T) {
+	for _, err := range []error{errors.New("connection reset"), context.DeadlineExceeded, codedErr{"SDK.TimeoutError"}, codedErr{"InternalError"}} {
+		if !OutcomeUnknown(fmt.Errorf("run: %w", err)) {
+			t.Errorf("%v: want unknown", err)
+		}
+	}
+	for _, err := range []error{nil, codedErr{"InsufficientInstanceCapacity"}, codedErr{"InvalidParameter"}} {
+		if OutcomeUnknown(err) {
+			t.Errorf("%v: want a definite outcome", err)
+		}
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -889,5 +890,54 @@ func TestWindowsCreateAsksKeyFile(t *testing.T) {
 	h.rt.Flags.NonInteractive = true
 	if err := h.run("ec2", "instance", "create", "win-b", "--os", "windows", "--type", "t3.large", "--key-pair", "ops-rsa"); !exit2(err) || !strings.Contains(err.Error(), "needs --key-file") {
 		t.Errorf("non-interactive = %v", err)
+	}
+}
+
+// A RunInstances whose answer is lost is asked again with the same client
+// token: AWS answers the instance it launched, and the login is kept.
+func TestWindowsRunAnswerLostOnce(t *testing.T) {
+	h := winHarness(t, app.Flags{})
+	h.ec2.inst.runLost = 1
+	if err := h.run(winCreate...); err != nil {
+		t.Fatalf("%v\n%s", err, h.stderr.String())
+	}
+	if n := len(h.ec2.inst.byRegion["ap-east-1"]); n != 1 || len(h.ec2.inst.runs) != 2 || len(h.ec2.deletedKeyPairs) != 0 {
+		t.Errorf("instances %d, runs %d, deleted key pairs %v", n, len(h.ec2.inst.runs), h.ec2.deletedKeyPairs)
+	}
+	if c := storedWin(t, h, "win-a"); len(c) != 1 || c[0].Password != winPassword || !strings.HasPrefix(c[0].InstanceID, "i-") {
+		t.Errorf("stored = %+v", c)
+	}
+}
+
+// When every answer is lost, the result stays unknown: the key pair is
+// kept, its private key stored under the instance name, and the password
+// command finds the instance by name and fetches its password.
+func TestWindowsRunResultUnknown(t *testing.T) {
+	h := winHarness(t, app.Flags{})
+	h.ec2.inst.runLost = 100
+	err := h.run(winCreate...)
+	if err == nil || !strings.Contains(err.Error(), "result is unknown, the instance may already exist") {
+		t.Fatalf("unknown = %v", err)
+	}
+	if len(h.ec2.deletedKeyPairs) != 0 || !strings.Contains(h.stderr.String(), "key pair win-a-win is kept") {
+		t.Errorf("deleted %v, stderr %s", h.ec2.deletedKeyPairs, h.stderr.String())
+	}
+	pend := storedWin(t, h, "win-a")
+	if len(pend) != 1 || pend[0].PrivateKey == "" || !strings.HasPrefix(pend[0].InstanceID, pendingInstancePrefix) {
+		t.Fatalf("pending = %+v", pend)
+	}
+	// The instance did launch: the password command fetches its password
+	// and stores the login under the instance id.
+	h.ec2.inst.runLost, h.ec2.inst.pwDelay = 0, 0
+	if err := h.run("ec2", "instance", "password", "win-a"); err != nil {
+		t.Fatalf("%v\n%s", err, h.stderr.String())
+	}
+	var login map[string]any
+	h.jsonOut(&login)
+	if login["password"] != winPassword || !strings.HasPrefix(fmt.Sprint(login["id"]), "i-") {
+		t.Errorf("login = %v", login)
+	}
+	if got := storedWin(t, h, "win-a"); len(got) != 1 || !strings.HasPrefix(got[0].InstanceID, "i-") || got[0].Password != winPassword || got[0].PrivateKey == "" {
+		t.Errorf("stored after retrieve = %+v", got)
 	}
 }

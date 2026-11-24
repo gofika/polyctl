@@ -1,8 +1,10 @@
 package platform
 
 import (
+	"context"
 	"errors"
 	"slices"
+	"strings"
 )
 
 // ErrForbidden marks a request that valid credentials were not allowed to
@@ -51,4 +53,24 @@ func ErrorCode(err error) string {
 func HasErrorCode(err error, codes ...string) bool {
 	code := ErrorCode(err)
 	return code != "" && slices.Contains(codes, code)
+}
+
+// serverFailureCodes are the codes of a server-side failure, after which a
+// write may or may not have been carried out.
+var serverFailureCodes = []string{"InternalError", "InternalFailure", "ServiceUnavailable", "Unavailable", "UnknownError"}
+
+// OutcomeUnknown reports whether a failed write may still have been carried
+// out: the error carries no platform error code (a transport failure, a
+// request cancelled or timed out after it was sent), a client-side SDK code
+// (Alibaba Cloud "SDK.*": timeouts, an unreachable server) or a server-side
+// failure code. An error with any other code is a definite refusal.
+func OutcomeUnknown(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	code := ErrorCode(err)
+	return code == "" || strings.HasPrefix(code, "SDK.") || slices.Contains(serverFailureCodes, code)
 }

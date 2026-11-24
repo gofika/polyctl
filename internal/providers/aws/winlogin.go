@@ -339,6 +339,27 @@ func (w *windowsLogin) created(ctx context.Context, id string) {
 	w.put(ctx)
 }
 
+// pendingInstancePrefix starts the instance id under which the login of an
+// instance whose RunInstances result is unknown is stored: the password
+// command finds it by the instance name, and stores it again under the
+// real id once it has fetched the password.
+const pendingInstancePrefix = "pending-"
+
+// pending stores the login of an instance whose RunInstances result is
+// unknown, under the client token of the request and the instance name,
+// so that the private key of the key pair polyctl created survives the
+// run. Nothing is shown: finish has no instance id.
+func (w *windowsLogin) pending(ctx context.Context, token string) {
+	w.id = pendingInstancePrefix + token
+	w.put(ctx)
+	if !w.stored {
+		w.rt.Infof("warning: the private key of key pair %s could not be stored: if instance %s exists, reset its Windows password in AWS", w.createdKeyPair, w.name)
+	} else {
+		w.rt.Infof("note: key pair %s is kept and its private key stored: if instance %s exists, `%s` fetches its password", w.createdKeyPair, w.name, app.PasswordCommandLine(ec2InstanceTree, w.name))
+	}
+	w.id = ""
+}
+
 // wait polls GetPasswordData until AWS has generated the password, then
 // decrypts and stores it. It returns the state for the change report; the
 // create succeeds whatever it is.
@@ -524,11 +545,27 @@ func retrieveWindowsLogin(ctx context.Context, rt *app.Runtime, profile, locatio
 			return nil, fmt.Errorf("%w: the Windows password of instance %s is not stored and polyctl holds no private key to decrypt it (the key pair is yours): pass --key-file <the RSA private key of its key pair>",
 				platform.ErrNotFound, label)
 		}
-		// The profile asked for, not the stored row's: the row of an
-		// account that was logged out names a detached profile.
-		var err error
-		if c, err = openProfile(ctx, rt, profile); err != nil {
-			return nil, err
+		if pendingID := cred.InstanceID; strings.HasPrefix(pendingID, pendingInstancePrefix) {
+			// Stored when the RunInstances result was unknown: the
+			// instance, if it exists, goes by the name.
+			l, err := resolveInstance(ctx, rt, cred.Name, cred.Location, false)
+			if err != nil {
+				return nil, fmt.Errorf("the login of instance %s was stored while its creation was uncertain: %w", cred.Name, err)
+			}
+			c = l.c
+			cred.Ref = secrets.Ref{Platform: platform.AWS, Profile: l.profile, Location: l.region, InstanceID: l.id()}
+			label = instanceLabel(l.inst)
+			// From now on the login goes by the instance id.
+			if st, err := rt.Secrets(); err == nil && st.Put(ctx, cred) == nil {
+				_ = st.Delete(ctx, stored.Ref)
+			}
+		} else {
+			// The profile asked for, not the stored row's: the row of an
+			// account that was logged out names a detached profile.
+			var err error
+			if c, err = openProfile(ctx, rt, profile); err != nil {
+				return nil, err
+			}
 		}
 	}
 	data, err := c.passwordData(ctx, cred.Location, cred.InstanceID)

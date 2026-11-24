@@ -48,6 +48,7 @@ type fakeInstance struct {
 	sgs                                      []string // nil is [sg-0aaa]
 	nics                                     int      // network interfaces; 0 is 1
 	image, platformDetails                   string   // ImageId and PlatformDetails
+	clientToken                              string   // of the RunInstances that launched it
 }
 
 // fakeInstances is the instance part of the shared fake state.
@@ -80,6 +81,9 @@ type fakeInstances struct {
 	volErr      error
 	errs        map[string]error   // call -> error of that call
 	errOnce     map[string][]error // call -> errors of its next calls, one each
+	// runLost is the number of RunInstances calls that launch the instance
+	// but lose the answer (a transport error with no code).
+	runLost int
 	runs        []*ec2.RunInstancesInput
 	filters     [][]ec2types.Filter
 	pageSize    int
@@ -370,10 +374,25 @@ func (f *fakeEC2) RunInstances(_ context.Context, in *ec2.RunInstancesInput, _ .
 	fi := &s.inst
 	fi.init()
 	fi.runs = append(fi.runs, in)
+	answer := func(inst *fakeInstance) (*ec2.RunInstancesOutput, error) {
+		if fi.runLost > 0 {
+			fi.runLost--
+			return nil, errors.New("read tcp: connection reset by peer")
+		}
+		return &ec2.RunInstancesOutput{Instances: []ec2types.Instance{inst.ec2()}}, nil
+	}
+	// The same client token answers the instance it launched.
+	if tok := awssdk.ToString(in.ClientToken); tok != "" {
+		for _, inst := range fi.byRegion[f.region] {
+			if inst.clientToken == tok {
+				return answer(inst)
+			}
+		}
+	}
 	fi.nextID++
 	inst := &fakeInstance{id: fmt.Sprintf("i-0000000000000%04d", fi.nextID), typ: string(in.InstanceType), state: statePending,
 		next: []string{statePending, stateRunning}, az: "ap-east-1a", arch: "x86_64", priv: "10.0.1." + strconv.Itoa(fi.nextID), rootDevice: "/dev/xvda",
-		keyName: awssdk.ToString(in.KeyName)}
+		keyName: awssdk.ToString(in.KeyName), clientToken: awssdk.ToString(in.ClientToken)}
 	for _, im := range fi.images[f.region] {
 		if awssdk.ToString(im.ImageId) == awssdk.ToString(in.ImageId) && im.Platform == ec2types.PlatformValuesWindows {
 			inst.platform, inst.rootDevice = "windows", "/dev/sda1"
@@ -389,7 +408,7 @@ func (f *fakeEC2) RunInstances(_ context.Context, in *ec2.RunInstancesInput, _ .
 		}
 	}
 	fi.byRegion[f.region] = append(fi.byRegion[f.region], inst)
-	return &ec2.RunInstancesOutput{Instances: []ec2types.Instance{inst.ec2()}}, nil
+	return answer(inst)
 }
 
 func (f *fakeEC2) TerminateInstances(_ context.Context, in *ec2.TerminateInstancesInput, _ ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error) {
