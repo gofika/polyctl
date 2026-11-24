@@ -577,6 +577,8 @@ What each command asks, and what it needs instead:
 | `aliyun vpc vpc create` without `<name>` | the name (the `naming.aliyun_vpc` one proposed when it is free), checked as typed against the VPCs of the region | `<name>` |
 | `aliyun vpc vswitch create` without `--vpc` / `--zone` / `<name>` | the VPC, from the Available VPCs (the `naming.aliyun_vpc` one preselected); the zone, from the zones that offer instances (zones holding a vSwitch of the VPC marked, the first default zone without one preselected); the name (the `naming.aliyun_vswitch` one of the zone proposed), checked as typed | `--vpc`, `--zone` and `<name>` |
 | `aliyun vpc vswitch ensure` when the default VPC does not exist | the VPC, from the Available VPCs of the region | `--vpc` |
+| `aws ec2 instance get` / `start` / `stop` / `reboot` / `delete` / `resize` without `<name\|id>` | the instance, from the inventory of the selected accounts (restricted to `--region`; `get` / `delete`: every one not terminated, `start`: stopped ones, `stop`: running or pending, `reboot` / `resize`: running or stopped; none is nothing to do); a name several live instances share: which one | `<name\|id>` (exit code 5 for a name several live instances share) |
+| `aws ec2 instance resize` without `--type` | the size, from the T3 sizes (x86_64) offered in the instance's availability zone (its own type left out, 2H4G preselected), or "Other size or exact instance type..." (checked as typed); an arm64 instance: an exact type, typed | `--type` |
 
 A re-authentication (`auth login` for an account the profile already has) reuses what the previous login recorded (username, start URL, account, role, project, region, method), so in the non-interactive flow usually only the secret has to be passed again.
 

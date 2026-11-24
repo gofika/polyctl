@@ -91,7 +91,7 @@ func resolveInstance(ctx context.Context, rt *app.Runtime, ref, region string, a
 			return nil, err
 		}
 		ask(profile, region)
-		return pickInstance(ref, found, failure, allowTerminated)
+		return pickInstance(rt, ref, found, failure, allowTerminated)
 	}
 	accounts, err := awsAccounts(rt)
 	if err != nil {
@@ -116,7 +116,7 @@ func resolveInstance(ctx context.Context, rt *app.Runtime, ref, region string, a
 			}
 		}
 	}
-	return pickInstance(ref, found, failure, allowTerminated)
+	return pickInstance(rt, ref, found, failure, allowTerminated)
 }
 
 // openProfile opens the AWS client of a profile.
@@ -228,8 +228,10 @@ func liveOnly(found []*locatedInstance) []*locatedInstance {
 	return out
 }
 
-// pickInstance chooses among the instances found.
-func pickInstance(ref string, found []*locatedInstance, failure error, allowTerminated bool) (*locatedInstance, error) {
+// pickInstance chooses among the instances found. Several live ones are
+// asked about in the interactive flow and ambiguous (exit code 5)
+// otherwise.
+func pickInstance(rt *app.Runtime, ref string, found []*locatedInstance, failure error, allowTerminated bool) (*locatedInstance, error) {
 	live := liveOnly(found)
 	switch {
 	case len(live) == 1:
@@ -245,7 +247,8 @@ func pickInstance(ref string, found []*locatedInstance, failure error, allowTerm
 		if len(accounts) == 1 {
 			hint = "the account holds several instances with this name; pass the instance id"
 		}
-		return nil, &app.AmbiguousError{What: fmt.Sprintf("instance %q", ref), Candidates: names, Hint: hint}
+		amb := &app.AmbiguousError{What: fmt.Sprintf("instance %q", ref), Candidates: names, Hint: hint}
+		return disambiguate(rt, amb, live, locatedLabel)
 	}
 	if allowTerminated && len(found) > 0 {
 		return found[0], nil
@@ -474,10 +477,18 @@ value of one field (public_ip, private_ip, instance_id, ...) for scripts;
 an empty value is exit code 1.`,
 		Example: `  polyctl aws ec2 instance get web-01
   polyctl aws ec2 instance get web-01 --field public_ip`,
-		Args: cobra.ExactArgs(1),
+		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if field != "" && !slices.Contains(detailFields, field) {
 				return app.UsageErrf("unknown --field %q (one of %s)", field, strings.Join(detailFields, ", "))
+			}
+			keep := notTerminated
+			if includeTerminated {
+				keep = nil
+			}
+			args, err := instanceArg(cmd.Context(), rt, args, region, "AWS instance", keep)
+			if err != nil {
+				return err
 			}
 			l, err := resolveInstance(cmd.Context(), rt, args[0], region, includeTerminated)
 			if err != nil {
@@ -1053,11 +1064,14 @@ the instance is removed, and the RSA key pair polyctl created for it (and
 recorded with that login) is deleted, when the instance still uses it; a
 key pair of yours is never deleted.`,
 		Example: "  polyctl aws ec2 instance delete site-old --yes --wait",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			wait, timeout, err := wf.Resolve(cmd)
 			if err != nil {
+				return err
+			}
+			if args, err = instanceArg(ctx, rt, args, region, "AWS instance", notTerminated); err != nil {
 				return err
 			}
 			l, err := resolveInstance(ctx, rt, args[0], region, true)
@@ -1167,11 +1181,14 @@ state to wait for: --wait applies to the start of a stopped instance only,
 which waits until it runs and prints its new public IP (it changes unless
 the instance has an Elastic IP).`,
 		Example: "  polyctl aws ec2 instance reboot web-01",
-		Args:    cobra.ExactArgs(1),
+		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			wait, timeout, err := wf.Resolve(cmd)
 			if err != nil {
+				return err
+			}
+			if args, err = instanceArg(ctx, rt, args, region, "running or stopped AWS instance", statesIn(stateRunning, stateStopped)); err != nil {
 				return err
 			}
 			l, err := resolveInstance(ctx, rt, args[0], region, false)
@@ -1266,14 +1283,13 @@ A gradual path that works well: c6a.large (2 vCPU, 4 GiB), c6a.xlarge,
 c6a.2xlarge, c6a.4xlarge; burstable t3 types can stall under steady load.`,
 		Example: `  polyctl aws ec2 instance resize web-01 --type c6a.2xlarge --yes
   polyctl aws ec2 instance resize web-01 --type 4H8G --dry-run`,
-		Args: cobra.ExactArgs(1),
+		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			if typ == "" {
+			if typ == "" && !rt.Interactive() {
 				return app.UsageErrf("--type is required")
 			}
-			size, isSize, err := platform.ParseTypeShorthand(typ)
-			if err != nil {
+			if _, _, err := platform.ParseTypeShorthand(typ); err != nil {
 				return err
 			}
 			if timeout <= 0 {
@@ -1282,7 +1298,25 @@ c6a.2xlarge, c6a.4xlarge; burstable t3 types can stall under steady load.`,
 			if waitPort < 0 || waitPort > 65535 {
 				return app.UsageErrf("--wait-port must be a TCP port (1-65535), got %d", waitPort)
 			}
+			args, err := instanceArg(ctx, rt, args, region, "running or stopped AWS instance", statesIn(stateRunning, stateStopped))
+			if err != nil {
+				return err
+			}
 			l, err := resolveInstance(ctx, rt, args[0], region, false)
+			if err != nil {
+				return err
+			}
+			if typ == "" {
+				az := ""
+				if l.inst.Placement != nil {
+					az = awssdk.ToString(l.inst.Placement.AvailabilityZone)
+				}
+				x86 := l.inst.Architecture == "" || l.inst.Architecture == ec2types.ArchitectureValuesX8664
+				if typ, err = pickInstanceType(ctx, rt, l.c, l.region, az, string(l.inst.InstanceType), x86); err != nil {
+					return err
+				}
+			}
+			size, isSize, err := platform.ParseTypeShorthand(typ)
 			if err != nil {
 				return err
 			}

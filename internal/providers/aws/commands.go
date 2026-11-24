@@ -837,11 +837,18 @@ shutdown of the operating system.`
 		Use:   action + " <name|id>",
 		Short: title + " an EC2 instance",
 		Long:  long,
-		Args:  cobra.ExactArgs(1),
+		Args:  app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			wait, timeout, err := wf.Resolve(cmd)
 			if err != nil {
+				return err
+			}
+			what, keep := "stopped AWS instance", statesIn(stateStopped)
+			if action == "stop" {
+				what, keep = "running AWS instance", statesIn(stateRunning, statePending)
+			}
+			if args, err = instanceArg(ctx, rt, args, region, what, keep); err != nil {
 				return err
 			}
 			// The non-interactive flow without --yes is refused before any
