@@ -34,7 +34,8 @@ func windowsInstance(in Instance) bool {
 // and what they come from. An instance created to log in as ecs-user
 // disables root logins: ecs-user only. Otherwise root, then ecs-user: a
 // false LoginAsNonRoot is also what a response without ImageOptions
-// decodes to.
+// decodes to, so the note does not claim the instance was created for
+// root.
 func ecsLoginUsers(in *Instance) (users []string, from string) {
 	label := nameOr(in.Name, in.ID)
 	if in.Name != "" && in.Name != in.ID {
@@ -43,7 +44,7 @@ func ecsLoginUsers(in *Instance) (users []string, from string) {
 	if in.LoginAsNonRoot {
 		return []string{nonRootUser}, "instance " + label + ", created to log in as " + nonRootUser
 	}
-	return []string{rootUser, nonRootUser}, "instance " + label + ", created to log in as " + rootUser
+	return []string{rootUser, nonRootUser}, "instance " + label + ", not created to log in as " + nonRootUser
 }
 
 func ecsSSHKeyCmd(rt *app.Runtime) *cobra.Command {

@@ -184,13 +184,13 @@ func TestECSSSHKeyLoginUsers(t *testing.T) {
 		t.Errorf("ecs-user %q, root %q", r.file("ecs-user"), r.file("root"))
 	}
 
-	// Created for root, but only ecs-user takes the key: root fails, then
+	// Not created for ecs-user, but only ecs-user takes the key: root fails, then
 	// ecs-user logs in, and a note names it.
 	r2 := newECSKeyRig(t, []string{"root", "ecs-user"}, "ecs-user")
 	if err := r2.run("list", "web-1"); err != nil {
 		t.Fatalf("%v\n%s", err, r2.h.stderr.String())
 	}
-	if errOut := r2.h.stderr.String(); !strings.Contains(errOut, "as ecs-user") || !strings.Contains(errOut, "created to log in as root") {
+	if errOut := r2.h.stderr.String(); !strings.Contains(errOut, "as ecs-user") || !strings.Contains(errOut, "not created to log in as ecs-user") {
 		t.Errorf("stderr:\n%s", errOut)
 	}
 
