@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -392,3 +393,25 @@ func TestCshLoginShell(t *testing.T) {
 	}
 }
 
+// A listing whose content is shorter than the size the script printed was
+// cut short on the way (a platform keeps only the first kilobytes of a
+// command's output): it is refused, except for a lost final newline.
+func TestParseListRefusesTruncatedOutput(t *testing.T) {
+	k := newKey(t)
+	content := line(k.pub, "a") + "\n" + line(newKey(t).pub, "b") + "\n"
+	out := func(body string, size int) []byte {
+		return []byte(header + "\nuser u\npath /h/.ssh/authorized_keys\nsum 1-2\nsize " + itoa(size) + "\n---\n" + body)
+	}
+	ak, err := parseList("u", out(content, len(content)))
+	if err != nil || len(ak.Entries) != 2 {
+		t.Fatalf("whole file: %v %+v", err, ak)
+	}
+	if _, err := parseList("u", out(strings.TrimSuffix(content, "\n"), len(content))); err != nil {
+		t.Errorf("lost final newline: %v", err)
+	}
+	if _, err := parseList("u", out(content[:len(content)/2], len(content))); !errors.Is(err, platform.ErrNotSupported) || !strings.Contains(err.Error(), "incomplete") {
+		t.Errorf("truncated: %v", err)
+	}
+}
+
+func itoa(n int) string { return strconv.Itoa(n) }

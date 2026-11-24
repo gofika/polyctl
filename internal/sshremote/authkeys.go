@@ -74,6 +74,7 @@ list)
 	[ -n "$akf" ] && echo "authorizedkeysfile $akf"
 	[ -L "$f" ] && echo "symlink"
 	echo "sum $(sum)"
+	[ -f "$f" ] && echo "size $(wc -c < "$f" | awk '{ print $1 }')"
 	echo "---"
 	if [ -f "$f" ]; then cat "$f" || die 6 "cannot read $f"; fi
 	exit 0
@@ -324,6 +325,7 @@ func listKeys(ctx context.Context, r keyRunner, user string) (*AuthorizedKeys, e
 func parseList(user string, out []byte) (*AuthorizedKeys, error) {
 	ak := &AuthorizedKeys{User: user}
 	rest := string(out[len(header)+1:])
+	size := -1
 	for {
 		line, tail, ok := strings.Cut(rest, "\n")
 		if !ok {
@@ -343,13 +345,33 @@ func parseList(user string, out []byte) (*AuthorizedKeys, error) {
 			ak.Symlink = true
 		case "authorizedkeysfile":
 			ak.AuthorizedKeysFile = v
+		case "size":
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 0 {
+				return nil, fmt.Errorf("the key script printed a malformed size %q", v)
+			}
+			size = n
 		}
 	}
 	if ak.Sum == "" {
 		return nil, errors.New("the key script printed no checksum")
 	}
+	if size >= 0 && !completeOutput(rest, size) {
+		// Output cut short (a platform that runs commands keeps only
+		// the first kilobytes) would hide keys: refuse it rather than
+		// add a key twice or miss one to remove.
+		return nil, fmt.Errorf("%w: the listing of %s is incomplete (%d of %d bytes came back); the file is too large to be read this way", platform.ErrNotSupported, ak.Path, len(rest), size)
+	}
 	ak.Entries = parseEntries(rest)
 	return ak, nil
+}
+
+// completeOutput reports whether content is the whole file of size bytes.
+// A final newline or two lost on the way (some platforms trim the output
+// of a command) is tolerated; anything else missing is not.
+func completeOutput(content string, size int) bool {
+	n := len(content)
+	return n == size || n < size && size-n <= 2 && !strings.HasSuffix(content, "\n")
 }
 
 // parseEntries parses the lines of an authorized_keys file; lines that hold
