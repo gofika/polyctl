@@ -77,8 +77,20 @@ func x86Class(class string) bool {
 	return i < 0 || !strings.Contains(fam[i:], "g")
 }
 
+// previousGenFamilies are the RDS class families of earlier generations,
+// which AWS lists as previous generation and is retiring: never offered.
+var previousGenFamilies = []string{"t1", "t2", "m1", "m2", "m3", "m4", "r3", "r4"}
+
+// currentGenClass reports whether an RDS class is of a current
+// generation (not db.t2, db.m4, db.r4, ...).
+func currentGenClass(class string) bool {
+	fam, _, _ := strings.Cut(strings.TrimPrefix(class, "db."), ".")
+	return !slices.Contains(previousGenFamilies, fam)
+}
+
 // orderableClasses lists the classes engine (version, when given) offers
-// with storageType in az (in any zone when az is ""), x86 only, sorted.
+// with storageType in az (in any zone when az is ""), x86 and current
+// generation only, sorted.
 func (c *client) orderableClasses(ctx context.Context, region, engine, version, storageType, az string) ([]string, error) {
 	in := &rds.DescribeOrderableDBInstanceOptionsInput{Engine: awssdk.String(engine)}
 	if version != "" {
@@ -93,7 +105,7 @@ func (c *client) orderableClasses(ctx context.Context, region, engine, version, 
 		}
 		for _, o := range page.OrderableDBInstanceOptions {
 			class := awssdk.ToString(o.DBInstanceClass)
-			if class == "" || !x86Class(class) || (storageType != "" && awssdk.ToString(o.StorageType) != storageType) || slices.Contains(out, class) {
+			if class == "" || !x86Class(class) || !currentGenClass(class) || (storageType != "" && awssdk.ToString(o.StorageType) != storageType) || slices.Contains(out, class) {
 				continue
 			}
 			ok := az == ""
@@ -133,8 +145,9 @@ func (c *client) classZones(ctx context.Context, region, engine, class, storageT
 }
 
 // pickDBClass asks for the new class of resize in the interactive flow:
-// the x86 classes the instance's engine and version offer with its storage
-// type in its zone (Graviton classes never listed), its current class left
+// the x86 classes of a current generation the instance's engine and
+// version offer with its storage type in its zone (Graviton and previous
+// generation classes never listed), its current class left
 // out. None is a usage error naming --class.
 func pickDBClass(ctx context.Context, rt *app.Runtime, l *locatedDB) (string, error) {
 	if !rt.Interactive() {
@@ -152,7 +165,7 @@ func pickDBClass(ctx context.Context, rt *app.Runtime, l *locatedDB) (string, er
 		}
 	}
 	return rt.Choose(app.Choice{Title: fmt.Sprintf("New class of %s (now %s)", l.id(), l.class()), Options: opts, Arg: "--class", Required: true,
-		What: "other x86 class offered for " + l.id()})
+		What: "other current x86 class offered for " + l.id()})
 }
 
 // askDBCreate asks what rds instance create misses in the interactive

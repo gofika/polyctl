@@ -42,6 +42,7 @@ func TestRDSPicks(t *testing.T) {
 		orderable("db.t3.micro", "gp3", "ap-east-1a"), orderable("db.m5.large", "gp3", "ap-east-1a"),
 		orderable("db.t4g.medium", "gp3", "ap-east-1a"), orderable("db.m6gd.large", "gp3", "ap-east-1a"),
 		orderable("db.r5.large", "gp3", "ap-east-1b"), orderable("db.m6i.large", "gp2", "ap-east-1a"),
+		orderable("db.t2.medium", "gp3", "ap-east-1a"), orderable("db.m4.large", "gp3", "ap-east-1a"),
 	}
 	h.ec2.mu.Unlock()
 
@@ -75,6 +76,15 @@ func TestRDSPicks(t *testing.T) {
 	h.rt.Flags.NonInteractive = true
 	if err := h.run("rds", "instance", "resize", "db-a"); !errors.Is(err, app.ErrUsage) {
 		t.Errorf("non-interactive = %v", err)
+	}
+}
+
+func TestCurrentGenClass(t *testing.T) {
+	for class, want := range map[string]bool{"db.t3.micro": true, "db.m5.large": true, "db.r6i.large": true, "db.x2iedn.xlarge": true,
+		"db.t2.micro": false, "db.m4.large": false, "db.r4.large": false, "db.m3.medium": false} {
+		if got := currentGenClass(class); got != want {
+			t.Errorf("currentGenClass(%s) = %v", class, got)
+		}
 	}
 }
 
