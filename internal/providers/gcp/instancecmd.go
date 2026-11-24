@@ -670,7 +670,17 @@ enables a password. Without any key of its own, a Linux instance (any
 image but --os windows, an image of the windows-cloud project or one
 with the WINDOWS guest OS feature) is created only when the project
 metadata holds SSH keys (not blocked) or enables OS Login; otherwise
-create is exit code 2 before anything is written.
+create is exit code 2 before anything is written (on a terminal, a public
+key from ~/.ssh/*.pub, or another file, is offered for the instance's own
+ssh-keys metadata instead).
+
+On a terminal, what is missing is asked: the zone (UP, not deprecated),
+the machine type of the zone (x86_64, current families, not deprecated,
+the E2 presets first, e2-medium preselected; or a size), the network when
+the project has none named default, the subnetwork when the network has
+several in the region, and the name, checked as it is typed against the
+name rules and the instances of the zone. A configured default is used
+without asking.
 
 A Windows instance (--os windows, an image of the windows-cloud project
 or one with the WINDOWS guest OS feature) logs in with a user name and a
@@ -702,9 +712,9 @@ by the next attempt.`,
     --disk 100 --os ubuntu --ssh-key-file ~/.ssh/id_ed25519.pub --tag http-server --dry-run
   polyctl gcp compute instance create tmp-1 --machine-type e2-medium --zone us-central1-a --os debian --os-version 12 --static-ip=false
   polyctl gcp compute instance create win-1 --machine-type e2-standard-4 --zone us-central1-a --os windows`,
-		Args: cobra.ExactArgs(1),
+		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runCreate(cmd, rt, o, strings.TrimSpace(args[0]))
+			return runCreate(cmd, rt, o, strings.TrimSpace(app.Arg(args, 0)))
 		},
 	}
 	f := cmd.Flags()
@@ -776,8 +786,10 @@ func checkProjectLogin(rt *app.Runtime, read func() (*compute.Metadata, error)) 
 
 func runCreate(cmd *cobra.Command, rt *app.Runtime, o *createOptions, name string) error {
 	ctx := cmd.Context()
-	if err := checkInstanceName(name); err != nil {
-		return err
+	if name != "" || !rt.Interactive() {
+		if err := checkInstanceName(name); err != nil {
+			return err
+		}
 	}
 	wait, timeout, err := o.wf.Resolve(cmd)
 	if err != nil {
@@ -839,21 +851,24 @@ func runCreate(cmd *cobra.Command, rt *app.Runtime, o *createOptions, name strin
 	if err != nil {
 		return err
 	}
-	if o.machineType, err = rt.RequireSetting(profile, platform.GCP, "machine_type", "machine-type", o.machineType); err != nil {
+	// The interactive flow picks a machine type and a zone that neither
+	// the flags nor defaults.gcp name, once the client is open.
+	if o.machineType, err = rt.Setting(profile, platform.GCP, "machine_type", o.machineType); err != nil {
 		return err
 	}
-	size, isSize, err := platform.ParseTypeShorthand(o.machineType)
-	if err != nil {
+	if o.zone, err = rt.Setting(profile, platform.GCP, "zone", o.zone); err != nil {
 		return err
 	}
-	if o.zone, err = rt.RequireSetting(profile, platform.GCP, "zone", "zone", o.zone); err != nil {
-		return err
+	if !rt.Interactive() {
+		if o.machineType, err = rt.RequireSetting(profile, platform.GCP, "machine_type", "machine-type", o.machineType); err != nil {
+			return err
+		}
+		if o.zone, err = rt.RequireSetting(profile, platform.GCP, "zone", "zone", o.zone); err != nil {
+			return err
+		}
 	}
 	if o.network, err = rt.Setting(profile, platform.GCP, "network", o.network); err != nil {
 		return err
-	}
-	if o.network == "" {
-		o.network = "default"
 	}
 	if o.subnet, err = rt.Setting(profile, platform.GCP, "subnet", o.subnet); err != nil {
 		return err
@@ -878,30 +893,69 @@ func runCreate(cmd *cobra.Command, rt *app.Runtime, o *createOptions, name strin
 	if err != nil {
 		return err
 	}
-	extName, err := rt.ResourceName("gcp_instance_external_ip", "", map[string]string{"name": name, "zone": o.zone, "region": regionOf(o.zone)})
-	if err != nil {
-		return err
-	}
-	intName, err := rt.ResourceName("gcp_instance_internal_ip", "", map[string]string{"name": name, "zone": o.zone, "region": regionOf(o.zone)})
-	if err != nil {
-		return err
-	}
 
 	c, err := openProfile(ctx, rt, profile)
 	if err != nil {
 		return err
+	}
+	if o.zone == "" {
+		if o.zone, err = pickZone(ctx, rt, c, profile); err != nil {
+			return err
+		}
+	}
+	if o.machineType == "" {
+		if o.machineType, err = pickMachineType(ctx, rt, c, o.zone, "", defaultPickMachineType, true); err != nil {
+			return err
+		}
+	}
+	size, isSize, err := platform.ParseTypeShorthand(o.machineType)
+	if err != nil {
+		return err
+	}
+	if o.network == "" {
+		if o.network, err = builtinNetwork(ctx, rt, c); err != nil {
+			return err
+		}
 	}
 	zone, region := o.zone, regionOf(o.zone)
 	target := platform.Target{Platform: platform.GCP, Profile: profile, Zone: zone}
 	warn := func(s string) { rt.Infof("%s", s) }
 
 	// Observe (read-only, in a dry run too).
+	if name == "" {
+		// A new name cannot be listed: it is asked, and checked as it is
+		// typed against the rules and the instances of the zone.
+		if name, err = rt.AskInput("<name>", "Name of the new instance (in "+zone+")", "", func(s string) error {
+			s = strings.TrimSpace(s)
+			if err := checkInstanceName(s); err != nil {
+				return err
+			}
+			in, err := c.findInstance(ctx, zone, s)
+			if err != nil {
+				return err
+			}
+			if in != nil {
+				return fmt.Errorf("instance %s already exists in zone %s (%s)", s, zone, in.Status)
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
 	existing, err := c.findInstance(ctx, zone, name)
 	if err != nil {
 		return err
 	}
 	if existing != nil {
 		return fmt.Errorf("instance %s already exists in zone %s of project %s (%s): use `polyctl gcp compute instance get %s`, or choose another name", name, zone, c.project, existing.Status, name)
+	}
+	extName, err := rt.ResourceName("gcp_instance_external_ip", "", map[string]string{"name": name, "zone": zone, "region": region})
+	if err != nil {
+		return err
+	}
+	intName, err := rt.ResourceName("gcp_instance_internal_ip", "", map[string]string{"name": name, "zone": zone, "region": region})
+	if err != nil {
+		return err
 	}
 	o.size = nil
 	// A size resolves to an E2 type, which is x86_64; a machine type has
@@ -957,7 +1011,20 @@ func runCreate(cmd *cobra.Command, rt *app.Runtime, o *createOptions, name strin
 	}
 	if len(keys) == 0 && !windows {
 		if err := checkProjectLogin(rt, readProjectMD); err != nil {
-			return err
+			if !rt.Interactive() || !errors.Is(err, app.ErrUsage) {
+				return err
+			}
+			// The interactive flow offers a local public key for the
+			// instance's own ssh-keys metadata instead.
+			md, _ := readProjectMD()
+			picked, perr := pickSSHKey(rt, o.sshUser, md)
+			if errors.Is(perr, errNoLocalKey) {
+				return err
+			}
+			if perr != nil {
+				return perr
+			}
+			keys = picked
 		}
 	}
 	bootGB := img.MinDiskGB
@@ -967,7 +1034,7 @@ func runCreate(cmd *cobra.Command, rt *app.Runtime, o *createOptions, name strin
 		}
 		bootGB = o.bootDiskSize
 	}
-	subnet, err := resolveSubnet(ctx, c, region, o.network, o.subnet)
+	subnet, err := resolveSubnet(ctx, rt, c, region, o.network, o.subnet)
 	if err != nil {
 		return err
 	}
@@ -1106,10 +1173,11 @@ func runCreate(cmd *cobra.Command, rt *app.Runtime, o *createOptions, name strin
 
 // resolveSubnet decides the subnetwork of the NIC: the one given (which
 // must exist and belong to network), else the only subnetwork of network
-// in the region. Several are a usage error. None is "" for an auto-mode
+// in the region. Several are a pick in the interactive flow and a usage
+// error otherwise. None is "" for an auto-mode
 // (or legacy) network, where Compute Engine picks the region's one, and a
 // failure for a custom-mode network.
-func resolveSubnet(ctx context.Context, c *client, region, network, subnet string) (string, error) {
+func resolveSubnet(ctx context.Context, rt *app.Runtime, c *client, region, network, subnet string) (string, error) {
 	if subnet != "" {
 		s, err := c.subnetwork(ctx, region, subnet)
 		if err != nil {
@@ -1129,6 +1197,9 @@ func resolveSubnet(ctx context.Context, c *client, region, network, subnet strin
 		return subs[0].Name, nil
 	case 0:
 	default:
+		if rt.Interactive() {
+			return pickSubnet(rt, network, region, subs)
+		}
 		var names []string
 		for _, s := range subs {
 			names = append(names, s.Name)

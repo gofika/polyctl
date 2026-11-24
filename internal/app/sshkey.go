@@ -91,7 +91,7 @@ func (p keyPrompter) ChooseKeyPairOrCreate(pairs []platform.KeyPair, local map[s
 			label += "  " + fp
 		}
 		if f, ok := local[kp.Name]; ok {
-			label += "  [matches " + homeRelative(f) + "]"
+			label += "  [matches " + HomeRelative(f) + "]"
 			if def == "" {
 				def = kp.Name
 			}
@@ -115,7 +115,7 @@ func (p keyPrompter) KeyFile(candidates []platform.KeyFileCandidate) (string, er
 		opts := make([]prompt.Option, 0, len(candidates)+1)
 		def := ""
 		for _, c := range candidates {
-			label := homeRelative(c.Path) + "  " + c.Key.Summary()
+			label := HomeRelative(c.Path) + "  " + c.Key.Summary()
 			if len(c.Registered) > 0 {
 				label += "  [already key pair " + strings.Join(c.Registered, ", ") + "]"
 			} else if def == "" || filepath.Base(c.Path) == "id_ed25519.pub" {
@@ -153,8 +153,9 @@ func (p keyPrompter) ChooseKeyPair(names []string) (string, error) {
 	return p.rt.Pick().Select("The key is registered under several key pairs; use which one?", opts, "")
 }
 
-// homeRelative shows a path under the home directory as ~/...
-func homeRelative(path string) string {
+// HomeRelative shows a path under the home directory as ~/... (a label of
+// the interactive flow).
+func HomeRelative(path string) string {
 	if home, err := os.UserHomeDir(); err == nil {
 		if rel, err := filepath.Rel(home, path); err == nil && !strings.HasPrefix(rel, "..") {
 			return filepath.ToSlash(filepath.Join("~", rel))

@@ -2,7 +2,9 @@ package gcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -211,4 +213,151 @@ func pickMachineType(ctx context.Context, rt *app.Runtime, c *client, zone, curr
 		}
 		return nil
 	})
+}
+
+// pickZone asks for the --zone of create in the interactive flow: the
+// zones of the project that are UP and not deprecated, labelled with their
+// region, the zone most of the profile's known instances use preselected
+// (else none). The non-interactive flow returns the usage error of a
+// missing zone.
+func pickZone(ctx context.Context, rt *app.Runtime, c *client, profile string) (string, error) {
+	if !rt.Interactive() {
+		return "", app.UsageErrf("zone is required: pass --zone, or set defaults.gcp.zone")
+	}
+	zones, err := c.listZonesUp(ctx)
+	if err != nil {
+		return "", err
+	}
+	used := map[string]int{}
+	if db, err := rt.DB(); err == nil {
+		rows, _ := db.List(ctx, inventory.Query{Platform: platform.GCP, Profile: profile, Type: platform.ResInstance})
+		for _, r := range rows {
+			used[r.ParentID]++
+		}
+	}
+	var opts []prompt.Option
+	def, best := "", 0
+	for _, z := range zones {
+		opts = append(opts, prompt.Option{Label: joinLabel(z.Name, "("+lastSegment(z.Region)+")"), Value: z.Name})
+		if used[z.Name] > best {
+			def, best = z.Name, used[z.Name]
+		}
+	}
+	return rt.Choose(app.Choice{Title: "Zone", Options: opts, Default: def, Arg: "--zone", Required: true, What: "zone that is UP"})
+}
+
+// networkLabel: "default  auto  42 subnets".
+func networkLabel(n *compute.Network) string {
+	return joinLabel(n.Name, networkMode(n), fmt.Sprintf("%d subnets", len(n.Subnetworks)))
+}
+
+// builtinNetwork returns the network a command uses when neither the flag
+// nor defaults.gcp.network names one: "default" when the project has it;
+// otherwise, in the interactive flow, a network picked from the project's
+// VPC networks, and "default" in the non-interactive flow (which then
+// fails where the network is read).
+func builtinNetwork(ctx context.Context, rt *app.Runtime, c *client) (string, error) {
+	if !rt.Interactive() {
+		return "default", nil
+	}
+	nets, err := c.listNetworks(ctx)
+	if err != nil {
+		return "", err
+	}
+	var opts []prompt.Option
+	for _, n := range nets {
+		if n.Name == "default" {
+			return "default", nil
+		}
+		opts = append(opts, prompt.Option{Label: networkLabel(n), Value: n.Name})
+	}
+	def := ""
+	if len(opts) == 1 {
+		def = opts[0].Value
+	}
+	return rt.Choose(app.Choice{Title: "VPC network (the project has no network named default)", Options: opts, Default: def,
+		Arg: "--network", Required: true, What: "VPC network"})
+}
+
+// pickSubnet asks, in the interactive flow, which of several subnetworks
+// of a network in a region create uses: the ordinary ones (no proxy-only
+// or other special purpose), labelled with their range.
+func pickSubnet(rt *app.Runtime, network, region string, subs []*compute.Subnetwork) (string, error) {
+	var opts []prompt.Option
+	for _, s := range subs {
+		if s.Purpose != "" && !strings.EqualFold(s.Purpose, "PRIVATE") {
+			continue
+		}
+		opts = append(opts, prompt.Option{Label: joinLabel(s.Name, s.IpCidrRange, region), Value: s.Name})
+	}
+	sort.Slice(opts, func(i, j int) bool { return opts[i].Value < opts[j].Value })
+	if len(opts) == 1 {
+		return opts[0].Value, nil
+	}
+	return rt.Choose(app.Choice{Title: "Subnetwork of " + network + " in " + region, Options: opts, Arg: "--subnet", Required: true, What: "subnetwork"})
+}
+
+// errNoLocalKey says there is no ~/.ssh/*.pub to offer and nothing was
+// typed: the caller keeps its own usage error.
+var errNoLocalKey = errors.New("no local public key")
+
+// pickSSHKey asks, in the interactive flow, for a public key to put into
+// the ssh-keys metadata of a new Linux instance when the project offers
+// no SSH login: the usable ~/.ssh/*.pub files (type, fingerprint,
+// comment; those already in the project metadata marked), or "Another
+// file..." for a path checked as it is typed. A key whose user cannot be
+// told (no user: prefix, no e-mail comment, no --ssh-user) asks for the
+// user. No local key file returns errNoLocalKey.
+func pickSSHKey(rt *app.Runtime, sshUser string, md *compute.Metadata) ([]sshKey, error) {
+	present := metadataKeys(md)
+	var opts []prompt.Option
+	def := ""
+	for _, path := range platform.PublicKeyFiles() {
+		pk, err := platform.LoadPublicKeyFile(path)
+		if err != nil || pk.CheckType(platform.AnyKeyTypes) != nil {
+			continue
+		}
+		label := joinLabel(app.HomeRelative(path), pk.Summary())
+		for _, m := range present {
+			if string(m.Key.Marshal()) == string(pk.Key.Marshal()) {
+				label += "  [in project metadata]"
+				break
+			}
+		}
+		if def == "" || filepath.Base(path) == "id_ed25519.pub" {
+			def = path
+		}
+		opts = append(opts, prompt.Option{Label: label, Value: path})
+	}
+	if len(opts) == 0 {
+		return nil, errNoLocalKey
+	}
+	opts = append(opts, prompt.Option{Label: "Another file...", Value: otherValue})
+	pick := rt.Pick()
+	path, err := pick.Select("SSH public key for the instance (the project metadata offers no SSH login)", opts, def)
+	if err != nil {
+		return nil, err
+	}
+	if path == otherValue {
+		if path, err = pick.Input("Path of the public key file (.pub)", "", func(s string) error {
+			if strings.TrimSpace(s) == "" {
+				return errors.New("a path is required")
+			}
+			_, err := platform.LoadPublicKeyFile(s)
+			return err
+		}); err != nil {
+			return nil, err
+		}
+	}
+	keys, err := loadSSHKeyFile(path, sshUser)
+	if err == nil || sshUser != "" || !strings.Contains(err.Error(), "cannot tell the user") {
+		return keys, err
+	}
+	user, err := pick.Input("User of the key on the instance (--ssh-user)", "", func(s string) error {
+		return checkSSHUser(strings.TrimSpace(s), "--ssh-user")
+	})
+	if err != nil {
+		return nil, err
+	}
+	return loadSSHKeyFile(path, strings.TrimSpace(user))
 }
