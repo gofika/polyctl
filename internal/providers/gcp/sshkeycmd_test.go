@@ -13,6 +13,7 @@ import (
 	"google.golang.org/api/compute/v1"
 
 	"github.com/gofika/polyctl/internal/app"
+	"github.com/gofika/polyctl/internal/prompt/prompttest"
 )
 
 // keyFP is the SHA256 fingerprint of a public key line.
@@ -406,5 +407,23 @@ func TestGoogleSSHExpired(t *testing.T) {
 		if got := googleSSHExpired(c, now); got != want {
 			t.Errorf("%s = %v", c, got)
 		}
+	}
+}
+
+// On a terminal, ssh-key list without <name|id> offers the Linux instances
+// only (a stopped one too: the metadata needs no running instance).
+func TestSSHKeyPickGCP(t *testing.T) {
+	h, _ := interactiveGCP(t, nil)
+	keyInstance(t, h)
+	off := h.gce.addInstance("proj", "us-central1-b", "web-off", "10.128.0.6", "")
+	off.Status = statusTerminated
+	addWindows(h, "win-1")
+	p := h.answer(prompttest.Label("web-1"))
+	if err := h.run("compute", "instance", "ssh-key", "list"); err != nil {
+		t.Fatalf("%v\n%s", err, h.stderr.String())
+	}
+	p.Done()
+	if l := prompttest.Labels(p.Find("Instance").Options); strings.Contains(l, "win-1") || !strings.Contains(l, "web-1") || !strings.Contains(l, "web-off") {
+		t.Errorf("offered:\n%s", l)
 	}
 }

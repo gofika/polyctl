@@ -52,7 +52,7 @@ user@host that ends the key's comment; on a terminal it is asked.`,
 		},
 		Resolve: func(ctx context.Context, arg string) (*app.SSHKeyInstance, error) {
 			if arg == "" {
-				ref, err := pickInstanceRef(ctx, rt, "<name|id>", zone, "GCP instance", false, nil)
+				ref, err := pickInstanceRef(ctx, rt, "<name|id>", zone, "Linux instance", false, func(in Instance) bool { return !in.Windows })
 				if err != nil {
 					return nil, err
 				}

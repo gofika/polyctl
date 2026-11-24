@@ -26,6 +26,9 @@ type Instance struct {
 	// Interfaces are every network interface with all its addresses
 	// (polyctl find).
 	Interfaces []NetIface `json:"interfaces,omitempty" yaml:"interfaces,omitempty"`
+	// Windows marks an instance whose boot disk runs Windows (a Windows
+	// license or guest OS feature).
+	Windows bool `json:"windows,omitempty" yaml:"windows,omitempty"`
 }
 
 // lastSegment returns the final path element of a resource URL
@@ -47,6 +50,7 @@ func instanceFromAPI(in *compute.Instance) Instance {
 		Status:            in.Status,
 		CreationTimestamp: in.CreationTimestamp,
 		Labels:            in.Labels,
+		Windows:           instanceWindows(in),
 	}
 	if in.Tags != nil {
 		out.Tags = in.Tags.Items
