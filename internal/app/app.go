@@ -121,16 +121,23 @@ func New(flags Flags, stdin io.Reader, stdout, stderr io.Writer) *Runtime {
 }
 
 // Init validates flags and loads config. Call once before running a command.
+// A bad flag, setting or config file is a usage error (exit code 2); a
+// config directory or file that cannot be created or read is returned as
+// it is, an I/O failure (exit code 1).
 func (rt *Runtime) Init() error {
 	if rt.Flags.Refresh && rt.Flags.Offline {
-		return errors.New("--refresh and --offline are mutually exclusive")
+		return UsageErrf("--refresh and --offline are mutually exclusive")
 	}
 	if !rt.SkipNonInteractiveEnvCheck {
 		if err := CheckNonInteractiveEnv(); err != nil {
-			return err
+			return UsageErrf("%v", err)
 		}
 	}
 	if _, err := rt.Config(); err != nil {
+		var invalid *config.InvalidError
+		if errors.As(err, &invalid) {
+			return UsageErrf("%v", err)
+		}
 		return err
 	}
 	// Like every setting: flag, then environment, then config file, then
@@ -144,7 +151,7 @@ func (rt *Runtime) Init() error {
 	}
 	format, err := output.ParseFormat(f)
 	if err != nil {
-		return err
+		return UsageErrf("%v", err)
 	}
 	rt.format = format
 	return nil

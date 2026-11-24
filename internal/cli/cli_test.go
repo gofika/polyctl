@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -758,5 +759,47 @@ func TestAuthLoginSecretOptionFromStdin(t *testing.T) {
 	code = Main([]string{"--config-dir", filepath.Dir(cfgPath), "auth", "login", string(fakePlatform), "--set", "token=plain"}, strings.NewReader(""), &out, &errb)
 	if code != ExitOK || !strings.Contains(errb.String(), "process listings") {
 		t.Errorf("exit %d, stderr %q: --set token=... must warn", code, errb.String())
+	}
+}
+
+// A config directory or file that cannot be created or read is an I/O
+// failure (exit code 1), not a usage error; a config file that does not
+// parse is one (exit code 2).
+func TestConfigIOErrorsAreNotUsageErrors(t *testing.T) {
+	setup(t, false)
+	base := t.TempDir()
+	// config.yaml is a directory: it exists but cannot be read.
+	unreadable := filepath.Join(base, "unreadable")
+	if err := os.MkdirAll(filepath.Join(unreadable, config.FileName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The parent of --config-dir is a file: the directory cannot be made.
+	file := filepath.Join(base, "file")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	broken := filepath.Join(base, "broken")
+	if err := os.MkdirAll(broken, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(broken, config.FileName), []byte("output: ["), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		dir  string
+		want int
+	}{
+		{unreadable, ExitError},
+		{filepath.Join(file, "sub"), ExitError},
+		{broken, ExitUsage},
+	} {
+		var out, errb bytes.Buffer
+		code := Main([]string{"--config-dir", c.dir, "auth", "list"}, strings.NewReader(""), &out, &errb)
+		if code != c.want {
+			t.Errorf("--config-dir %s: exit %d, want %d (stderr %q)", c.dir, code, c.want, errb.String())
+		}
+		if c.want == ExitError && strings.Contains(errb.String(), "usage error") {
+			t.Errorf("--config-dir %s: stderr %q calls an I/O failure a usage error", c.dir, errb.String())
+		}
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/gofika/polyctl/internal/app"
+	"github.com/gofika/polyctl/internal/config"
 	"github.com/gofika/polyctl/internal/httpx"
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/platform"
@@ -40,6 +41,7 @@ var Version = "dev"
 func ExitCodeFor(err error) int {
 	var amb *app.AmbiguousError
 	var partial *platform.PartialError
+	var invalidCfg *config.InvalidError
 	switch {
 	case err == nil, errors.Is(err, errNothingToDo):
 		return ExitOK
@@ -58,7 +60,7 @@ func ExitCodeFor(err error) int {
 		return ExitOffline
 	case errors.Is(err, platform.ErrNotSupported):
 		return ExitNotSupported
-	case errors.Is(err, app.ErrUsage), errors.Is(err, prompt.ErrNotInteractive), errors.Is(err, platform.ErrInvalidInput):
+	case errors.Is(err, app.ErrUsage), errors.Is(err, prompt.ErrNotInteractive), errors.Is(err, platform.ErrInvalidInput), errors.As(err, &invalidCfg):
 		// The second one is the safety net of the non-interactive flow: a
 		// question that could not be asked is a value the caller left out.
 		return ExitUsage
@@ -318,10 +320,9 @@ POLYCTL_NON_INTERACTIVE is set.`,
 			}
 			rt.SkipNonInteractiveEnvCheck = asksNothing(cmd)
 			rt.NoPrompt = asksNothing(cmd)
-			if err := rt.Init(); err != nil {
-				return usageErr("%v", err)
-			}
-			return nil
+			// Init tells a bad setting (a usage error) from a config
+			// directory or file it cannot create or read (exit code 1).
+			return rt.Init()
 		},
 		// A runnable root lets cobra validate its arguments, so a stray
 		// first argument is reported through Args (a usage error) instead

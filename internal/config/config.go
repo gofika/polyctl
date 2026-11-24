@@ -294,7 +294,7 @@ func Load(path string) (*Config, error) {
 	}
 	c.read = stateOf(b)
 	if err := yaml.Unmarshal(b, c); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
+		return nil, &InvalidError{fmt.Errorf("parse %s: %w", path, err)}
 	}
 	if c.Profiles == nil {
 		c.Profiles = map[string]*Profile{}
@@ -310,10 +310,18 @@ func Load(path string) (*Config, error) {
 		}
 	}
 	if err := c.validate(); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, &InvalidError{fmt.Errorf("%s: %w", path, err)}
 	}
 	return c, nil
 }
+
+// InvalidError is a config file whose content cannot be used: it does not
+// parse or holds an invalid value. A file that cannot be read is not one;
+// Load returns that I/O error as it is.
+type InvalidError struct{ Err error }
+
+func (e *InvalidError) Error() string { return e.Err.Error() }
+func (e *InvalidError) Unwrap() error { return e.Err }
 
 // Path returns where the config is saved.
 func (c *Config) Path() string { return c.path }
