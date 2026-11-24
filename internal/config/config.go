@@ -14,6 +14,7 @@ import (
 	"github.com/gofrs/flock"
 	"gopkg.in/yaml.v3"
 
+	"github.com/gofika/polyctl/internal/fsutil"
 	"github.com/gofika/polyctl/internal/platform"
 )
 
@@ -367,7 +368,7 @@ func (c *Config) Save() error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp.Name(), c.path); err != nil {
+	if err := fsutil.Rename(tmp.Name(), c.path); err != nil {
 		return err
 	}
 	c.read = stateOf(b)

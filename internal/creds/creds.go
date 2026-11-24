@@ -13,6 +13,8 @@ import (
 	"sync"
 
 	"github.com/zalando/go-keyring"
+
+	"github.com/gofika/polyctl/internal/fsutil"
 )
 
 // Service is the keyring service of the default configuration directory.
@@ -195,7 +197,10 @@ func (f *File) load() (map[string]map[string]string, error) {
 
 // save writes the file atomically: a fresh private temporary file (O_EXCL,
 // 0600 from creation, so no permission window, no symlink following and no
-// clash between concurrent writers), fsync, then rename over the target.
+// clash between concurrent writers), fsync, then rename over the target. On
+// Windows the rename is retried for about a second while the target is open
+// elsewhere (another process reading it, an antivirus), so that a rotated
+// token is not lost to a reader that holds the file for a moment.
 func (f *File) save(all map[string]map[string]string) error {
 	dir := filepath.Dir(f.Path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -225,7 +230,7 @@ func (f *File) save(all map[string]map[string]string) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), f.Path)
+	return fsutil.Rename(tmp.Name(), f.Path)
 }
 
 // WithLock runs fn while holding the cross-process lock of the file, so
