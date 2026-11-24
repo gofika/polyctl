@@ -54,7 +54,9 @@ current certificate, whatever its expiry. --force updates every matching
 target. The store's certificate of a root domain is ensured first, once per
 run, as cert ensure would with --days plus 5 (so that a certificate just
 deployed is not due again the next day); a domain no DNS account hosts skips
-its targets (their certificate is managed elsewhere).
+its targets (their certificate is managed elsewhere), unless the store holds
+a certificate of it: an unexpired one is deployed with a warning, an expired
+one fails the domain.
 
 Every account of the platforms with a deployer is scanned, narrowed by
 --profile, --platform and --deployer; cert.skip_accounts leaves out a profile

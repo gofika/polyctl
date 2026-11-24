@@ -145,7 +145,9 @@ type pruneJob struct {
 // always (--force). The store's certificate is ensured first (cert ensure
 // with o.Days+DeployEnsureMargin), once per root domain and run; a domain
 // no DNS account hosts skips its targets (its certificates are managed
-// elsewhere). Every target, deployer and account is handled on its own: a
+// elsewhere) unless the store holds a certificate of it: an unexpired one
+// is deployed with a warning (it cannot be renewed), an expired one fails
+// the domain. Every target, deployer and account is handled on its own: a
 // failure is reported as a failed change, sent to hooks.on_failure, and the
 // run goes on; the error is then a PartialError (exit code 1), or an
 // authentication error when every failure was one (exit code 3).
@@ -161,7 +163,7 @@ func Deploy(ctx context.Context, env *DeployEnv, o DeployOptions) (*DeployReport
 	if !o.All {
 		// A named domain: its certificate first, whatever the targets.
 		b := r.bundle(ctx, o.Domain)
-		if b.skip != "" && (env.Stored == nil || env.Stored(o.Domain) == nil) {
+		if b.skip != "" {
 			return r.rep, fmt.Errorf("%w: no certificate of %s in the local store, and %s", platform.ErrNotFound, o.Domain, b.skip)
 		}
 	}
@@ -524,8 +526,29 @@ func (r *deployRun) bundle(ctx context.Context, root string) *bundleResult {
 	certRes := "cert/" + root
 	switch {
 	case err != nil && errors.Is(err, app.ErrDomainUnknown):
-		b.skip = "no DNS account hosts " + root + ", so its certificate cannot be issued here (it is managed elsewhere)"
-		r.add(platform.Change{Resource: certRes, Action: platform.Skipped, Detail: b.skip})
+		stored := r.stored(root)
+		if stored == nil {
+			b.skip = "no DNS account hosts " + root + ", so its certificate cannot be issued here (it is managed elsewhere)"
+			r.add(platform.Change{Resource: certRes, Action: platform.Skipped, Detail: b.skip})
+			break
+		}
+		// The store holds a certificate of root: it is managed here, but
+		// cannot be renewed any more.
+		left := int(stored.NotAfter.Sub(r.env.now()).Hours() / 24)
+		if !stored.NotAfter.After(r.env.now()) {
+			b.err = fmt.Errorf("the stored certificate of %s expired on %s and cannot be renewed: no DNS account hosts %s (log in to its DNS platform and run `polyctl sync`)",
+				root, stored.NotAfter.UTC().Format("2006-01-02"), root)
+			r.total++
+			r.fail(ctx, platform.Change{Resource: certRes}, b.err, app.Failure{Domain: root, Target: certRes}, true)
+			break
+		}
+		b.cert = DeployCertOf(stored)
+		detail := fmt.Sprintf("cannot renew: no DNS account hosts %s; deploying the stored certificate (days_left=%d)", root, left)
+		r.env.infof("warning: cert/%s: %s", root, detail)
+		r.add(platform.Change{Resource: certRes, Action: platform.Skipped, Detail: detail})
+		if !r.o.DryRun && r.env.Notify != nil {
+			r.env.Notify(ctx, app.Failure{Event: "cert.deploy.failed", Domain: root, Target: certRes, Error: detail})
+		}
 	case err != nil:
 		b.err = err
 		r.total++
@@ -537,6 +560,14 @@ func (r *deployRun) bundle(ctx context.Context, root string) *bundleResult {
 		b.cert = DeployCertOf(res.Bundle)
 	}
 	return b
+}
+
+// stored is the certificate the store holds for root, or nil.
+func (r *deployRun) stored(root string) *Bundle {
+	if r.env.Stored == nil {
+		return nil
+	}
+	return r.env.Stored(root)
 }
 
 // DeployCertOf turns a bundle of the store into the certificate deployers

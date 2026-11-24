@@ -568,3 +568,48 @@ func TestDeploySkipsTargetsTheCertificateDoesNotCover(t *testing.T) {
 		}
 	}
 }
+
+// A root domain no DNS account hosts any more whose certificate the store
+// holds: an unexpired one is deployed with a warning and a notification, an
+// expired one fails the domain.
+func TestDeployStoredCertificateWithoutDNSAccount(t *testing.T) {
+	h := newDeployHarness(t, "acme")
+	b := deployBundle(t, "example.com", 20)
+	h.bundles["example.com"] = b
+	h.ensureFn = func(root string, days int) (*Result, error) {
+		return nil, fmt.Errorf("%w: no DNS account hosts %s", app.ErrDomainUnknown, root)
+	}
+	d := &fakeDeployer{id: "fake-lb", platform: platform.AWS, targets: map[string][]*fakeTarget{"acme": {
+		{id: "l1", name: "lb-1", domains: []string{"example.com"}, notAfter: days(2), serial: "01"},
+	}}}
+	for _, o := range []DeployOptions{{Domain: "example.com"}, {All: true}} {
+		d.writes = nil
+		d.targets["acme"][0].serial, d.targets["acme"][0].notAfter = "01", days(2)
+		rep, err := h.run(o, d)
+		if err != nil {
+			t.Fatalf("%+v: %v", o, err)
+		}
+		if !slices.Equal(d.writes, []string{"upload acme example.com", "bind acme l1"}) {
+			t.Errorf("%+v: writes = %v rows %v", o, d.writes, deployRows(rep))
+		}
+		if !slices.Contains(deployRows(rep), "cert/example.com skipped cannot renew: no DNS account hosts example.com; deploying the stored certificate (days_left=20)") {
+			t.Errorf("%+v: rows = %v", o, deployRows(rep))
+		}
+		if len(h.notified) != 1 || h.notified[0].Domain != "example.com" || h.notified[0].Target != "cert/example.com" {
+			t.Errorf("%+v: notified = %+v", o, h.notified)
+		}
+	}
+	// Expired in the store: a failure, notified, exit code 1.
+	h.bundles["example.com"] = deployBundle(t, "example.com", -1)
+	d.writes = nil
+	rep, err := h.run(DeployOptions{Domain: "example.com"}, d)
+	var partial *platform.PartialError
+	if !errors.As(err, &partial) || len(d.writes) != 0 || len(h.notified) != 1 {
+		t.Fatalf("expired: err %v writes %v notified %v rows %v", err, d.writes, h.notified, deployRows(rep))
+	}
+	if !slices.ContainsFunc(deployRows(rep), func(r string) bool {
+		return strings.HasPrefix(r, "cert/example.com failed the stored certificate of example.com expired")
+	}) {
+		t.Errorf("expired rows = %v", deployRows(rep))
+	}
+}
