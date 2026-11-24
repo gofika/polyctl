@@ -634,6 +634,7 @@ func TestReadmeListsConfirmingCommands(t *testing.T) {
 		{"gcp compute instance delete", "GCP", "`delete`"},
 		{"gcp compute instance reboot", "GCP", "`reboot`"},
 		{"gcp compute instance resize", "GCP", "`resize`"},
+		{"gcp compute instance password", "GCP", "`password --reset`"},
 		{"gcp compute firewall delete", "GCP", "`compute firewall delete`"},
 		{"gcp compute ssl-certificate delete", "GCP", "`compute ssl-certificate delete`"},
 		{"gcp compute load-balancer delete", "GCP", "`compute load-balancer delete`"},

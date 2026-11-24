@@ -83,6 +83,8 @@ type fakeCompute struct {
 	lbState *lbFake
 	// lbParts holds the other load balancer components (lb_fake_test.go).
 	lbParts *lbParts
+	// agent emulates the Windows guest agent (winlogin_test.go).
+	agent *fakeAgent
 }
 
 func newFakeCompute(t *testing.T) *fakeCompute {
@@ -91,7 +93,8 @@ func newFakeCompute(t *testing.T) *fakeCompute {
 		images: map[string][]*compute.Image{}, machineTypes: map[string]bool{}, machineArch: map[string]string{}, networks: map[string]*compute.Network{},
 		subnets: map[string][]*compute.Subnetwork{}, projectMeta: map[string]*compute.Metadata{}, ops: map[string]*compute.Operation{},
 		firewalls: map[string]*compute.Firewall{}, busy: map[string]string{},
-		fail: map[string]fakeErr{}, opFail: map[string]compute.OperationErrorErrors{}, stuck: map[string]string{}}
+		fail: map[string]fakeErr{}, opFail: map[string]compute.OperationErrorErrors{}, stuck: map[string]string{},
+		agent: newFakeAgent()}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.handle))
 	t.Cleanup(f.srv.Close)
 	// Like most projects, the fake one holds an SSH key in its metadata,
@@ -520,6 +523,18 @@ func (f *fakeCompute) handleInstances(w http.ResponseWriter, r *http.Request, pr
 		}
 		for _, d := range in.Disks {
 			p := d.InitializeParams
+			if d.Boot {
+				// Compute Engine copies the licenses and guest OS features
+				// of the image onto the boot disk.
+				if strings.Contains(p.SourceImage, "projects/windows-cloud/") {
+					d.Licenses = []string{apiBase + "projects/windows-cloud/global/licenses/windows-server-2025-dc"}
+				}
+				for _, im := range f.images[strings.Split(strings.TrimPrefix(p.SourceImage, "projects/"), "/")[0]] {
+					if strings.HasSuffix(p.SourceImage, "/"+im.Name) {
+						d.GuestOsFeatures = im.GuestOsFeatures
+					}
+				}
+			}
 			d.Source = in.Zone + "/disks/" + p.DiskName
 			d.DiskSizeGb = p.DiskSizeGb
 			f.disks[project+"/"+zone+"/"+p.DiskName] = &compute.Disk{Name: p.DiskName, SizeGb: p.DiskSizeGb, SourceImage: p.SourceImage,
@@ -599,6 +614,8 @@ func (f *fakeCompute) handleInstances(w http.ResponseWriter, r *http.Request, pr
 	}
 	action := rest[1]
 	switch action {
+	case "setMetadata", "serialPort":
+		f.handleAgent(w, r, in, action)
 	case "setTags":
 		var body compute.Tags
 		_ = json.NewDecoder(r.Body).Decode(&body)

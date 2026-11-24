@@ -21,6 +21,7 @@ import (
 	"github.com/gofika/polyctl/internal/output"
 	"github.com/gofika/polyctl/internal/platform"
 	"github.com/gofika/polyctl/internal/prompt"
+	"github.com/gofika/polyctl/internal/secrets"
 )
 
 // ------------------------------------------------------------ routing
@@ -582,6 +583,10 @@ type createOptions struct {
 	sshKeys, sshKeyFiles, tags                                          []string
 	spot, ipForward, staticIP, sshInstanceOnly                          bool
 	wf                                                                  app.WaitFlags
+	// windowsUser and passwordTimeout are the Windows login of a Windows
+	// instance.
+	windowsUser     string
+	passwordTimeout time.Duration
 	// size is the size --machine-type was resolved from (nil: a type).
 	size *machineChoice
 }
@@ -676,6 +681,24 @@ image but --os windows, an image of the windows-cloud project or one
 with the WINDOWS guest OS feature) is created only when the project
 metadata holds SSH keys (not blocked) or enables OS Login; otherwise
 create is exit code 2 before anything is written.
+
+A Windows instance (--os windows, an image of the windows-cloud project
+or one with the WINDOWS guest OS feature) logs in with a user name and a
+password. Compute Engine Windows images have no password of their own, so
+once the instance runs create asks its guest agent to create the user
+--windows-user (polyctl-admin by default; an administrator) and set a new
+password, the way gcloud compute reset-windows-password does: an RSA-2048
+key generated for this request (kept in memory only), its public half
+written into the windows-keys metadata of the instance, and the password
+the agent encrypts with it read from serial port 4 (every 10 seconds, up
+to --password-timeout, 10m) and decrypted. User and password are stored
+encrypted in polyctl's database: an interactive create prints them at the
+end, a non-interactive one prints a note naming "polyctl gcp compute
+instance password <id>". When the agent does not answer in time, or with
+--no-wait, the create still succeeds with a note: "password <id> --reset"
+sets a password later. --windows-user and --password-timeout are exit
+code 2 with a Linux image. A dry run generates, writes and stores nothing.
+
 --tag and defaults.gcp.tags are network tags. The instance
 gets the service account --service-account (default: the default compute
 service account), Shielded VM with vTPM and integrity monitoring, and
@@ -687,7 +710,8 @@ Nothing is rolled back on failure: reserved addresses are kept and reused
 by the next attempt.`,
 		Example: `  polyctl gcp compute instance create web-1 --machine-type e2-standard-4 --zone us-central1-a \
     --disk 100 --os ubuntu --ssh-key-file ~/.ssh/id_ed25519.pub --tag http-server --dry-run
-  polyctl gcp compute instance create tmp-1 --machine-type e2-medium --zone us-central1-a --os debian --os-version 12 --static-ip=false`,
+  polyctl gcp compute instance create tmp-1 --machine-type e2-medium --zone us-central1-a --os debian --os-version 12 --static-ip=false
+  polyctl gcp compute instance create win-1 --machine-type e2-standard-4 --zone us-central1-a --os windows`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runCreate(cmd, rt, o, strings.TrimSpace(args[0]))
@@ -714,6 +738,8 @@ by the next attempt.`,
 	f.BoolVar(&o.ipForward, "ip-forward", false, "allow the instance to forward IP packets (--ip-forward=false: no)")
 	f.BoolVar(&o.staticIP, "static-ip", true, "reserve static external and internal addresses (--static-ip=false: ephemeral)")
 	f.StringVar(&o.serviceAccount, "service-account", "default", "service account e-mail, or default for the default compute service account")
+	f.StringVar(&o.windowsUser, "windows-user", defaultWindowsUser, "Windows only: the user the guest agent creates (an administrator) and sets the password of")
+	f.DurationVar(&o.passwordTimeout, "password-timeout", defaultPasswordTimeout, "Windows only: upper bound of the wait for the guest agent to set the password once the instance runs")
 	_ = cmd.MarkFlagFilename("ssh-key-file", "pub")
 	app.AddWaitFlags(cmd, &o.wf, true, app.DefaultWaitTimeout)
 	return cmd
@@ -800,6 +826,18 @@ func runCreate(cmd *cobra.Command, rt *app.Runtime, o *createOptions, name strin
 	}
 	if strings.TrimSpace(o.serviceAccount) == "" {
 		return app.UsageErrf("--service-account is empty (pass an e-mail, or default)")
+	}
+	if o.image == "" && !o.windows() {
+		// An --image is known to be Windows or not once it is read.
+		if err := windowsCreateFlags(cmd, "--os "+o.osName+" is not Windows"); err != nil {
+			return err
+		}
+	}
+	if err := checkWindowsUser(o.windowsUser, "--windows-user"); err != nil {
+		return err
+	}
+	if o.passwordTimeout <= 0 {
+		return app.UsageErrf("--password-timeout must be a positive duration, got %s", o.passwordTimeout)
 	}
 	if _, _, err := platform.ParseTypeShorthand(o.machineType); err != nil {
 		return err
@@ -921,7 +959,13 @@ func runCreate(cmd *cobra.Command, rt *app.Runtime, o *createOptions, name strin
 		}
 		return projectMD, projectMDErr
 	}
-	if len(keys) == 0 && !o.windows() && !img.Windows {
+	windows := o.windows() || img.Windows
+	if !windows {
+		if err := windowsCreateFlags(cmd, "image "+img.Name+" is not a Windows image"); err != nil {
+			return err
+		}
+	}
+	if len(keys) == 0 && !windows {
 		if err := checkProjectLogin(rt, readProjectMD); err != nil {
 			return err
 		}
@@ -1005,6 +1049,12 @@ func runCreate(cmd *cobra.Command, rt *app.Runtime, o *createOptions, name strin
 		}
 	}
 	desc := createDesc(o, bootGB, tags, users)
+	var win *windowsLogin
+	if windows {
+		win = &windowsLogin{rt: rt, c: c, profile: profile, zone: zone, name: name, user: o.windowsUser, timeout: o.passwordTimeout, wait: wait}
+		desc += ", Windows login " + o.windowsUser
+	}
+	var createdID string
 	build := func() *compute.Instance {
 		return instanceBody(c, o, name, zone, region, subnet, img.Path, bootGB, tags, toWrite, extIP, intIP)
 	}
@@ -1013,6 +1063,9 @@ func runCreate(cmd *cobra.Command, rt *app.Runtime, o *createOptions, name strin
 		defer cancel()
 		if err := c.insertInstance(wctx, zone, build(), wait); err != nil {
 			return platform.Change{}, conv(err)
+		}
+		if win != nil {
+			win.created = true
 		}
 		if !wait {
 			rt.Infof("instance %s is being created; `polyctl gcp compute instance get %s` shows its addresses once it runs", name, name)
@@ -1029,13 +1082,27 @@ func runCreate(cmd *cobra.Command, rt *app.Runtime, o *createOptions, name strin
 			if err != nil {
 				return platform.Change{}, fmt.Errorf("instance %s was created but did not become RUNNING: %w", name, err)
 			}
+			createdID = strconv.FormatUint(in.Id, 10)
 			in2, ext := ips(in)
 			rt.Infof("instance %s is RUNNING: external ip %s, internal ip %s", name, orNone(ext), orNone(in2))
 			return platform.Change{ID: strconv.FormatUint(in.Id, 10), Detail: fmt.Sprintf("RUNNING, external ip %s, internal ip %s", orNone(ext), orNone(in2)),
 				Attrs: map[string]string{"external_ip": ext, "internal_ip": in2}}, nil
 		}})
 	}
+	if win != nil && wait {
+		plan.Add(win.step(func() string { return createdID }))
+	}
+	if win != nil && wait && !rt.DryRun() {
+		// Before the first write: a login that cannot be stored would be
+		// lost once the instance exists.
+		if err := rt.PrepareSecrets(); err != nil {
+			return fmt.Errorf("the Windows login could not be stored, nothing was created: %w", err)
+		}
+	}
 	err = rt.Ensure(ctx, "gcp.compute.instance.create", target, &plan)
+	if werr := win.finish(ctx); werr != nil {
+		err = errors.Join(err, werr)
+	}
 	if err == nil && !wait && !rt.DryRun() {
 		if in, gerr := c.getInstance(ctx, zone, name); gerr == nil {
 			storeInstance(ctx, rt, profile, in)
@@ -1166,7 +1233,8 @@ the protection off.
 --release-ips also deletes the addresses {name}-external-ip and
 {name}-internal-ip once the instance is gone, when they are RESERVED (an
 address another resource uses is skipped); it implies --wait. --wait waits
-until the instance is deleted (--timeout, 10m).`,
+until the instance is deleted (--timeout, 10m). Once the deletion is
+requested, the Windows login polyctl stored for the instance is removed.`,
 		Example: "  polyctl gcp compute instance delete tmp-1 --release-ips --yes",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -1228,6 +1296,7 @@ until the instance is deleted (--timeout, 10m).`,
 						return platform.Change{}, conv(err)
 					}
 					dropInstance(ctx, rt, l.profile, strconv.FormatUint(l.inst.Id, 10))
+					rt.ForgetCredentials(ctx, secrets.Ref{Platform: platform.GCP, Profile: l.profile, Location: l.zone, InstanceID: strconv.FormatUint(l.inst.Id, 10)})
 					if wait || release {
 						return platform.Change{Detail: "zone " + l.zone + "; deleted"}, nil
 					}

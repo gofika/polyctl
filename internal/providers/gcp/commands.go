@@ -581,7 +581,7 @@ func newComputeCmd(rt *app.Runtime) *cobra.Command {
 	instance := &cobra.Command{Use: "instance", Short: "Compute Engine instances"}
 	instance.AddCommand(newComputeListCmd(rt), computeGetCmd(rt), computeCreateCmd(rt), computeDeleteCmd(rt),
 		computeResizeCmd(rt), computeRebootCmd(rt), computeUpdateCmd(rt),
-		newComputePowerCmd(rt, "start"), newComputePowerCmd(rt, "stop"))
+		newComputePowerCmd(rt, "start"), newComputePowerCmd(rt, "stop"), computePasswordCmd(rt))
 	cmd.AddCommand(instance, newFirewallCmd(rt), newNetworkCmd(rt), newSubnetCmd(rt), newSSLCertificateCmd(rt), newLoadBalancerCmd(rt),
 		newBackendServiceCmd(rt), newForwardingRuleCmd(rt), newHealthCheckCmd(rt), newInstanceGroupCmd(rt))
 	return cmd
