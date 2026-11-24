@@ -38,6 +38,9 @@ type DeployOptions struct {
 	DryRun  bool
 	NoWait  bool
 	Timeout time.Duration
+	// IssueTimeout bounds the ensure of each root domain, waiting for its
+	// lock included (--issue-timeout; 0: no bound).
+	IssueTimeout time.Duration
 	// NameTemplate is cert.name_template (see platform.DeployOptions).
 	NameTemplate string
 }
@@ -515,7 +518,16 @@ func (r *deployRun) bundle(ctx context.Context, root string) *bundleResult {
 	}
 	b := &bundleResult{}
 	r.bundles[root] = b
-	res, err := r.env.Ensure(ctx, root, r.o.Days+DeployEnsureMargin)
+	ectx := ctx
+	if r.o.IssueTimeout > 0 {
+		var cancel context.CancelFunc
+		ectx, cancel = context.WithTimeout(ctx, r.o.IssueTimeout)
+		defer cancel()
+	}
+	res, err := r.env.Ensure(ectx, root, r.o.Days+DeployEnsureMargin)
+	if err != nil && ctx.Err() == nil && errors.Is(ectx.Err(), context.DeadlineExceeded) {
+		err = fmt.Errorf("the certificate of %s was not ensured within --issue-timeout %s: %w", root, r.o.IssueTimeout, err)
+	}
 	if res != nil {
 		for _, ch := range res.Changes {
 			if ch.Action != platform.Failed {

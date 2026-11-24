@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -29,6 +30,7 @@ func newCertDeployCmd(rt *app.Runtime) *cobra.Command {
 		regions   []string
 		deployers []string
 		wait      app.WaitFlags
+		issueTO   time.Duration
 	)
 	cmd := &cobra.Command{
 		Use:   "deploy (<domain> | --all)",
@@ -124,8 +126,11 @@ polyctl cert deploy --all --prune-expired --yes.`,
 				return err
 			}
 			s := cfg.CertSettings()
+			if issueTO <= 0 {
+				return usageErr("--issue-timeout must be a positive duration, got %s", issueTO)
+			}
 			o := cert.DeployOptions{All: all, Days: s.RenewDays, Force: force, Prune: prune, DryRun: rt.DryRun(), NoWait: !doWait, Timeout: timeout,
-				NameTemplate: s.NameTemplate}
+				IssueTimeout: issueTO, NameTemplate: s.NameTemplate}
 			if cmd.Flags().Changed("days") {
 				if days < 0 {
 					return usageErr("--days must not be negative, got %d", days)
@@ -180,6 +185,7 @@ polyctl cert deploy --all --prune-expired --yes.`,
 	f.StringArrayVar(&regions, "region", nil, "region to scan (repeatable; replaces cert.aws.regions / cert.aliyun.regions; \"global\" for GCP global proxies)")
 	f.StringArrayVar(&deployers, "deployer", nil, "deployer to run: "+strings.Join(platform.DeployerIDs(), ", ")+" (repeatable; default: all)")
 	f.BoolVar(&prune, "prune-expired", false, "also delete the expired certificates nothing uses any more (asks first; --yes in scripts)")
+	f.DurationVar(&issueTO, "issue-timeout", DefaultCertTimeout, "upper bound of ensuring the certificate of each root domain, waiting for its lock included")
 	app.AddWaitFlags(cmd, &wait, true, app.DefaultWaitTimeout)
 	_ = cmd.RegisterFlagCompletionFunc("deployer", cobra.FixedCompletions(platform.DeployerIDs(), cobra.ShellCompDirectiveNoFileComp))
 	addRouteFlags(rt, cmd)

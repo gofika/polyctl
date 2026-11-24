@@ -613,3 +613,37 @@ func TestDeployStoredCertificateWithoutDNSAccount(t *testing.T) {
 		t.Errorf("expired rows = %v", deployRows(rep))
 	}
 }
+
+// The ensure of a root domain is bounded by IssueTimeout (a lock another
+// process holds included): the domain fails and is notified, the run ends.
+func TestDeployIssueTimeoutFailsTheDomain(t *testing.T) {
+	h := newDeployHarness(t, "acme")
+	h.env.Ensure = func(ctx context.Context, root string, days int) (*Result, error) {
+		<-ctx.Done()
+		return nil, fmt.Errorf("another polyctl process is issuing the certificate of %s (lock x); try again later", root)
+	}
+	d := &fakeDeployer{id: "fake-lb", platform: platform.AWS, targets: map[string][]*fakeTarget{"acme": {
+		{id: "l1", name: "lb-1", domains: []string{"example.com"}, notAfter: days(2), serial: "01"},
+	}}}
+	done := make(chan struct{})
+	var rep *DeployReport
+	var err error
+	go func() {
+		rep, err = h.run(DeployOptions{All: true, IssueTimeout: 20 * time.Millisecond}, d)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("deploy did not end at the issue timeout")
+	}
+	var partial *platform.PartialError
+	if !errors.As(err, &partial) || len(h.notified) != 1 || len(d.writes) != 0 {
+		t.Fatalf("err %v notified %v writes %v", err, h.notified, d.writes)
+	}
+	if !slices.ContainsFunc(deployRows(rep), func(r string) bool {
+		return strings.HasPrefix(r, "cert/example.com failed the certificate of example.com was not ensured within --issue-timeout 20ms")
+	}) {
+		t.Errorf("rows = %v", deployRows(rep))
+	}
+}

@@ -176,7 +176,7 @@ polyctl cert ensure <domain> [--days 30] [--force] [--staging] [--email <addr>] 
                              [--profile <name>] [--platform <platform>]
 polyctl cert get    <domain> [--print fullchain|cert|chain|privkey] [--staging]
 polyctl cert deploy (<domain> | --all) [--days 30] [--force] [--region <r>]... [--deployer <id>]...
-                             [--prune-expired] [--no-wait] [--timeout 10m]
+                             [--prune-expired] [--no-wait] [--timeout 10m] [--issue-timeout 15m]
                              [--profile <name>] [--platform <platform>]
 ```
 
@@ -257,6 +257,7 @@ polyctl cert deploy example.com --deployer gcp-lb --region asia-east2
 - Accounts: every account with a deployer, narrowed by `--profile`, `--platform` and `--deployer`. `cert.skip_accounts` leaves out a profile (`name`) or one deployer of it (`name:aliyun-alb`).
 - Regions: `--region` (repeatable) replaces `cert.aws.regions` / `cert.aliyun.regions` (default: the profile's region; CloudFront certificates are in `us-east-1`, list it). GCP scans every region unless `--region` is given (`global` for global proxies).
 - `--no-wait` returns once a change is requested (`--wait` is the default). `--timeout` (default 10m) bounds each wait.
+- `--issue-timeout` (default 15m) bounds ensuring the certificate of each root domain, including waiting for the per-domain lock held by another run; a domain that does not finish in time fails (exit code 1, `hooks.on_failure`) and the run goes on.
 - `--prune-expired` also deletes expired certificates nothing uses. It asks once (default no); non-interactive runs need `--yes`.
 - `--dry-run` does every read and reports `would create` / `would update` / `would delete`. `--offline` is exit code 6.
 
