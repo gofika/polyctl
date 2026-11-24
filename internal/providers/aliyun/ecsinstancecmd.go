@@ -219,13 +219,17 @@ type instanceFlags struct {
 	// choice is the type it resolved to.
 	size   *platform.TypeShorthand
 	choice *typeChoice
+	// diskSet reports that --disk was given; imageWindows that --image is
+	// a Windows image (known once inspectImage has read it).
+	diskSet      bool
+	imageWindows bool
 }
 
 func (f *instanceFlags) add(cmd *cobra.Command, eipDefault, waitDefault bool, typeHelp, sgHelp string) {
 	cmd.Flags().StringVar(&f.typ, "type", "", typeHelp)
 	cmd.Flags().StringVar(&f.image, "image", "", "image id (default: the newest image of --os)")
 	cmd.Flags().StringVar(&f.osName, "os", osAlibabaCloudLinux, "operating system of the newest public image used when --image is not given: "+supportedOSes)
-	cmd.Flags().IntVar(&f.disk, "disk", defaultSystemDiskGiB, "system disk size in GiB (at least the image's size; with --os windows the default is 40, the least it takes)")
+	cmd.Flags().IntVar(&f.disk, "disk", defaultSystemDiskGiB, "system disk size in GiB (at least the image's size; for a Windows instance the default is 40, the least it takes, or a Windows --image's size if larger)")
 	cmd.Flags().StringVar(&f.diskCategory, "disk-category", defaultSystemDiskCat, "system disk category (cloud_essd_entry, cloud_essd, cloud_auto, ...)")
 	cmd.Flags().StringVar(&f.vswitch, "vswitch", "", "vSwitch of the instance, id or name (it decides the zone)")
 	cmd.Flags().StringVar(&f.securityGroup, "security-group", "", sgHelp)
@@ -247,6 +251,7 @@ func (f *instanceFlags) check(cmd *cobra.Command) error {
 	if strings.TrimSpace(f.diskCategory) == "" {
 		return app.UsageErrf("--disk-category is empty")
 	}
+	f.diskSet = cmd.Flags().Changed("disk")
 	if f.image != "" && cmd.Flags().Changed("os") {
 		return app.UsageErrf("--image and --os are mutually exclusive")
 	}
@@ -259,7 +264,7 @@ func (f *instanceFlags) check(cmd *cobra.Command) error {
 		if f.keys.Given() {
 			return app.UsageErrf("--os windows takes no --key-pair, --ssh-key or --ssh-key-file: ECS key pairs are for Linux instances only; a Windows instance logs in as %s with a password polyctl generates and stores encrypted (`polyctl %s password <name|id>` shows it)", windowsUser, ecsInstanceTree)
 		}
-		if !cmd.Flags().Changed("disk") {
+		if !f.diskSet {
 			f.disk = windowsMinDiskGiB
 		} else if f.disk < windowsMinDiskGiB {
 			return app.UsageErrf("--os windows needs --disk %d or more (the Windows Server images are %d GiB), got %d", windowsMinDiskGiB, windowsMinDiskGiB, f.disk)
@@ -271,10 +276,50 @@ func (f *instanceFlags) check(cmd *cobra.Command) error {
 	return nil
 }
 
-// windows reports an instance of the newest Windows Server image: it
-// takes no key pair but a generated Administrator password, a system disk
-// of windowsMinDiskGiB or more and a Windows host name.
-func (f *instanceFlags) windows() bool { return f.image == "" && f.osName == osWindows }
+// windows reports a Windows instance: the newest Windows Server image
+// (--os windows), or an --image that inspectImage found to be a Windows
+// image. It takes no key pair but a generated Administrator password, a
+// system disk of windowsMinDiskGiB or more and a Windows host name.
+func (f *instanceFlags) windows() bool {
+	return f.imageWindows || (f.image == "" && f.osName == osWindows)
+}
+
+// inspectImage reads --image (a read-only call, made in a dry run too) to
+// tell a Windows image from a Linux one: only then is it known whether the
+// instance takes a key pair or a generated password. A Windows image
+// refuses the key pair flags (a usage error, before anything is written)
+// and gets a system disk of at least windowsMinDiskGiB and the image's
+// size unless --disk is given. An image that does not exist is
+// platform.ErrNotFound. Without --image it does nothing.
+func (f *instanceFlags) inspectImage(ctx context.Context, rt *app.Runtime, s *ecsScope) error {
+	if f.image == "" {
+		return nil
+	}
+	im, err := s.c.describeImage(ctx, s.region, f.image)
+	if err != nil {
+		return err
+	}
+	if !windowsImage(im) {
+		return nil
+	}
+	f.imageWindows = true
+	if f.keys.Given() {
+		return app.UsageErrf("--image %s is a Windows image, which takes no --key-pair, --ssh-key or --ssh-key-file: ECS key pairs are for Linux instances only; a Windows instance logs in as %s with a password polyctl generates and stores encrypted (`polyctl %s password <name|id>` shows it)", f.image, windowsUser, ecsInstanceTree)
+	}
+	least := max(windowsMinDiskGiB, im.Size)
+	switch {
+	case !f.diskSet:
+		f.disk = max(f.disk, least)
+	case f.disk < im.Size:
+		return app.UsageErrf("Windows image %s needs --disk %d or more (its size), got %d", f.image, im.Size, f.disk)
+	}
+	label := imageFrom(s.region, im).OSName
+	if label == "" {
+		label = im.ImageName
+	}
+	rt.Infof("note: image %s is a Windows image (%s): the instance logs in as %s with a generated password, no key pair", f.image, label, windowsUser)
+	return nil
+}
 
 // hostName fits the host name of an instance to its OS: a Windows host
 // name holds no dots, at most 15 characters, and not only digits.
@@ -616,12 +661,20 @@ vSwitches and the security group as well.
   chosen for you). A key pair is required: Linux instances log in with a
   key only and polyctl never sets a password; without any key flag a
   terminal asks for a key file, and the non-interactive flow is exit
-  code 2 before anything is read.
+  code 2 before anything is read (with --image, once the image is read:
+  only then is it known to be Linux or Windows; still before anything is
+  written).
 - The image is --image (any image id: the way to use another system), else
   the newest public image of --os (alibaba-cloud-linux, or windows; see
   image latest) for the architecture of the type (a size resolves to an
   x86 type). The system disk is --disk GiB of --disk-category.
-- --os windows takes no key pair flags and imports no key pair (ECS key
+- --image is read first (DescribeImages; a missing image is exit code 4):
+  an image whose OSType is windows (such as an English Windows Server
+  image, which --os windows never picks) is created as --os windows is,
+  below, with --disk defaulting to 40 or the image's size if larger
+  (smaller than the image: exit code 2); any other image is Linux.
+- A Windows instance (--os windows, or a Windows --image) takes no key
+  pair flags (exit code 2) and imports no key pair (ECS key
   pairs are for Linux only): polyctl generates the Administrator password
   (20 characters from crypto/rand; no flag takes one) and sets it in
   RunInstances, then stores the user name and password encrypted in its
@@ -629,9 +682,9 @@ vSwitches and the security group as well.
   end (on stdout, on stderr with -o json / -o yaml); a non-interactive one
   never prints the password: a note on stderr names the command that
   shows it, ` + "`polyctl aliyun ecs instance password <name|id>`" + `. A dry
-  run generates and stores nothing. --disk defaults to 40 (smaller is
-  exit code 2), the host name holds no dots and at most 15 characters,
-  and an arm64 type is exit code 2.
+  run generates and stores nothing. The host name holds no dots and at
+  most 15 characters. With --os windows, --disk defaults to 40 (smaller
+  is exit code 2) and an arm64 type is exit code 2.
 - The host name is the name with every character other than letters,
   digits, hyphens and dots replaced by a hyphen, cut to 64 characters.
 - An instance of the name in the region is exit code 1: use ensure.
@@ -647,14 +700,15 @@ vSwitches and the security group as well.
 			if err := checkInstanceName(name); err != nil {
 				return err
 			}
-			host, renamed, err := normalizeHostName(name)
+			baseHost, baseRenamed, err := normalizeHostName(name)
 			if err != nil {
 				return err
 			}
 			if err := f.check(cmd); err != nil {
 				return err
 			}
-			if host, renamed, err = f.hostName(name, host, renamed); err != nil {
+			host, renamed, err := f.hostName(name, baseHost, baseRenamed)
+			if err != nil {
 				return err
 			}
 			if f.securityGroup == "" {
@@ -669,10 +723,13 @@ vSwitches and the security group as well.
 				if in, err = f.keyInput(rt); err != nil {
 					return err
 				}
-				if !f.keys.Given() && !rt.Interactive() {
-					// Before anything is read: an instance without a key
-					// pair is one nobody can log in to.
-					return app.UsageErrf("a key pair is required (Linux instances log in with a key only, never a password): pass --key-pair <name> (an existing key pair), or --ssh-key-file <path> / --ssh-key <public key> with --key-pair <name> to import one")
+				// Before anything is read: an instance without a key pair
+				// is one nobody can log in to. An --image is known to be
+				// Windows or Linux only once it is read (below).
+				if f.image == "" {
+					if err := requireKey(rt, &f); err != nil {
+						return err
+					}
 				}
 			}
 			if rt.Flags.Offline {
@@ -681,6 +738,18 @@ vSwitches and the security group as well.
 			s, err := openECSScope(ctx, rt, f.region)
 			if err != nil {
 				return err
+			}
+			if f.image != "" {
+				if err := f.inspectImage(ctx, rt, s); err != nil {
+					return err
+				}
+				if !f.windows() {
+					if err := requireKey(rt, &f); err != nil {
+						return err
+					}
+				} else if host, renamed, err = f.hostName(name, baseHost, baseRenamed); err != nil {
+					return err
+				}
 			}
 			if f.typ, err = rt.RequireSetting(s.profile, platform.Aliyun, "ecs_instance_type", "type", f.typ); err != nil {
 				return err
@@ -780,6 +849,15 @@ vSwitches and the security group as well.
 	}
 	f.add(cmd, false, true, "instance type id, or a size <cores>H<memory>G such as 2H4G resolved to the cheapest x86 type in stock (required, unless defaults.aliyun.ecs_instance_type is set)", "security group of the instance, name or id (required)")
 	return cmd
+}
+
+// requireKey refuses a non-interactive Linux create without any key flag:
+// an instance without a key pair is one nobody can log in to.
+func requireKey(rt *app.Runtime, f *instanceFlags) error {
+	if f.keys.Given() || rt.Interactive() {
+		return nil
+	}
+	return app.UsageErrf("a key pair is required (Linux instances log in with a key only, never a password): pass --key-pair <name> (an existing key pair), or --ssh-key-file <path> / --ssh-key <public key> with --key-pair <name> to import one")
 }
 
 // findInstanceSG finds the security group of an instance: the group of

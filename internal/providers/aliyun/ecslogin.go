@@ -95,7 +95,8 @@ func ecsPasswordCmd(rt *app.Runtime) *cobra.Command {
 		Platform:     platform.Aliyun,
 		Tree:         ecsInstanceTree,
 		LocationFlag: "region",
-		Detail: `Alibaba Cloud ECS: create and ensure --os windows generate the password of
+		Detail: `Alibaba Cloud ECS: create and ensure of a Windows instance (--os windows,
+or an --image whose OSType is windows) generate the password of
 Administrator (20 characters from crypto/rand) and set it in RunInstances,
 so the instance is ready to log in to (RDP) once it is Running. Alibaba
 Cloud never shows an instance password: for an instance polyctl did not

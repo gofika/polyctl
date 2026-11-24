@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -286,5 +287,148 @@ func TestWindowsCreateRefusesKeys(t *testing.T) {
 	}
 	if len(f.writes) != 0 {
 		t.Errorf("wrote %v", f.writes)
+	}
+}
+
+// winImageID is a Windows image only --image reaches (the English
+// edition: --os windows picks the Chinese one).
+const winImageID = "win2022_datacenter_en_40G.vhd"
+
+// winImageHarness is winHarness with that image and a custom Ubuntu one.
+func winImageHarness(t *testing.T, flags app.Flags) (*harness, *fakeECS) {
+	t.Helper()
+	h, f := winHarness(t, flags)
+	en := winImg(winImageID, "acs:win_2022_datacenter_x64_en", "2026-10-01T00:00:00Z")
+	en["Size"] = 40
+	ubuntu := img("m-ubuntu", "", "Ubuntu 24.04 64 bit", "x86_64", "2026-11-01T00:00:00Z")
+	ubuntu["ImageOwnerAlias"] = "self"
+	f.images = append(f.images, en, ubuntu)
+	return h, f
+}
+
+// A create of a Windows --image takes the Windows path: a generated
+// password in the form body, no key pair, a 40 GiB disk, a Windows host
+// name, the login stored and forgotten on delete.
+func TestWindowsImageCreate(t *testing.T) {
+	h, f := winImageHarness(t, app.Flags{})
+	if err := h.run("ecs", "instance", "create", "web.site-number-one", "--image", winImageID, "--type", "ecs.u1-c1m2.large", "--security-group", "sg-common", "--no-wait"); err != nil {
+		t.Fatalf("%v\n%s", err, h.stderr.String())
+	}
+	if !slices.Equal(f.writes, []string{"RunInstances"}) || len(h.api.callsFor("DescribeKeyPairs")) != 0 {
+		t.Fatalf("writes = %v, key pair reads %d", f.writes, len(h.api.callsFor("DescribeKeyPairs")))
+	}
+	if q := h.api.callsFor("DescribeImages"); len(q) != 1 || q[0].Get("ImageId") != winImageID || q[0].Has("ImageOwnerAlias") {
+		t.Errorf("DescribeImages = %v", q)
+	}
+	run := h.api.callsFor("RunInstances")[0]
+	pw := run.Get("Password")
+	if !secrets.ValidPassword(pw) || run.Has("KeyPairName") || run.Has("PasswordInherit") || run.Get("ImageId") != winImageID ||
+		run.Get("SystemDisk.Size") != "40" || run.Get("HostName") != "web-site-number" {
+		t.Fatalf("RunInstances = %v", run)
+	}
+	for _, q := range h.api.queries {
+		if strings.Contains(q, "Password") {
+			t.Errorf("the password is in the URL query: %s", q)
+		}
+	}
+	if strings.Contains(h.stdout.String()+h.stderr.String(), pw) || !strings.Contains(h.stderr.String(), "is a Windows image") {
+		t.Errorf("stdout %s\nstderr %s", h.stdout.String(), h.stderr.String())
+	}
+	id := f.instances[0]["InstanceId"].(string)
+	got := storedLogin(t, h, id)
+	if len(got) != 1 || got[0].Password != pw || got[0].User != windowsUser {
+		t.Fatalf("stored = %+v", got)
+	}
+	if !strings.Contains(h.stderr.String(), "`polyctl aliyun ecs instance password "+id+"` shows the password") {
+		t.Errorf("stderr = %s", h.stderr.String())
+	}
+	f.instances[0]["Status"] = instStopped
+	h.rt.Flags.Yes = true
+	if err := h.run("ecs", "instance", "delete", id); err != nil {
+		t.Fatalf("%v\n%s", err, h.stderr.String())
+	}
+	if got := storedLogin(t, h, id); len(got) != 0 {
+		t.Errorf("stored after delete = %+v", got)
+	}
+}
+
+// A dry run of a Windows --image reads the image, generates and stores
+// nothing.
+func TestWindowsImageCreateDryRun(t *testing.T) {
+	h, f := winImageHarness(t, app.Flags{DryRun: true})
+	if err := h.run("ecs", "instance", "create", "win-a", "--image", winImageID, "--type", "ecs.u1-c1m2.large", "--security-group", "sg-common"); err != nil {
+		t.Fatalf("%v\n%s", err, h.stderr.String())
+	}
+	if len(f.writes) != 0 {
+		t.Fatalf("dry run wrote %v", f.writes)
+	}
+	var rep struct {
+		Changes []platform.Change `json:"changes"`
+	}
+	h.jsonOut(&rep)
+	if len(rep.Changes) == 0 || !strings.Contains(rep.Changes[0].Detail, "login Administrator with a generated password") {
+		t.Errorf("report = %+v", rep)
+	}
+	if n, err := h.db().CountSecrets(context.Background()); err != nil || n != 0 {
+		t.Errorf("secrets = %d, %v", n, err)
+	}
+}
+
+// Refused with exit code 2 and nothing created: the key pair flags with a
+// Windows --image, a Linux --image without any key in the non-interactive
+// flow, and a --disk smaller than the Windows image. An image that does
+// not exist is exit code 4.
+func TestImageDecidesTheLogin(t *testing.T) {
+	h, f := winImageHarness(t, app.Flags{})
+	base := []string{"ecs", "instance", "create", "site-a", "--type", "ecs.u1-c1m2.large", "--security-group", "sg-common", "--no-wait"}
+	for _, extra := range [][]string{
+		{"--image", winImageID, "--key-pair", "ops"},
+		{"--image", winImageID, "--ssh-key", testKey(t, "ed25519"), "--key-pair", "ops"},
+		{"--image", winImageID, "--disk", "30"},
+		{"--image", "m-ubuntu"},
+	} {
+		err := h.run(append(append([]string{}, base...), extra...)...)
+		if !errors.Is(err, app.ErrUsage) {
+			t.Errorf("%v = %v, want a usage error", extra, err)
+		}
+	}
+	if len(f.writes) != 0 || len(h.api.callsFor("RunInstances")) != 0 {
+		t.Errorf("wrote %v", f.writes)
+	}
+	err := h.run(append(append([]string{}, base...), "--image", "m-nosuch")...)
+	if !errors.Is(err, platform.ErrNotFound) || len(f.writes) != 0 {
+		t.Errorf("missing image = %v, writes %v", err, f.writes)
+	}
+
+	// A Linux --image with a key pair sends the key pair and no password.
+	f.addKeyPair("ops", "aa", "2026-11-17T16:10Z")
+	if err := h.run(append(append([]string{}, base...), "--image", "m-ubuntu", "--key-pair", "ops")...); err != nil {
+		t.Fatalf("%v\n%s", err, h.stderr.String())
+	}
+	run := h.api.callsFor("RunInstances")[0]
+	if run.Get("KeyPairName") != "ops" || run.Has("Password") || run.Has("PasswordInherit") || run.Has("UserData") {
+		t.Errorf("RunInstances = %v", run)
+	}
+}
+
+// ensure of a new instance of a Windows --image: no key pair step, a
+// generated password stored.
+func TestWindowsImageEnsure(t *testing.T) {
+	h, f := winImageHarness(t, app.Flags{})
+	if err := h.run("ecs", "instance", "ensure", "win-a", "--image", winImageID, "--type", "ecs.u1-c1m2.large", "--eip=false"); err != nil {
+		t.Fatalf("%v\n%s", err, h.stderr.String())
+	}
+	run := h.api.callsFor("RunInstances")[0]
+	pw := run.Get("Password")
+	got := storedLogin(t, h, "win-a")
+	if !secrets.ValidPassword(pw) || run.Has("KeyPairName") || run.Get("SystemDisk.Size") != "40" || len(got) != 1 || got[0].Password != pw {
+		t.Fatalf("RunInstances %v, stored %+v", run, got)
+	}
+	if slices.Contains(f.writes, "ImportKeyPair") {
+		t.Errorf("writes = %v", f.writes)
+	}
+	err := h.run("ecs", "instance", "ensure", "win-b", "--image", winImageID, "--type", "ecs.u1-c1m2.large", "--key-pair", "ops")
+	if !errors.Is(err, app.ErrUsage) {
+		t.Errorf("ensure --key-pair = %v", err)
 	}
 }

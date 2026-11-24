@@ -86,12 +86,13 @@ func TestInstanceCreateExactTypeResolvesNothing(t *testing.T) {
 	if run := h.api.callsFor("RunInstances")[0]; run.Get("InstanceType") != "ecs.u1-c1m2.large" || run.Get("VSwitchId") != "vsw-b" {
 		t.Errorf("RunInstances = %v", run)
 	}
-	// With --image nothing is looked up for the image.
+	// With --image the image is read (Windows or Linux), nothing else.
+	f.images = append(f.images, img("m-own", "", "Ubuntu 24.04 64 bit", "x86_64", "2026-11-01T00:00:00Z"))
 	if err := h.run("ecs", "instance", "create", "site-b", "--type", "ecs.u1-c1m2.large", "--image", "m-own", "--security-group", "sg-common", "--key-pair", "ops", "--no-wait"); err != nil {
 		t.Fatalf("%v\n%s", err, h.stderr.String())
 	}
-	if n, m := len(h.api.callsFor("DescribeInstanceTypes")), len(h.api.callsFor("DescribeImages")); n != 1 || m != 1 {
-		t.Errorf("--image: %d type and %d image queries in all, want 1 and 1", n, m)
+	if n, m := len(h.api.callsFor("DescribeInstanceTypes")), len(h.api.callsFor("DescribeImages")); n != 1 || m != 2 {
+		t.Errorf("--image: %d type and %d image queries in all, want 1 and 2", n, m)
 	}
 	if run := h.api.callsFor("RunInstances")[1]; run.Get("ImageId") != "m-own" {
 		t.Errorf("RunInstances = %v", run)

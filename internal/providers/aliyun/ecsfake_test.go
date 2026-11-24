@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -432,6 +433,9 @@ func (f *fakeECS) describeImages(q url.Values) (int, any) {
 	}
 	var out []map[string]any
 	for _, im := range f.images {
+		if v := q.Get("ImageId"); v != "" && im["ImageId"] != v {
+			continue
+		}
 		if v := q.Get("ImageFamily"); v != "" && im["ImageFamily"] != v {
 			continue
 		}
@@ -441,7 +445,7 @@ func (f *fakeECS) describeImages(q url.Values) (int, any) {
 		if v := q.Get("OSType"); v != "" && im["OSType"] != v {
 			continue
 		}
-		if v := q.Get("Status"); v != "" && im["Status"] != v {
+		if v := q.Get("Status"); v != "" && !slices.Contains(strings.Split(v, ","), im["Status"].(string)) {
 			continue
 		}
 		out = append(out, im)

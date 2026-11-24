@@ -142,6 +142,35 @@ func (c *client) describeImages(ctx context.Context, region, osType, arch string
 	return out, nil
 }
 
+// describeImage returns the image of an id in a region, whoever owns it
+// (a public, custom, shared or marketplace image), available or
+// deprecated. None is platform.ErrNotFound.
+func (c *client) describeImage(ctx context.Context, region, id string) (ecs.Image, error) {
+	region = c.regionOr(region)
+	cl, err := c.ecsClient(ctx, region)
+	if err != nil {
+		return ecs.Image{}, err
+	}
+	req := ecs.CreateDescribeImagesRequest()
+	c.route(req, endpointECS)
+	req.RegionId = region
+	req.ImageId = id
+	req.Status = "Available,Deprecated"
+	resp, err := cl.DescribeImages(req)
+	if err != nil {
+		return ecs.Image{}, wrapErr("ecs DescribeImages "+id, err)
+	}
+	for _, im := range resp.Images.Image {
+		if im.ImageId == id {
+			return im, nil
+		}
+	}
+	return ecs.Image{}, fmt.Errorf("%w: image %s in %s", platform.ErrNotFound, id, region)
+}
+
+// windowsImage reports a Windows image (OSType windows).
+func windowsImage(im ecs.Image) bool { return strings.EqualFold(im.OSType, "windows") }
+
 // pickLatestImage picks the newest image whose family matches family:
 // the highest OS version (the first group) first, then the newest
 // CreationTime (UTC ISO 8601, compared as text), then the image id.

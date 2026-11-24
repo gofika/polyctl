@@ -64,10 +64,12 @@ profile's), Running, with an EIP. Running it again changes nothing.
 - The instance is --type (defaults.aliyun.ecs_instance_type, else
   ecs.u1-c1m1.large; a type id, or a size <cores>H<memory>G such as 2H4G,
   see Instance sizes below), --image or the newest image of --os for the
-  type's architecture (as for create, --os windows included), a --disk GiB
+  type's architecture (as for create, --os windows and a Windows --image
+  included; a new instance of an --image reads the image first), a --disk GiB
   --disk-category system disk, pay as you go, without a public address of
   its own. A Linux instance logs in with its key pair only (polyctl never
-  sets a password). A new --os windows instance gets a generated
+  sets a password). A new Windows instance (--os windows, or an --image
+  whose OSType is windows) gets a generated
   Administrator password, stored encrypted and shown as create shows it
   (printed at the end when interactive; otherwise a note names
   ` + "`polyctl aliyun ecs instance password <name|id>`" + `); an existing
@@ -89,14 +91,15 @@ profile's), Running, with an EIP. Running it again changes nothing.
 			if err := checkInstanceName(name); err != nil {
 				return err
 			}
-			host, renamed, err := normalizeHostName(name)
+			baseHost, baseRenamed, err := normalizeHostName(name)
 			if err != nil {
 				return err
 			}
 			if err := f.check(cmd); err != nil {
 				return err
 			}
-			if host, renamed, err = f.hostName(name, host, renamed); err != nil {
+			host, renamed, err := f.hostName(name, baseHost, baseRenamed)
+			if err != nil {
 				return err
 			}
 			wait, timeout, err := f.wait.Resolve(cmd)
@@ -139,6 +142,16 @@ profile's), Running, with an EIP. Running it again changes nothing.
 			e := &instanceEnsure{rt: rt, s: s, name: name, f: &f, wait: wait, timeout: timeout}
 			switch len(found) {
 			case 0:
+				// A new instance of an --image: the image tells whether it
+				// takes a key pair or a generated password.
+				if err := f.inspectImage(ctx, rt, s); err != nil {
+					return err
+				}
+				if f.imageWindows {
+					if host, renamed, err = f.hostName(name, baseHost, baseRenamed); err != nil {
+						return err
+					}
+				}
 				if renamed {
 					rt.Infof("note: the host name of %s is %s (%s)", name, host, f.hostNameRule())
 				}
