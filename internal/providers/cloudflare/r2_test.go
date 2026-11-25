@@ -1,11 +1,14 @@
 package cloudflare
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/gofika/polyctl/internal/platform"
@@ -159,5 +162,72 @@ func TestUnbindReadsZoneAccountAndRecordMeta(t *testing.T) {
 	handled, err := c.Unbind(t.Context(), platform.Zone{ID: "z1", Name: "example.com"}, rec)
 	if err != nil || !handled || len(deletes) != 1 || deletes[0] != "/accounts/acc1/r2/buckets/assets/domains/custom/cdn.example.com" {
 		t.Errorf("handled=%t err=%v deletes=%v", handled, err, deletes)
+	}
+}
+
+// Unbind looks for the bucket in the account of the zone, then in the
+// other selected accounts of the login, then in the accounts of the other
+// logins; no account is asked twice.
+func TestUnbindOrder(t *testing.T) {
+	// bound is the account whose bucket lists the domain.
+	var bound string
+	var requests []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		requests = append(requests, r.Header.Get("Authorization")[len("Bearer "):]+" "+r.Method+" "+r.URL.Path)
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		if len(parts) < 2 || parts[0] != "accounts" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if parts[1] != bound {
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "errors": []any{map[string]any{"code": codeR2NoSuchBucket, "message": "The specified bucket does not exist."}}})
+			return
+		}
+		var result any = map[string]any{"domain": "cdn.example.com"}
+		if r.Method == http.MethodGet {
+			result = map[string]any{"domains": []any{map[string]any{"domain": "cdn.example.com", "enabled": true}}}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "errors": []any{}, "result": result})
+	}))
+	defer srv.Close()
+	a := newAPI(srv.URL, "own", "acc1")
+	a.accounts = []string{"acc1", "acc2"}
+	c := &Client{api: a, profile: platform.Profile{Name: "acme"}}
+	// The other login selects an account of this login too, and one of its own.
+	pa := newAPI(srv.URL, "peer", "acc2")
+	pa.accounts = []string{"acc2", "acc3"}
+	peer := &Client{api: pa, profile: platform.Profile{Name: "beta"}}
+	c.SetPeers(func(context.Context) ([]platform.Peer, error) {
+		return []platform.Peer{{Profile: "beta", Client: peer}}, nil
+	})
+	px := true
+	rec := platform.Record{ID: "r1", Name: "cdn.example.com", Type: "CNAME", Value: "public.r2.dev", Proxied: &px, Meta: map[string]any{"r2_bucket": "assets"}}
+	zone := platform.Zone{ID: "z1", Name: "example.com", Extra: map[string]any{"account_id": "acc1"}}
+	const path = "/accounts/%s/r2/buckets/assets/domains/custom"
+	at := func(acc string) string { return fmt.Sprintf(path, acc) }
+
+	for _, tc := range []struct {
+		bound string
+		want  []string
+	}{
+		{"acc1", []string{"own DELETE " + at("acc1") + "/cdn.example.com"}},
+		{"acc2", []string{"own DELETE " + at("acc1") + "/cdn.example.com", "own GET " + at("acc2"), "own DELETE " + at("acc2") + "/cdn.example.com"}},
+		{"acc3", []string{"own DELETE " + at("acc1") + "/cdn.example.com", "own GET " + at("acc2"), "peer GET " + at("acc3"), "peer DELETE " + at("acc3") + "/cdn.example.com"}},
+	} {
+		bound, requests = tc.bound, nil
+		handled, err := c.Unbind(t.Context(), zone, rec)
+		if err != nil || !handled || !reflect.DeepEqual(requests, tc.want) {
+			t.Errorf("bound in %s: handled=%t err=%v\n got %q\nwant %q", tc.bound, handled, err, requests, tc.want)
+		}
+	}
+	// Bound nowhere: every account was asked once, and the bucket is
+	// reported as not found.
+	bound, requests = "", nil
+	handled, err := c.Unbind(t.Context(), zone, rec)
+	if handled || !errors.Is(err, platform.ErrNotFound) || len(requests) != 3 {
+		t.Errorf("bound nowhere: handled=%t err=%v requests=%q", handled, err, requests)
 	}
 }

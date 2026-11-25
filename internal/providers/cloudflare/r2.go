@@ -215,8 +215,9 @@ func hasCode(err error, code int) bool {
 // an R2 bucket that is not in the account of the zone.
 func (c *Client) SetPeers(peers func(ctx context.Context) ([]platform.Peer, error)) { c.peers = peers }
 
-// r2Account returns the account R2 requests go to: the pinned account, or
-// the only account the credentials see.
+// r2Account returns the account R2 requests go to: the account the client
+// is bound to (the default account of the login, or the one of --account),
+// or the only account the credentials see.
 func (c *Client) r2Account(ctx context.Context) (string, error) {
 	if c.api.accountID != "" {
 		return c.api.accountID, nil
@@ -239,36 +240,102 @@ func (c *Client) r2Account(ctx context.Context) (string, error) {
 		platform.ErrAmbiguous, c.profile.Name, len(accounts), accountNames(accounts), c.profile.Name)
 }
 
-// syncBuckets lists the R2 buckets of the account (default jurisdiction)
-// for the inventory. An account the credentials cannot use for R2 (R2 not
-// enabled, no R2 permission, several accounts and none pinned) syncs as an
-// empty set with a warning, as `r2 bucket list` skips it: the other types of
-// a sync are not failed for it, and a bucket the inventory does not know is
-// still looked up live.
+// r2Accounts returns the accounts the R2 listings of the client cover: the
+// selected accounts (or the one of --account), or, for a login without an
+// account, the only account its credentials see.
+func (c *Client) r2Accounts(ctx context.Context) ([]string, error) {
+	if ids := c.api.scopeIDs(); len(ids) > 1 || ids[0] != "" {
+		return ids, nil
+	}
+	acc, err := c.r2Account(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return []string{acc}, nil
+}
+
+// r2Unusable reports the failure of an account the credentials cannot use
+// for R2: R2 is not enabled, the credentials lack the R2 permission, or
+// the login has several accounts and names none.
+func r2Unusable(err error) bool {
+	return errors.Is(err, platform.ErrNotSupported) || errors.Is(err, platform.ErrUnauthorized) ||
+		errors.Is(err, platform.ErrForbidden) || errors.Is(err, platform.ErrAmbiguous)
+}
+
+// syncBuckets lists the R2 buckets of the selected accounts (default
+// jurisdiction) for the inventory. An account the credentials cannot use
+// for R2 (R2 not enabled, no R2 permission, several accounts and none
+// selected) syncs as an empty set with a warning, as `r2 bucket list` skips
+// it: the other types of a sync are not failed for it, and a bucket the
+// inventory does not know is still looked up live.
 func (c *Client) syncBuckets(ctx context.Context) ([]platform.Resource, error) {
-	out, err := c.bucketResources(ctx)
-	if err != nil && (errors.Is(err, platform.ErrNotSupported) || errors.Is(err, platform.ErrUnauthorized) ||
-		errors.Is(err, platform.ErrForbidden) || errors.Is(err, platform.ErrAmbiguous)) {
-		warnf("cloudflare/%s: skipped r2 buckets: %v", c.profile.Name, err)
+	return c.buckets(ctx, true)
+}
+
+// bucketResources lists the R2 buckets of the selected accounts (default
+// jurisdiction) as inventory resources. With one account every failure is
+// returned; with several, an account that cannot be used for R2 holds no
+// bucket (with a warning) unless none of them can, and an account that
+// fails otherwise keeps its stored rows (a *platform.RegionSyncError).
+func (c *Client) bucketResources(ctx context.Context) ([]platform.Resource, error) {
+	return c.buckets(ctx, false)
+}
+
+func (c *Client) buckets(ctx context.Context, skipUnusable bool) ([]platform.Resource, error) {
+	skipped := func(account string, err error) ([]platform.Resource, error) {
+		if account != "" {
+			warnf("cloudflare/%s account %s: skipped r2 buckets: %v", c.profile.Name, account, err)
+		} else {
+			warnf("cloudflare/%s: skipped r2 buckets: %v", c.profile.Name, err)
+		}
 		return []platform.Resource{}, nil
+	}
+	ids, err := c.r2Accounts(ctx)
+	if err != nil {
+		if skipUnusable && r2Unusable(err) {
+			return skipped("", err)
+		}
+		return nil, err
+	}
+	if len(ids) == 1 {
+		out, err := c.bucketsOf(ctx, ids[0])
+		if err != nil && skipUnusable && r2Unusable(err) {
+			return skipped("", err)
+		}
+		return out, err
+	}
+	var unusable []error
+	out, err := c.eachAccount(ctx, func(ctx context.Context, ac *Client) ([]platform.Resource, error) {
+		acc := ac.api.accountID
+		res, err := c.bucketsOf(ctx, acc)
+		if err != nil && r2Unusable(err) {
+			unusable = append(unusable, fmt.Errorf("account %s: %w", acc, err))
+			return skipped(acc, err)
+		}
+		return res, err
+	})
+	if !skipUnusable && len(unusable) == len(ids) {
+		// Not one account can be used for R2: that is the answer of a
+		// command that asked for the buckets.
+		return nil, errors.Join(unusable...)
+	}
+	if out == nil && err == nil {
+		out = []platform.Resource{}
 	}
 	return out, err
 }
 
-// bucketResources lists the R2 buckets of the account (default
-// jurisdiction) as inventory resources; every failure is returned.
-func (c *Client) bucketResources(ctx context.Context) ([]platform.Resource, error) {
-	acc, err := c.r2Account(ctx)
-	var buckets []r2Bucket
-	if err == nil {
-		buckets, err = c.api.listBuckets(ctx, acc, "")
-	}
+// bucketsOf lists the R2 buckets of one account as inventory resources. The
+// name of a bucket is unique in its account only, so the id of a row is
+// "<account>/<bucket>" and its parent the account.
+func (c *Client) bucketsOf(ctx context.Context, acc string) ([]platform.Resource, error) {
+	buckets, err := c.api.listBuckets(ctx, acc, "")
 	if err != nil {
 		return nil, err
 	}
 	out := make([]platform.Resource, 0, len(buckets))
 	for _, b := range buckets {
-		out = append(out, platform.Resource{Type: platform.ResR2Bucket, ID: b.Name, Name: b.Name,
+		out = append(out, platform.Resource{Type: platform.ResR2Bucket, ID: acc + "/" + b.Name, Name: b.Name, ParentID: acc,
 			Data: r2BucketRow{Profile: c.profile.Name, AccountID: acc, Name: b.Name, CreationDate: b.CreationDate}})
 	}
 	return out, nil
@@ -357,6 +424,37 @@ func (c *Client) Unbind(ctx context.Context, zone platform.Zone, rec platform.Re
 		return false, fmt.Errorf("R2 unbind failed: R2 is not enabled on the account of cloudflare/%s (%w); %s", c.profile.Name, err, errR2Managed)
 	}
 	last := err
+	// unbindIn unbinds the domain in another account, only from a bucket
+	// that lists it.
+	tried := map[string]bool{acc: true}
+	unbindIn := func(a *api, account string) bool {
+		if account == "" || tried[account] {
+			return false
+		}
+		tried[account] = true
+		domains, err := a.listCustomDomains(ctx, account, bucket)
+		if err != nil {
+			if !errors.Is(err, platform.ErrNotFound) {
+				last = err
+			}
+			return false
+		}
+		if !slices.ContainsFunc(domains, func(d r2CustomDomain) bool { return platform.NormalizeDomain(d.Domain) == domain }) {
+			return false
+		}
+		if err := a.removeCustomDomain(ctx, account, bucket, domain); err != nil {
+			last = err
+			return false
+		}
+		return true
+	}
+	// The other selected accounts of this login come before the other
+	// logins: they need no further credentials.
+	for _, id := range c.api.scopeIDs() {
+		if unbindIn(c.api, id) {
+			return true, nil
+		}
+	}
 	if c.peers != nil {
 		peers, perr := c.peers(ctx)
 		if perr != nil {
@@ -367,25 +465,15 @@ func (c *Client) Unbind(ctx context.Context, zone platform.Zone, rec platform.Re
 			if !ok {
 				continue
 			}
-			pacc, err := pc.r2Account(ctx)
-			if err != nil || pacc == acc {
-				continue
-			}
-			domains, err := pc.api.listCustomDomains(ctx, pacc, bucket)
+			ids, err := pc.r2Accounts(ctx)
 			if err != nil {
-				if !errors.Is(err, platform.ErrNotFound) {
-					last = err
+				continue
+			}
+			for _, id := range ids {
+				if unbindIn(pc.api, id) {
+					return true, nil
 				}
-				continue
 			}
-			if !slices.ContainsFunc(domains, func(d r2CustomDomain) bool { return platform.NormalizeDomain(d.Domain) == domain }) {
-				continue
-			}
-			if err := pc.api.removeCustomDomain(ctx, pacc, bucket, domain); err != nil {
-				last = err
-				continue
-			}
-			return true, nil
 		}
 	}
 	if errors.Is(last, platform.ErrNotFound) {

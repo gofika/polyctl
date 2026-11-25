@@ -113,7 +113,7 @@ polyctl dns delete example.com --all --type TXT --dry-run
 - A record that cannot be deleted is `failed` and the rest continue (exit code 1). Nothing to delete prints `no records to clean up` (exit code 0).
 - In JSON, each deleted record keeps its full data in `attrs` (`value`, `ttl`, `priority`, `proxied`), so it can be restored with `dns ensure`; `summary` counts `deleted`, `skipped` and `failed`.
 
-**Cloudflare R2 custom domains.** The CNAME Cloudflare creates for an R2 bucket's custom domain cannot be deleted through the DNS API. `dns delete` (and `cloudflare dns delete`) removes it by unbinding the domain from its bucket; the question and the dry run say so. The bucket is looked up in the zone's account first, then in the other Cloudflare profiles. Without R2 permission, with R2 not enabled or with no bucket named in the record, the record stays and the command fails.
+**Cloudflare R2 custom domains.** The CNAME Cloudflare creates for an R2 bucket's custom domain cannot be deleted through the DNS API. `dns delete` (and `cloudflare dns delete`) removes it by unbinding the domain from its bucket; the question and the dry run say so. The bucket is looked up in the zone's account first, then in the other selected accounts of the same login, then in the other Cloudflare profiles. Without R2 permission, with R2 not enabled or with no bucket named in the record, the record stays and the command fails.
 
 ## Domains
 

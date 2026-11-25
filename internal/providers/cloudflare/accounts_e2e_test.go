@@ -146,3 +146,59 @@ func TestDomainRoutingSeveralAccounts(t *testing.T) {
 		t.Fatalf("one account: exit %d, %s", code, stderr)
 	}
 }
+
+// The name of an R2 bucket is unique in its account only: the rows of two
+// selected accounts holding the same name do not replace each other.
+func TestSyncBucketsSeveralAccounts(t *testing.T) {
+	e := newR2Env(t)
+	e.f.accounts["acc1"].buckets = []string{"assets", "logs"}
+	e.f.accounts["acc2"].buckets = []string{"assets"}
+	e.loginBoth("acc1", "acc1", "acc2")
+
+	sync := func(profile string) (int, string) {
+		code, stdout, stderr := e.run("sync", "--profile", profile, "--platform", "cloudflare", "--type", "r2_bucket")
+		return code, stdout + stderr
+	}
+	if code, out := sync("both"); code != cli.ExitOK {
+		t.Fatalf("sync: exit %d, %s", code, out)
+	}
+	if got, want := e.rows("both", platform.ResR2Bucket), []string{"acc1/assets acc1", "acc1/logs acc1", "acc2/assets acc2"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("buckets: %v", got)
+	}
+	// A login of one account keys its rows the same way.
+	if code, out := sync("acme"); code != cli.ExitOK {
+		t.Fatalf("sync acme: exit %d, %s", code, out)
+	}
+	if got, want := e.rows("acme", platform.ResR2Bucket), []string{"acc1/assets acc1", "acc1/logs acc1"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("buckets of one account: %v", got)
+	}
+	// The listing shows the buckets of both accounts of the login.
+	code, stdout, stderr := e.run("cloudflare", "r2", "bucket", "list", "--profile", "both", "-o", "json")
+	if code != cli.ExitOK || strings.Count(stdout, `"name": "assets"`) != 2 || !strings.Contains(stdout, `"account_id": "acc2"`) {
+		t.Fatalf("bucket list: exit %d, %s%s", code, stdout, stderr)
+	}
+
+	// An account without R2 holds no bucket: the sync does not fail for
+	// it (it warns on the standard error of the process).
+	e.f.accounts["acc2"].r2Disabled = true
+	code, out := sync("both")
+	if code != cli.ExitOK {
+		t.Fatalf("sync without R2 in acc2: exit %d, %s", code, out)
+	}
+	if got, want := e.rows("both", platform.ResR2Bucket), []string{"acc1/assets acc1", "acc1/logs acc1"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("buckets without R2 in acc2: %v", got)
+	}
+	// ... and so does the listing; only when no account of the login can
+	// be used for R2 is that its answer (exit code 7).
+	code, stdout, stderr = e.run("--refresh", "cloudflare", "r2", "bucket", "list", "--profile", "both")
+	if code != cli.ExitOK || !strings.Contains(stdout, "logs") {
+		t.Fatalf("bucket list without R2 in acc2: exit %d, %s%s", code, stdout, stderr)
+	}
+	e.f.accounts["acc1"].r2Disabled = true
+	if code, _, stderr = e.run("--refresh", "cloudflare", "r2", "bucket", "list", "--profile", "both"); code != cli.ExitNotSupported {
+		t.Fatalf("bucket list without R2 at all: exit %d, %s", code, stderr)
+	}
+	if code, out := sync("both"); code != cli.ExitOK {
+		t.Fatalf("sync without R2 at all: exit %d, %s", code, out)
+	}
+}

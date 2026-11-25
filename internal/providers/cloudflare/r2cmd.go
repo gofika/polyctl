@@ -410,7 +410,7 @@ read.`,
 								return err
 							}
 						}
-						full, err := a.api.getBucket(ctx, a.account, row.Name)
+						full, err := a.api.getBucket(ctx, row.AccountID, row.Name)
 						if err != nil {
 							return r2Err(err, a, row.Name)
 						}

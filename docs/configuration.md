@@ -282,7 +282,7 @@ Resource types (values of `--type`; each platform syncs the ones it supports):
 | `db_instance` | managed database instances |
 | `eip` | elastic / static public IPs |
 | `key_pair` | SSH key pairs |
-| `r2_bucket` | Cloudflare R2 buckets (default jurisdiction) |
+| `r2_bucket` | Cloudflare R2 buckets (default jurisdiction); the id of a row is `<account id>/<bucket>`, since a bucket name is unique in its account only |
 
 ```text
 polyctl sync [--platform cloudflare,aws] [--profile <name>] [--type domain,zone,...]
