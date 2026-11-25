@@ -427,6 +427,33 @@ func TestDataKeyAdoptedFromTheSharedService(t *testing.T) {
 	}
 }
 
+// When the shared service of earlier releases cannot be read, the data key
+// it may hold is not replaced by a new one.
+func TestNoDataKeyCreatedWhileTheSharedServiceFails(t *testing.T) {
+	keyring.MockInit()
+	ctx := context.Background()
+	db, _ := openDB(t)
+	if err := New(db, &creds.Multi{Primary: creds.Keyring{}}).Put(ctx, Credentials{Ref: ref, User: "u", Password: "shared"}); err != nil {
+		t.Fatal(err)
+	}
+	broken := errors.New("keyring locked")
+	restore := creds.UseKeyring(func(service, user string) (string, error) {
+		if service == creds.Service {
+			return "", broken
+		}
+		return keyring.Get(service, user)
+	}, keyring.Set, keyring.Delete)
+	defer restore()
+	own := creds.Keyring{Service: "polyctl:0123456789abcdef"}
+	store := &creds.Multi{Primary: own, Others: []creds.Store{creds.NewFile(t.TempDir())}}
+	if err := New(db, store).Ready(); !errors.Is(err, broken) {
+		t.Errorf("Ready = %v, want the keyring error", err)
+	}
+	if _, err := own.Get(DataKeyName); !errors.Is(err, creds.ErrNotFound) {
+		t.Errorf("a data key was created: %v", err)
+	}
+}
+
 // Lookup finds the login of an instance detached by a logout, and Forget
 // (a deleted instance) removes it with the one under the profile.
 func TestLookupAndForgetDetached(t *testing.T) {

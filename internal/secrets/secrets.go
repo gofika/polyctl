@@ -158,7 +158,12 @@ func (s *Store) dataKey(create bool) ([]byte, error) {
 		// key under a keyring service of its own; earlier releases (or the
 		// directory before it moved) stored it under another one.
 		if a, ok := s.keys.(adopter); ok {
-			if copied, aerr := a.Adopt(DataKeyName); aerr == nil && copied {
+			copied, aerr := a.Adopt(DataKeyName)
+			switch {
+			case aerr != nil:
+				// The key may well be there: no new one is created.
+				err = fmt.Errorf("read the data key of instance secrets from an earlier keyring service: %w", aerr)
+			case copied:
 				err = read()
 			}
 		}
