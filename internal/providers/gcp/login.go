@@ -300,8 +300,7 @@ func loginOAuth(ctx context.Context, in platform.LoginInput, pio *prompt.IO) (*p
 		}
 	}
 	if builtin {
-		fmt.Fprintln(pio.Err, "Logging in to Google Cloud in the browser with polyctl's OAuth client.")
-		fmt.Fprintln(pio.Err, "If Google shows \"Google hasn't verified this app\", choose \"Advanced\", then the \"Go to ... (unsafe)\" link to continue.")
+		fmt.Fprintln(pio.Err, "Logging in to Google Cloud in the browser (the consent screen names \"Google Auth Library\").")
 	} else if client.ID == "" || client.Secret == "" {
 		fmt.Fprintln(pio.Err, "polyctl needs an OAuth client of your own: in the Google Cloud console open APIs & Services > Credentials,")
 		fmt.Fprintln(pio.Err, "create an OAuth client ID of type \"Desktop app\", and enter its id and secret below.")

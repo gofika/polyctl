@@ -196,7 +196,7 @@ func TestLoginBuiltinClient(t *testing.T) {
 			}
 		}
 	}
-	if s := errBuf.String(); strings.Contains(s, "How do you want") || strings.Contains(s, "OAuth client id") || !strings.Contains(s, "Google hasn't verified this app") {
+	if s := errBuf.String(); strings.Contains(s, "How do you want") || strings.Contains(s, "OAuth client id") || !strings.Contains(s, "Google Auth Library") {
 		t.Errorf("stderr: %q", s)
 	}
 
