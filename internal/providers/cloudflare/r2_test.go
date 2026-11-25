@@ -166,8 +166,8 @@ func TestUnbindReadsZoneAccountAndRecordMeta(t *testing.T) {
 }
 
 // Unbind looks for the bucket in the account of the zone, then in the
-// other selected accounts of the login, then in the accounts of the other
-// logins; no account is asked twice.
+// other enabled accounts of the login (the ones its credentials list),
+// then in the accounts of the other logins; no account is asked twice.
 func TestUnbindOrder(t *testing.T) {
 	// bound is the account whose bucket lists the domain.
 	var bound string
@@ -176,6 +176,15 @@ func TestUnbindOrder(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		requests = append(requests, r.Header.Get("Authorization")[len("Bearer "):]+" "+r.Method+" "+r.URL.Path)
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		if r.URL.Path == "/accounts" {
+			// Each login lists its accounts: one of them is seen by both.
+			list := []any{map[string]any{"id": "acc1"}, map[string]any{"id": "acc2"}}
+			if strings.HasPrefix(requests[len(requests)-1], "peer ") {
+				list = []any{map[string]any{"id": "acc2"}, map[string]any{"id": "acc3"}}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "errors": []any{}, "result": list})
+			return
+		}
 		if len(parts) < 2 || parts[0] != "accounts" {
 			t.Errorf("unexpected %s %s", r.Method, r.URL)
 			w.WriteHeader(http.StatusNotFound)
@@ -193,13 +202,9 @@ func TestUnbindOrder(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "errors": []any{}, "result": result})
 	}))
 	defer srv.Close()
-	a := newAPI(srv.URL, "own", "acc1")
-	a.accounts = []string{"acc1", "acc2"}
-	c := &Client{api: a, profile: platform.Profile{Name: "acme"}}
-	// The other login selects an account of this login too, and one of its own.
-	pa := newAPI(srv.URL, "peer", "acc2")
-	pa.accounts = []string{"acc2", "acc3"}
-	peer := &Client{api: pa, profile: platform.Profile{Name: "beta"}}
+	c := &Client{api: newAPI(srv.URL, "own", "acc1"), profile: platform.Profile{Name: "acme"}}
+	// The other login sees an account of this login too, and one of its own.
+	peer := &Client{api: newAPI(srv.URL, "peer", "acc2"), profile: platform.Profile{Name: "beta"}}
 	c.SetPeers(func(context.Context) ([]platform.Peer, error) {
 		return []platform.Peer{{Profile: "beta", Client: peer}}, nil
 	})
@@ -214,8 +219,8 @@ func TestUnbindOrder(t *testing.T) {
 		want  []string
 	}{
 		{"acc1", []string{"own DELETE " + at("acc1") + "/cdn.example.com"}},
-		{"acc2", []string{"own DELETE " + at("acc1") + "/cdn.example.com", "own GET " + at("acc2"), "own DELETE " + at("acc2") + "/cdn.example.com"}},
-		{"acc3", []string{"own DELETE " + at("acc1") + "/cdn.example.com", "own GET " + at("acc2"), "peer GET " + at("acc3"), "peer DELETE " + at("acc3") + "/cdn.example.com"}},
+		{"acc2", []string{"own DELETE " + at("acc1") + "/cdn.example.com", "own GET /accounts", "own GET " + at("acc2"), "own DELETE " + at("acc2") + "/cdn.example.com"}},
+		{"acc3", []string{"own DELETE " + at("acc1") + "/cdn.example.com", "own GET /accounts", "own GET " + at("acc2"), "peer GET /accounts", "peer GET " + at("acc3"), "peer DELETE " + at("acc3") + "/cdn.example.com"}},
 	} {
 		bound, requests = tc.bound, nil
 		handled, err := c.Unbind(t.Context(), zone, rec)
@@ -227,7 +232,7 @@ func TestUnbindOrder(t *testing.T) {
 	// reported as not found.
 	bound, requests = "", nil
 	handled, err := c.Unbind(t.Context(), zone, rec)
-	if handled || !errors.Is(err, platform.ErrNotFound) || len(requests) != 3 {
+	if handled || !errors.Is(err, platform.ErrNotFound) || len(requests) != 5 {
 		t.Errorf("bound nowhere: handled=%t err=%v requests=%q", handled, err, requests)
 	}
 }

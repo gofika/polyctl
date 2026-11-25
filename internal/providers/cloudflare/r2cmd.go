@@ -64,9 +64,9 @@ type r2Acct struct {
 	// api is the client's API scoped to the --jurisdiction.
 	api     *api
 	account string
-	// multi says the account is one of several the profile works on (or
-	// one outside its selection, named by --account): what is said about
-	// it names the account next to the profile.
+	// multi says the account is one of several the command reads in the
+	// profile, or is not the default account of its login: what is said
+	// about it names the account next to the profile.
 	multi bool
 }
 
@@ -96,38 +96,33 @@ func (a *r2Acct) candCells() string {
 	return prompt.Cells("cloudflare/"+a.profile, "account "+a.account)
 }
 
-// newR2Acct is the account of a scope's profile, opened as c.
-func newR2Acct(c *Client, sc acctScope, account, jurisdiction string) *r2Acct {
-	one := len(sc.selected) == 1 && sc.selected[0] == account
+// newR2Acct is the account of a scope's profile, opened as c. several
+// says the command reads more accounts of the profile than this one.
+func newR2Acct(c *Client, sc acctScope, account, jurisdiction string, several bool) *r2Acct {
 	return &r2Acct{profile: sc.profile, client: c.inAccount(account), api: c.api.withJurisdiction(jurisdiction), account: account,
-		multi: len(sc.selected) > 1 || (sc.pin != "" && !one)}
+		multi: several || sc.named(account)}
 }
 
 // openR2Accounts opens the accounts an R2 command works on in the profile
-// of a scope: the account of --account, else every selected account of the
-// login, else (a login without an account) the only account its
-// credentials see.
+// of a scope: the account of --account, else every enabled account of the
+// login (see Client.enabledAccounts).
 func openR2Accounts(ctx context.Context, rt *app.Runtime, sc acctScope, jurisdiction string) ([]*r2Acct, error) {
 	c, err := openProfile(ctx, rt, sc.profile)
 	if err != nil {
 		return nil, err
 	}
-	var ids []string
-	switch {
-	case sc.pin != "":
-		ids = []string{sc.pin}
-	case len(sc.selected) > 0:
-		ids = sc.selected
-	default:
-		acc, err := c.r2Account(ctx)
-		if err != nil {
+	ids := []string{sc.pin}
+	if sc.pin == "" {
+		if ids, err = c.enabledAccounts(ctx); err != nil {
 			return nil, err
 		}
-		ids = []string{acc}
+		if len(ids) == 0 {
+			return nil, fmt.Errorf("%w: every account the credentials of cloudflare/%s see is disabled", platform.ErrNotFound, sc.profile)
+		}
 	}
 	out := make([]*r2Acct, 0, len(ids))
 	for _, id := range ids {
-		out = append(out, newR2Acct(c, sc, id, jurisdiction))
+		out = append(out, newR2Acct(c, sc, id, jurisdiction, len(ids) > 1))
 	}
 	return out, nil
 }
@@ -153,10 +148,11 @@ func r2Profiles(rt *app.Runtime) (names []string, explicit bool, err error) {
 	return names, false, nil
 }
 
-// r2Scopes are the scopes of an R2 command: the selection of every
+// r2Scopes are the scopes of an R2 command: the enabled accounts of every
 // Cloudflare login (or of the one of --profile), or, with --account, that
-// account in the logins that select it; an account no login selects is
-// read live through the profile every Cloudflare command would use.
+// account in the logins that know it and do not disable it; an account no
+// login knows is taken through the profile every Cloudflare command would
+// use, and read live when it is disabled there.
 // explicit says --profile was given.
 func r2Scopes(ctx context.Context, rt *app.Runtime) (scopes []acctScope, explicit bool, err error) {
 	names, explicit, err := r2Profiles(rt)
@@ -190,16 +186,16 @@ func skipReason(err error) string {
 }
 
 // findBucket returns the account that holds bucket, among the accounts the
-// command covers: every selected account of every Cloudflare login, of the
+// command covers: every enabled account of every Cloudflare login, of the
 // login of --profile, or the one account of --account. The same account
 // in two logins counts once.
 //
-// One account to look in (--account, or --profile with a login of one
-// account) is used as it is, without a listing. Otherwise, in the default
-// jurisdiction, the inventory (r2_bucket) is asked first: when it names
-// exactly one account for the bucket, that account is used. Failing that
-// (no inventory, no or several matches, --refresh) every account is asked
-// live. A name several accounts hold a bucket of is a pick in the
+// The account of --account is used as it is, without a listing. Otherwise,
+// in the default jurisdiction, the inventory (r2_bucket) is asked first:
+// when it names exactly one account for the bucket, that account is used.
+// Failing that (no inventory, no or several matches, --refresh) the
+// accounts are asked live: the only account of the login of --profile is
+// used as it is, and of several each one is asked for the bucket. A name several accounts hold a bucket of is a pick in the
 // interactive flow and ambiguous (exit code 5) otherwise.
 func findBucket(ctx context.Context, rt *app.Runtime, bucket, jurisdiction string) (*r2Acct, error) {
 	scopes, explicit, err := r2Scopes(ctx, rt)
@@ -209,7 +205,7 @@ func findBucket(ctx context.Context, rt *app.Runtime, bucket, jurisdiction strin
 	if len(scopes) == 0 {
 		return nil, fmt.Errorf("%w: no cloudflare account configured (run `polyctl auth login cloudflare`)", platform.ErrUnauthorized)
 	}
-	if pinnedAccount(rt) != "" || (explicit && len(scopes[0].selected) <= 1) {
+	if pinnedAccount(rt) != "" {
 		// One account: the logins of the scopes all name it.
 		var first error
 		for _, sc := range scopes {
@@ -230,7 +226,7 @@ func findBucket(ctx context.Context, rt *app.Runtime, bucket, jurisdiction strin
 			if err != nil {
 				return nil, err
 			}
-			a := newR2Acct(c, sc, account, jurisdiction)
+			a := newR2Acct(c, sc, account, jurisdiction, false)
 			rt.Infof("bucket %s via %s (local inventory)", bucket, a.via())
 			return a, nil
 		}
@@ -255,6 +251,11 @@ func findBucket(ctx context.Context, rt *app.Runtime, bucket, jurisdiction strin
 			}
 			skip(sc.profile, err)
 			continue
+		}
+		if explicit && len(scopes) == 1 && len(accts) == 1 {
+			// The one account of the login of --profile: no listing.
+			rt.Infof("bucket %s via %s", bucket, accts[0].via())
+			return accts[0], nil
 		}
 		for _, a := range accts {
 			if seen[a.account] {
@@ -296,7 +297,7 @@ func findBucket(ctx context.Context, rt *app.Runtime, bucket, jurisdiction strin
 	msg := fmt.Sprintf("bucket %s not found in any cloudflare profile", bucket)
 	what := "profiles"
 	if explicit {
-		msg = fmt.Sprintf("bucket %s not found in the selected accounts of cloudflare/%s (%s)", bucket, scopes[0].profile, strings.Join(searched, ", "))
+		msg = fmt.Sprintf("bucket %s not found in the enabled accounts of cloudflare/%s (%s)", bucket, scopes[0].profile, strings.Join(searched, ", "))
 		what = "accounts"
 	}
 	if len(skipped) > 0 {
@@ -364,7 +365,7 @@ func inventoryBucket(ctx context.Context, rt *app.Runtime, scopes []acctScope, b
 		acc := bucketRowAccount(r, row)
 		switch {
 		case acc == "" || !sc.keeps(acc):
-			// A row of an account the login no longer selects.
+			// A row of an account that is disabled for the login.
 		case account == "":
 			found, account = sc, acc
 		case acc != account:
@@ -543,14 +544,17 @@ command fails only when no account could be read.`,
 					failures = append(failures, err)
 					continue
 				}
-				// The accounts the profile answered for: those of its
-				// scope, or, for a login without an account, those of
-				// its buckets.
-				covered := sc.selected
-				if sc.pin != "" {
+				// The accounts the profile answered for: the account of
+				// --account, else its default account and those of its
+				// buckets.
+				var covered []string
+				switch {
+				case sc.pin != "":
 					covered = []string{sc.pin}
+				case sc.def != "":
+					covered = []string{sc.def}
 				}
-				if len(covered) == 0 {
+				if sc.pin == "" {
 					for _, row := range list {
 						if !slices.Contains(covered, row.AccountID) {
 							covered = append(covered, row.AccountID)
@@ -582,7 +586,7 @@ command fails only when no account could be read.`,
 							}
 							clients[sc.profile] = c
 						}
-						a := newR2Acct(c, sc, row.AccountID, *jur)
+						a := newR2Acct(c, sc, row.AccountID, *jur, false)
 						full, err := a.api.getBucket(ctx, row.AccountID, row.Name)
 						if err != nil {
 							return r2Err(err, a, row.Name)
@@ -649,23 +653,25 @@ command fails only when no account could be read.`,
 }
 
 // scopeBuckets lists the buckets of a scope: through the inventory in the
-// default jurisdiction, live in another one and for an account outside the
-// selection of the login. cached says the inventory answered.
+// default jurisdiction, live in another one and for an account that is
+// disabled for the login. cached says the inventory answered.
 func scopeBuckets(ctx context.Context, rt *app.Runtime, sc acctScope, jurisdiction string) ([]r2BucketRow, bool, error) {
 	if jurisdiction == "" && !sc.live {
 		list, cached, err := cachedBuckets(ctx, rt, sc)
-		if err == nil || sc.pin == "" || len(sc.selected) > 0 || !errors.Is(err, platform.ErrAmbiguous) {
+		if err != nil || len(list) > 0 || sc.pin == "" || sc.pin == sc.def || rt.Flags.Offline {
 			return list, cached, err
 		}
-		// A login without an account whose credentials see several has
-		// no bucket set to keep: the account of --account is read live.
+		// The inventory holds no bucket of the account of --account. It
+		// may hold none because the sync does not reach the account
+		// (credentials that cannot list their accounts sync the default
+		// one alone): the account is asked.
 	}
 	list, err := liveBuckets(ctx, rt, sc, jurisdiction)
 	return list, false, err
 }
 
 // cachedBuckets serves the buckets of the accounts of a scope (default
-// jurisdiction) through the inventory, which holds those of every selected
+// jurisdiction) through the inventory, which holds those of every enabled
 // account of the profile.
 func cachedBuckets(ctx context.Context, rt *app.Runtime, sc acctScope) ([]r2BucketRow, bool, error) {
 	set := inventory.Set{Platform: platform.Cloudflare, Profile: sc.profile, Type: platform.ResR2Bucket}
@@ -677,7 +683,7 @@ func cachedBuckets(ctx context.Context, rt *app.Runtime, sc acctScope) ([]r2Buck
 		out, err := c.bucketResources(ctx)
 		if err != nil {
 			// The account of a login without one is known by now.
-			err = r2Err(err, newR2Acct(c, acctScope{profile: sc.profile, selected: sc.selected}, nonEmpty(c.api.accountID, c.r2AccountID), ""), "")
+			err = r2Err(err, newR2Acct(c, acctScope{profile: sc.profile, def: sc.def}, nonEmpty(c.api.accountID, c.r2AccountID), "", false), "")
 		}
 		return out, err
 	})

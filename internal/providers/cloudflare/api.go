@@ -26,11 +26,11 @@ type api struct {
 	http *httpx.Client
 	// accountID is the account this copy is bound to: the default account
 	// of the login, or the one inAccount / pin names. "" for a login
-	// without an account.
+	// without a default account.
 	accountID string
-	// accounts is the selection of the login, the default account first;
-	// empty for a login without an account.
-	accounts []string
+	// disabled are the accounts of the login that are kept out of every
+	// sync, list and lookup (never the default account).
+	disabled []string
 	// pinned is set by --account: the lists and lookups read accountID
 	// alone.
 	pinned bool
@@ -353,8 +353,9 @@ type tokenInfo struct {
 // verifyToken checks the token against the endpoint that matches its owner.
 // User-owned tokens verify at /user/tokens/verify. Account-owned tokens are
 // rejected there ("Invalid API Token") and verify only at
-// /accounts/{id}/tokens/verify, so on an authentication failure the accounts
-// visible to the token are tried before the failure is reported.
+// /accounts/{id}/tokens/verify, so on an authentication failure the default
+// account and then the accounts visible to the token are tried before the
+// failure is reported.
 func (a *api) verifyToken(ctx context.Context) (*tokenInfo, error) {
 	var t tokenInfo
 	_, userErr := a.do(ctx, http.MethodGet, "/user/tokens/verify", nil, nil, &t)
@@ -364,26 +365,30 @@ func (a *api) verifyToken(ctx context.Context) (*tokenInfo, error) {
 	if !errors.Is(userErr, platform.ErrUnauthorized) {
 		return nil, userErr
 	}
-	ids := []string{}
-	if a.accountID != "" {
-		// The account the copy is bound to first, then the others of the
-		// selection.
-		ids = append(ids, a.accountID)
-		for _, id := range a.accounts {
-			if id != a.accountID {
-				ids = append(ids, id)
-			}
+	// The account the copy is bound to first: an account-owned token is
+	// most often the one of the default account, and that costs one
+	// request. Then the accounts the token lists.
+	try := func(id string) *tokenInfo {
+		var at tokenInfo
+		if _, err := a.do(ctx, http.MethodGet, "/accounts/"+url.PathEscape(id)+"/tokens/verify", nil, nil, &at); err != nil {
+			return nil
 		}
-	} else if accounts, err := a.listAccounts(ctx); err == nil {
-		for _, acc := range accounts {
-			ids = append(ids, acc.ID)
+		at.AccountID = id
+		return &at
+	}
+	if a.accountID != "" {
+		if at := try(a.accountID); at != nil {
+			return at, nil
 		}
 	}
-	for _, id := range ids {
-		var at tokenInfo
-		if _, err := a.do(ctx, http.MethodGet, "/accounts/"+url.PathEscape(id)+"/tokens/verify", nil, nil, &at); err == nil {
-			at.AccountID = id
-			return &at, nil
+	if accounts, err := a.listAccounts(ctx); err == nil {
+		for _, acc := range accounts {
+			if acc.ID == a.accountID {
+				continue
+			}
+			if at := try(acc.ID); at != nil {
+				return at, nil
+			}
 		}
 	}
 	return nil, userErr
@@ -453,24 +458,6 @@ func (a *api) listZonesOf(ctx context.Context, id string) ([]apiZone, error) {
 	return paginate[apiZone](ctx, a, "/zones", q, zonesPerPage)
 }
 
-// listZones returns the zones of every account the API covers (scopeIDs),
-// one account after the other.
-func (a *api) listZones(ctx context.Context) ([]apiZone, error) {
-	ids := a.scopeIDs()
-	var out []apiZone
-	for _, id := range ids {
-		zs, err := a.listZonesOf(ctx, id)
-		if err != nil {
-			if len(ids) > 1 {
-				return nil, fmt.Errorf("account %s: %w", id, err)
-			}
-			return nil, err
-		}
-		out = append(out, zs...)
-	}
-	return out, nil
-}
-
 func (a *api) getZone(ctx context.Context, id string) (*apiZone, error) {
 	var z apiZone
 	if _, err := a.do(ctx, http.MethodGet, "/zones/"+url.PathEscape(id), nil, nil, &z); err != nil {
@@ -481,8 +468,8 @@ func (a *api) getZone(ctx context.Context, id string) (*apiZone, error) {
 
 // findZone resolves a zone by name (exact) or id, among the accounts the
 // API covers. A name held by several of them is ambiguous; an id of a zone
-// in an account outside the selection is not found, since nothing else of
-// that account is worked on (a zone that names no account passes).
+// in a disabled account is not found, since nothing else of that account
+// is worked on (a zone that names no account passes).
 func (a *api) findZone(ctx context.Context, idOrName string) (*apiZone, error) {
 	name := platform.NormalizeDomain(idOrName)
 	if strings.Contains(name, ".") {
@@ -500,20 +487,15 @@ func (a *api) findZone(ctx context.Context, idOrName string) (*apiZone, error) {
 		for _, z := range zs {
 			held = append(held, fmt.Sprintf("%s in account %s", z.ID, accountLabel(z.Account.ID, z.Account.Name)))
 		}
-		of := "the selected accounts"
-		if a.unscoped() {
-			of = "the accounts"
-		}
-		return nil, fmt.Errorf("%w: zone %s is held by %d of %s of this login (%s): name it by its zone id, or use the cloudflare commands with --account <id or name>",
-			platform.ErrAmbiguous, name, len(zs), of, strings.Join(held, ", "))
+		return nil, fmt.Errorf("%w: zone %s is held by %d of the enabled accounts of this login (%s): name it by its zone id, or use the cloudflare commands with --account <id or name>",
+			platform.ErrAmbiguous, name, len(zs), strings.Join(held, ", "))
 	}
 	z, err := a.getZone(ctx, idOrName)
 	if err != nil {
 		return nil, err
 	}
 	if acc := z.Account.ID; !a.covers(acc) {
-		return nil, fmt.Errorf("%w: zone %s (%s) is in account %s, which is not selected for this login: add it with \"polyctl cloudflare account add %s\", or pass --account %s to the cloudflare commands",
-			platform.ErrNotFound, platform.NormalizeDomain(z.Name), z.ID, acc, acc, acc)
+		return nil, disabledZoneErr(z.Name, z.ID, acc)
 	}
 	return z, nil
 }

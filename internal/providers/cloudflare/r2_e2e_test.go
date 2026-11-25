@@ -59,6 +59,8 @@ type r2Fake struct {
 	// failZones answers this status to the zone listing of an account
 	// (GET /zones?account.id=<account>).
 	failZones map[string]int
+	// failRecords answers this status to the record listing of a zone id.
+	failRecords map[string]int
 	// accountsStatus, when set, is the status the account listing
 	// (GET /accounts) answers: 403 as a token without Account:Read gets it
 	// (code 10000), anything else as a request that failed.
@@ -268,6 +270,10 @@ func (f *r2Fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		z := f.zoneByID(parts[1])
 		if z == nil || !sees(acc, z.account) {
 			f.fail(w, http.StatusNotFound, 7003, "Could not route")
+			return
+		}
+		if status := f.failRecords[z.id]; status != 0 && len(parts) == 3 {
+			f.fail(w, status, 1000, "the records of the zone cannot be listed")
 			return
 		}
 		if len(parts) == 3 {

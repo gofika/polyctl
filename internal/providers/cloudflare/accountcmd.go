@@ -22,28 +22,37 @@ import (
 func newAccountCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "account",
-		Short: "Cloudflare accounts of the login: the selected ones and the default",
-		Long: `A Cloudflare login works on the accounts selected for it: the inventory, name
-lookups and domain routing cover all of them. One of them is the default
-account, where new zones are created. The login selects them; use, add and
-remove change the selection without a new login.
+		Short: "Cloudflare accounts of the login: the default one, and the ones kept out of every sync",
+		Long: `A Cloudflare login works on every account its credentials see: the
+inventory, name lookups and domain routing cover all of them, the ones the
+credentials reach later included. One of them is the default account, where
+new zones are created and which a command works on when nothing names an
+account: use sets it.
 
-An account that is not selected can still be named with --account on the
-cloudflare zone, dns, cache, redirect, dev-mode, ssl-mode and r2 commands: it
-is read live and nothing of it is cached.`,
+disable keeps the accounts that are certainly not used out of every sync,
+list and lookup, and enable takes them back.
+
+A disabled account can still be named with --account on the cloudflare zone,
+dns, cache, redirect, dev-mode, ssl-mode and r2 commands: it is read live and
+nothing of it is cached.`,
 	}
-	cmd.AddCommand(newAccountListCmd(rt), newAccountCurrentCmd(rt), newAccountUseCmd(rt), newAccountAddCmd(rt), newAccountRemoveCmd(rt))
+	cmd.AddCommand(newAccountListCmd(rt), newAccountCurrentCmd(rt), newAccountUseCmd(rt),
+		newAccountEnableCmd(rt, "enable", false), newAccountDisableCmd(rt, "disable", false),
+		// The names these two had while the login held a selection.
+		newAccountEnableCmd(rt, "add", true), newAccountDisableCmd(rt, "remove", true))
 	return cmd
 }
 
 // accountRow is an account as account list shows it. The first three
 // fields are the account as Cloudflare lists it.
 type accountRow struct {
-	ID       string `json:"id" yaml:"id"`
-	Name     string `json:"name" yaml:"name"`
-	Type     string `json:"type,omitempty" yaml:"type,omitempty"`
-	Selected bool   `json:"selected" yaml:"selected"`
-	Default  bool   `json:"default" yaml:"default"`
+	ID      string `json:"id" yaml:"id"`
+	Name    string `json:"name" yaml:"name"`
+	Type    string `json:"type,omitempty" yaml:"type,omitempty"`
+	Enabled bool   `json:"enabled" yaml:"enabled"`
+	Default bool   `json:"default" yaml:"default"`
+	// hidden marks an account the credentials do not list.
+	hidden bool
 }
 
 type accountListResult struct {
@@ -51,69 +60,59 @@ type accountListResult struct {
 	Accounts []accountRow `json:"accounts" yaml:"accounts"`
 }
 
-// accountRows marks the selection of a login in the accounts its
-// credentials list. A selected account the list does not show is appended
-// without a type, and returned as unseen.
-func accountRows(accounts []account, def, defName string, selected []string) (rows []accountRow, unseen []string) {
-	rows = make([]accountRow, 0, len(accounts))
+// accountRows are the accounts the credentials list, each enabled unless
+// it is disabled. The default account and the disabled accounts the list
+// does not show are appended without a type, as hidden.
+func accountRows(accounts []account, def, defName string, disabled []string) []accountRow {
+	rows := make([]accountRow, 0, len(accounts))
 	seen := map[string]bool{}
+	add := func(r accountRow) {
+		r.Default = r.ID == def
+		r.Enabled = r.Default || !slices.Contains(disabled, r.ID)
+		seen[r.ID] = true
+		rows = append(rows, r)
+	}
 	for _, a := range accounts {
-		seen[a.ID] = true
-		rows = append(rows, accountRow{ID: a.ID, Name: a.Name, Type: a.Type, Selected: slices.Contains(selected, a.ID), Default: a.ID == def})
+		add(accountRow{ID: a.ID, Name: a.Name, Type: a.Type})
 	}
-	for _, id := range selected {
-		if seen[id] {
-			continue
-		}
-		row := accountRow{ID: id, Selected: true, Default: id == def}
-		if row.Default {
-			row.Name = defName
-		}
-		rows = append(rows, row)
-		unseen = append(unseen, id)
+	if def != "" && !seen[def] {
+		add(accountRow{ID: def, Name: defName, hidden: true})
 	}
-	return rows, unseen
+	rest := slices.Clone(disabled)
+	sort.Strings(rest)
+	for _, id := range rest {
+		if !seen[id] {
+			add(accountRow{ID: id, hidden: true})
+		}
+	}
+	return rows
 }
 
 // accountGrid is the table of account list: * marks the default account.
 func accountGrid(rows []accountRow) output.Grid {
-	g := output.Grid{Headers: []string{"NAME", "TYPE", "ID", "SELECTED"}, Empty: "no accounts"}
+	g := output.Grid{Headers: []string{"NAME", "TYPE", "ID", "ENABLED"}, Empty: "no accounts"}
 	for _, r := range rows {
-		name, sel := r.Name, ""
+		name, enabled := r.Name, "no"
 		if r.Default {
 			name += " *"
 		}
-		if r.Selected {
-			sel = "yes"
+		if r.Enabled {
+			enabled = "yes"
 		}
-		g.Rows = append(g.Rows, []string{name, r.Type, r.ID, sel})
+		g.Rows = append(g.Rows, []string{name, r.Type, r.ID, enabled})
 	}
 	return g
-}
-
-// listedAccounts reads the accounts the credentials of a profile list,
-// with the selection of its login marked.
-func listedAccounts(ctx context.Context, rt *app.Runtime, s *session) ([]accountRow, []string, error) {
-	accounts, err := s.client.api.listAccounts(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-	def, defName, selected, err := loginAccounts(rt, s.profile)
-	if err != nil {
-		return nil, nil, err
-	}
-	rows, unseen := accountRows(accounts, def, defName, selected)
-	return rows, unseen, nil
 }
 
 func newAccountListCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List the accounts visible to the credentials, with the selected and the default ones marked",
+		Short: "List the accounts visible to the credentials, with the default and the disabled ones marked",
 		Long: `List the accounts visible to the profile's credentials (API token:
-Account:Read; browser login: the account-settings.read scope). SELECTED marks
-the accounts the login works on, and * the default one; a selected account the
-credentials do not list is shown without a type, with a note.`,
+Account:Read; browser login: the account-settings.read scope). Every one is
+enabled (synced, listed and searched) unless it was disabled: ENABLED says
+which, and * marks the default account. The default account and the disabled
+accounts the credentials do not list are shown without a type.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if rt.Flags.Offline {
@@ -123,20 +122,24 @@ credentials do not list is shown without a type, with a note.`,
 			if err != nil {
 				return err
 			}
-			rows, unseen, err := listedAccounts(cmd.Context(), rt, s)
+			accounts, err := s.client.api.listAccounts(cmd.Context())
 			if err != nil {
 				return err
 			}
-			selected := 0
+			def, defName, disabled, err := loginAccounts(rt, s.profile)
+			if err != nil {
+				return err
+			}
+			rows := accountRows(accounts, def, defName, disabled)
+			enabled := 0
 			for _, r := range rows {
-				if r.Selected {
-					selected++
+				if r.Enabled {
+					enabled++
+				} else if r.hidden {
+					rt.Infof("note: disabled account %s is not visible to the credentials (to forget it: polyctl cloudflare account enable %s)", r.ID, r.ID)
 				}
 			}
-			for _, id := range unseen {
-				rt.Infof("note: selected account %s is not visible to the credentials (to take it out: polyctl cloudflare account remove %s)", id, id)
-			}
-			rt.Infof("%d account(s) via cloudflare/%s, %d selected", len(rows), s.profile, selected)
+			rt.Infof("%d account(s) via cloudflare/%s, %d enabled, %d disabled", len(rows), s.profile, enabled, len(rows)-enabled)
 			return rt.Render(accountListResult{Profile: s.profile, Accounts: rows}, func() output.Grid { return accountGrid(rows) })
 		},
 	}
@@ -145,10 +148,11 @@ credentials do not list is shown without a type, with a note.`,
 type currentAccount struct {
 	Profile string `json:"profile" yaml:"profile"`
 	// AccountID is the default account ("" for a login that is not bound
-	// to an account); Accounts the selection, the default first.
+	// to an account); Disabled the accounts kept out of every sync. The
+	// enabled accounts are not stored: account list reads them.
 	AccountID   string   `json:"account_id" yaml:"account_id"`
 	AccountName string   `json:"account_name,omitempty" yaml:"account_name,omitempty"`
-	Accounts    []string `json:"accounts" yaml:"accounts"`
+	Disabled    []string `json:"disabled_accounts" yaml:"disabled_accounts"`
 	Method      string   `json:"method" yaml:"method"`
 	Email       string   `json:"email,omitempty" yaml:"email,omitempty"`
 }
@@ -164,12 +168,14 @@ func currentOf(rt *app.Runtime, profile string) (currentAccount, error) {
 	if err != nil {
 		return currentAccount{}, fmt.Errorf("%w: %v", platform.ErrNotFound, err)
 	}
-	cur := currentAccount{Profile: profile, Accounts: selectedAccounts(a.Metadata), Method: a.Metadata[metaMethod], Email: a.Metadata[metaEmail]}
-	if cur.Accounts == nil {
-		cur.Accounts = []string{}
+	cur := currentAccount{Profile: profile, AccountID: strings.TrimSpace(a.Metadata[metaAccountID]), Disabled: disabledAccounts(a.Metadata),
+		Method: a.Metadata[metaMethod], Email: a.Metadata[metaEmail]}
+	sort.Strings(cur.Disabled)
+	if cur.Disabled == nil {
+		cur.Disabled = []string{}
 	}
-	if len(cur.Accounts) > 0 {
-		cur.AccountID, cur.AccountName = cur.Accounts[0], strings.TrimSpace(a.Metadata[metaAccountName])
+	if cur.AccountID != "" {
+		cur.AccountName = strings.TrimSpace(a.Metadata[metaAccountName])
 	}
 	return cur, nil
 }
@@ -180,17 +186,18 @@ func renderCurrent(rt *app.Runtime, cur currentAccount) error {
 		if cur.AccountID != "" {
 			def = accountLabel(cur.AccountID, cur.AccountName)
 		}
-		return output.KV("profile", cur.Profile, "account", def, "accounts", strings.Join(cur.Accounts, ", "), "method", cur.Method, "email", cur.Email)
+		return output.KV("profile", cur.Profile, "account", def, "disabled", strings.Join(cur.Disabled, ", "), "method", cur.Method, "email", cur.Email)
 	})
 }
 
 func newAccountCurrentCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "current",
-		Short: "Show the default account and the selected accounts of the Cloudflare login",
-		Long: `Show the default account and the selected accounts of the profile's
+		Short: "Show the default account and the disabled accounts of the Cloudflare login",
+		Long: `Show the default account and the disabled accounts of the profile's
 Cloudflare login, as the local configuration holds them. Nothing is requested:
-it works with --offline.`,
+it works with --offline. The enabled accounts are every other account the
+credentials see: "polyctl cloudflare account list" reads them.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name, err := rt.ProfileFor(platform.Cloudflare)
@@ -206,8 +213,8 @@ it works with --offline.`,
 	}
 }
 
-// accountBook resolves and checks the accounts named to use, add and
-// remove for the login of one profile.
+// accountBook resolves and checks the accounts named to use, enable and
+// disable for the login of one profile.
 type accountBook struct {
 	rt      *app.Runtime
 	profile string
@@ -250,20 +257,27 @@ func (b *accountBook) list(ctx context.Context) ([]account, error) {
 	return b.visible, b.listErr
 }
 
+// stored reports whether the login names the account id: it is its default
+// account or one of its disabled ones.
+func (b *accountBook) stored(id string) bool {
+	return id != "" && (id == b.cur.AccountID || slices.Contains(b.cur.Disabled, id))
+}
+
 // resolve turns the accounts named on the command line, by id or by name,
-// into ids. The id of a selected account needs no request. Anything else
-// is looked up among the accounts the credentials see, so that a name two
-// of them carry is ambiguous (exit code 5) whatever the profile knows.
-// Credentials that cannot list their accounts leave that to the profile
-// first. With --offline only the profile is asked,
-// and what it does not know is taken as an id.
+// into ids. The id of the default account or of a disabled one needs no
+// request. Anything else is looked up among the accounts the credentials
+// see, so that a name two of them carry is ambiguous (exit code 5)
+// whatever the profile knows, and an account they do not see is not found
+// (exit code 4). Credentials that cannot list their accounts leave that to
+// the profile first. With --offline only the profile is asked, and what it
+// does not know is taken as an id.
 func (b *accountBook) resolve(ctx context.Context, args []string) ([]string, error) {
 	var out []string
 	for _, ref := range args {
 		ref = strings.TrimSpace(ref)
 		id := ref
 		switch {
-		case slices.Contains(b.cur.Accounts, ref):
+		case b.stored(ref):
 		case b.rt.Flags.Offline:
 			known, ok := knownAccount(ctx, b.rt, b.profile, ref)
 			if !ok {
@@ -291,47 +305,6 @@ func (b *accountBook) resolve(ctx context.Context, args []string) ([]string, err
 					return nil, err
 				}
 				id = known
-			}
-		}
-		if !slices.Contains(out, id) {
-			out = append(out, id)
-		}
-	}
-	return out, nil
-}
-
-// resolveSelected turns the accounts named to remove, by id or by name,
-// into ids of the selection, which is where remove works: a name is one a
-// selected account carries, as the credentials list it (they are not asked
-// with --offline, and credentials that fail keep nothing from being removed
-// by id) or as the profile knows it. A name several selected accounts carry
-// is ambiguous (exit code 5); a reference that names no selected account is
-// returned as it is, for the caller to report it as not selected.
-func (b *accountBook) resolveSelected(ctx context.Context, args []string) ([]string, error) {
-	var out []string
-	for _, ref := range args {
-		ref = strings.TrimSpace(ref)
-		id := ref
-		if !slices.Contains(b.cur.Accounts, ref) {
-			if !b.rt.Flags.Offline {
-				_, _ = b.list(ctx)
-			}
-			var named []string
-			for _, sel := range b.cur.Accounts {
-				if n := b.localName(ctx, sel); n != "" && strings.EqualFold(n, ref) {
-					named = append(named, sel)
-				}
-			}
-			switch len(named) {
-			case 0:
-			case 1:
-				id = named[0]
-			default:
-				cands := make([]string, 0, len(named))
-				for _, sel := range named {
-					cands = append(cands, accountLabel(sel, b.localName(ctx, sel)))
-				}
-				return nil, &app.AmbiguousError{What: fmt.Sprintf("account %q", ref), Candidates: cands, Hint: "pass the account id to choose"}
 			}
 		}
 		if !slices.Contains(out, id) {
@@ -375,10 +348,14 @@ func (b *accountBook) name(ctx context.Context, id string) string {
 	return b.localName(ctx, id)
 }
 
-// check verifies that the credentials see the accounts before they are
-// selected. Offline, and with credentials that cannot list their accounts,
-// nothing can be checked, which is said.
+// check verifies that the credentials see the accounts. Offline, and with
+// credentials that cannot list their accounts (or whose list was read off
+// the zones and does not show the account), nothing can be checked, which
+// is said.
 func (b *accountBook) check(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
 	if b.rt.Flags.Offline {
 		b.rt.Infof("note: --offline: access to %s was not checked", strings.Join(ids, ", "))
 		return nil
@@ -409,9 +386,10 @@ func accountOption(id, name, mark string) prompt.Option {
 	return prompt.Option{Label: prompt.Cells(name, id, mark), Value: id}
 }
 
-// options are the accounts the credentials see, as options labelled with
-// what the selection says about them. keep filters them.
-func (b *accountBook) options(ctx context.Context, keep func(accountRow) bool) ([]prompt.Option, error) {
+// rows are the accounts of the login for a pick: the ones the credentials
+// see, with the default and the disabled ones they do not. The list needs
+// Cloudflare (not with --offline).
+func (b *accountBook) rows(ctx context.Context) ([]accountRow, error) {
 	if !b.rt.Interactive() {
 		return nil, nil
 	}
@@ -422,10 +400,12 @@ func (b *accountBook) options(ctx context.Context, keep func(accountRow) bool) (
 	if err != nil {
 		return nil, err
 	}
-	if len(accounts) == 0 {
-		return nil, app.UsageErrf("the credentials of cloudflare/%s cannot list accounts: pass the account id", b.profile)
-	}
-	rows, _ := accountRows(accounts, b.cur.AccountID, b.cur.AccountName, b.cur.Accounts)
+	return accountRows(accounts, b.cur.AccountID, b.cur.AccountName, b.cur.Disabled), nil
+}
+
+// options are account rows as the options of a pick, labelled with what
+// the login says about them. keep filters them.
+func accountOptions(rows []accountRow, keep func(accountRow) bool) []prompt.Option {
 	var opts []prompt.Option
 	for _, r := range rows {
 		if keep != nil && !keep(r) {
@@ -435,25 +415,24 @@ func (b *accountBook) options(ctx context.Context, keep func(accountRow) bool) (
 		switch {
 		case r.Default:
 			mark = "default"
-		case r.Selected:
-			mark = "selected"
+		case !r.Enabled && r.hidden:
+			mark = "disabled, not visible"
+		case !r.Enabled:
+			mark = "disabled"
 		}
 		opts = append(opts, accountOption(r.ID, r.Name, mark))
 	}
-	return opts, nil
+	return opts
 }
 
-// save stores def as the default account, with its name, and selected as
-// the selection.
-func (b *accountBook) save(ctx context.Context, def string, selected []string) error {
-	return saveSelection(ctx, b.rt, b.profile, account{ID: def, Name: b.name(ctx, def)}, selected)
-}
-
-// saveSelection stores a new default account and selection for the
-// profile's Cloudflare login, drops what is cached for the accounts outside
-// the new selection and makes every cached set of the login due, so that
-// the next read syncs the new selection.
-func saveSelection(ctx context.Context, rt *app.Runtime, profile string, def account, selected []string) error {
+// saveAccounts stores a new default account and new disabled accounts for
+// the profile's Cloudflare login. What the inventory cached of the
+// accounts that are disabled now is dropped. The cached sets of the login
+// are made due when an account was enabled again, so that the next read
+// syncs it; an account that was only disabled leaves them as they are, its
+// rows being gone, and so does a changed default account, which changes
+// nothing of what the login covers.
+func saveAccounts(ctx context.Context, rt *app.Runtime, profile string, def account, disabled []string) error {
 	cfg, err := rt.ReloadConfig()
 	if err != nil {
 		return err
@@ -462,11 +441,11 @@ func saveSelection(ctx context.Context, rt *app.Runtime, profile string, def acc
 	if err != nil {
 		return fmt.Errorf("%w: %v", platform.ErrNotFound, err)
 	}
-	before := selectedAccounts(a.Metadata)
 	if a.Metadata == nil {
 		a.Metadata = map[string]string{}
 	}
-	setSelection(a.Metadata, def, selected)
+	before := disabledAccounts(a.Metadata)
+	setAccounts(a.Metadata, def, disabled)
 	if err := cfg.Save(); err != nil {
 		return err
 	}
@@ -477,42 +456,40 @@ func saveSelection(ctx context.Context, rt *app.Runtime, profile string, def acc
 	if err != nil {
 		return err
 	}
-	if err := forgetUnselected(ctx, rt, db, profile, before, selectedAccounts(a.Metadata)); err != nil {
+	after := disabledAccounts(a.Metadata)
+	var off []string
+	for _, id := range after {
+		if !slices.Contains(before, id) {
+			off = append(off, id)
+		}
+	}
+	if err := forgetDisabled(ctx, rt, db, profile, off); err != nil {
 		return err
 	}
-	return db.Expire(ctx, platform.Cloudflare, profile)
+	for _, id := range before {
+		if !slices.Contains(after, id) {
+			return db.Expire(ctx, platform.Cloudflare, profile)
+		}
+	}
+	return nil
 }
 
-// forgetUnselected drops from the inventory of a profile what it holds of
-// the accounts outside the selection after of its login: the trees of the
-// accounts that left the selection before, and every other zone (with its
-// records) and bucket row of an account that is not selected.
-//
-// Those other rows are the ones of a login that was not bound to an account
-// (it cached whatever its credentials saw, and before is empty), and the
-// ones stored before the rows had their account as parent, which the purge
-// of a tree does not reach: they name the account in their data. A row that
-// names no account at all is of the default account it was stored under.
-// Nothing is dropped for a login that ends up without an account: it covers
-// whatever its credentials see.
-func forgetUnselected(ctx context.Context, rt *app.Runtime, db *inventory.DB, profile string, before, after []string) error {
-	if len(after) == 0 {
+// forgetDisabled drops from the inventory of a profile what it holds of
+// the disabled accounts: their trees, and every other zone (with its
+// records) and bucket row that names one of them in its data. Those other
+// rows are the ones stored before the rows had their account as parent,
+// which the purge of a tree does not reach. A row that names no account at
+// all is of the default account, which is never disabled.
+func forgetDisabled(ctx context.Context, rt *app.Runtime, db *inventory.DB, profile string, disabled []string) error {
+	if len(disabled) == 0 {
 		return nil
 	}
-	for _, id := range before {
-		if slices.Contains(after, id) {
-			continue
-		}
+	for _, id := range disabled {
 		if err := db.PurgeTree(ctx, platform.Cloudflare, profile, id); err != nil {
 			return err
 		}
 	}
-	gone := func(account string) bool {
-		if account == "" && len(before) > 0 {
-			account = before[0]
-		}
-		return account != "" && !slices.Contains(after, account)
-	}
+	gone := func(account string) bool { return account != "" && slices.Contains(disabled, account) }
 	zones, err := db.List(ctx, inventory.Query{Platform: platform.Cloudflare, Profile: profile, Type: platform.ResZone})
 	if err != nil {
 		return err
@@ -544,23 +521,67 @@ func forgetUnselected(ctx context.Context, rt *app.Runtime, db *inventory.DB, pr
 	return nil
 }
 
+// accountDiff tells the accounts that def and disabled disable (off) and
+// enable again (on) against cur, each sorted.
+func accountDiff(cur currentAccount, def string, disabled []string) (off, on []string) {
+	for _, id := range disabled {
+		if id != def && !slices.Contains(cur.Disabled, id) && !slices.Contains(off, id) {
+			off = append(off, id)
+		}
+	}
+	for _, id := range cur.Disabled {
+		if id == def || !slices.Contains(disabled, id) {
+			on = append(on, id)
+		}
+	}
+	sort.Strings(off)
+	sort.Strings(on)
+	return off, on
+}
+
+// apply stores the default account and the disabled accounts a command
+// arrived at, says what changed against the login as it was and prints it
+// as account current does.
+func (b *accountBook) apply(ctx context.Context, def string, disabled []string) error {
+	off, on := accountDiff(b.cur, def, disabled)
+	acc := account{ID: def}
+	if def != "" {
+		acc.Name = b.name(ctx, def)
+	}
+	if err := saveAccounts(ctx, b.rt, b.profile, acc, disabled); err != nil {
+		return err
+	}
+	if len(off) > 0 {
+		b.rt.Infof("disabled %s for cloudflare/%s", strings.Join(off, ", "), b.profile)
+	}
+	if len(on) > 0 {
+		b.rt.Infof("enabled %s for cloudflare/%s", strings.Join(on, ", "), b.profile)
+	}
+	if def != b.cur.AccountID {
+		b.rt.Infof("account %s is now the default account of cloudflare/%s", def, b.profile)
+	}
+	cur, err := currentOf(b.rt, b.profile)
+	if err != nil {
+		return err
+	}
+	return renderCurrent(b.rt, cur)
+}
+
 func newAccountUseCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "use <account>",
 		Short: "Make an account the default account of the Cloudflare login",
 		Long: `Make <account>, an account id or name, the default account of the profile's
-Cloudflare login: the one new zones are created in when --account names no
-other. An account that is not selected yet is added to the selection. The
-credentials must see it (not checked with --offline, nor when they cannot
-list their accounts). On a terminal, without <account> the visible accounts
-are offered.
+Cloudflare login: the one new zones are created in and commands work on when
+--account names no other. A disabled account that becomes the default is
+enabled again. The credentials must see it (not checked with --offline, nor
+when they cannot list their accounts). On a terminal, without <account> the
+visible accounts are offered.
 
-A login that is not bound to an account (its credentials could not list their
-accounts when it was made) works on this account alone from then on: what the
-inventory cached of every other account is dropped.
-
-Only the local configuration changes; the cached inventory of the login is
-synced again on its next use.`,
+Nothing else changes: the login keeps working on every account its
+credentials see, also a login that had no default account before. Only the
+local configuration is written; the cached inventory is synced again on its
+next use when the account was disabled.`,
 		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -576,11 +597,14 @@ synced again on its next use.`,
 			if len(ids) > 0 {
 				id = ids[0]
 			} else {
-				opts, err := b.options(ctx, nil)
+				rows, err := b.rows(ctx)
 				if err != nil {
 					return err
 				}
-				if id, err = rt.Choose(app.Choice{Title: "Default account", Options: opts, Default: b.cur.AccountID, Arg: "<account>", What: "account visible to cloudflare/" + b.profile}); err != nil {
+				if rt.Interactive() && len(b.visible) == 0 {
+					return app.UsageErrf("the credentials of cloudflare/%s cannot list accounts: pass the account id", b.profile)
+				}
+				if id, err = rt.Choose(app.Choice{Title: "Default account", Options: accountOptions(rows, nil), Default: b.cur.AccountID, Arg: "<account>", What: "account visible to cloudflare/" + b.profile}); err != nil {
 					return err
 				}
 			}
@@ -588,41 +612,174 @@ synced again on its next use.`,
 				rt.Infof("account %s is already the default account of cloudflare/%s", id, b.profile)
 				return renderCurrent(rt, b.cur)
 			}
-			if !slices.Contains(b.cur.Accounts, id) {
-				if err := b.check(ctx, []string{id}); err != nil {
-					return err
+			if err := b.check(ctx, []string{id}); err != nil {
+				return err
+			}
+			var disabled []string
+			for _, d := range b.cur.Disabled {
+				if d != id {
+					disabled = append(disabled, d)
 				}
 			}
-			if err := b.save(ctx, id, append([]string{id}, b.cur.Accounts...)); err != nil {
-				return err
+			if len(disabled) != len(b.cur.Disabled) {
+				rt.Infof("account %s was disabled and is enabled again", id)
 			}
-			rt.Infof("account %s is now the default account of cloudflare/%s", id, b.profile)
-			cur, err := currentOf(rt, b.profile)
-			if err != nil {
-				return err
-			}
-			return renderCurrent(rt, cur)
+			// What apply reports is the new default alone: that the account
+			// is enabled again was said.
+			b.cur.Disabled = disabled
+			return b.apply(ctx, id, disabled)
 		},
 	}
 	app.MarkNoDryRun(cmd)
 	return cmd
 }
 
-func newAccountAddCmd(rt *app.Runtime) *cobra.Command {
+// formerName says, in the help of a hidden command, which command it is
+// the former name of.
+func formerName(cmd *cobra.Command, now string) {
+	if cmd.Hidden {
+		cmd.Long = fmt.Sprintf("The former name of \"polyctl cloudflare account %s\"; it does the same.\n\n", now) + cmd.Long
+	}
+}
+
+// newAccountEnableCmd builds enable, and add, the name it had while a
+// login held a selection, kept hidden.
+func newAccountEnableCmd(rt *app.Runtime, name string, hidden bool) *cobra.Command {
+	var newDefault string
 	cmd := &cobra.Command{
-		Use:   "add <account>...",
-		Short: "Add accounts to the selection of the Cloudflare login",
-		Long: `Add accounts, by id or name, to the selection of the profile's Cloudflare
-login, without a new login: the inventory, name lookups and domain routing
-cover them from then on. The default account stays (the first account added
-to a login that is not bound to one becomes its default). The credentials
-must see each account (not checked with --offline, nor when they cannot list
-their accounts). An account that is selected already is left as it is. On a
-terminal, without <account> the visible accounts that are not selected are
-offered (tick several).
+		Use:    name + " <account>...",
+		Hidden: hidden,
+		Short:  "Enable accounts of the Cloudflare login again, after they were disabled",
+		Long: `Enable accounts, by id or name, of the profile's Cloudflare login that were
+disabled: the inventory, name lookups and domain routing cover them again.
+Nothing needs to be enabled otherwise: every account the credentials see is
+enabled unless it was disabled.
+
+An account that is enabled already is left as it is (exit code 0, nothing is
+written). One that is neither disabled nor visible to the credentials is not
+found (exit code 4): name it with --account, or make it the default account
+with "polyctl cloudflare account use". A disabled account that is no longer
+visible is forgotten. On a terminal, without <account> the disabled accounts
+are offered (tick several).
 
 Only the local configuration changes; the cached inventory of the login is
-synced again on its next use.`,
+synced again on its next use. Works with --offline for accounts named by id.`,
+		Args: app.RangeArgsOrInteractive(rt, 1, 100, nil),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			b, err := openAccountBook(rt)
+			if err != nil {
+				return err
+			}
+			ids, err := b.resolve(ctx, args)
+			if err != nil {
+				if errors.Is(err, platform.ErrNotFound) {
+					return fmt.Errorf("%w: nothing to enable (name the account with --account, or make it the default: polyctl cloudflare account use <id>)", err)
+				}
+				return err
+			}
+			if len(ids) == 0 {
+				rows, err := b.rows(ctx)
+				if err != nil {
+					return err
+				}
+				opts := accountOptions(rows, func(r accountRow) bool { return !r.Enabled })
+				if ids, err = rt.ChooseMany(app.Choice{Title: "Accounts to enable", Options: opts, Arg: "<account>", What: "disabled account of cloudflare/" + b.profile}); err != nil {
+					return err
+				}
+			}
+			var disabled []string
+			for _, d := range b.cur.Disabled {
+				if !slices.Contains(ids, d) {
+					disabled = append(disabled, d)
+				}
+			}
+			if len(disabled) == len(b.cur.Disabled) {
+				return app.NothingToDof("%s: already enabled for cloudflare/%s", strings.Join(ids, ", "), b.profile)
+			}
+			return b.apply(ctx, b.cur.AccountID, disabled)
+		},
+	}
+	cmd.Flags().StringVar(&newDefault, "default", "", "accepted as by disable; enabling the accounts named never needs a new default account")
+	app.MarkNoDryRun(cmd)
+	formerName(cmd, "enable")
+	return cmd
+}
+
+// newDefault tells the default account of a login whose disabled accounts
+// become disabled: the one it has, unless that is among them or --default
+// (ref) names another. rest are the accounts that stay enabled, as far as
+// the credentials tell, and complete says they tell all of them. A default
+// that is disabled is replaced by --default, by the only account left or
+// by the answer on a terminal, and is a usage error otherwise, as is
+// disabling every account.
+func (b *accountBook) newDefault(ctx context.Context, disabled, rest []string, complete bool, ref string) (string, error) {
+	def := b.cur.AccountID
+	ref = strings.TrimSpace(ref)
+	gone := def != "" && slices.Contains(disabled, def)
+	needDefault := func() error {
+		if len(rest) == 0 {
+			return app.UsageErrf("%s is the default account of cloudflare/%s: pass --default <id> to name the one that replaces it", def, b.profile)
+		}
+		return app.UsageErrf("%s is the default account of cloudflare/%s: pass --default <id> to name the one that replaces it (one of: %s)", def, b.profile, strings.Join(rest, ", "))
+	}
+	switch {
+	case gone && complete && len(rest) == 0:
+		return "", app.UsageErrf("this would disable every account of cloudflare/%s; a login needs one (to drop the login: polyctl auth logout cloudflare --profile %s)", b.profile, b.profile)
+	case ref != "":
+		picked, err := b.resolve(ctx, []string{ref})
+		if err != nil {
+			return "", err
+		}
+		// A list that is not complete does not tell every enabled account:
+		// any account that is not disabled is taken then.
+		if slices.Contains(disabled, picked[0]) || (complete && !slices.Contains(rest, picked[0])) {
+			return "", app.UsageErrf("--default %s: not one of the accounts that stay enabled (%s)", ref, strings.Join(rest, ", "))
+		}
+		return picked[0], nil
+	case gone && len(rest) == 0:
+		return "", needDefault()
+	case gone && len(rest) == 1 && complete && b.rt.Interactive():
+		return rest[0], nil
+	case gone:
+		var opts []prompt.Option
+		for _, id := range rest {
+			opts = append(opts, accountOption(id, b.localName(ctx, id), ""))
+		}
+		return b.rt.Choose(app.Choice{Title: "New default account", Options: opts, Arg: "--default", Missing: needDefault})
+	}
+	return def, nil
+}
+
+// newAccountDisableCmd builds disable, and remove, the name it had while a
+// login held a selection, kept hidden.
+func newAccountDisableCmd(rt *app.Runtime, name string, hidden bool) *cobra.Command {
+	var newDefault string
+	cmd := &cobra.Command{
+		Use:    name + " <account>...",
+		Hidden: hidden,
+		Short:  "Disable accounts of the Cloudflare login: keep them out of every sync, list and lookup",
+		Long: `Disable accounts, by id or name, of the profile's Cloudflare login: the ones
+that are certainly not used. Nothing at Cloudflare changes and the credentials
+stay as they are: the accounts are no longer synced, listed or searched, and
+what the inventory cached of them (zones, their records, R2 buckets) is
+dropped. "polyctl cloudflare account enable" takes them back, and --account
+still names one for a single call.
+
+An account that is disabled already is left as it is (exit code 0, nothing is
+written). One the credentials do not see is not found (exit code 4); when
+they cannot list their accounts an id is taken as it is, which is said.
+
+The default account can be disabled only together with --default <account>,
+which names the enabled account that becomes the default (on a terminal it is
+asked); without it this is a usage error (exit code 2), as is disabling every
+account (log the login out with "polyctl auth logout cloudflare" instead). On
+a terminal, without <account> the enabled accounts are offered (tick several).
+
+No confirmation is asked: only the local configuration and a cache that the
+next sync rebuilds change. Works with --offline; a name is then one the
+profile knows (that of the default account, or of an account with a cached
+zone), and the accounts are not checked against what the credentials see.`,
 		Args: app.RangeArgsOrInteractive(rt, 1, 100, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -635,158 +792,63 @@ synced again on its next use.`,
 				return err
 			}
 			if len(ids) == 0 {
-				opts, err := b.options(ctx, func(r accountRow) bool { return !r.Selected })
+				rows, err := b.rows(ctx)
 				if err != nil {
 					return err
 				}
-				if ids, err = rt.ChooseMany(app.Choice{Title: "Accounts to add", Options: opts, Arg: "<account>", What: "visible account that is not selected yet"}); err != nil {
+				opts := accountOptions(rows, func(r accountRow) bool { return r.Enabled })
+				if ids, err = rt.ChooseMany(app.Choice{Title: "Accounts to disable", Options: opts, Arg: "<account>", What: "enabled account of cloudflare/" + b.profile}); err != nil {
 					return err
 				}
 			}
-			var add []string
+			disabled := slices.Clone(b.cur.Disabled)
+			var off []string
 			for _, id := range ids {
-				if !slices.Contains(b.cur.Accounts, id) {
-					add = append(add, id)
+				if !slices.Contains(disabled, id) {
+					off = append(off, id)
+					disabled = append(disabled, id)
 				}
 			}
-			if len(add) == 0 {
-				return app.NothingToDof("%s: already selected for cloudflare/%s", strings.Join(ids, ", "), b.profile)
+			if len(off) == 0 {
+				return app.NothingToDof("%s: already disabled for cloudflare/%s", strings.Join(ids, ", "), b.profile)
 			}
-			if err := b.check(ctx, add); err != nil {
-				return err
-			}
-			def := b.cur.AccountID
-			if def == "" {
-				def = add[0]
-			}
-			if err := b.save(ctx, def, append(slices.Clone(b.cur.Accounts), add...)); err != nil {
-				return err
-			}
-			rt.Infof("added %s to the accounts of cloudflare/%s", strings.Join(add, ", "), b.profile)
-			if def != b.cur.AccountID {
-				rt.Infof("account %s is now the default account of cloudflare/%s", def, b.profile)
-			}
-			cur, err := currentOf(rt, b.profile)
-			if err != nil {
-				return err
-			}
-			return renderCurrent(rt, cur)
-		},
-	}
-	app.MarkNoDryRun(cmd)
-	return cmd
-}
-
-func newAccountRemoveCmd(rt *app.Runtime) *cobra.Command {
-	var newDefault string
-	cmd := &cobra.Command{
-		Use:   "remove <account>...",
-		Short: "Take accounts out of the selection of the Cloudflare login",
-		Long: `Take accounts, by id or name, out of the selection of the profile's
-Cloudflare login. Nothing at Cloudflare changes and the credentials stay as
-they are: the accounts are no longer synced or searched, and what the
-inventory cached of them (zones, their records, R2 buckets) is dropped. An
-account that is not selected is not found (exit code 4).
-
-The default account can be removed only together with --default <account>,
-which names the selected account that becomes the default (on a terminal it
-is asked); without it this is a usage error (exit code 2), as is removing
-every account (log the login out with "polyctl auth logout cloudflare"
-instead). On a terminal, without <account> the selected accounts are offered.
-
-No confirmation is asked: only the local configuration and a cache that the
-next sync rebuilds change. Works with --offline; a name is then one the
-profile knows (that of the default account, or of an account with a cached
-zone).`,
-		Args: app.RangeArgsOrInteractive(rt, 1, 100, nil),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
-			b, err := openAccountBook(rt)
-			if err != nil {
-				return err
-			}
-			cur := b.cur
-			ids, err := b.resolveSelected(ctx, args)
-			if err != nil {
-				return err
-			}
-			if len(ids) == 0 {
-				var opts []prompt.Option
-				for _, id := range cur.Accounts {
-					mark := ""
-					if id == cur.AccountID {
-						mark = "default"
-					}
-					opts = append(opts, accountOption(id, b.localName(ctx, id), mark))
-				}
-				if ids, err = rt.ChooseMany(app.Choice{Title: "Accounts to remove", Options: opts, Arg: "<account>", What: "selected account"}); err != nil {
-					return err
+			// The default account is known to the login; the others are
+			// checked against what the credentials see.
+			var check []string
+			for _, id := range off {
+				if id != b.cur.AccountID {
+					check = append(check, id)
 				}
 			}
-			var missing []string
-			for _, id := range ids {
-				if !slices.Contains(cur.Accounts, id) {
-					missing = append(missing, id)
-				}
+			if err := b.check(ctx, check); err != nil {
+				return err
 			}
-			if len(missing) > 0 {
-				sort.Strings(missing)
-				selected := "none"
-				if len(cur.Accounts) > 0 {
-					selected = strings.Join(cur.Accounts, ", ")
-				}
-				return fmt.Errorf("%w: %s is not selected for cloudflare/%s (selected: %s)", platform.ErrNotFound, strings.Join(missing, ", "), b.profile, selected)
-			}
+			// rest are the accounts that stay enabled, as far as the
+			// credentials tell.
 			var rest []string
-			for _, id := range cur.Accounts {
-				if !slices.Contains(ids, id) {
-					rest = append(rest, id)
-				}
-			}
-			if len(rest) == 0 {
-				return app.UsageErrf("this would remove every account of cloudflare/%s; a login needs one (to drop the login: polyctl auth logout cloudflare --profile %s)", b.profile, b.profile)
-			}
-			def := cur.AccountID
-			newDefault = strings.TrimSpace(newDefault)
-			switch {
-			case newDefault != "":
-				picked, err := b.resolveSelected(ctx, []string{newDefault})
+			complete := false
+			if !rt.Flags.Offline {
+				accounts, err := b.list(ctx)
 				if err != nil {
 					return err
 				}
-				if !slices.Contains(rest, picked[0]) {
-					return app.UsageErrf("--default %s: not one of the accounts that stay selected (%s)", newDefault, strings.Join(rest, ", "))
+				complete = b.complete && len(accounts) > 0
+				for _, a := range accounts {
+					if !slices.Contains(disabled, a.ID) {
+						rest = append(rest, a.ID)
+					}
 				}
-				def = picked[0]
-			case !slices.Contains(rest, def):
-				if len(rest) == 1 && rt.Interactive() {
-					def = rest[0]
-					break
-				}
-				var opts []prompt.Option
-				for _, id := range rest {
-					opts = append(opts, accountOption(id, b.localName(ctx, id), ""))
-				}
-				if def, err = rt.Choose(app.Choice{Title: "New default account", Options: opts, Arg: "--default", Missing: func() error {
-					return app.UsageErrf("%s is the default account of cloudflare/%s: pass --default <id> to name the one that replaces it (one of: %s)", cur.AccountID, b.profile, strings.Join(rest, ", "))
-				}}); err != nil {
-					return err
-				}
+				sort.Strings(rest)
 			}
-			if err := b.save(ctx, def, rest); err != nil {
+			def, err := b.newDefault(ctx, disabled, rest, complete, newDefault)
+			if err != nil {
 				return err
 			}
-			rt.Infof("removed %s from the accounts of cloudflare/%s", strings.Join(ids, ", "), b.profile)
-			if def != cur.AccountID {
-				rt.Infof("account %s is now the default account of cloudflare/%s", def, b.profile)
-			}
-			if cur, err = currentOf(rt, b.profile); err != nil {
-				return err
-			}
-			return renderCurrent(rt, cur)
+			return b.apply(ctx, def, disabled)
 		},
 	}
-	cmd.Flags().StringVar(&newDefault, "default", "", "the selected account, by id or name, that becomes the default when the default account is removed")
+	cmd.Flags().StringVar(&newDefault, "default", "", "the enabled account, by id or name, that becomes the default when the default account is disabled")
 	app.MarkNoDryRun(cmd)
+	formerName(cmd, "disable")
 	return cmd
 }

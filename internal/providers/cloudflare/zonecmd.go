@@ -33,7 +33,7 @@ func (s *zoneScope) target() platform.Target {
 }
 
 // storeZone mirrors a zone read from the API into the inventory, unless
-// its account is outside the selection of the login. A failure is only
+// its account is disabled for the login. A failure is only
 // reported: the platform is the source of truth.
 func storeZone(ctx context.Context, rt *app.Runtime, profile string, z apiZone) {
 	if !cacheable(rt, profile, z.Account.ID) {
@@ -108,7 +108,7 @@ func zoneRef(arg string) string {
 }
 
 // resolveLiveZone finds the zone <zone> names among the Cloudflare logins
-// (restricted by --profile) and their selected accounts (or the account of
+// (restricted by --profile) and their enabled accounts (or the account of
 // --account) through the inventory, synced once when it does not know the
 // zone, and reads it live: a zone the inventory remembers but the platform
 // no longer has is removed from the inventory and looked up again by name,
@@ -151,23 +151,23 @@ func resolveLiveZone(ctx context.Context, rt *app.Runtime, arg string) (*zoneSco
 	if acc := z.Account.ID; !c.api.covers(acc) {
 		// The row was of an account the login works on; the zone is not.
 		dropZone(ctx, rt, res.Profile, res.ID)
-		return nil, unselectedZoneErr(z.Name, z.ID, acc)
+		return nil, disabledZoneErr(z.Name, z.ID, acc)
 	}
 	storeZone(ctx, rt, res.Profile, *z)
 	return &zoneScope{c: c, profile: res.Profile, z: z}, nil
 }
 
 // routeZone finds the zone ref (a normalized name or an id) among the
-// Cloudflare logins (restricted by --profile) and the accounts they select
+// Cloudflare logins (restricted by --profile) and their enabled accounts
 // (or the account of --account) through the inventory, synced once when it
 // does not know the zone, and opens the client of the login that holds it.
 // The zone is not read: the inventory row is all the caller gets. A name
 // several accounts hold a zone of is a pick in the interactive flow and
 // ambiguous (exit code 5) otherwise.
 //
-// The account of --account that no login selects is not in the inventory:
-// its zone is looked up on the platform, through the profile every
-// Cloudflare command would use.
+// A disabled account named by --account is not in the inventory: its zone
+// is looked up on the platform, through the profile every Cloudflare
+// command would use.
 func routeZone(ctx context.Context, rt *app.Runtime, ref string) (*Client, inventory.Resource, error) {
 	if rt.Flags.Offline {
 		return nil, inventory.Resource{}, app.ErrOffline
@@ -189,14 +189,14 @@ func routeZone(ctx context.Context, rt *app.Runtime, ref string) (*Client, inven
 	}
 	if ref == "" {
 		// The <zone> left out in the interactive flow: asked for among
-		// the zones of the selected accounts.
-		if ref, err = pickLiveZone(ctx, rt, by, keep); err != nil {
+		// the zones of the enabled accounts.
+		if ref, err = pickLiveZone(ctx, rt, keep); err != nil {
 			return nil, inventory.Resource{}, err
 		}
 	}
 	cand := func(r inventory.Resource) zoneCand { return candOfZone(r.Profile, rowZone(r)) }
-	// A name is looked up in zone sets that are not due: after the
-	// selection changed, an account that was added may hold a zone of it too.
+	// A name is looked up in zone sets that are not due: an account that
+	// was enabled since they were synced may hold a zone of it too.
 	lookup := app.ResourceLookup{Platform: platform.Cloudflare, Kind: platform.ResZone, Ref: ref, Keep: keep, SyncDue: strings.Contains(ref, "."),
 		Candidate: func(r inventory.Resource) string { return cand(r).String() },
 		Option:    func(r inventory.Resource) string { return cand(r).cells() },
@@ -242,8 +242,8 @@ func routeZone(ctx context.Context, rt *app.Runtime, ref string) (*Client, inven
 	return c, res, nil
 }
 
-// routeLiveZone is routeZone for the account of --account that no login
-// selects: the zone is looked up on the platform, and asked for among the
+// routeLiveZone is routeZone for a disabled account named by --account:
+// the zone is looked up on the platform, and asked for among the
 // zones read from it when ref is empty.
 func routeLiveZone(ctx context.Context, rt *app.Runtime, sc acctScope, ref string) (*Client, inventory.Resource, error) {
 	c, err := openProfile(ctx, rt, sc.profile)
@@ -323,7 +323,7 @@ func openAccount(ctx context.Context, rt *app.Runtime) (s *session, account stri
 	}
 	accounts, err := s.client.api.listAccounts(ctx)
 	if err != nil {
-		return nil, "", false, fmt.Errorf("profile %s has no selected account and its accounts cannot be listed (pass --account <id>): %w", s.profile, err)
+		return nil, "", false, fmt.Errorf("profile %s has no default account and its accounts cannot be listed (pass --account <id>): %w", s.profile, err)
 	}
 	switch len(accounts) {
 	case 0:
@@ -332,7 +332,7 @@ func openAccount(ctx context.Context, rt *app.Runtime) (s *session, account stri
 		return s, accounts[0].ID, true, nil
 	}
 	if !rt.Interactive() {
-		return nil, "", false, app.UsageErrf("the credentials of profile %s see %d accounts (%s): pass --account <id or name>, or select the accounts of the login with \"polyctl cloudflare account use <id>\"",
+		return nil, "", false, app.UsageErrf("the credentials of profile %s see %d accounts (%s): pass --account <id or name>, or name the default account with \"polyctl cloudflare account use <id>\"",
 			s.profile, len(accounts), accountNames(accounts))
 	}
 	// The interactive flow asks, for this run only.

@@ -215,9 +215,10 @@ func hasCode(err error, code int) bool {
 // an R2 bucket that is not in the account of the zone.
 func (c *Client) SetPeers(peers func(ctx context.Context) ([]platform.Peer, error)) { c.peers = peers }
 
-// r2Account returns the account R2 requests go to: the account the client
-// is bound to (the default account of the login, or the one of --account),
-// or the only account the credentials see.
+// r2Account returns the one account an R2 request goes to when nothing
+// names it: the account the client is bound to (the default account of
+// the login, or the one of --account), or the only account the
+// credentials see.
 func (c *Client) r2Account(ctx context.Context) (string, error) {
 	if c.api.accountID != "" {
 		return c.api.accountID, nil
@@ -227,7 +228,7 @@ func (c *Client) r2Account(ctx context.Context) (string, error) {
 	}
 	accounts, err := c.api.listAccounts(ctx)
 	if err != nil {
-		return "", fmt.Errorf("cloudflare profile %q has no selected account and cannot list its accounts: %w", c.profile.Name, err)
+		return "", fmt.Errorf("cloudflare profile %q has no default account and cannot list its accounts: %w", c.profile.Name, err)
 	}
 	switch len(accounts) {
 	case 0:
@@ -236,22 +237,8 @@ func (c *Client) r2Account(ctx context.Context) (string, error) {
 		c.r2AccountID = accounts[0].ID
 		return c.r2AccountID, nil
 	}
-	return "", fmt.Errorf("%w: cloudflare profile %q sees %d accounts (%s): pass --account <id or name>, or select the accounts of the login with \"polyctl cloudflare account use <id>\"",
+	return "", fmt.Errorf("%w: cloudflare profile %q sees %d accounts (%s): pass --account <id or name>, or name the default account with \"polyctl cloudflare account use <id>\"",
 		platform.ErrAmbiguous, c.profile.Name, len(accounts), accountNames(accounts))
-}
-
-// r2Accounts returns the accounts the R2 listings of the client cover: the
-// selected accounts (or the one of --account), or, for a login without an
-// account, the only account its credentials see.
-func (c *Client) r2Accounts(ctx context.Context) ([]string, error) {
-	if ids := c.api.scopeIDs(); len(ids) > 1 || ids[0] != "" {
-		return ids, nil
-	}
-	acc, err := c.r2Account(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return []string{acc}, nil
 }
 
 // r2Unusable reports the failure of an account the credentials cannot use
@@ -262,55 +249,56 @@ func r2Unusable(err error) bool {
 		errors.Is(err, platform.ErrForbidden) || errors.Is(err, platform.ErrAmbiguous)
 }
 
-// syncBuckets lists the R2 buckets of the selected accounts (default
+// syncBuckets lists the R2 buckets of the enabled accounts (default
 // jurisdiction) for the inventory. An account the credentials cannot use
-// for R2 (R2 not enabled, no R2 permission, several accounts and none
-// selected) syncs as an empty set with a warning, as `r2 bucket list` skips
-// it: the other types of a sync are not failed for it, and a bucket the
-// inventory does not know is still looked up live.
+// for R2 (R2 not enabled, no R2 permission) holds no bucket, which one
+// note per run says for all of them, as `r2 bucket list` skips it: the
+// other types of a sync are not failed for it, and a bucket the inventory
+// does not know is still looked up live.
 func (c *Client) syncBuckets(ctx context.Context) ([]platform.Resource, error) {
 	return c.buckets(ctx, true)
 }
 
-// bucketResources lists the R2 buckets of the selected accounts (default
+// bucketResources lists the R2 buckets of the enabled accounts (default
 // jurisdiction) as inventory resources. With one account every failure is
 // returned; with several, an account that cannot be used for R2 holds no
-// bucket (with a warning) unless none of them can, and an account that
+// bucket (with the note) unless none of them can, and an account that
 // fails otherwise keeps its stored rows (a *platform.RegionSyncError).
 func (c *Client) bucketResources(ctx context.Context) ([]platform.Resource, error) {
 	return c.buckets(ctx, false)
 }
 
-func (c *Client) buckets(ctx context.Context, skipUnusable bool) ([]platform.Resource, error) {
-	skipped := func(account string, err error) ([]platform.Resource, error) {
-		if account != "" {
-			warnf("cloudflare/%s account %s: skipped r2 buckets: %v", c.profile.Name, account, err)
-		} else {
-			warnf("cloudflare/%s: skipped r2 buckets: %v", c.profile.Name, err)
-		}
-		return []platform.Resource{}, nil
+// r2UnusableWhy says in a few words why an account cannot be used for R2.
+func r2UnusableWhy(err error) string {
+	if errors.Is(err, platform.ErrNotSupported) {
+		return "R2 is not enabled"
 	}
-	ids, err := c.r2Accounts(ctx)
+	return "no R2 permission"
+}
+
+func (c *Client) buckets(ctx context.Context, skipUnusable bool) ([]platform.Resource, error) {
+	ids, err := c.enabledAccounts(ctx)
 	if err != nil {
 		if skipUnusable && r2Unusable(err) {
-			return skipped("", err)
+			warnf("cloudflare/%s: skipped r2 buckets: %v", c.profile.Name, err)
+			return []platform.Resource{}, nil
 		}
 		return nil, err
 	}
-	if len(ids) == 1 {
-		out, err := c.bucketsOf(ctx, ids[0])
-		if err != nil && skipUnusable && r2Unusable(err) {
-			return skipped("", err)
-		}
-		return out, err
+	if len(ids) == 0 {
+		return []platform.Resource{}, nil
 	}
-	var unusable []error
-	out, err := c.eachAccount(ctx, func(ctx context.Context, ac *Client) ([]platform.Resource, error) {
+	var (
+		unusable []error
+		notes    []string
+	)
+	out, err := c.eachAccount(ctx, ids, func(ctx context.Context, ac *Client) ([]platform.Resource, error) {
 		acc := ac.api.accountID
 		res, err := c.bucketsOf(ctx, acc)
-		if err != nil && r2Unusable(err) {
+		if err != nil && r2Unusable(err) && (skipUnusable || len(ids) > 1) {
 			unusable = append(unusable, fmt.Errorf("account %s: %w", acc, err))
-			return skipped(acc, err)
+			notes = append(notes, fmt.Sprintf("%s (%s)", acc, r2UnusableWhy(err)))
+			return []platform.Resource{}, nil
 		}
 		return res, err
 	})
@@ -318,6 +306,11 @@ func (c *Client) buckets(ctx context.Context, skipUnusable bool) ([]platform.Res
 		// Not one account can be used for R2: that is the answer of a
 		// command that asked for the buckets.
 		return nil, errors.Join(unusable...)
+	}
+	if len(notes) > 0 {
+		// One line for all of them. It names no command: the account may
+		// still hold zones, so disabling it is not the answer.
+		warnf("note: cloudflare/%s: R2 is not usable in %d account(s): %s", c.profile.Name, len(notes), strings.Join(notes, ", "))
 	}
 	if out == nil && err == nil {
 		out = []platform.Resource{}
@@ -448,11 +441,13 @@ func (c *Client) Unbind(ctx context.Context, zone platform.Zone, rec platform.Re
 		}
 		return true
 	}
-	// The other selected accounts of this login come before the other
+	// The other enabled accounts of this login come before the other
 	// logins: they need no further credentials.
-	for _, id := range c.api.scopeIDs() {
-		if unbindIn(c.api, id) {
-			return true, nil
+	if ids, err := c.enabledAccounts(ctx); err == nil {
+		for _, id := range ids {
+			if unbindIn(c.api, id) {
+				return true, nil
+			}
 		}
 	}
 	if c.peers != nil {
@@ -465,7 +460,7 @@ func (c *Client) Unbind(ctx context.Context, zone platform.Zone, rec platform.Re
 			if !ok {
 				continue
 			}
-			ids, err := pc.r2Accounts(ctx)
+			ids, err := pc.enabledAccounts(ctx)
 			if err != nil {
 				continue
 			}

@@ -47,18 +47,35 @@ func pickCachedZone(rt *app.Runtime, zones []platform.Zone, sc acctScope) (strin
 	return rt.Choose(app.Choice{Title: "Zone", Options: opts, Arg: "<zone>", What: what})
 }
 
-// pickLiveZone asks for one of the zones of every selected account of
+// pickLiveZone asks for one of the zones of every enabled account of
 // every Cloudflare login, as the inventory knows them (the <zone> of the
 // commands that route a zone among the logins). keep tells the rows in
-// the scope of the call; a zone of a login with several accounts is shown
-// with its account.
-func pickLiveZone(ctx context.Context, rt *app.Runtime, scopes map[string]acctScope, keep func(inventory.Resource) bool) (string, error) {
+// the scope of the call; a zone of a login whose zones are of several
+// accounts is shown with its account.
+func pickLiveZone(ctx context.Context, rt *app.Runtime, keep func(inventory.Resource) bool) (string, error) {
+	// The profiles whose zones at hand are of more than one account.
+	several := map[string]bool{}
+	if db, err := rt.DB(); err == nil {
+		first := map[string]string{}
+		rows, _ := db.List(ctx, inventory.Query{Platform: platform.Cloudflare, Type: platform.ResZone})
+		for _, r := range rows {
+			if !keep(r) {
+				continue
+			}
+			acc := rowAccount(r)
+			if f, ok := first[r.Profile]; !ok {
+				first[r.Profile] = acc
+			} else if f != acc {
+				several[r.Profile] = true
+			}
+		}
+	}
 	return rt.PickResource(ctx, app.ResourcePick{Platform: platform.Cloudflare, Kind: platform.ResZone, Title: "Zone", Arg: "<zone>",
 		Filter: keep,
 		Label: func(r inventory.Resource) string {
 			z := rowZone(r)
 			account := ""
-			if acc := rowAccount(r); acc != "" && scopes[r.Profile].several() {
+			if acc := rowAccount(r); acc != "" && several[r.Profile] {
 				account = nonEmpty(zoneAccountName(z), acc)
 			}
 			return zoneLabel(z, account, r.Profile)

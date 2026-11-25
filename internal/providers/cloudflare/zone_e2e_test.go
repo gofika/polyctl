@@ -775,12 +775,18 @@ func TestZoneEnsureUsageErrors(t *testing.T) {
 	}
 }
 
+// --account keeps to its account also when the API ignores the account
+// filter of the lookup. Without it a login works on every account its
+// credentials see, so a name two of them hold a zone of is ambiguous.
 func TestZoneEnsureAccountFilter(t *testing.T) {
 	e := newZoneEnv(t)
 	e.f.ignoreAccount = true
 	other := e.f.addZone("example.com", "acc2", "free", "active")
 	mine := e.f.addZone("example.com", "acc1", "free", "active")
-	code, stdout, stderr := e.run("cloudflare", "zone", "ensure", "example.com", "-o", "json")
+	if code, _, stderr := e.run("cloudflare", "zone", "ensure", "example.com", "-o", "json"); code != cli.ExitAmbiguous || !strings.Contains(stderr, "--account <id or name>") {
+		t.Fatalf("two accounts: exit %d: %s", code, stderr)
+	}
+	code, stdout, stderr := e.run("cloudflare", "zone", "ensure", "example.com", "--account", "acc1", "-o", "json")
 	if code != cli.ExitOK {
 		t.Fatalf("exit %d: %s", code, stderr)
 	}

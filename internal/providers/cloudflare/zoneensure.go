@@ -49,10 +49,10 @@ type zoneEnsure struct {
 	profile string
 	// account is where a new zone goes: the account of --account, else the
 	// default account of the login. An existing zone found in another
-	// selected account moves it there.
+	// enabled account moves it there.
 	account string
 	// only: the account was named for this call; the zone is looked for in
-	// it alone, not in every selected account.
+	// it alone, not in every enabled account.
 	only   bool
 	domain string
 	create bool // zone create: an existing zone is an error
@@ -90,7 +90,7 @@ func (e *zoneEnsure) report(changes []platform.Change) zoneReport {
 }
 
 // find looks for the zone: in the named account alone, else in every
-// selected account of the login, since a domain may have a zone in more
+// enabled account of the login, since a domain may have a zone in more
 // than one account and a second one must not be made next to the first.
 func (e *zoneEnsure) find(ctx context.Context) ([]apiZone, error) {
 	if e.only {
@@ -99,8 +99,10 @@ func (e *zoneEnsure) find(ctx context.Context) ([]apiZone, error) {
 	return e.c.api.zonesNamed(ctx, e.domain)
 }
 
-// several reports whether the run looked in more than one account.
-func (e *zoneEnsure) several() bool { return !e.only && len(e.c.api.scopeIDs()) > 1 }
+// elsewhere reports whether the zone the run found is in another account
+// than the default one of the login, so that what is said about it names
+// the account.
+func (e *zoneEnsure) elsewhere() bool { return !e.only && e.account != e.c.api.accountID }
 
 // run observes the zone, then creates it when it is missing (with
 // Foundation DNS) and converges the settings, printing the report.
@@ -132,7 +134,7 @@ func (e *zoneEnsure) run(ctx context.Context, event string) error {
 		dropZoneNamed(ctx, e.rt, e.profile, e.domain, e.account, e.z.ID)
 		storeZone(ctx, e.rt, e.profile, *e.z)
 		if e.create {
-			if e.several() {
+			if e.elsewhere() {
 				return fmt.Errorf("zone %s already exists in account %s of profile %s (id=%s); use 'polyctl cloudflare zone ensure'", e.domain, e.account, e.profile, e.z.ID)
 			}
 			return fmt.Errorf("zone %s already exists in profile %s (id=%s); use 'polyctl cloudflare zone ensure'", e.domain, e.profile, e.z.ID)
@@ -216,7 +218,7 @@ func (e *zoneEnsure) createZone(ctx context.Context) (platform.Change, error) {
 				return platform.Change{Action: platform.Unchanged, ID: e.z.ID, Detail: fmt.Sprintf("id=%s status=%s (created meanwhile)", e.z.ID, e.z.Status)}, nil
 			}
 		}
-		return platform.Change{}, fmt.Errorf("zone %s already exists, in this account or in another one the login does not select (Cloudflare holds an active domain in one account only): pass --account or --profile to target the account that holds it: %w", e.domain, err)
+		return platform.Change{}, fmt.Errorf("zone %s already exists, in this account or in another one the login does not work on (Cloudflare holds an active domain in one account only): pass --account or --profile to target the account that holds it: %w", e.domain, err)
 	}
 	if err != nil {
 		return platform.Change{}, err
@@ -224,7 +226,7 @@ func (e *zoneEnsure) createZone(ctx context.Context) (platform.Change, error) {
 	e.z, e.created, e.wrote = z, true, true
 	storeZone(ctx, e.rt, e.profile, *z)
 	if !cacheable(e.rt, e.profile, e.account) {
-		e.rt.Infof("note: account %s is not selected, so the new zone is not in the inventory (polyctl cloudflare account add %s)", e.account, e.account)
+		e.rt.Infof("note: account %s is disabled, so the new zone is not in the inventory (polyctl cloudflare account enable %s)", e.account, e.account)
 	}
 	return platform.Change{ID: z.ID, Detail: fmt.Sprintf("id=%s status=%s", z.ID, z.Status)}, nil
 }

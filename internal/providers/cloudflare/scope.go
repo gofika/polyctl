@@ -18,9 +18,10 @@ import (
 	"github.com/gofika/polyctl/internal/prompt"
 )
 
-// A Cloudflare command works on the selected accounts of its login, or on
-// the one account --account names. An account outside the selection is read
-// live: nothing of it is stored in the inventory.
+// A Cloudflare command works on the enabled accounts of its login (every
+// account its credentials see that was not disabled), or on the one account
+// --account names. A disabled account is read live: nothing of it is stored
+// in the inventory.
 
 // accountFlag is the value of --account: an account id or name.
 type accountFlag struct{ v *string }
@@ -42,7 +43,7 @@ func (f accountFlag) Set(s string) error {
 }
 
 // accountFlagHelp is the usage text of --account.
-const accountFlagHelp = "Cloudflare account of this call, by id or name (default: every selected account for lookups and lists, the default account for creates); an account outside the selection is read live and not cached"
+const accountFlagHelp = "Cloudflare account of this call, by id or name (default: every enabled account for lookups and lists, the default account for creates); a disabled account is read live and not cached"
 
 // addAccountFlag adds --account to a command and everything below it. A
 // command tree built without a runtime (to inspect it) gets a flag nothing
@@ -59,10 +60,10 @@ func addAccountFlag(rt *app.Runtime, cmd *cobra.Command) {
 // pinnedAccount is the value of --account, "" when the flag was not given.
 func pinnedAccount(rt *app.Runtime) string { return strings.TrimSpace(rt.Flags.Account) }
 
-// loginAccounts returns the default account, its name and the selection of
-// a profile's Cloudflare login, from the config. All are empty for an
-// unscoped login.
-func loginAccounts(rt *app.Runtime, profile string) (def, defName string, selected []string, err error) {
+// loginAccounts returns the default account, its name and the disabled
+// accounts of a profile's Cloudflare login, from the config. The default is
+// empty for a login without one.
+func loginAccounts(rt *app.Runtime, profile string) (def, defName string, disabled []string, err error) {
 	cfg, err := rt.Config()
 	if err != nil {
 		return "", "", nil, err
@@ -71,11 +72,11 @@ func loginAccounts(rt *app.Runtime, profile string) (def, defName string, select
 	if err != nil {
 		return "", "", nil, fmt.Errorf("%w: %v", platform.ErrNotFound, err)
 	}
-	selected = selectedAccounts(a.Metadata)
-	if len(selected) > 0 {
-		def = selected[0]
+	def = strings.TrimSpace(a.Metadata[metaAccountID])
+	if def != "" {
+		defName = strings.TrimSpace(a.Metadata[metaAccountName])
 	}
-	return def, strings.TrimSpace(a.Metadata[metaAccountName]), selected, nil
+	return def, defName, disabledAccounts(a.Metadata), nil
 }
 
 // zoneAccount is the account id a zone carries, "" when it names none.
@@ -113,16 +114,16 @@ func rowAccount(r inventory.Resource) string {
 }
 
 // knownAccount resolves an account reference without the network: the id
-// of a selected account, or a name the profile knows (that of the default
-// account, and those the cached zones carry) when it names one account. A
-// login without an account has no selection: the id of an account it
-// cached zones of is known to it instead.
+// of the default account, of a disabled account or of an account the
+// cached zones and buckets carry, or a name the profile knows (that of the
+// default account, and those the cached zones carry) when it names one
+// account.
 func knownAccount(ctx context.Context, rt *app.Runtime, profile, ref string) (string, bool) {
-	def, defName, selected, err := loginAccounts(rt, profile)
-	if err != nil {
+	def, defName, disabled, err := loginAccounts(rt, profile)
+	if err != nil || ref == "" {
 		return "", false
 	}
-	if slices.Contains(selected, ref) {
+	if ref == def || slices.Contains(disabled, ref) {
 		return ref, true
 	}
 	var ids []string
@@ -136,10 +137,16 @@ func knownAccount(ctx context.Context, rt *app.Runtime, profile, ref string) (st
 		rows, _ := db.List(ctx, inventory.Query{Platform: platform.Cloudflare, Profile: profile, Type: platform.ResZone})
 		for _, r := range rows {
 			z := rowZone(r)
-			if len(selected) == 0 && ref != "" && rowAccount(r) == ref {
+			if rowAccount(r) == ref {
 				return ref, true
 			}
 			add(zoneAccount(z), zoneAccountName(z))
+		}
+		buckets, _ := db.List(ctx, inventory.Query{Platform: platform.Cloudflare, Profile: profile, Type: platform.ResR2Bucket})
+		for _, r := range buckets {
+			if r.ParentID == ref {
+				return ref, true
+			}
 		}
 	}
 	if len(ids) == 1 {
@@ -202,8 +209,8 @@ func visibleAccounts(ctx context.Context, a *api) (accounts []account, complete 
 // resolveAccountRef turns the account a user names for a profile, by id or
 // by name, into its id:
 //
-//   - the id of a selected account, or a name the profile knows, without
-//     the network;
+//   - an id or a name the profile knows (see knownAccount), without the
+//     network;
 //   - else among the accounts the credentials see, by id, then by name: a
 //     name several of them carry is ambiguous (exit code 5), and an account
 //     that is not among them is not found (exit code 4);
@@ -218,7 +225,7 @@ func resolveAccountRef(ctx context.Context, rt *app.Runtime, profile, ref string
 		return id, nil
 	}
 	if rt.Flags.Offline {
-		return "", fmt.Errorf("%w: account %q is not selected for cloudflare/%s and cannot be looked up with --offline", app.ErrOffline, ref, profile)
+		return "", fmt.Errorf("%w: account %q is not known to cloudflare/%s and cannot be looked up with --offline", app.ErrOffline, ref, profile)
 	}
 	c, err := openProfile(ctx, rt, profile)
 	if err != nil {
@@ -273,26 +280,27 @@ func matchAccount(profile, ref, prefix string, accounts []account, complete bool
 // acctScope is what one call covers in one profile.
 type acctScope struct {
 	profile string
-	// def is the default account of the login: a row that names no account
-	// counts as one of it.
+	// def is the default account of the login ("" for a login without
+	// one): a row that names no account counts as one of it.
 	def string
-	// selected is the selection of the login, empty for an unscoped one
-	// (which covers whatever its credentials see).
-	selected []string
+	// disabled are the accounts of the login kept out of every sync, list
+	// and lookup.
+	disabled []string
 	// pin is the account of --account, "" without the flag.
 	pin string
-	// live says --account names an account outside the selection: it is
-	// read live and nothing of it is stored.
+	// live says --account names a disabled account: it is read live and
+	// nothing of it is stored.
 	live bool
 }
 
 // keeps reports whether an object of account is in the scope: of the
-// account of --account with the flag, of a selected account without it.
+// account of --account with the flag, of an account that is not disabled
+// without it.
 //
-// A cached row of an account that is no longer selected is out of scope:
-// the selection may have changed (a new login, an edited config.yaml)
-// while the set that holds the row is still fresh, and a command must not
-// find, let alone change, a zone of an account the login was taken off.
+// A cached row of a disabled account is out of scope: the account may have
+// been disabled (a new login, an edited config.yaml) while the set that
+// holds the row is still fresh, and a command must not find, let alone
+// change, a zone of an account the login was taken off.
 func (s acctScope) keeps(account string) bool {
 	if account == "" {
 		account = s.def
@@ -303,22 +311,31 @@ func (s acctScope) keeps(account string) bool {
 	case s.pin != "":
 		return account == s.pin
 	}
-	return len(s.selected) == 0 || slices.Contains(s.selected, account)
+	return !slices.Contains(s.disabled, account)
 }
 
-// several reports whether the scope spans more than one account, so that
-// what it lists has to say which account it is of.
-func (s acctScope) several() bool { return s.pin == "" && len(s.selected) != 1 }
+// named reports whether what is said about account has to name it next to
+// the profile: it is not the default account of the login. A login that
+// works on its default account alone reads as it always did.
+func (s acctScope) named(account string) bool { return account != "" && account != s.def }
 
-// profileScope is the scope of the call in profile: the selection of its
-// login, or the account of --account. An unscoped login covers every
-// account its credentials see, so --account only filters it.
-func profileScope(ctx context.Context, rt *app.Runtime, profile string) (acctScope, error) {
-	def, _, selected, err := loginAccounts(rt, profile)
+// scopeOf is the scope of a profile without --account.
+func scopeOf(rt *app.Runtime, profile string) (acctScope, error) {
+	def, _, disabled, err := loginAccounts(rt, profile)
 	if err != nil {
 		return acctScope{}, err
 	}
-	s := acctScope{profile: profile, def: def, selected: selected}
+	return acctScope{profile: profile, def: def, disabled: disabled}, nil
+}
+
+// profileScope is the scope of the call in profile: the enabled accounts
+// of its login, or the account of --account, which is read live when it
+// is a disabled one.
+func profileScope(ctx context.Context, rt *app.Runtime, profile string) (acctScope, error) {
+	s, err := scopeOf(rt, profile)
+	if err != nil {
+		return acctScope{}, err
+	}
 	ref := pinnedAccount(rt)
 	if ref == "" {
 		return s, nil
@@ -326,15 +343,15 @@ func profileScope(ctx context.Context, rt *app.Runtime, profile string) (acctSco
 	if s.pin, err = resolveAccountRef(ctx, rt, profile, ref); err != nil {
 		return acctScope{}, err
 	}
-	s.live = len(selected) > 0 && !slices.Contains(selected, s.pin)
+	s.live = slices.Contains(s.disabled, s.pin)
 	return s, nil
 }
 
 // localScope is profileScope without the network, for shell completion: an
 // --account the profile does not know filters nothing.
 func localScope(ctx context.Context, rt *app.Runtime, profile string) acctScope {
-	def, _, selected, _ := loginAccounts(rt, profile)
-	s := acctScope{profile: profile, def: def, selected: selected}
+	s, _ := scopeOf(rt, profile)
+	s.profile = profile
 	if ref := pinnedAccount(rt); ref != "" {
 		s.pin, _ = knownAccount(ctx, rt, profile, ref)
 	}
@@ -358,45 +375,34 @@ func cloudflareProfiles(rt *app.Runtime) ([]config.AccountRef, error) {
 }
 
 // routeScopes are the scopes of a command that finds its zone among the
-// Cloudflare logins (restricted by --profile): the selection of each, or,
-// with --account, that account in the logins that select it (or are
-// unscoped). When no login selects the account it is read live through the
-// profile every Cloudflare command would use: the one scope returned then
-// has live set.
+// Cloudflare logins (restricted by --profile): the enabled accounts of
+// each, or, with --account, that account in the logins that know it (see
+// knownAccount) and do not disable it. When no login does, the account is
+// taken through the profile every Cloudflare command would use, which may
+// ask the credentials for it: the one scope returned then has live set
+// when the account is disabled there.
 func routeScopes(ctx context.Context, rt *app.Runtime) ([]acctScope, error) {
 	profiles, err := cloudflareProfiles(rt)
 	if err != nil {
 		return nil, err
 	}
 	ref := pinnedAccount(rt)
-	var out, unscoped []acctScope
-	pin := ""
+	var out []acctScope
 	for _, p := range profiles {
-		def, _, selected, err := loginAccounts(rt, p.Profile)
+		s, err := scopeOf(rt, p.Profile)
 		if err != nil {
 			return nil, err
 		}
-		s := acctScope{profile: p.Profile, def: def, selected: selected}
-		switch {
-		case ref == "":
+		if ref == "" {
 			out = append(out, s)
-		case len(selected) == 0:
-			unscoped = append(unscoped, s)
-		default:
-			if id, ok := knownAccount(ctx, rt, p.Profile, ref); ok && slices.Contains(selected, id) {
-				s.pin, pin = id, id
-				out = append(out, s)
-			}
+			continue
 		}
-	}
-	if ref == "" {
-		return out, nil
-	}
-	if len(out) > 0 {
-		for _, s := range unscoped {
-			s.pin = pin
+		if id, ok := knownAccount(ctx, rt, p.Profile, ref); ok && !slices.Contains(s.disabled, id) {
+			s.pin = id
 			out = append(out, s)
 		}
+	}
+	if ref == "" || len(out) > 0 {
 		return out, nil
 	}
 	profile, err := rt.ProfileFor(platform.Cloudflare)
@@ -411,11 +417,11 @@ func routeScopes(ctx context.Context, rt *app.Runtime) ([]acctScope, error) {
 }
 
 // cacheable reports whether what a profile reads of account belongs in the
-// inventory: the account is selected, or the login is unscoped. Something
-// that names no account is of the default one.
+// inventory: the account is not disabled. Something that names no account
+// is of the default one.
 func cacheable(rt *app.Runtime, profile, account string) bool {
-	_, _, selected, err := loginAccounts(rt, profile)
-	return err != nil || account == "" || len(selected) == 0 || slices.Contains(selected, account)
+	_, _, disabled, err := loginAccounts(rt, profile)
+	return err != nil || account == "" || !slices.Contains(disabled, account)
 }
 
 // disambiguate settles an ambiguous lookup of the interactive flow by
@@ -544,10 +550,10 @@ func pickAmbiguousZone(rt *app.Runtime, profile, ref string, zs []apiZone, byID 
 	return &z, nil
 }
 
-// unselectedZoneErr is the answer for a zone in an account the login does
-// not select.
-func unselectedZoneErr(name, id, account string) error {
-	return fmt.Errorf("%w: zone %s (%s) is in account %s, which is not selected for this login: add it with \"polyctl cloudflare account add %s\", or pass --account %s to the cloudflare commands",
+// disabledZoneErr is the answer for a zone in an account that is disabled
+// for the login.
+func disabledZoneErr(name, id, account string) error {
+	return fmt.Errorf("%w: zone %s (%s) is in account %s, which is disabled for this login: enable it with \"polyctl cloudflare account enable %s\", or pass --account %s to the cloudflare commands",
 		platform.ErrNotFound, platform.NormalizeDomain(name), id, account, account, account)
 }
 
@@ -576,11 +582,13 @@ func findLiveZone(ctx context.Context, rt *app.Runtime, a *api, sc acctScope, re
 		case sc.pin != "":
 			return nil, otherAccountErr(ref, acc, sc.pin)
 		default:
-			return nil, unselectedZoneErr(z.Name, z.ID, acc)
+			return nil, disabledZoneErr(z.Name, z.ID, acc)
 		}
 		return z, nil
 	}
-	zs, err := a.zonesNamed(ctx, name)
+	// One request tells the zones of the name in the accounts of the
+	// scope and the ones in a disabled account, which the answer names.
+	zs, others, err := a.zonesNamedAll(ctx, name)
 	if err != nil {
 		return nil, err
 	}
@@ -591,17 +599,10 @@ func findLiveZone(ctx context.Context, rt *app.Runtime, a *api, sc acctScope, re
 		if sc.pin != "" {
 			return nil, fmt.Errorf("%w: zone %q in account %s of cloudflare/%s", platform.ErrNotFound, name, sc.pin, sc.profile)
 		}
-		if !a.unscoped() {
-			// The credentials may see it in an account the login does not
-			// select: say so.
-			if others, oerr := a.findZonesNamed(ctx, name, ""); oerr == nil {
-				for _, z := range others {
-					if acc := z.Account.ID; acc != "" && !a.covers(acc) {
-						return nil, fmt.Errorf("%w: zone %q (it is in account %s, which is not selected: polyctl cloudflare account add %s, or --account %s)",
-							platform.ErrNotFound, name, acc, acc, acc)
-					}
-				}
-			}
+		if len(others) > 0 {
+			acc := others[0].Account.ID
+			return nil, fmt.Errorf("%w: zone %q (it is in account %s, which is disabled: polyctl cloudflare account enable %s, or --account %s)",
+				platform.ErrNotFound, name, acc, acc, acc)
 		}
 		return nil, fmt.Errorf("%w: zone %q", platform.ErrNotFound, name)
 	}

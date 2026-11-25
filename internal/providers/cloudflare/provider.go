@@ -75,8 +75,10 @@ const storedToken = "api_token"
 //	method        "api_token" or "oauth"
 //	account_id    the id of the default account (absent when the accounts cannot be listed)
 //	account_name  the display name of the default account
-//	accounts      the ids of the selected accounts, separated by commas, when
-//	              there are several (see accounts.go)
+//	disabled_accounts
+//	              the ids of the accounts kept out of every sync, list and
+//	              lookup, separated by commas (see accounts.go); every other
+//	              account the credentials see is enabled
 //	email         the user's email when it can be read (optional)
 //	token_id      API token: its public id, as reported by the token verify endpoint
 //	scopes        oauth: the granted scopes, separated by spaces
@@ -120,15 +122,17 @@ func (*provider) LoginHelp() string {
 	return "API token created in the dashboard (--set method=token). Non-interactive: export\n" +
 		tokenEnv + " or pass --set token=- with the token on stdin.\n" +
 		browser + "\n" +
-		"--set account_id=<id> names the default account and --set accounts=<id>,<id>,...\n" +
-		"the accounts the login works on, when the credentials see several. A first\n" +
-		"non-interactive login requires one of them then; a later one that names\n" +
-		"neither keeps the stored selection."
+		"The login works on every account the credentials see. --set account_id=<id>\n" +
+		"names the default account, where new zones are created: a first\n" +
+		"non-interactive login requires it when the credentials see several, and a\n" +
+		"later login keeps the stored one. --set disabled_accounts=<id>,<id>,... keeps\n" +
+		"accounts out of every sync, list and lookup (given empty, none is disabled);\n" +
+		"without it a later login keeps the stored list."
 }
 
 // LoginOptions lists the --set keys of the login (see LoginHelp).
 func (*provider) LoginOptions() []string {
-	return []string{metaMethod, "token", metaAccountID, metaAccounts}
+	return []string{metaMethod, "token", metaAccountID, metaDisabledAccounts}
 }
 
 // RecordTypes are the record types Cloudflare creates through the API
@@ -144,43 +148,41 @@ func (*provider) ResourceTypes() []platform.ResourceType {
 
 var _ platform.CoverageChanger = (*provider)(nil)
 
-// CoverageChange compares the selections of a login before and after a new
-// login: the accounts that left it are dropped from the inventory (their
-// zones, the records of those, their R2 buckets), and any change of the
-// selection makes the cached sets due. A login that only changes its
-// default account covers what it covered.
+// CoverageChange compares what a login covers before and after a new login:
+// the accounts that are disabled now and were not before are dropped from
+// the inventory (their zones, the records of those, their R2 buckets), and
+// the cached sets are made due when the disabled accounts changed, or when
+// the login held a selection before (it covers every account its
+// credentials see now). A login that only changes its default account
+// covers what it covered.
 func (*provider) CoverageChange(before, after map[string]string) (dropped []string, changed bool) {
-	was, is := selectedAccounts(before), selectedAccounts(after)
-	for _, a := range was {
-		if !slices.Contains(is, a) {
+	was, is := disabledAccounts(before), disabledAccounts(after)
+	for _, a := range is {
+		if !slices.Contains(was, a) {
 			dropped = append(dropped, a)
 		}
 	}
-	for _, a := range is {
-		if !slices.Contains(was, a) {
-			changed = true
-		}
-	}
-	return dropped, changed || len(dropped) > 0
+	_, legacyWas := before[legacyAccounts]
+	_, legacyIs := after[legacyAccounts]
+	return dropped, len(dropped) > 0 || len(was) != len(is) || legacyWas != legacyIs
 }
 
 var _ app.CoverageForgetter = (*provider)(nil)
 
-// ForgetUncovered drops, after a new login, the cached rows of the accounts
-// outside its selection that CoverageChange does not name: see
-// forgetUnselected.
-func (*provider) ForgetUncovered(ctx context.Context, rt *app.Runtime, profile string, before, after map[string]string) error {
+// ForgetUncovered drops, after a new login, the cached rows of its disabled
+// accounts that CoverageChange does not name: see forgetDisabled.
+func (*provider) ForgetUncovered(ctx context.Context, rt *app.Runtime, profile string, _, after map[string]string) error {
 	db, err := rt.DB()
 	if err != nil {
 		return err
 	}
-	return forgetUnselected(ctx, rt, db, profile, selectedAccounts(before), selectedAccounts(after))
+	return forgetDisabled(ctx, rt, db, profile, disabledAccounts(after))
 }
 
 var _ platform.OwnerHinter = (*provider)(nil)
 
 // OwnerHint says how to choose among several zones of one login that hold
-// the same name: they are zones of different accounts of its selection
+// the same name: they are zones of different accounts it works on
 // (Cloudflare holds a name once per account), told apart by --account of
 // the cloudflare commands, or by their zone id, which those commands take
 // in place of the name (the platform-neutral ones do not).
@@ -357,13 +359,11 @@ func (p *provider) loginToken(ctx context.Context, in platform.LoginInput, io *p
 	if accErr != nil {
 		fmt.Fprintf(io.Err, "note: the token cannot list accounts (%v); zones will be listed across all accounts it can see\n", accErr)
 	}
-	chosen, err := chooseAccounts(in, io, accounts, accErr == nil, accErr == nil, "token", true)
+	chosen, err := chooseDefault(in, io, accounts, accErr == nil, accErr == nil, "token", true)
 	if err != nil {
 		return nil, err
 	}
-	if chosen != nil {
-		chosen.store(meta)
-	}
+	chosen.store(meta)
 
 	// User details are optional (needs User:Read).
 	if u, err := a.getUser(ctx); err == nil && u.Email != "" {
@@ -416,7 +416,7 @@ func (p *provider) loginOAuth(ctx context.Context, in platform.LoginInput, io *p
 	}
 	// The default account of the previous login is a preference here: the
 	// person may have approved another one in the browser.
-	chosen, err := chooseAccounts(in, io, accounts, accErr == nil, complete, "authorization", false)
+	chosen, err := chooseDefault(in, io, accounts, accErr == nil, complete, "authorization", false)
 	if err != nil {
 		return nil, err
 	}
@@ -435,9 +435,7 @@ func (p *provider) loginOAuth(ctx context.Context, in platform.LoginInput, io *p
 			fmt.Fprintf(io.Err, "note: not granted: %s; the commands that need them will say so\n", strings.Join(declined, ", "))
 		}
 	}
-	if chosen != nil {
-		chosen.store(meta)
-	}
+	chosen.store(meta)
 	// The e-mail is optional: the user details scope, else the userinfo
 	// endpoint, else none.
 	if email := oauthEmail(ctx, a); email != "" {
@@ -452,239 +450,175 @@ func (p *provider) loginOAuth(ctx context.Context, in platform.LoginInput, io *p
 }
 
 // loginLabel is the short description shown after a login: the e-mail,
-// else the default account, with the number of other selected accounts.
-func loginLabel(meta map[string]string, sel *selection, fallback string) string {
-	acct, more := "", 0
-	if sel != nil {
-		if acct = sel.def.Name; acct == "" {
-			acct = sel.def.ID
-		}
-		more = len(sel.accounts) - 1
+// else the default account. The default account is named next to the
+// e-mail, with the number of disabled accounts, when the login works on
+// more than it: the credentials list several accounts, or some are
+// disabled.
+func loginLabel(meta map[string]string, l *loginChoice, fallback string) string {
+	acct := l.def.Name
+	if acct == "" {
+		acct = l.def.ID
+	}
+	d := len(l.disabled)
+	note := ""
+	if d > 0 {
+		note = fmt.Sprintf("%d disabled", d)
 	}
 	switch e := meta[metaEmail]; {
-	case e != "" && more > 0:
-		return fmt.Sprintf("%s (account %s, +%d more)", e, acct, more)
+	case e != "" && acct != "" && d > 0:
+		return fmt.Sprintf("%s (account %s; %s)", e, acct, note)
+	case e != "" && acct != "" && l.visible > 1:
+		return fmt.Sprintf("%s (account %s)", e, acct)
+	case e != "" && d > 0:
+		return fmt.Sprintf("%s (%s)", e, note)
 	case e != "":
 		return e
-	case acct != "" && more > 0:
-		return fmt.Sprintf("%s (+%d more)", acct, more)
+	case acct != "" && d > 0:
+		return fmt.Sprintf("%s (%s)", acct, note)
 	case acct != "":
 		return acct
 	}
 	return fallback
 }
 
-// selection is the accounts of a login: the default one and the selected
-// set, the default first.
-type selection struct {
+// loginChoice is what a login settles about its accounts: the default
+// one (without an id for a login that is not bound to an account) and the
+// disabled ones. Every other account the credentials see is enabled.
+type loginChoice struct {
 	def      account
-	accounts []string
+	disabled []string
+	// visible is the number of accounts the credentials list, 0 when the
+	// list could not be read or was read off the zones.
+	visible int
 }
 
-func newSelection(def account, accounts []string) *selection {
-	return &selection{def: def, accounts: selectedAccounts(map[string]string{metaAccountID: def.ID, metaAccounts: strings.Join(accounts, ",")})}
-}
+// store writes the accounts into the metadata of the login.
+func (l *loginChoice) store(meta map[string]string) { setAccounts(meta, l.def, l.disabled) }
 
-// store writes the selection into the metadata of the login.
-func (s *selection) store(meta map[string]string) { setSelection(meta, s.def, s.accounts) }
-
-// accountChooser resolves the accounts of a login among those its
-// credentials see.
-type accountChooser struct {
-	in  platform.LoginInput
-	pio *prompt.IO
-	// accounts are the accounts the credentials see. listed says the list
-	// could be read at all (a token without Account:Read cannot; that is
-	// tolerated), complete that it is the list of the accounts and was not
-	// read off the zones, which shows the accounts with a zone only.
-	accounts         []account
-	listed, complete bool
-	// what names the credential in messages.
-	what string
-	// prev is the selection stored by the previous login.
-	prev []string
-}
-
-func (c *accountChooser) find(id string) *account {
-	for i := range c.accounts {
-		if c.accounts[i].ID == id {
-			return &c.accounts[i]
-		}
+// optDisabledAccounts is the disabled accounts of a login whose default
+// account is def: the list of --set disabled_accounts=a,b (given empty,
+// nothing is disabled any more), else the one stored before, without def.
+// The default account is always enabled, so naming it in the option is a
+// usage error.
+func optDisabledAccounts(in platform.LoginInput, def string) ([]string, error) {
+	v, given := in.Options[metaDisabledAccounts]
+	if !given {
+		return disabledAccounts(map[string]string{metaAccountID: def, metaDisabledAccounts: in.Existing[metaDisabledAccounts]}), nil
 	}
-	return nil
-}
-
-// visible reports whether there is a list to check an account against.
-func (c *accountChooser) visible() bool { return c.listed && len(c.accounts) > 0 }
-
-// named is the account of an id: as the credentials list it, else with
-// the name the previous login stored for it.
-func (c *accountChooser) named(id string) account {
-	if a := c.find(id); a != nil {
-		return *a
-	}
-	name := ""
-	if c.in.Existing != nil && c.in.Existing[metaAccountID] == id {
-		name = c.in.Existing[metaAccountName]
-	}
-	return account{ID: id, Name: name}
-}
-
-// kept is the selection of the previous login without the accounts the
-// credentials no longer see, which is said. An account missing from a list
-// read off the zones stays: it may only have no zone.
-func (c *accountChooser) kept() []string {
-	var out []string
-	for _, id := range c.prev {
-		if c.find(id) == nil && c.visible() && c.complete {
-			fmt.Fprintf(c.pio.Err, "note: account %s of the previous selection is not visible to this %s and was left out\n", id, c.what)
-			continue
-		}
-		out = append(out, id)
-	}
-	c.prev = out
-	return out
-}
-
-// keptSelection is the selection of a login that names def as the default
-// account and says nothing else: the selection stored before, with def.
-func (c *accountChooser) keptSelection(def account) *selection {
-	return newSelection(def, c.kept())
-}
-
-// optSelection is the selection --set gives, if it gives one:
-//
-//   - account_id=X makes X the default account; the selection is the one
-//     stored before, with X;
-//   - accounts=a,b,c is the selection, with the default account. Without
-//     account_id, the default is the one stored before when it is still
-//     selected, else the first account listed, which is said on stderr.
-//
-// Every account named must be one the credentials see, when they can list
-// their accounts.
-func (c *accountChooser) optSelection() (sel *selection, given bool, err error) {
-	def := strings.TrimSpace(c.in.Opt(metaAccountID, ""))
-	list := splitAccounts(c.in.Opt(metaAccounts, ""))
-	for _, id := range append([]string{def}, list...) {
-		if id == "" {
-			continue
-		}
+	list := splitAccounts(v)
+	for _, id := range list {
 		if err := checkAccountID(id); err != nil {
-			return nil, false, app.UsageErrf("%v (--set account_id=<id>, --set accounts=<id>,<id>,...)", err)
-		}
-		if c.visible() && c.find(id) == nil {
-			return nil, false, fmt.Errorf("account %q is not visible to this %s (visible: %s)", id, c.what, accountNames(c.accounts))
+			return nil, app.UsageErrf("%v (--set disabled_accounts=<id>,<id>,...)", err)
 		}
 	}
-	switch {
-	case len(list) > 0:
-		if def == "" {
-			if len(c.prev) > 0 && slices.Contains(list, c.prev[0]) {
-				def = c.prev[0]
-			} else {
-				def = list[0]
-				fmt.Fprintf(c.pio.Err, "using %s as the default account (pass --set account_id=<id> to choose another)\n", def)
+	if def != "" && slices.Contains(list, def) {
+		return nil, app.UsageErrf("--set disabled_accounts names %s, the default account, which is always enabled (pass --set account_id=<id> to make another one the default)", def)
+	}
+	return list, nil
+}
+
+// chooseDefault resolves the default account of a login, the one new zones
+// are created in, among the accounts its credentials see. Nothing else is
+// chosen at a login: every account the credentials see is enabled, and the
+// disabled ones are kept (optDisabledAccounts).
+//
+//   - --set account_id=X names it; it must be one the credentials see, when
+//     they can list their accounts.
+//   - A later login keeps the default stored before, which is said, when it
+//     is still visible or there is nothing to check it against. One that is
+//     no longer visible is an error with strictExisting (an API token); a
+//     browser login says so and goes on as a first login, since the person
+//     may have approved another account.
+//   - A first login uses the only visible account. Of several, the
+//     interactive flow asks which one is the default and the
+//     non-interactive flow is a usage error.
+//   - Credentials that see no account (they cannot list them, and see no
+//     zone) make a login that is not bound to an account.
+//
+// listed says the list could be read at all (a token without Account:Read
+// cannot; that is tolerated), complete that it is the list of the accounts
+// and was not read off the zones, which shows the accounts with a zone
+// only. what names the credential in messages.
+func chooseDefault(in platform.LoginInput, pio *prompt.IO, accounts []account, listed, complete bool, what string, strictExisting bool) (*loginChoice, error) {
+	find := func(id string) *account {
+		for i := range accounts {
+			if accounts[i].ID == id {
+				return &accounts[i]
 			}
 		}
-		return newSelection(c.named(def), list), true, nil
-	case def != "":
-		// The default of before is checked like the rest of the selection.
-		return c.keptSelection(c.named(def)), true, nil
+		return nil
 	}
-	return nil, false, nil
-}
-
-// chooseAccounts resolves the accounts of a login: --set (see
-// optSelection), then, in the interactive flow of credentials that see
-// several accounts, a multi-select of them with the selection stored
-// before ticked (a first login ticks none) and, when several are selected,
-// the question which one is the default. Credentials that see one account
-// work on it without a question.
-//
-// The non-interactive flow asks nothing: the selection stored before is
-// kept, else the only visible account is used, and several are a usage
-// error.
-//
-// listed and complete describe the list (see accountChooser), what names
-// the credential in messages. With strictExisting the default account of
-// the previous login must still be visible; otherwise it is only
-// preferred. A nil selection is that of credentials whose accounts cannot
-// be listed and are not named: the login is not bound to an account.
-func chooseAccounts(in platform.LoginInput, pio *prompt.IO, accounts []account, listed, complete bool, what string, strictExisting bool) (*selection, error) {
-	c := &accountChooser{in: in, pio: pio, accounts: accounts, listed: listed, complete: complete, what: what}
-	if in.Existing != nil {
-		c.prev = selectedAccounts(in.Existing)
+	visible := listed && len(accounts) > 0
+	// named is the account of an id: as the credentials list it, else with
+	// the name the previous login stored for it.
+	named := func(id string) account {
+		if a := find(id); a != nil {
+			return *a
+		}
+		name := ""
+		if in.Existing != nil && strings.TrimSpace(in.Existing[metaAccountID]) == id {
+			name = in.Existing[metaAccountName]
+		}
+		return account{ID: id, Name: name}
 	}
-	if sel, given, err := c.optSelection(); given || err != nil {
-		return sel, err
+	done := func(def account) (*loginChoice, error) {
+		disabled, err := optDisabledAccounts(in, def.ID)
+		if err != nil {
+			return nil, err
+		}
+		l := &loginChoice{def: def, disabled: disabled}
+		if visible && complete {
+			l.visible = len(accounts)
+			enabled := 0
+			for _, a := range accounts {
+				if a.ID == def.ID || !slices.Contains(disabled, a.ID) {
+					enabled++
+				}
+			}
+			if enabled > 1 {
+				fmt.Fprintf(pio.Err, "%d accounts are enabled (everything the %s sees); keep the ones that are not used out of every sync with polyctl cloudflare account disable\n", enabled, what)
+			}
+		}
+		return l, nil
 	}
-	def := ""
-	if len(c.prev) > 0 {
-		def = c.prev[0]
+	if id := strings.TrimSpace(in.Opt(metaAccountID, "")); id != "" {
+		if err := checkAccountID(id); err != nil {
+			return nil, app.UsageErrf("%v (--set account_id=<id>)", err)
+		}
+		if visible && find(id) == nil {
+			return nil, fmt.Errorf("account %q is not visible to this %s (visible: %s)", id, what, accountNames(accounts))
+		}
+		return done(named(id))
+	}
+	if prev := strings.TrimSpace(in.Existing[metaAccountID]); prev != "" {
 		switch {
-		case c.find(def) != nil:
-		case !c.visible():
-			// Nothing to check against: the selection stays as it is.
-			return newSelection(c.named(def), c.prev), nil
+		case find(prev) != nil || !visible:
+			if len(accounts) > 1 {
+				fmt.Fprintf(pio.Err, "default account %s kept (change it with polyctl cloudflare account use)\n", prev)
+			}
+			return done(named(prev))
 		case strictExisting:
-			return nil, fmt.Errorf("account %q is not visible to this %s (visible: %s)", def, what, accountNames(accounts))
-		default:
-			fmt.Fprintf(pio.Err, "note: the account of the previous login (%s) is not covered by this %s\n", def, what)
-			def, c.prev = "", c.prev[1:]
+			return nil, fmt.Errorf("account %q is not visible to this %s (visible: %s)", prev, what, accountNames(accounts))
 		}
+		fmt.Fprintf(pio.Err, "note: the default account of the previous login (%s) is not covered by this %s\n", prev, what)
 	}
-	if !in.Interactive {
-		switch {
-		case def != "":
-			return c.keptSelection(c.named(def)), nil
-		case len(accounts) == 1:
-			return newSelection(accounts[0], nil), nil
-		case len(accounts) > 1:
-			return nil, app.UsageErrf("the %s sees %d accounts; pass --set account_id=<id> to choose one (and --set accounts=<id>,<id>,... to select more) of: %s", what, len(accounts), accountNames(accounts))
-		}
-		return nil, nil
+	switch {
+	case len(accounts) == 0:
+		return done(account{})
+	case len(accounts) == 1:
+		return done(accounts[0])
+	case !in.Interactive:
+		return nil, app.UsageErrf("the %s sees %d accounts; pass --set account_id=<id> to choose the default of: %s", what, len(accounts), accountNames(accounts))
 	}
 	opts := make([]prompt.Option, 0, len(accounts))
 	for _, acc := range accounts {
 		opts = append(opts, prompt.Option{Label: prompt.Cells(acc.Name, acc.ID), Value: acc.ID})
 	}
-	preset := c.kept()
-	for _, id := range preset {
-		// A selected account the list does not show stays offered, its id
-		// in the cell of the ids.
-		if c.find(id) == nil {
-			opts = append(opts, prompt.Option{Label: prompt.Cells("", id), Value: id})
-		}
-	}
-	switch len(opts) {
-	case 0:
-		return nil, nil
-	case 1:
-		return newSelection(c.named(opts[0].Value), nil), nil
-	}
-	chosen, err := in.MultiSelect(pio, "Cloudflare accounts to work on (the inventory covers them all)", opts, preset)
+	def, err := in.Select(pio, "Default account (new zones are created there; every account is synced unless disabled)", opts, "")
 	if err != nil {
 		return nil, err
 	}
-	switch len(chosen) {
-	case 0:
-		return nil, fmt.Errorf("%w: no account was selected", platform.ErrInvalidInput)
-	case 1:
-		return newSelection(c.named(chosen[0]), nil), nil
-	}
-	if !slices.Contains(chosen, def) {
-		def = chosen[0]
-	}
-	var defOpts []prompt.Option
-	for _, o := range opts {
-		if slices.Contains(chosen, o.Value) {
-			defOpts = append(defOpts, o)
-		}
-	}
-	if def, err = in.Select(pio, "Default account (where new zones are created)", defOpts, def); err != nil {
-		return nil, err
-	}
-	return newSelection(c.named(def), chosen), nil
+	return done(named(def))
 }
 
 func accountNames(accounts []account) string {
@@ -722,32 +656,29 @@ func (a *api) accountsOfZones(ctx context.Context) ([]account, error) {
 	return out, nil
 }
 
-// Open returns a client bound to the profile's credentials, its selected
-// accounts and its default account. Nothing is requested here: an expired
+// Open returns a client bound to the profile's credentials, its default
+// account and its disabled accounts. Nothing is requested here: an expired
 // access token of a browser login is renewed by the first request that
 // needs it.
 func (p *provider) Open(ctx context.Context, prof platform.Profile) (platform.Client, error) {
-	sel := selectedAccounts(prof.Metadata)
-	def := ""
-	if len(sel) > 0 {
-		def = sel[0]
-	}
+	def := strings.TrimSpace(prof.Metadata[metaAccountID])
+	disabled := disabledAccounts(prof.Metadata)
 	if isOAuth(prof) {
 		sess := newOAuthSession(prof)
 		if sess.tok.Access == "" && sess.tok.Refresh == "" {
 			return nil, fmt.Errorf("%w: profile %q holds no Cloudflare authorization; run `%s`", platform.ErrUnauthorized, prof.Name, sess.loginAgain())
 		}
 		a := newOAuthAPI(p.base(), sess, def)
-		a.accounts = sel
-		return &Client{api: a, profile: prof}, nil
+		a.disabled = disabled
+		return &Client{api: a, profile: prof, memo: &clientMemo{def: def}}, nil
 	}
 	token := strings.TrimSpace(prof.Secret[secretToken])
 	if token == "" {
 		return nil, fmt.Errorf("%w: profile %q has no %s", platform.ErrUnauthorized, prof.Name, secretToken)
 	}
 	a := newAPI(p.base(), token, def)
-	a.accounts = sel
-	return &Client{api: a, profile: prof}, nil
+	a.disabled = disabled
+	return &Client{api: a, profile: prof, memo: &clientMemo{def: def}}, nil
 }
 
 // Client is an authenticated Cloudflare session. It implements
@@ -760,6 +691,9 @@ type Client struct {
 	// r2AccountID caches the account R2 requests go to when the profile
 	// pins none.
 	r2AccountID string
+	// memo is what the copies of the client share for the run (nil for a
+	// client built without Open: nothing is remembered then).
+	memo *clientMemo
 }
 
 var (
@@ -791,14 +725,14 @@ func (c *Client) Verify(ctx context.Context) (*platform.Identity, error) {
 	return id, nil
 }
 
-// identifyAccounts adds the name of the default account and, when the
-// login works on several accounts, its selection to an identity.
+// identifyAccounts adds the name of the default account and the disabled
+// accounts of the login, when it has any, to an identity.
 func (c *Client) identifyAccounts(id *platform.Identity) {
 	if n := c.profile.Meta(metaAccountName); n != "" {
 		id.Extra["account_name"] = n
 	}
-	if len(c.api.accounts) > 1 {
-		id.Extra[metaAccounts] = strings.Join(c.api.accounts, ",")
+	if len(c.api.disabled) > 0 {
+		id.Extra[metaDisabledAccounts] = strings.Join(c.api.disabled, ",")
 	}
 }
 
@@ -845,20 +779,22 @@ func oauthEmail(ctx context.Context, a *api) string {
 	return ""
 }
 
-// Sync fetches every resource of the given type, in every selected account
+// Sync fetches every resource of the given type, in every enabled account
 // of the login. A sync that fails for some accounts only returns the rows
 // of the others with a *platform.RegionSyncError: the rows stored for the
 // failed accounts are kept.
 func (c *Client) Sync(ctx context.Context, rt platform.ResourceType) ([]platform.Resource, error) {
 	switch rt {
 	case platform.ResZone:
-		return c.eachAccount(ctx, func(ctx context.Context, ac *Client) ([]platform.Resource, error) {
-			zs, err := ac.api.listZonesOf(ctx, ac.api.accountID)
-			if err != nil {
-				return nil, err
-			}
-			return zoneResources(toZones(zs)), nil
-		})
+		// One listing of everything the credentials see: it has no failure
+		// of one account, so a failure is that of the whole set (nothing is
+		// replaced). The record sync of the same run reuses it.
+		zs, err := c.api.coveredZones(ctx)
+		if err != nil {
+			return nil, err
+		}
+		c.keepZones(zs)
+		return zoneResources(toZones(zs)), nil
 	case platform.ResDNSRecord:
 		return c.syncRecords(ctx)
 	case platform.ResR2Bucket:
@@ -867,33 +803,56 @@ func (c *Client) Sync(ctx context.Context, rt platform.ResourceType) ([]platform
 	return nil, fmt.Errorf("%s: %w", rt, platform.ErrNotSupported)
 }
 
-// syncRecords lists the records of every visible zone. A token commonly has
-// Zone:Read on all zones but DNS:Read on a subset; the API answers 403 for
-// the others, and zones in moved/initializing state may answer 404. Such
-// zones are skipped with a warning so the readable ones still get indexed.
-// Only when every zone fails (or a non-permission error occurs) is the error
-// returned, so a token without any DNS permission still surfaces as
-// ErrUnauthorized.
+// syncRecords lists the records of every zone the login works on. A token
+// commonly has Zone:Read on all zones but DNS:Read on a subset; the API
+// answers 403 for the others, and zones in moved/initializing state may
+// answer 404. Such zones are skipped with a warning so the readable ones
+// still get indexed. Only when every zone fails (or a non-permission error
+// occurs) is the error returned, so a token without any DNS permission
+// still surfaces as ErrUnauthorized.
 //
-// With several accounts selected, an account whose zones cannot be listed
-// (or one of whose zones fails for another reason) is a failure of that
-// account: its stored records are kept. The skipped zones are counted
-// across all the accounts, so an account in which the token reads no
-// records at all does not fail as long as another account has some.
+// The zones are the listing the zone sync of the same run read, when there
+// is one, else one listing of their own. When they are of several
+// accounts, an account one of whose zones fails for another reason is a
+// failure of that account: its stored records are kept. The skipped zones
+// are counted across all the accounts, so an account in which the token
+// reads no records at all does not fail as long as another account has
+// some.
 func (c *Client) syncRecords(ctx context.Context) ([]platform.Resource, error) {
+	// A client pinned by --account lists the zones of its account.
+	var zs []apiZone
+	ok := false
+	if !c.api.pinned {
+		zs, ok = c.takeZones()
+	}
+	if !ok {
+		var err error
+		if zs, err = c.api.coveredZones(ctx); err != nil {
+			return nil, err
+		}
+	}
+	// The zones by account, the accounts in the order of the listing.
+	var ids []string
+	byAccount := map[string][]platform.Zone{}
+	for _, z := range toZones(zs) {
+		acc := zoneAccount(z)
+		if _, seen := byAccount[acc]; !seen {
+			ids = append(ids, acc)
+		}
+		byAccount[acc] = append(byAccount[acc], z)
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
 	var (
 		skipped []error
 		okZones int
 	)
-	out, err := c.eachAccount(ctx, func(ctx context.Context, ac *Client) ([]platform.Resource, error) {
-		zs, err := ac.api.listZonesOf(ctx, ac.api.accountID)
-		if err != nil {
-			return nil, err
-		}
+	out, err := c.eachAccount(ctx, ids, func(ctx context.Context, ac *Client) ([]platform.Resource, error) {
 		var out []platform.Resource
 		var skip []error
 		ok := 0
-		for _, z := range toZones(zs) {
+		for _, z := range byAccount[ac.api.accountID] {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
@@ -929,17 +888,17 @@ func (c *Client) syncRecords(ctx context.Context) ([]platform.Resource, error) {
 	return out, err
 }
 
-// ListZones returns the zones of every selected account of the login (all
-// the zones the credentials see when it has none).
+// ListZones returns the zones of every enabled account of the login: all
+// the zones the credentials see, without those of the disabled accounts.
 func (c *Client) ListZones(ctx context.Context) ([]platform.Zone, error) {
-	zs, err := c.api.listZones(ctx)
+	zs, err := c.api.coveredZones(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return toZones(zs), nil
 }
 
-// GetZone returns one zone by id or name, among the selected accounts.
+// GetZone returns one zone by id or name, among the enabled accounts.
 func (c *Client) GetZone(ctx context.Context, idOrName string) (*platform.Zone, error) {
 	z, err := c.api.findZone(ctx, idOrName)
 	if err != nil {

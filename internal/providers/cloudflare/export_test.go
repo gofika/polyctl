@@ -1,6 +1,7 @@
 package cloudflare
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -84,4 +85,15 @@ func SetFoundationPollInterval(t *testing.T, d time.Duration) {
 	old := foundationPollInterval
 	foundationPollInterval = d
 	t.Cleanup(func() { foundationPollInterval = old })
+}
+
+// CaptureWarnings collects what the provider warns about (skipped zones,
+// accounts that cannot be used for R2) for the duration of the test.
+func CaptureWarnings(t *testing.T) *[]string {
+	t.Helper()
+	var warned []string
+	old := warnf
+	warnf = func(format string, args ...any) { warned = append(warned, fmt.Sprintf(format, args...)) }
+	t.Cleanup(func() { warnf = old })
+	return &warned
 }

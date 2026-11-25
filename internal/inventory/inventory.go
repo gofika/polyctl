@@ -683,7 +683,7 @@ func (d *DB) Purge(ctx context.Context, p platform.ID, profile string) error {
 
 // PurgeTree removes what is cached for one tree of parents of a profile
 // (see ReplaceKeepingTrees): the rows of a Google Cloud project that was
-// disabled, or those of a Cloudflare account that left the selection
+// disabled, or those of a Cloudflare account that was disabled
 // (its zone rows, and the record rows under the ids of those zones), with
 // their index entries and the sync state of the scopes among them.
 // Instance secrets stay.

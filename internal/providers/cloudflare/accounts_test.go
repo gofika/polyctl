@@ -46,46 +46,56 @@ func (f *fakeCF) reqs() []string {
 	return out
 }
 
-func TestSelectedAccounts(t *testing.T) {
+func TestDisabledAccounts(t *testing.T) {
 	cases := []struct {
 		name string
 		meta map[string]string
 		want []string
 	}{
-		{"unscoped", map[string]string{}, nil},
-		{"a login before the selection", map[string]string{metaAccountID: "acc1"}, []string{"acc1"}},
-		{"the default account first", map[string]string{metaAccountID: "acc2", metaAccounts: "acc1,acc2,acc3"}, []string{"acc2", "acc1", "acc3"}},
-		{"a default account outside the list", map[string]string{metaAccountID: "acc9", metaAccounts: "acc1"}, []string{"acc9", "acc1"}},
-		{"blanks and repeats", map[string]string{metaAccountID: " acc1 ", metaAccounts: " acc2, ,acc2,acc1,"}, []string{"acc1", "acc2"}},
-		{"a selection without a default", map[string]string{metaAccounts: "acc2,acc1"}, []string{"acc2", "acc1"}},
+		{"nothing stored", map[string]string{}, nil},
+		{"a login bound to one account", map[string]string{metaAccountID: "acc1"}, nil},
+		{"stored order", map[string]string{metaAccountID: "acc1", metaDisabledAccounts: "acc3,acc2"}, []string{"acc3", "acc2"}},
+		{"blanks and repeats", map[string]string{metaAccountID: "acc1", metaDisabledAccounts: " acc2, ,acc2,acc3,"}, []string{"acc2", "acc3"}},
+		{"the default account cannot be disabled", map[string]string{metaAccountID: " acc1 ", metaDisabledAccounts: "acc1,acc2"}, []string{"acc2"}},
+		{"a login without a default account", map[string]string{metaDisabledAccounts: "acc2"}, []string{"acc2"}},
+		// The selection of a login made before is not read any more.
+		{"the former selection", map[string]string{metaAccountID: "acc1", legacyAccounts: "acc1,acc2"}, nil},
 	}
 	for _, c := range cases {
-		if got := selectedAccounts(c.meta); !reflect.DeepEqual(got, c.want) {
+		if got := disabledAccounts(c.meta); !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
 		}
 	}
 }
 
-func TestSetSelection(t *testing.T) {
-	meta := map[string]string{metaMethod: storedToken, metaAccountID: "acc1", metaAccountName: "Acme"}
-	setSelection(meta, account{ID: "acc2", Name: "Beta"}, []string{"acc1", "acc2", "acc1"})
-	if meta[metaAccountID] != "acc2" || meta[metaAccountName] != "Beta" || meta[metaAccounts] != "acc2,acc1" || meta[metaMethod] != storedToken {
+func TestSetAccounts(t *testing.T) {
+	meta := map[string]string{metaMethod: storedToken, metaAccountID: "acc1", metaAccountName: "Acme", legacyAccounts: "acc1,acc2"}
+	setAccounts(meta, account{ID: "acc2", Name: "Beta"}, []string{"acc3", "acc1", "acc3", "acc2"})
+	// Sorted, without repeats and without the default; the former
+	// selection is dropped.
+	if meta[metaAccountID] != "acc2" || meta[metaAccountName] != "Beta" || meta[metaDisabledAccounts] != "acc1,acc3" || meta[metaMethod] != storedToken {
 		t.Fatalf("several: %v", meta)
 	}
-	// The default account alone is stored as a login before the selection
-	// existed stored it; an unknown name does not keep the old one.
-	setSelection(meta, account{ID: "acc1"}, []string{"acc1"})
-	if _, ok := meta[metaAccounts]; ok || meta[metaAccountID] != "acc1" {
-		t.Fatalf("one: %v", meta)
+	if _, ok := meta[legacyAccounts]; ok {
+		t.Fatalf("the former selection was kept: %v", meta)
+	}
+	// Nothing disabled is stored without the key; an unknown name does not
+	// keep the old one.
+	setAccounts(meta, account{ID: "acc1"}, nil)
+	if _, ok := meta[metaDisabledAccounts]; ok || meta[metaAccountID] != "acc1" {
+		t.Fatalf("none disabled: %v", meta)
 	}
 	if _, ok := meta[metaAccountName]; ok {
 		t.Fatalf("the name of another account was kept: %v", meta)
 	}
-	// The default account is part of the selection also when it is not
-	// named in it.
-	setSelection(meta, account{ID: "acc3", Name: "Gamma"}, []string{"acc1"})
-	if meta[metaAccounts] != "acc3,acc1" {
-		t.Fatalf("default outside: %v", meta)
+	// A login without a default account stores its disabled accounts
+	// alone.
+	setAccounts(meta, account{Name: "ignored"}, []string{"acc9"})
+	if _, ok := meta[metaAccountID]; ok || meta[metaDisabledAccounts] != "acc9" {
+		t.Fatalf("no default: %v", meta)
+	}
+	if _, ok := meta[metaAccountName]; ok {
+		t.Fatalf("a name without an account: %v", meta)
 	}
 }
 
@@ -102,103 +112,117 @@ func TestCheckAccountID(t *testing.T) {
 	}
 }
 
-func TestAPIScope(t *testing.T) {
+func TestAPICovers(t *testing.T) {
 	a := newAPI("http://unused", "tok", "")
-	if !a.unscoped() || !reflect.DeepEqual(a.scopeIDs(), []string{""}) || !a.covers("anything") {
-		t.Fatalf("unscoped: %v", a.scopeIDs())
+	if !a.unbound() || !a.covers("anything") || !a.covers("") {
+		t.Fatalf("a login without a default account: %+v", a)
 	}
 	a = newAPI("http://unused", "tok", "acc1")
-	a.accounts = []string{"acc1", "acc2"}
-	if a.unscoped() || !reflect.DeepEqual(a.scopeIDs(), []string{"acc1", "acc2"}) || !a.covers("acc2") || a.covers("acc3") || !a.covers("") {
-		t.Fatalf("selection: %v", a.scopeIDs())
+	a.disabled = []string{"acc3"}
+	if a.unbound() || !a.covers("acc1") || !a.covers("acc2") || a.covers("acc3") || !a.covers("") {
+		t.Fatalf("disabled: %+v", a)
 	}
 	in := a.inAccount("acc2")
-	if in.accountID != "acc2" || !reflect.DeepEqual(in.scopeIDs(), []string{"acc1", "acc2"}) || a.accountID != "acc1" {
+	if in.accountID != "acc2" || in.covers("acc3") || a.accountID != "acc1" {
 		t.Fatalf("inAccount: %+v", in)
 	}
+	// --account covers its account alone, disabled or not.
 	pin := a.pin("acc3")
-	if !reflect.DeepEqual(pin.scopeIDs(), []string{"acc3"}) || !pin.covers("acc3") || pin.covers("acc1") || a.pinned {
+	if !pin.covers("acc3") || pin.covers("acc1") || a.pinned {
 		t.Fatalf("pin: %+v", pin)
 	}
-	// A pin on a login without an account is a scope all the same.
-	if p := newAPI("http://unused", "tok", "").pin("acc1"); p.unscoped() || p.covers("acc2") {
-		t.Fatalf("pin of an unscoped login: %+v", p)
+	if p := newAPI("http://unused", "tok", "").pin("acc1"); p.unbound() || p.covers("acc2") {
+		t.Fatalf("pin of a login without a default account: %+v", p)
 	}
 }
 
-// A login stored before the selection existed sends the requests it always
-// sent.
-func TestLegacyLoginRequests(t *testing.T) {
+// A login bound to one account, as every login before polyctl 0.5 was,
+// works on every account its credentials see: its lists and lookups make
+// one request each, without an account filter.
+func TestBoundLoginRequests(t *testing.T) {
 	f, srv := newFake(t)
 	c := openClient(t, srv, "good-token", "acc2")
 	ctx := context.Background()
-	if _, err := c.ListZones(ctx); err != nil {
-		t.Fatal(err)
+	zones, err := c.ListZones(ctx)
+	if err != nil || len(zones) != 2 {
+		t.Fatalf("zones: %+v %v", zones, err)
 	}
 	if z, err := c.GetZone(ctx, "Example.ORG."); err != nil || z.ID != "zone2" {
 		t.Fatalf("by name: %v %v", z, err)
+	}
+	if z, err := c.GetZone(ctx, "example.com"); err != nil || z.ID != "zone1" {
+		t.Fatalf("by name, in another account than the default: %v %v", z, err)
 	}
 	if z, err := c.GetZone(ctx, "zone2"); err != nil || z.ID != "zone2" {
 		t.Fatalf("by id: %v %v", z, err)
 	}
 	want := []string{
-		"GET /zones?account.id=acc2&page=1&per_page=50",
-		"GET /zones?account.id=acc2&name=example.org&page=1&per_page=50",
+		"GET /zones?page=1&per_page=50",
+		"GET /zones?name=example.org&page=1&per_page=50",
+		"GET /zones?name=example.com&page=1&per_page=50",
 		"GET /zones/zone2",
 	}
 	if got := f.reqs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("requests:\n got %q\nwant %q", got, want)
 	}
-	// A login without an account filters nothing.
+	// A login without a default account makes the same requests.
 	c = openClient(t, srv, "good-token", "")
 	if _, err := c.ListZones(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := f.reqs(), []string{"GET /zones?page=1&per_page=50"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("unscoped requests: %q", got)
+		t.Fatalf("requests without a default account: %q", got)
 	}
 }
 
-func TestListZonesOfTheSelection(t *testing.T) {
+func TestListZonesOfTheEnabledAccounts(t *testing.T) {
 	f, srv := newFake(t)
 	f.addZone("zone3", "example.net", "active", "acc3", "Gamma")
-	c := openSelection(t, srv, map[string]string{metaAccountID: "acc2", metaAccounts: "acc1,acc2"})
+	c := openSelection(t, srv, map[string]string{metaAccountID: "acc2", metaDisabledAccounts: "acc3"})
 	zones, err := c.ListZones(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The default account first, no zone of an account that is not selected.
-	if len(zones) != 2 || zones[0].ID != "zone2" || zones[1].ID != "zone1" {
+	// One listing of everything, without the zones of a disabled account.
+	if len(zones) != 2 || zones[0].ID != "zone1" || zones[1].ID != "zone2" {
 		t.Fatalf("zones: %+v", zones)
 	}
-	want := []string{"GET /zones?account.id=acc2&page=1&per_page=50", "GET /zones?account.id=acc1&page=1&per_page=50"}
-	if got := f.reqs(); !reflect.DeepEqual(got, want) {
+	if got, want := f.reqs(), []string{"GET /zones?page=1&per_page=50"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("requests: %q", got)
 	}
-	// --account reads that account alone, selected or not.
+	// --account reads that account alone, disabled or not, with the filter
+	// of the API.
 	zones, err = c.pin("acc3").ListZones(context.Background())
 	if err != nil || len(zones) != 1 || zones[0].ID != "zone3" {
 		t.Fatalf("pinned: %+v %v", zones, err)
 	}
+	if got, want := f.reqs(), []string{"GET /zones?account.id=acc3&page=1&per_page=50"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("pinned requests: %q", got)
+	}
 }
 
-func TestGetZoneAmongTheSelection(t *testing.T) {
+func TestGetZoneAmongTheEnabledAccounts(t *testing.T) {
 	f, srv := newFake(t)
 	f.addZone("zone3", "example.com", "pending", "acc2", "Beta")
 	f.addZone("zone4", "example.net", "active", "acc3", "Gamma")
 	ctx := context.Background()
-	c := openSelection(t, srv, map[string]string{metaAccountID: "acc1", metaAccounts: "acc1,acc2"})
+	c := openSelection(t, srv, map[string]string{metaAccountID: "acc1", metaDisabledAccounts: "acc3"})
 
-	// A name of the second account is found.
+	// A name of another account than the default is found.
 	if z, err := c.GetZone(ctx, "example.org"); err != nil || z.ID != "zone2" {
 		t.Fatalf("second account: %v %v", z, err)
 	}
-	// A name held by two selected accounts is ambiguous (exit code 5).
+	// A name held by two enabled accounts is ambiguous (exit code 5), with
+	// one request.
+	f.reqs()
 	_, err := c.GetZone(ctx, "example.com")
 	if !errors.Is(err, platform.ErrAmbiguous) {
 		t.Fatalf("want ErrAmbiguous, got %v", err)
 	}
-	for _, want := range []string{"zone example.com is held by 2 of the selected accounts", "zone1 in account acc1 (Acme)", "zone3 in account acc2 (Beta)", "zone id", "--account <id or name>"} {
+	if got, want := f.reqs(), []string{"GET /zones?name=example.com&page=1&per_page=50"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("requests: %q", got)
+	}
+	for _, want := range []string{"zone example.com is held by 2 of the enabled accounts", "zone1 in account acc1 (Acme)", "zone3 in account acc2 (Beta)", "zone id", "--account <id or name>"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("ambiguity %q lacks %q", err, want)
 		}
@@ -210,17 +234,22 @@ func TestGetZoneAmongTheSelection(t *testing.T) {
 	if z, err := c.GetZone(ctx, "zone3"); err != nil || z.ID != "zone3" {
 		t.Fatalf("by id: %v %v", z, err)
 	}
+	// Disabling one of the two accounts leaves one zone of the name.
+	d := openSelection(t, srv, map[string]string{metaAccountID: "acc1", metaDisabledAccounts: "acc2,acc3"})
+	if z, err := d.GetZone(ctx, "example.com"); err != nil || z.ID != "zone1" {
+		t.Fatalf("after disabling the other account: %v %v", z, err)
+	}
 
-	// A zone of an account that is not selected is not found (exit code
-	// 4), by name and by id, and the id says where it is.
+	// A zone of a disabled account is not found (exit code 4), by name and
+	// by id, and the id says where it is.
 	if _, err := c.GetZone(ctx, "example.net"); !errors.Is(err, platform.ErrNotFound) {
-		t.Fatalf("unselected by name: %v", err)
+		t.Fatalf("disabled by name: %v", err)
 	}
 	_, err = c.GetZone(ctx, "zone4")
 	if !errors.Is(err, platform.ErrNotFound) {
-		t.Fatalf("unselected by id: %v", err)
+		t.Fatalf("disabled by id: %v", err)
 	}
-	for _, want := range []string{"zone example.net (zone4) is in account acc3, which is not selected", "polyctl cloudflare account add acc3", "--account acc3"} {
+	for _, want := range []string{"zone example.net (zone4) is in account acc3, which is disabled for this login", "polyctl cloudflare account enable acc3", "--account acc3"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("not found %q lacks %q", err, want)
 		}
@@ -233,30 +262,38 @@ func TestGetZoneAmongTheSelection(t *testing.T) {
 		t.Fatalf("pinned elsewhere: %v", err)
 	}
 
-	// A login without an account takes any zone by id; a name two of its
-	// accounts hold is ambiguous as well.
+	// A login without a default account works the same way.
 	u := openClient(t, srv, "good-token", "")
 	if z, err := u.GetZone(ctx, "zone4"); err != nil || z.ID != "zone4" {
-		t.Fatalf("unscoped by id: %v %v", z, err)
+		t.Fatalf("no default, by id: %v %v", z, err)
 	}
-	if _, err := u.GetZone(ctx, "example.com"); !errors.Is(err, platform.ErrAmbiguous) || !strings.Contains(err.Error(), "2 of the accounts of this login") {
-		t.Fatalf("unscoped by name: %v", err)
+	if _, err := u.GetZone(ctx, "example.com"); !errors.Is(err, platform.ErrAmbiguous) || !strings.Contains(err.Error(), "2 of the enabled accounts of this login") {
+		t.Fatalf("no default, by name: %v", err)
 	}
 }
 
-// An account-owned token verifies at the account that owns it, also when
-// that is not the default account of the selection.
-func TestVerifyTokenTriesTheSelection(t *testing.T) {
+// An account-owned token verifies at the account that owns it: the default
+// account is tried first, then the accounts the token lists.
+func TestVerifyTokenTriesTheVisibleAccounts(t *testing.T) {
 	f, srv := newFake(t)
 	f.accountOwned = "acc2"
-	c := openSelection(t, srv, map[string]string{metaAccountID: "acc1", metaAccounts: "acc1,acc2"})
+	c := openSelection(t, srv, map[string]string{metaAccountID: "acc1"})
 	tok, err := c.api.verifyToken(context.Background())
 	if err != nil || tok.AccountID != "acc2" {
 		t.Fatalf("verify: %+v %v", tok, err)
 	}
-	want := []string{"GET /user/tokens/verify", "GET /accounts/acc1/tokens/verify", "GET /accounts/acc2/tokens/verify"}
+	want := []string{"GET /user/tokens/verify", "GET /accounts/acc1/tokens/verify", "GET /accounts?page=1&per_page=50", "GET /accounts/acc2/tokens/verify"}
 	if got := f.reqs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("requests: %q", got)
+	}
+	// The token of the default account needs no listing.
+	c = openSelection(t, srv, map[string]string{metaAccountID: "acc2"})
+	if tok, err = c.api.verifyToken(context.Background()); err != nil || tok.AccountID != "acc2" {
+		t.Fatalf("verify at the default account: %+v %v", tok, err)
+	}
+	want = []string{"GET /user/tokens/verify", "GET /accounts/acc2/tokens/verify"}
+	if got := f.reqs(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("requests at the default account: %q", got)
 	}
 }
 
@@ -280,19 +317,22 @@ func rowIDs(res []platform.Resource) []string {
 	return out
 }
 
-func TestSyncOfTheSelection(t *testing.T) {
+// A sync covers every account the credentials see, minus the disabled
+// ones: one zone listing without an account filter, which the record sync
+// of the same run reuses.
+func TestSyncOfTheEnabledAccounts(t *testing.T) {
 	f, srv := newFake(t)
 	f.addZone("zone3", "example.net", "active", "acc3", "Gamma")
-	c := openSelection(t, srv, map[string]string{metaAccountID: "acc1", metaAccounts: "acc1,acc2"})
+	// A login of polyctl 0.4.0: bound to one account, nothing else stored.
+	c := openSelection(t, srv, map[string]string{metaAccountID: "acc1"})
 	ctx := context.Background()
 
-	// The zones of both accounts, each under its account; none of an
-	// account that is not selected.
 	zones, err := c.Sync(ctx, platform.ResZone)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := rowIDs(zones), []string{"zone1 acc1", "zone2 acc2"}; !reflect.DeepEqual(got, want) {
+	// Each zone under its account.
+	if got, want := rowIDs(zones), []string{"zone1 acc1", "zone2 acc2", "zone3 acc3"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("zones: %v", got)
 	}
 	// The records keep their zone as parent.
@@ -307,66 +347,118 @@ func TestSyncOfTheSelection(t *testing.T) {
 	if len(recs) != 9 || byZone["zone1"] != 8 || byZone["zone2"] != 1 {
 		t.Fatalf("records: %v", byZone)
 	}
-
-	// A login stored before the selection reads its one account, with the
-	// requests it always made.
-	f.reqs()
-	old := openClient(t, srv, "good-token", "acc2")
-	zones, err = old.Sync(ctx, platform.ResZone)
-	if err != nil || !reflect.DeepEqual(rowIDs(zones), []string{"zone2 acc2"}) {
-		t.Fatalf("one account: %v %v", rowIDs(zones), err)
+	// One /zones request for both syncs, none with an account filter, and
+	// one record listing (three pages for zone1) per zone.
+	var zoneLists, recordLists int
+	for _, r := range f.reqs() {
+		switch {
+		case strings.Contains(r, "account.id"):
+			t.Errorf("a request filters by account: %s", r)
+		case strings.HasPrefix(r, "GET /zones?"):
+			zoneLists++
+		case strings.Contains(r, "/dns_records"):
+			recordLists++
+		}
 	}
-	if got, want := f.reqs(), []string{"GET /zones?account.id=acc2&page=1&per_page=50"}; !reflect.DeepEqual(got, want) {
+	if zoneLists != 1 || recordLists != 5 {
+		t.Fatalf("%d zone listings and %d record listings, want 1 and 5", zoneLists, recordLists)
+	}
+	// The listing is reused once: a record sync on its own lists the zones.
+	if _, err := c.Sync(ctx, platform.ResDNSRecord); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.reqs(); len(got) == 0 || got[0] != "GET /zones?page=1&per_page=50" {
+		t.Fatalf("a record sync alone: %q", got)
+	}
+
+	// A disabled account is left out of both, and its zones are not asked
+	// for their records.
+	d := openSelection(t, srv, map[string]string{metaAccountID: "acc1", metaDisabledAccounts: "acc2"})
+	if zones, err = d.Sync(ctx, platform.ResZone); err != nil || !reflect.DeepEqual(rowIDs(zones), []string{"zone1 acc1", "zone3 acc3"}) {
+		t.Fatalf("with a disabled account: %v %v", rowIDs(zones), err)
+	}
+	f.reqs()
+	if recs, err = d.Sync(ctx, platform.ResDNSRecord); err != nil || len(recs) != 8 {
+		t.Fatalf("records with a disabled account: %d %v", len(recs), err)
+	}
+	for _, r := range f.reqs() {
+		if strings.Contains(r, "/zones/zone2/") || strings.HasPrefix(r, "GET /zones?") {
+			t.Errorf("unexpected request: %s", r)
+		}
+	}
+}
+
+// A token without Account:Read syncs the zones of everything it sees all
+// the same: the zone listing needs no account list.
+func TestSyncZonesWithoutAccountRead(t *testing.T) {
+	f, srv := newFake(t)
+	f.forbidAccounts = true
+	c := openSelection(t, srv, map[string]string{metaAccountID: "acc1"})
+	zones, err := c.Sync(context.Background(), platform.ResZone)
+	if err != nil || !reflect.DeepEqual(rowIDs(zones), []string{"zone1 acc1", "zone2 acc2"}) {
+		t.Fatalf("zones: %v %v", rowIDs(zones), err)
+	}
+	if got, want := f.reqs(), []string{"GET /zones?page=1&per_page=50"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("requests: %q", got)
 	}
 }
 
 func TestSyncKeepsAFailedAccount(t *testing.T) {
 	f, srv := newFake(t)
-	f.failZones = map[string]int{"acc2": 400}
-	c := openSelection(t, srv, map[string]string{metaAccountID: "acc1", metaAccounts: "acc1,acc2"})
+	f.failRecords = map[string]int{"zone2": 400}
+	c := openSelection(t, srv, map[string]string{metaAccountID: "acc1"})
 	ctx := context.Background()
 
-	for _, typ := range []platform.ResourceType{platform.ResZone, platform.ResDNSRecord} {
-		res, err := c.Sync(ctx, typ)
-		rse := platform.AsRegionSyncError(err)
-		if rse == nil {
-			t.Fatalf("%s: want a RegionSyncError, got %v", typ, err)
-		}
-		if len(rse.Failures) != 1 || rse.Failures[0].Region != "acc2" || !rse.Failures[0].Tree || rse.Noun != "account" {
-			t.Fatalf("%s: failures: %+v", typ, rse)
-		}
-		if !strings.Contains(err.Error(), "polyctl cloudflare account remove acc2") {
-			t.Errorf("%s: the failure does not say how to drop the account: %v", typ, err)
-		}
-		// The rows of the account that answered are returned.
-		for _, r := range res {
-			if (typ == platform.ResZone && r.ParentID != "acc1") || (typ == platform.ResDNSRecord && r.ParentID != "zone1") {
-				t.Fatalf("%s: row of the failed account: %+v", typ, r)
-			}
-		}
-		if len(res) == 0 {
-			t.Fatalf("%s: no rows of the other account", typ)
+	// A zone whose records fail makes its account a failed tree: the rows
+	// of the other account are returned.
+	res, err := c.Sync(ctx, platform.ResDNSRecord)
+	rse := platform.AsRegionSyncError(err)
+	if rse == nil {
+		t.Fatalf("want a RegionSyncError, got %v", err)
+	}
+	if len(rse.Failures) != 1 || rse.Failures[0].Region != "acc2" || !rse.Failures[0].Tree || rse.Noun != "account" {
+		t.Fatalf("failures: %+v", rse)
+	}
+	if !strings.Contains(err.Error(), "polyctl cloudflare account disable acc2") {
+		t.Errorf("the failure does not say how to keep the account out: %v", err)
+	}
+	if len(res) != 8 {
+		t.Fatalf("rows of the other account: %d", len(res))
+	}
+	for _, r := range res {
+		if r.ParentID != "zone1" {
+			t.Fatalf("row of the failed account: %+v", r)
 		}
 	}
 
 	// Every account failing is a plain error with the cause (and so the
 	// exit code) of the first.
-	f.failZones = map[string]int{"acc1": 403, "acc2": 400}
-	for _, typ := range []platform.ResourceType{platform.ResZone, platform.ResDNSRecord} {
-		res, err := c.Sync(ctx, typ)
-		if err == nil || platform.AsRegionSyncError(err) != nil || !errors.Is(err, platform.ErrUnauthorized) || res != nil {
-			t.Fatalf("%s: every account failed: %v %v", typ, res, err)
-		}
-		if !strings.Contains(err.Error(), "every selected account failed") {
-			t.Errorf("%s: %v", typ, err)
-		}
+	f.failRecords = map[string]int{"zone1": 500, "zone2": 400}
+	res, err = c.Sync(ctx, platform.ResDNSRecord)
+	if err == nil || platform.AsRegionSyncError(err) != nil || res != nil {
+		t.Fatalf("every account failed: %v %v", res, err)
+	}
+	if !strings.Contains(err.Error(), "every enabled account failed") {
+		t.Errorf("%v", err)
 	}
 
-	// One account alone fails as it always did.
-	f.failZones = map[string]int{"acc2": 400}
-	if _, err := openClient(t, srv, "good-token", "acc2").Sync(ctx, platform.ResZone); err == nil || platform.AsRegionSyncError(err) != nil {
+	// Zones of one account alone fail as a plain error.
+	f.failRecords = map[string]int{"zone1": 400}
+	one := openSelection(t, srv, map[string]string{metaAccountID: "acc1", metaDisabledAccounts: "acc2"})
+	if _, err := one.Sync(ctx, platform.ResDNSRecord); err == nil || platform.AsRegionSyncError(err) != nil || strings.Contains(err.Error(), "account disable") {
 		t.Fatalf("one account: %v", err)
+	}
+
+	// The zone listing is one request for every account: when it fails,
+	// the zone sync and the record sync fail as a whole, and nothing is
+	// replaced.
+	f.failRecords = nil
+	f.failZones = map[string]int{"": 400}
+	for _, typ := range []platform.ResourceType{platform.ResZone, platform.ResDNSRecord} {
+		res, err := c.Sync(ctx, typ)
+		if err == nil || platform.AsRegionSyncError(err) != nil || res != nil {
+			t.Fatalf("%s: a failed listing: %v %v", typ, res, err)
+		}
 	}
 }
 
@@ -377,7 +469,7 @@ func TestSyncRecordsSkipsAcrossAccounts(t *testing.T) {
 	f, srv := newFake(t)
 	f.forbidRecords["zone2"] = true
 	warned := captureWarnings(t)
-	c := openSelection(t, srv, map[string]string{metaAccountID: "acc1", metaAccounts: "acc1,acc2"})
+	c := openSelection(t, srv, map[string]string{metaAccountID: "acc1"})
 	ctx := context.Background()
 
 	recs, err := c.Sync(ctx, platform.ResDNSRecord)
@@ -393,24 +485,72 @@ func TestSyncRecordsSkipsAcrossAccounts(t *testing.T) {
 	}
 }
 
-// whoami reports the default account, and the selection when the login
-// works on several accounts.
-func TestVerifyReportsTheSelection(t *testing.T) {
+// The accounts the per-account requests (R2) cover are asked of the
+// credentials once per opened client.
+func TestEnabledAccounts(t *testing.T) {
+	f, srv := newFake(t)
+	f.accounts = append(f.accounts, map[string]any{"id": "acc0", "name": "Zero", "type": "standard"}, map[string]any{"id": "acc3", "name": "Gamma", "type": "standard"})
+	ctx := context.Background()
+	c := openSelection(t, srv, map[string]string{metaAccountID: "acc2", metaDisabledAccounts: "acc3"})
+	for i := 0; i < 2; i++ {
+		ids, err := c.inAccount("acc1").enabledAccounts(ctx)
+		// The default account first, the others by id, none disabled.
+		if err != nil || !reflect.DeepEqual(ids, []string{"acc2", "acc0", "acc1"}) {
+			t.Fatalf("enabled: %v %v", ids, err)
+		}
+	}
+	if n := f.count("GET /accounts"); n != 2 { // two pages, once
+		t.Fatalf("%d account listings, want one of two pages", n)
+	}
+	// --account is that account, without a request.
+	f.reqs()
+	if ids, err := c.pin("acc3").enabledAccounts(ctx); err != nil || !reflect.DeepEqual(ids, []string{"acc3"}) || len(f.reqs()) != 0 {
+		t.Fatalf("pinned: %v %v", ids, err)
+	}
+	// A login without a default account covers what its credentials list.
+	u := openSelection(t, srv, map[string]string{metaDisabledAccounts: "acc0"})
+	if ids, err := u.enabledAccounts(ctx); err != nil || !reflect.DeepEqual(ids, []string{"acc1", "acc2", "acc3"}) {
+		t.Fatalf("no default: %v %v", ids, err)
+	}
+	// Credentials that cannot list accounts work on the default account
+	// alone; without one that is an error that can be skipped.
+	f.forbidAccounts = true
+	c = openSelection(t, srv, map[string]string{metaAccountID: "acc2"})
+	if ids, err := c.enabledAccounts(ctx); err != nil || !reflect.DeepEqual(ids, []string{"acc2"}) {
+		t.Fatalf("cannot list: %v %v", ids, err)
+	}
+	_, err := openSelection(t, srv, nil).enabledAccounts(ctx)
+	if !errors.Is(err, platform.ErrUnauthorized) || !strings.Contains(err.Error(), "has no default account and cannot list its accounts") {
+		t.Fatalf("cannot list, no default: %v", err)
+	}
+	// Credentials that list none: the default alone.
+	f.forbidAccounts, f.accounts = false, nil
+	if ids, err := openSelection(t, srv, map[string]string{metaAccountID: "acc2"}).enabledAccounts(ctx); err != nil || !reflect.DeepEqual(ids, []string{"acc2"}) {
+		t.Fatalf("lists none: %v %v", ids, err)
+	}
+}
+
+// whoami reports the default account, and the disabled accounts when the
+// login has any.
+func TestVerifyReportsTheDisabledAccounts(t *testing.T) {
 	_, srv := newFake(t)
 	ctx := context.Background()
-	id, err := openSelection(t, srv, map[string]string{metaAccountID: "acc2", metaAccountName: "Beta", metaAccounts: "acc1,acc2"}).Verify(ctx)
+	id, err := openSelection(t, srv, map[string]string{metaAccountID: "acc2", metaAccountName: "Beta", metaDisabledAccounts: "acc3,acc1", legacyAccounts: "acc1,acc2"}).Verify(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if id.Account != "acc2" || id.Extra["account_name"] != "Beta" || id.Extra["accounts"] != "acc2,acc1" {
+	if id.Account != "acc2" || id.Extra["account_name"] != "Beta" || id.Extra["disabled_accounts"] != "acc3,acc1" {
 		t.Fatalf("identity: %+v", id)
+	}
+	if _, has := id.Extra["accounts"]; has {
+		t.Fatalf("the former selection is reported: %+v", id)
 	}
 	id, err = openClient(t, srv, "good-token", "acc1").Verify(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, has := id.Extra["accounts"]; has || id.Account != "acc1" {
-		t.Fatalf("one account: %+v", id)
+	if _, has := id.Extra["disabled_accounts"]; has || id.Account != "acc1" {
+		t.Fatalf("nothing disabled: %+v", id)
 	}
 	if id, err = openClient(t, srv, "good-token", "").Verify(ctx); err != nil || id.Account != "" {
 		t.Fatalf("no account: %+v %v", id, err)
@@ -429,13 +569,16 @@ func TestOwnerHint(t *testing.T) {
 
 func TestCoverageChange(t *testing.T) {
 	p := &provider{}
-	meta := func(def, accounts string) map[string]string {
+	meta := func(def, disabled, legacy string) map[string]string {
 		m := map[string]string{}
 		if def != "" {
 			m[metaAccountID] = def
 		}
-		if accounts != "" {
-			m[metaAccounts] = accounts
+		if disabled != "" {
+			m[metaDisabledAccounts] = disabled
+		}
+		if legacy != "" {
+			m[legacyAccounts] = legacy
 		}
 		return m
 	}
@@ -445,15 +588,17 @@ func TestCoverageChange(t *testing.T) {
 		dropped       []string
 		changed       bool
 	}{
-		{"the same account", meta("acc1", ""), meta("acc1", ""), nil, false},
-		{"another default of the same selection", meta("acc1", "acc1,acc2"), meta("acc2", "acc2,acc1"), nil, false},
-		{"an account added", meta("acc1", ""), meta("acc1", "acc1,acc2"), nil, true},
-		{"an account removed", meta("acc1", "acc1,acc2"), meta("acc1", ""), []string{"acc2"}, true},
-		{"another account", meta("acc1", ""), meta("acc2", ""), []string{"acc1"}, true},
-		{"the default removed", meta("acc1", "acc1,acc2,acc3"), meta("acc3", "acc3,acc2"), []string{"acc1"}, true},
-		{"a login without an account gets one", meta("", ""), meta("acc1", ""), nil, true},
-		{"a login loses its account", meta("acc1", ""), meta("", ""), []string{"acc1"}, true},
-		{"no account before or after", meta("", ""), meta("", ""), nil, false},
+		{"the same account", meta("acc1", "", ""), meta("acc1", "", ""), nil, false},
+		{"another default account", meta("acc1", "", ""), meta("acc2", "", ""), nil, false},
+		{"an account disabled", meta("acc1", "", ""), meta("acc1", "acc2", ""), []string{"acc2"}, true},
+		{"an account enabled again", meta("acc1", "acc2,acc3", ""), meta("acc1", "acc3", ""), nil, true},
+		{"one disabled, another enabled", meta("acc1", "acc2", ""), meta("acc1", "acc3", ""), []string{"acc3"}, true},
+		{"the same disabled accounts in another order", meta("acc1", "acc2,acc3", ""), meta("acc1", "acc3,acc2", ""), nil, false},
+		{"the default was disabled before", meta("acc1", "acc2", ""), meta("acc2", "", ""), nil, true},
+		{"a login without an account gets one", meta("", "", ""), meta("acc1", "", ""), nil, false},
+		{"a login loses its account", meta("acc1", "", ""), meta("", "", ""), nil, false},
+		// A login made while it held a selection covers more now.
+		{"the former selection goes", meta("acc1", "", "acc1,acc2"), meta("acc1", "", ""), nil, true},
 	} {
 		dropped, changed := p.CoverageChange(tc.before, tc.after)
 		if !reflect.DeepEqual(dropped, tc.dropped) || changed != tc.changed {
@@ -489,17 +634,18 @@ func TestZoneHint(t *testing.T) {
 	}
 }
 
-// The login help states the rule of TestLoginSetAccounts: only a first
-// non-interactive login of credentials that see several accounts has to
-// name them; a later one keeps the stored selection.
+// The login help states what a login has to name: only a first
+// non-interactive login of credentials that see several accounts needs the
+// default account; a later one keeps what is stored.
 func TestLoginHelpNamesTheAccountRule(t *testing.T) {
 	h := strings.Join(strings.Fields((&provider{}).LoginHelp()), " ")
-	for _, want := range []string{"A first non-interactive login requires one of them then", "a later one that names neither keeps the stored selection"} {
+	for _, want := range []string{"The login works on every account the credentials see", "a first non-interactive login requires it when the credentials see several",
+		"later login keeps the stored one", "--set disabled_accounts=<id>,<id>,...", "without it a later login keeps the stored list"} {
 		if !strings.Contains(h, want) {
 			t.Errorf("the login help lacks %q: %s", want, h)
 		}
 	}
-	if strings.Contains(h, "the non-interactive flow requires one of them") {
-		t.Errorf("the login help requires the keys of every non-interactive login: %s", h)
+	if strings.Contains(h, "--set accounts=") {
+		t.Errorf("the login help names the former option: %s", h)
 	}
 }

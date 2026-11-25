@@ -340,7 +340,8 @@ type OwnerCellDescriber interface {
 
 // CoverageChanger is implemented by providers whose account covers a set
 // of inventory trees that its metadata decides (the projects of a Google
-// Cloud account that are not disabled). After a re-login replaced the
+// Cloud account, or the accounts of a Cloudflare login, that are not
+// disabled). After a re-login replaced the
 // metadata before by after, dropped are the trees the account no longer
 // covers, whose cached rows must go at once (a fresh set would otherwise
 // keep serving them, and domain routing would keep sending writes to

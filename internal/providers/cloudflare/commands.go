@@ -130,9 +130,9 @@ func recordSet(profile, zoneID string) inventory.Set {
 }
 
 // cachedZones returns the zones of the resolved profile in the scope of
-// the call (the selected accounts, or the one of --account) honouring
+// the call (the enabled accounts, or the one of --account) honouring
 // --refresh/--offline/TTL, and whether they came from the cache. The zones
-// of an account outside the selection are read live and not stored.
+// of a disabled account are read live and not stored.
 func cachedZones(ctx context.Context, rt *app.Runtime) ([]platform.Zone, acctScope, bool, error) {
 	profile, err := rt.ProfileFor(platform.Cloudflare)
 	if err != nil {
@@ -155,8 +155,7 @@ func cachedZones(ctx context.Context, rt *app.Runtime) ([]platform.Zone, acctSco
 		if err != nil {
 			return nil, err
 		}
-		// A sync that fails for some of the selected accounts keeps the
-		// zones stored for them.
+		// One listing covers every enabled account.
 		return s.client.Sync(ctx, platform.ResZone)
 	})
 	if err != nil {
@@ -178,7 +177,7 @@ func cachedZones(ctx context.Context, rt *app.Runtime) ([]platform.Zone, acctSco
 
 // resolveZone finds a zone by name or id in the scope of the call:
 // inventory first, then remotely (unless --offline). A remote hit is stored
-// in the inventory when its account is selected. A name that several
+// in the inventory unless its account is disabled. A name that several
 // accounts of the scope hold a zone of is a pick in the interactive flow
 // and ambiguous (exit code 5) otherwise.
 //
@@ -419,8 +418,7 @@ func newDNSCmd(rt *app.Runtime) *cobra.Command {
 }
 
 // zoneRecords returns the records of a zone through the inventory; those
-// of a zone in an account outside the selection are read live and not
-// stored.
+// of a zone in a disabled account are read live and not stored.
 func zoneRecords(ctx context.Context, rt *app.Runtime, profile string, z *platform.Zone) ([]platform.Record, bool, error) {
 	if !cacheable(rt, profile, zoneAccount(*z)) {
 		s, err := open(ctx, rt)
@@ -493,7 +491,7 @@ func newDNSListCmd(rt *app.Runtime) *cobra.Command {
 }
 
 // storeRecord mirrors a mutation into the inventory, unless the zone is in
-// an account outside the selection.
+// a disabled account.
 func storeRecord(ctx context.Context, rt *app.Runtime, profile string, z *platform.Zone, rec platform.Record) {
 	if !cacheable(rt, profile, zoneAccount(*z)) {
 		return

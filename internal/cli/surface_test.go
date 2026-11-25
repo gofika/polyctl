@@ -360,7 +360,8 @@ func TestPlatformTreeShapes(t *testing.T) {
 		// The projects of a Google Cloud account.
 		"gcp project list", "gcp project current", "gcp project use", "gcp project enable", "gcp project disable", "gcp project add", "gcp project remove",
 		// The accounts of a Cloudflare login.
-		"cloudflare account list", "cloudflare account current", "cloudflare account use", "cloudflare account add", "cloudflare account remove",
+		"cloudflare account list", "cloudflare account current", "cloudflare account use", "cloudflare account enable", "cloudflare account disable",
+		"cloudflare account add", "cloudflare account remove",
 		// One identity check, at the top of every tree.
 		"aws whoami", "gcp whoami", "aliyun whoami", "cloudflare whoami", "namecom whoami", "godaddy whoami",
 		// The Cloudflare tree under its platform id and its alias.
@@ -785,7 +786,7 @@ func TestCloudflareAccountFlag(t *testing.T) {
 		"cloudflare cache purge": true, "cloudflare cache rule set": true, "cloudflare redirect rule list": true,
 		"cloudflare dev-mode": true, "cloudflare ssl-mode": true, "cloudflare r2 bucket list": true, "cloudflare r2 domain ensure": true,
 		"cloudflare account list": false, "cloudflare account current": false, "cloudflare account use": false, "cloudflare account add": false,
-		"cloudflare account remove": false, "cloudflare whoami": false, "gcp dns zone list": false, "dns list": false, "sync": false,
+		"cloudflare account remove": false, "cloudflare account enable": false, "cloudflare account disable": false, "cloudflare whoami": false, "gcp dns zone list": false, "dns list": false, "sync": false,
 	} {
 		c, _, err := root.Find(strings.Fields(path))
 		if err != nil {
@@ -803,9 +804,9 @@ func TestCloudflareAccountFlag(t *testing.T) {
 	if code, _, stderr := mainExit(t.TempDir(), "cloudflare", "account", "list", "--account", "acc1"); code != ExitUsage || !strings.Contains(stderr, "unknown flag") {
 		t.Errorf("account list --account: exit %d, %s", code, stderr)
 	}
-	// The commands that change the selection write the local configuration
-	// only: there is nothing to preview.
-	for _, sub := range []string{"use", "add", "remove"} {
+	// The commands that change the accounts of the login write the local
+	// configuration only: there is nothing to preview.
+	for _, sub := range []string{"use", "enable", "disable", "add", "remove"} {
 		if code, _, stderr := mainExit(t.TempDir(), "cloudflare", "account", sub, "acc1", "--dry-run"); code != ExitUsage || !strings.Contains(stderr, "does not support --dry-run") {
 			t.Errorf("cloudflare account %s --dry-run: exit %d, %s", sub, code, stderr)
 		}
