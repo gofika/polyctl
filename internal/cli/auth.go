@@ -425,6 +425,12 @@ func metaSummary(m map[string]string) string {
 func metaFact(m map[string]string, k string) string {
 	v := m[k]
 	if v == "" {
+		if k == "account_id" {
+			// A Cloudflare login without a default account (its
+			// credentials could not list their accounts) may still hold
+			// disabled ones.
+			return strings.TrimSpace(noDefaultNote(m["disabled_accounts"]))
+		}
 		return ""
 	}
 	switch k {
@@ -472,6 +478,15 @@ func metaCells(m map[string]string) []string {
 func disabledNote(list, def string) string {
 	if n := countOthers(list, def); n > 0 {
 		return fmt.Sprintf(" (%d disabled)", n)
+	}
+	return ""
+}
+
+// noDefaultNote is "no default account (N disabled)" for the N disabled
+// accounts of a Cloudflare login that has no default account; "" for none.
+func noDefaultNote(list string) string {
+	if note := disabledNote(list, ""); note != "" {
+		return "no default account" + note
 	}
 	return ""
 }
@@ -687,6 +702,8 @@ func identitySummary(id *platform.Identity) string {
 			note = disabledNote(id.Extra["disabled_accounts"], id.Account)
 		}
 		parts = append(parts, id.Account+note)
+	} else if note := noDefaultNote(id.Extra["disabled_accounts"]); note != "" {
+		parts = append(parts, note)
 	}
 	if id.User != "" {
 		parts = append(parts, id.User)

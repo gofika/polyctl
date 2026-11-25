@@ -876,4 +876,22 @@ func TestMetaSummaryCountsProjects(t *testing.T) {
 	if got := identitySummary(&platform.Identity{Account: "acc1", User: "a@b", Extra: map[string]string{"accounts": "acc1,acc2"}}); got != "acc1 a@b" {
 		t.Errorf("identitySummary of a login with the former list = %q", got)
 	}
+	// A Cloudflare login without a default account (credentials that
+	// cannot list their accounts) still says how many are disabled.
+	unbound := map[string]string{"disabled_accounts": "acc2,acc3", "method": "api_token"}
+	if got := metaSummary(unbound); got != "no default account (2 disabled) method=api_token" {
+		t.Errorf("metaSummary(%v) = %q", unbound, got)
+	}
+	if got := metaCells(unbound); got[0] != "no default account (2 disabled)" {
+		t.Errorf("metaCells(%v) = %q", unbound, got)
+	}
+	if got := identitySummary(&platform.Identity{User: "a@b", Extra: map[string]string{"disabled_accounts": "acc2,acc3"}}); got != "no default account (2 disabled) a@b" {
+		t.Errorf("identitySummary without a default account = %q", got)
+	}
+	if got := metaSummary(map[string]string{"method": "api_token"}); got != "method=api_token" {
+		t.Errorf("metaSummary without accounts = %q", got)
+	}
+	if got := identitySummary(&platform.Identity{User: "a@b"}); got != "a@b" {
+		t.Errorf("identitySummary without accounts = %q", got)
+	}
 }

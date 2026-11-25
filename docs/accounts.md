@@ -78,7 +78,7 @@ Runs the platform's login flow, verifies the credentials, stores the secret and 
 
 ### auth list
 
-One row per account: profile, platform, current marker (`*`), credential backend, metadata summary. A GCP account shows its default project and a Cloudflare login its default account, each with the number of disabled ones when there are any (`project=acme-prod (2 disabled)`, `account_id=0123456789abcdef0123456789abcdef (1 disabled)`). The enabled ones are not counted: that needs the platform, and `auth list` reads the local configuration only. A profile without accounts shows as `(no accounts)` (in JSON/YAML: `name` and `current` only).
+One row per account: profile, platform, current marker (`*`), credential backend, metadata summary. A GCP account shows its default project and a Cloudflare login its default account, each with the number of disabled ones when there are any (`project=acme-prod (2 disabled)`, `account_id=0123456789abcdef0123456789abcdef (1 disabled)`). A Cloudflare login without a default account shows `no default account (2 disabled)` when it holds disabled accounts. The enabled ones are not counted: that needs the platform, and `auth list` reads the local configuration only. A profile without accounts shows as `(no accounts)` (in JSON/YAML: `name` and `current` only).
 
 ### auth use
 
@@ -86,7 +86,7 @@ Sets `current_profile`. An unknown profile exits with code 4. Interactively, wit
 
 ### auth status
 
-Verifies the stored credentials of every account (or of `--profile`) against the platform and prints the resolved identity (account, user, email, ARN, project...; for GCP the default project and for Cloudflare the default account, with `(N disabled)` when projects or accounts are disabled). Exits with code 3 when every failing account failed for its credentials or permissions, and with code 1 when one failed for another reason (network, timeout, platform outage); each row keeps its own error. Ctrl-C stops it before the accounts left. With `--offline` it only checks that credentials are present.
+Verifies the stored credentials of every account (or of `--profile`) against the platform and prints the resolved identity (account, user, email, ARN, project...; for GCP the default project and for Cloudflare the default account, with `(N disabled)` when projects or accounts are disabled; a Cloudflare login without a default account says `no default account (N disabled)`). Exits with code 3 when every failing account failed for its credentials or permissions, and with code 1 when one failed for another reason (network, timeout, platform outage); each row keeps its own error. Ctrl-C stops it before the accounts left. With `--offline` it only checks that credentials are present.
 
 ### auth rename
 
