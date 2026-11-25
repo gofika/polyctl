@@ -813,29 +813,34 @@ func TestCloudflareAccountFlag(t *testing.T) {
 }
 
 // auth list names the default project of a Google Cloud account and how
-// many more are selected.
+// many projects are disabled, from the configuration alone: the enabled
+// ones are whatever else the credentials see. The default is never
+// counted, and the list of projects a login of polyctl 0.4.0 stored says
+// nothing any more.
 func TestMetaSummaryCountsProjects(t *testing.T) {
 	for meta, want := range map[string]string{
-		"p1|":         "email=a@b project=p1 method=adc",
-		"p1|p1":       "email=a@b project=p1 method=adc",
-		"p1|p1,p2,p3": "email=a@b project=p1 (+2 more) method=adc",
-		"p1|p2":       "email=a@b project=p1 (+1 more) method=adc",
+		"p1|":          "email=a@b project=p1 method=adc",
+		"p1|p1":        "email=a@b project=p1 method=adc",
+		"p1|p2,p3":     "email=a@b project=p1 (2 disabled) method=adc",
+		"p1|p1, p2,p2": "email=a@b project=p1 (1 disabled) method=adc",
 	} {
 		def, list, _ := strings.Cut(meta, "|")
-		m := map[string]string{"email": "a@b", "project": def, "method": "adc"}
+		m := map[string]string{"email": "a@b", "project": def, "projects": "p1,p4,p5", "method": "adc"}
 		if list != "" {
-			m["projects"] = list
+			m["disabled_projects"] = list
 		}
 		if got := metaSummary(m); got != want {
 			t.Errorf("metaSummary(%v) = %q, want %q", m, got, want)
 		}
 	}
-	id := &platform.Identity{Account: "p1", User: "a@b", Extra: map[string]string{"projects": "p1,p2"}}
-	if got := identitySummary(id); got != "p1 (+1 more) a@b" {
+	id := &platform.Identity{Account: "p1", User: "a@b", Extra: map[string]string{"disabled_projects": "p2,p3"}}
+	if got := identitySummary(id); got != "p1 (2 disabled) a@b" {
 		t.Errorf("identitySummary = %q", got)
 	}
-	if got := identitySummary(&platform.Identity{Account: "p1", User: "a@b"}); got != "p1 a@b" {
-		t.Errorf("identitySummary of one project = %q", got)
+	for _, extra := range []map[string]string{nil, {"projects": "p1,p2"}} {
+		if got := identitySummary(&platform.Identity{Account: "p1", User: "a@b", Extra: extra}); got != "p1 a@b" {
+			t.Errorf("identitySummary of %v = %q", extra, got)
+		}
 	}
 	// A Cloudflare login counts its selected accounts the same way.
 	cf := map[string]string{"account_id": "acc1", "accounts": "acc1,acc2,acc3", "method": "api_token"}

@@ -429,8 +429,9 @@ func metaFact(m map[string]string, k string) string {
 	switch k {
 	case "project":
 		// A Google Cloud account names its default project and how many
-		// more are selected.
-		v += moreProjects(m["projects"], v)
+		// projects are disabled: every other one its credentials see is
+		// enabled, which only Google Cloud can count.
+		v += disabledNote(m["disabled_projects"], v)
 	case "account_id":
 		// A Cloudflare login names its default account and how many more
 		// are selected.
@@ -463,9 +464,28 @@ func metaCells(m map[string]string) []string {
 	return cells
 }
 
-// moreProjects is " (+N more)" for the N projects (or Cloudflare accounts)
-// of a comma-separated list other than def, "" for none.
+// disabledNote is " (N disabled)" for the N projects of the comma-separated
+// list of disabled projects other than def, the default, which is never
+// disabled; "" for none.
+func disabledNote(list, def string) string {
+	if n := countOthers(list, def); n > 0 {
+		return fmt.Sprintf(" (%d disabled)", n)
+	}
+	return ""
+}
+
+// moreProjects is " (+N more)" for the N Cloudflare accounts of a
+// comma-separated list other than def, "" for none.
 func moreProjects(list, def string) string {
+	if n := countOthers(list, def); n > 0 {
+		return fmt.Sprintf(" (+%d more)", n)
+	}
+	return ""
+}
+
+// countOthers counts the distinct ids of a comma-separated list other than
+// def.
+func countOthers(list, def string) int {
 	n := 0
 	seen := map[string]bool{def: true}
 	for _, p := range strings.Split(list, ",") {
@@ -474,10 +494,7 @@ func moreProjects(list, def string) string {
 			n++
 		}
 	}
-	if n == 0 {
-		return ""
-	}
-	return fmt.Sprintf(" (+%d more)", n)
+	return n
 }
 
 func newAuthListCmd(rt *app.Runtime) *cobra.Command {
@@ -668,14 +685,15 @@ func statusGrid(rows []statusRow) output.Grid {
 func identitySummary(id *platform.Identity) string {
 	var parts []string
 	if id.Account != "" {
-		// Extra["projects"] is the selection of a Google Cloud account,
-		// whose Account is the default project; Extra["accounts"] that of
-		// a Cloudflare login, whose Account is the default account.
-		list := id.Extra["projects"]
-		if list == "" {
-			list = id.Extra["accounts"]
+		// Extra["disabled_projects"] are the disabled projects of a Google
+		// Cloud account, whose Account is the default project;
+		// Extra["accounts"] is the selection of a Cloudflare login, whose
+		// Account is the default account.
+		note := disabledNote(id.Extra["disabled_projects"], id.Account)
+		if note == "" {
+			note = moreProjects(id.Extra["accounts"], id.Account)
 		}
-		parts = append(parts, id.Account+moreProjects(list, id.Account))
+		parts = append(parts, id.Account+note)
 	}
 	if id.User != "" {
 		parts = append(parts, id.User)
