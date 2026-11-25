@@ -184,6 +184,7 @@ func (s *Store) Load(root string, repair bool) (*Bundle, error) {
 		s.removeStagings(stagings, src)
 		b, err := s.loadDir(root, live, repair)
 		if b != nil {
+			b.Recovered = slices.Contains(stagings, src)
 			s.dropPendingOf(root, b)
 		}
 		return b, err
@@ -264,8 +265,20 @@ func (s *Store) removeStagings(dirs []string, keep string) {
 }
 
 // dropPendingOf removes the pending issuance of root when b, now installed,
-// is its certificate (same key).
+// is its certificate: the kept chain has b's serial, or, with no chain kept,
+// the pending key is b's key. A kept chain of another certificate (with
+// cert.reuse_key the pending key is also the key of the archived bundle)
+// stays, so the next run installs it.
 func (s *Store) dropPendingOf(root string, b *Bundle) {
+	if kept, err := s.LoadPendingBundle(root); err == nil && kept != nil {
+		if kept.Serial == b.Serial {
+			_ = os.RemoveAll(filepath.Dir(s.PendingKeyPath(root)))
+		}
+		return
+	}
+	if _, err := os.Stat(s.PendingChainPath(root)); err == nil {
+		return // a chain that does not load: leave it for the next run to report
+	}
 	if k, err := s.LoadPendingKey(root); err == nil && k != nil && samePublicKey(k.Public(), b.Key.Public()) {
 		_ = os.RemoveAll(filepath.Dir(s.PendingKeyPath(root)))
 	}

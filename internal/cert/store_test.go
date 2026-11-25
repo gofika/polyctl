@@ -370,3 +370,46 @@ func TestStoreRemovesLeftoverStaging(t *testing.T) {
 		t.Error("staging directory kept by Save")
 	}
 }
+
+// With cert.reuse_key the pending key is also the key of the archived
+// bundle: restoring that bundle keeps the chain an earlier run obtained and
+// could not install, so the next run installs it.
+func TestStoreRestoreFromArchiveKeepsOtherPendingChain(t *testing.T) {
+	ca := certtest.New("Fake R1")
+	st := OpenStore(t.TempDir(), LetsEncryptProduction)
+	key := certtest.Key()
+	keyPEM := certtest.KeyPEM(key)
+	bundle := func(days int) *Bundle {
+		chain := ca.Issue(key.Public(), Names("example.com"), time.Now().Add(-time.Hour), time.Now().Add(time.Duration(days)*24*time.Hour))
+		b, err := NewBundle("example.com", chain, keyPEM)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	for _, days := range []int{3, 5} {
+		if err := st.Save(bundle(days)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// live/ lost between the renames, its staging directory gone: the
+	// newest archived bundle is restored.
+	if err := os.RemoveAll(st.LivePath("example.com")); err != nil {
+		t.Fatal(err)
+	}
+	kept := bundle(90)
+	if err := st.SavePendingKey("example.com", kept.Key); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SavePendingChain("example.com", kept.FullchainPEM); err != nil {
+		t.Fatal(err)
+	}
+	b, err := st.Load("example.com", true)
+	if err != nil || b == nil || b.Recovered {
+		t.Fatalf("restore = %+v, %v", b, err)
+	}
+	got, err := st.LoadPendingBundle("example.com")
+	if err != nil || got == nil || got.Serial != kept.Serial {
+		t.Fatalf("pending chain after the restore = %+v, %v", got, err)
+	}
+}

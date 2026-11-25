@@ -204,6 +204,9 @@ func Ensure(ctx context.Context, env *Env, o EnsureOptions) (*Result, error) {
 	if err != nil {
 		return res, err
 	}
+	// recovered is the action of a certificate a repair installed from the
+	// staging directory a failed or interrupted earlier run left, or "".
+	var recovered platform.Action
 	if cur != nil && cur.NeedsRepair && !o.DryRun {
 		// Repairs (a restore from the archive, a key mode) are made under
 		// the lock: another process may be replacing the bundle right now.
@@ -216,11 +219,12 @@ func Ensure(ctx context.Context, env *Env, o EnsureOptions) (*Result, error) {
 		if err != nil {
 			return res, err
 		}
+		recovered = recordRecovered(ctx, env, root, cur)
 	}
 	reason, action := renewReason(cur, o, env.now())
 	if reason == "" {
 		res.Bundle = cur
-		res.Changes = append(res.Changes, certChange(certRes, platform.Unchanged, cur, env.now()))
+		res.Changes = append(res.Changes, certChange(certRes, unchangedOr(recovered), cur, env.now()))
 		return res, nil
 	}
 	if o.Offline {
@@ -308,10 +312,15 @@ func Ensure(ctx context.Context, env *Env, o EnsureOptions) (*Result, error) {
 	if cur, err = st.Load(root, true); err != nil {
 		return res, err
 	}
+	if a := recordRecovered(ctx, env, root, cur); a != "" {
+		recovered = a
+	}
 	if reason, action = renewReason(cur, o, env.now()); reason == "" {
-		env.infof("the certificate of %s was renewed by another process meanwhile", root)
+		if recovered == "" {
+			env.infof("the certificate of %s was renewed by another process meanwhile", root)
+		}
 		res.Bundle = cur
-		res.Changes = append(res.Changes, certChange(certRes, platform.Unchanged, cur, env.now()))
+		res.Changes = append(res.Changes, certChange(certRes, unchangedOr(recovered), cur, env.now()))
 		return res, nil
 	}
 
@@ -370,6 +379,36 @@ func Ensure(ctx context.Context, env *Env, o EnsureOptions) (*Result, error) {
 	changes, err := plan.Run(ctx, false)
 	res.Changes = changes
 	return res, err
+}
+
+// recordRecovered records in history.log and the inventory a certificate a
+// repairing Load installed from the staging directory of a failed or
+// interrupted Save (the run that obtained it could not record it), and
+// returns its action (created or updated), or "" when b was not recovered.
+func recordRecovered(ctx context.Context, env *Env, root string, b *Bundle) platform.Action {
+	if b == nil || !b.Recovered {
+		return ""
+	}
+	action, word := platform.Updated, "updated"
+	if latest, err := env.Store.latestArchive(root); err == nil && latest == "" {
+		action, word = platform.Created, "created"
+	}
+	if err := env.Store.AppendHistory(HistoryEntry{Action: word, Domain: root, Serial: b.Serial, NotAfter: b.NotAfter.Format(time.RFC3339), ACMEDirectory: env.Store.Directory}); err != nil {
+		env.infof("warning: history.log: %v", err)
+	}
+	if env.Remember != nil {
+		env.Remember(ctx, b)
+	}
+	return action
+}
+
+// unchangedOr is the action of a certificate this run did not renew: the
+// action of one a repair installed (see recordRecovered), else unchanged.
+func unchangedOr(recovered platform.Action) platform.Action {
+	if recovered != "" {
+		return recovered
+	}
+	return platform.Unchanged
 }
 
 // declined turns a "no" to the terms of service into ErrDeclined.

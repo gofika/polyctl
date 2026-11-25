@@ -67,6 +67,10 @@ type Bundle struct {
 	// repair (a private key readable by others, a live directory restored
 	// from the archive only in memory).
 	NeedsRepair bool
+	// Recovered is set by a repairing Store.Load that installed the
+	// certificate a failed or interrupted Save left in a staging directory:
+	// the certificate is new, but it was not recorded yet.
+	Recovered bool
 }
 
 // NewBundle parses a full chain (leaf first) and a private key and checks

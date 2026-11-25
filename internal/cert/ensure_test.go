@@ -781,12 +781,25 @@ func TestEnsureRestoresStagingAfterInterruptedInstall(t *testing.T) {
 		t.Fatal(err)
 	}
 	restoreRename(t)
+	var remembered []string
+	fx.env.Remember = func(ctx context.Context, b *Bundle) { remembered = append(remembered, b.Serial) }
 	res, err := Ensure(context.Background(), fx.env, fx.opts())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fx.iss.obtains != 1 || res.Bundle.Serial != issued.Serial || res.Changes[0].Action != platform.Unchanged {
+	// The run that obtained it could not record it: this one does.
+	if fx.iss.obtains != 1 || res.Bundle.Serial != issued.Serial || len(res.Changes) != 1 || res.Changes[0].Action != platform.Updated {
 		t.Fatalf("obtains %d, serial %s want %s, changes %+v", fx.iss.obtains, res.Bundle.Serial, issued.Serial, res.Changes)
+	}
+	if h := historyLines(t, fx.env.Store); len(h) != 1 || !strings.Contains(h[0], issued.Serial) || !strings.Contains(h[0], `"updated"`) {
+		t.Errorf("history = %v", h)
+	}
+	if len(remembered) != 1 || remembered[0] != issued.Serial {
+		t.Errorf("inventory records = %v", remembered)
+	}
+	// A later run has nothing to record.
+	if res, err = Ensure(context.Background(), fx.env, fx.opts()); err != nil || res.Changes[0].Action != platform.Unchanged || len(remembered) != 1 {
+		t.Fatalf("second run: %+v, %v, records %v", res.Changes, err, remembered)
 	}
 	if left, _ := fx.env.Store.stagingDirs("example.com"); len(left) != 0 {
 		t.Errorf("staging left: %v", left)
