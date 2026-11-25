@@ -848,3 +848,62 @@ func TestOpenForgetsGCPRowsOfVersion2(t *testing.T) {
 		t.Errorf("the instance secret must stay: %+v, %v", got, err)
 	}
 }
+
+// A Google Cloud account covers every project its credentials see since
+// data version 4, and no longer the projects selected for it. Opening an
+// older database keeps what is cached for gcp and makes its sets due, so
+// that the next read syncs the projects that were not selected; the other
+// platforms stay fresh.
+func TestOpenExpiresGCPSetsOfVersion3(t *testing.T) {
+	db, path := openDB(t)
+	zones := inventory.Set{Platform: platform.GCP, Profile: "p", Type: platform.ResZone}
+	mustReplace(t, db, zones, time.Hour, zoneRes("p1/example-zone", "example.com"))
+	recs := scoped("p", platform.ResDNSRecord, "p1/example-zone")
+	recs.Platform = platform.GCP
+	mustReplace(t, db, recs, time.Hour, recRes("r1", "p1/example-zone", "example.com", "www.example.com", "5.6.7.8"))
+	other := inventory.Set{Platform: platform.NameCom, Profile: "p", Type: platform.ResZone}
+	mustReplace(t, db, other, time.Hour, zoneRes("example.org", "example.org"))
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`PRAGMA user_version = 3`); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if db, err = inventory.Open(path); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if rows, err := db.List(ctx, inventory.Query{Platform: platform.GCP}); err != nil || len(rows) != 2 {
+		t.Errorf("gcp rows after the upgrade: %+v, %v", rows, err)
+	}
+	if es, err := db.LookupDomain(ctx, []string{"example.com"}, ""); err != nil || len(es) == 0 {
+		t.Errorf("gcp domain index after the upgrade: %+v, %v", es, err)
+	}
+	for _, s := range []inventory.Set{zones, recs} {
+		if st, err := db.GetState(ctx, s); err != nil || st == nil || st.Fresh(now) {
+			t.Errorf("gcp set %s %q must be due after the upgrade: %+v, %v", s.Type, s.Scope, st, err)
+		}
+	}
+	if st, err := db.GetState(ctx, other); err != nil || !st.Fresh(now) {
+		t.Errorf("the sets of other platforms must stay fresh: %+v, %v", st, err)
+	}
+	// The step runs once: a set synced after it stays fresh at the next open.
+	mustReplace(t, db, zones, time.Hour, zoneRes("p1/example-zone", "example.com"))
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if db, err = inventory.Open(path); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if st, err := db.GetState(ctx, zones); err != nil || !st.Fresh(now) {
+		t.Errorf("a set synced after the upgrade must stay fresh: %+v, %v", st, err)
+	}
+}

@@ -87,8 +87,17 @@ func Open(path string) (*DB, error) {
 // wrote it as "content". Version 2 drops the cached GoDaddy DNS records,
 // whose ids did not carry the zone before (see forgetGoDaddyRecords).
 // Version 3 drops everything cached for Google Cloud, whose rows did not
-// carry their project before (see forgetGCPRows).
-const dataVersion = 3
+// carry their project before (see forgetGCPRows). Version 4 makes the sets
+// cached for Google Cloud due, whose accounts cover every project their
+// credentials see since then (see expireGCPSets).
+const dataVersion = 4
+
+// expireGCPSets makes every set cached for Google Cloud due, keeping its
+// rows: an account used to cover the projects selected for it and covers
+// every project its credentials see now, so a set that is still fresh
+// would hide the projects that were not selected. The next read of a set
+// syncs it; until then, and with --offline, its rows are served.
+const expireGCPSets = `UPDATE sync_state SET expires_at = 0 WHERE platform = 'gcp'`
 
 // forgetGCPRows drops the rows cached for Google Cloud before an account
 // could hold several projects: zone, record and certificate ids and the
@@ -174,6 +183,11 @@ func migrateData(db *sql.DB) error {
 			if _, err := tx.Exec(q); err != nil {
 				return err
 			}
+		}
+	}
+	if v < 4 {
+		if _, err := tx.Exec(expireGCPSets); err != nil {
+			return err
 		}
 	}
 	if v < dataVersion {
