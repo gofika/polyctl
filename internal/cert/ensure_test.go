@@ -593,7 +593,7 @@ func TestEnsureUsageAndOffline(t *testing.T) {
 	}
 }
 
-// An account the CA forgot (a reset staging CA, a deactivated account) is
+// An account the CA forgot (a reset staging CA) is
 // registered again with the key itself, not with the URI the store kept,
 // and the certificate is issued in the same run.
 func TestEnsureWithLegoRegistersForgottenAccount(t *testing.T) {

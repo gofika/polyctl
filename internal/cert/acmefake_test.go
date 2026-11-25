@@ -73,7 +73,7 @@ func newFakeACME(t *testing.T, ca *certtest.CA, lookup func(string) []string) *f
 }
 
 // forgetAccounts makes the CA forget every account, like a reset staging
-// CA or deactivated accounts.
+// CA does.
 func (f *fakeACME) forgetAccounts() {
 	f.mu.Lock()
 	defer f.mu.Unlock()

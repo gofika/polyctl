@@ -22,7 +22,9 @@ import (
 )
 
 // ErrAccountNotFound is returned by Issuer.ResolveAccount when the CA does
-// not know the account key (it was never registered, or was deactivated).
+// not know the account key (it was never registered, or the CA forgot it,
+// as a reset staging CA does). A deactivated account is not this error: the
+// CA refuses its key for good (RFC 8555 section 7.3.6).
 var ErrAccountNotFound = errors.New("the CA does not know this account")
 
 // ObtainRequest is one certificate order.
