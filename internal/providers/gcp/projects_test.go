@@ -39,9 +39,11 @@ type fakeDNS struct {
 	disabled map[string]bool
 	// billingOff answers 403 with a BILLING_DISABLED detail.
 	billingOff map[string]bool
-	// visible are the projects Resource Manager lists.
-	visible []string
-	calls   []string
+	// visible are the projects Resource Manager lists; listFail answers
+	// the list with that status instead.
+	visible  []string
+	listFail int
+	calls    []string
 }
 
 func newFakeDNS(t *testing.T) *fakeDNS {
@@ -98,6 +100,11 @@ func (f *fakeDNS) handle(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 	f.calls = append(f.calls, r.Method+" "+path)
 	if path == "/v1/projects" {
+		if f.listFail != 0 {
+			w.WriteHeader(f.listFail)
+			fmt.Fprintf(w, `{"error":{"code":%d,"message":"forced failure of the project list"}}`, f.listFail)
+			return
+		}
 		var out []map[string]any
 		for i, p := range f.visible {
 			out = append(out, map[string]any{"projectId": p, "name": "Project " + p, "projectNumber": fmt.Sprint(100 + i), "lifecycleState": "ACTIVE"})
@@ -177,15 +184,31 @@ func (f *fakeDNS) handle(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// selectProjects stores the selection of the lab account: def is the
-// default project.
-func (h *gcpHarness) selectProjects(def string, selected ...string) {
+// enableProjects makes def the default project of the lab account and
+// visible the projects its credentials list (on the Compute Engine fake):
+// all of them are enabled, but the ones disableProjects names.
+func (h *gcpHarness) enableProjects(def string, visible ...string) {
+	h.t.Helper()
+	h.gce.mu.Lock()
+	h.gce.visible = visible
+	h.gce.mu.Unlock()
+	h.editMeta(func(meta map[string]string) { setProjects(meta, def, disabledProjects(meta)) })
+}
+
+// disableProjects stores the disabled projects of the lab account.
+func (h *gcpHarness) disableProjects(ids ...string) {
+	h.t.Helper()
+	h.editMeta(func(meta map[string]string) { setProjects(meta, meta[metaProject], ids) })
+}
+
+// editMeta changes the stored metadata of the lab account.
+func (h *gcpHarness) editMeta(edit func(meta map[string]string)) {
 	h.t.Helper()
 	cfg, err := config.Load(filepath.Join(h.dir, "config.yaml"))
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	setSelection(cfg.Profiles["lab"].Platforms[platform.GCP].Metadata, def, selected)
+	edit(cfg.Profiles["lab"].Platforms[platform.GCP].Metadata)
 	if err := cfg.Save(); err != nil {
 		h.t.Fatal(err)
 	}
@@ -213,8 +236,24 @@ func multiDNS(t *testing.T) (*gcpHarness, *fakeDNS) {
 	old := extraOptions
 	extraOptions = g.options()
 	t.Cleanup(func() { extraOptions = old })
-	h.selectProjects("p1", "p1", "p2")
+	h.enableOn(g, "p1", "p1", "p2")
 	return h, g
+}
+
+// enableOn is enableProjects for a harness whose projects are listed by a
+// fakeDNS: both fakes list the same projects.
+func (h *gcpHarness) enableOn(g *fakeDNS, def string, visible ...string) {
+	h.t.Helper()
+	g.mu.Lock()
+	g.visible = visible
+	g.mu.Unlock()
+	h.enableProjects(def, visible...)
+}
+
+// labProjects is "<default> [<disabled projects>]" of the lab account.
+func (h *gcpHarness) labProjects() string {
+	m := h.labMeta()
+	return m[metaProject] + " [" + m[metaDisabledProjects] + "]"
 }
 
 // rowsOf lists "id parent" of the cached rows of a type of the lab
@@ -242,29 +281,32 @@ func (h *gcpHarness) sync(types ...platform.ResourceType) ([]app.SyncReport, err
 	return h.rt.SyncAccount(context.Background(), config.AccountRef{Profile: "lab", Platform: platform.GCP}, types)
 }
 
-func TestSelectedProjects(t *testing.T) {
+// Only the disabled projects are stored. The default project is never one
+// of them, and the key of the former selection is neither read nor kept.
+func TestDisabledProjects(t *testing.T) {
 	for _, tc := range []struct {
 		meta map[string]string
 		want string
 	}{
-		{map[string]string{"project": "p1"}, "p1"},
-		{map[string]string{"project": "p1", "projects": ""}, "p1"},
-		{map[string]string{"project": "p2", "projects": "p1, p2,p3,p1"}, "p2,p1,p3"},
-		{map[string]string{"project": "p9", "projects": "p1"}, "p9,p1"},
+		{map[string]string{"project": "p1"}, ""},
+		{map[string]string{"project": "p1", "disabled_projects": ""}, ""},
+		{map[string]string{"project": "p1", "disabled_projects": "p3, p2,p3,,p2"}, "p3,p2"},
+		{map[string]string{"project": "p1", "disabled_projects": "p1,p2"}, "p2"},
+		{map[string]string{"project": "p1", "projects": "p1,p2"}, ""},
 		{map[string]string{}, ""},
 	} {
-		if got := strings.Join(selectedProjects(tc.meta), ","); got != tc.want {
-			t.Errorf("selectedProjects(%v) = %q, want %q", tc.meta, got, tc.want)
+		if got := strings.Join(disabledProjects(tc.meta), ","); got != tc.want {
+			t.Errorf("disabledProjects(%v) = %q, want %q", tc.meta, got, tc.want)
 		}
 	}
-	meta := map[string]string{"project": "old", "projects": "old,x"}
-	setSelection(meta, "p1", []string{"p1"})
-	if _, ok := meta["projects"]; ok || meta["project"] != "p1" {
-		t.Errorf("a selection of the default alone must not store projects: %v", meta)
+	meta := map[string]string{"project": "old", "projects": "old,x", "disabled_projects": "a"}
+	setProjects(meta, "p1", nil)
+	if len(meta) != 1 || meta["project"] != "p1" {
+		t.Errorf("nothing disabled must store the default alone: %v", meta)
 	}
-	setSelection(meta, "p2", []string{"p1", "p2"})
-	if meta["projects"] != "p2,p1" {
-		t.Errorf("projects = %q, want the default first", meta["projects"])
+	setProjects(meta, "p2", []string{"z", "p2", "a", "z"})
+	if meta["disabled_projects"] != "a,z" || meta["project"] != "p2" {
+		t.Errorf("metadata = %v, want the disabled projects sorted, once, without the default", meta)
 	}
 }
 
@@ -321,7 +363,7 @@ func TestSyncOfFailedProjectKeepsItsRows(t *testing.T) {
 	if rse == nil || len(rse.Failures) != 1 || rse.Failures[0].Region != "p2" || !rse.Failures[0].Tree {
 		t.Fatalf("error = %v, want a tree failure of p2", reps[0].Err)
 	}
-	if msg := reps[0].Err.Error(); !strings.Contains(msg, "polyctl gcp project remove p2") || strings.Contains(msg, "region(s)") {
+	if msg := reps[0].Err.Error(); !strings.Contains(msg, "polyctl gcp project disable p2") || strings.Contains(msg, "region(s)") {
 		t.Errorf("message = %s", msg)
 	}
 	if got := strings.Join(h.rowsOf(platform.ResZone), "; "); got != "p1/uno p1; p2/two p2" {
@@ -368,7 +410,7 @@ func TestSyncCountsDisabledAPIAsEmpty(t *testing.T) {
 	if n := strings.Count(calls, "GET /dns/v1/projects/p1/managedZones\n"); n != 1 {
 		t.Errorf("the zones of p1 were listed %d times in one run, want once:\n%s", n, calls)
 	}
-	want := "note: gcp/lab: skipped 1 project(s) in which an API is not enabled or billing is off: p2 (Cloud DNS API); they hold nothing there. To stop asking them: polyctl gcp project remove p2\n"
+	want := "note: gcp/lab: skipped 1 project(s) in which an API is not enabled or billing is off: p2 (Cloud DNS API); they hold nothing there. To stop asking them: polyctl gcp project disable p2\n"
 	if got := h.stderr.String(); got != want {
 		t.Errorf("stderr = %q\nwant     %q", got, want)
 	}
@@ -379,9 +421,9 @@ func TestSyncCountsDisabledAPIAsEmpty(t *testing.T) {
 	}
 
 	// The only project of the account: still no failure, and no hint to
-	// take the default project off.
+	// disable the default project.
 	resetOffNotes()
-	h.selectProjects("p2", "p2")
+	h.enableOn(g, "p2", "p2")
 	reps, err = h.sync(platform.ResZone, platform.ResDNSRecord)
 	if err != nil || reps[0].Err != nil || reps[0].Count != 0 || reps[1].Err != nil || reps[1].Count != 0 {
 		t.Fatalf("one project, API not enabled: %+v, %v; want nothing and no error", reps, err)
@@ -395,11 +437,11 @@ func TestSyncCountsDisabledAPIAsEmpty(t *testing.T) {
 	resetOffNotes()
 	h.stderr.Reset()
 	g.billingOff["p3"] = true
-	h.selectProjects("p1", "p1", "p3", "p2")
+	h.enableOn(g, "p1", "p1", "p2", "p3")
 	if reps, err = h.sync(platform.ResZone); err != nil || reps[0].Err != nil || reps[0].Count != 1 {
 		t.Fatalf("billing off: %+v, %v; want one zone and no error", reps, err)
 	}
-	want = "note: gcp/lab: skipped 2 project(s) in which an API is not enabled or billing is off: p2 (Cloud DNS API), p3 (an API); they hold nothing there. To stop asking them: polyctl gcp project remove p2 p3\n"
+	want = "note: gcp/lab: skipped 2 project(s) in which an API is not enabled or billing is off: p2 (Cloud DNS API), p3 (an API); they hold nothing there. To stop asking them: polyctl gcp project disable p2 p3\n"
 	if got := h.stderr.String(); got != want {
 		t.Errorf("stderr = %q\nwant     %q", got, want)
 	}
@@ -420,12 +462,12 @@ func TestSyncCountsDisabledAPIAsEmpty(t *testing.T) {
 func TestZoneListSkipsProjectWithoutTheAPI(t *testing.T) {
 	h, g := multiDNS(t)
 	h.nonInteractive()
-	h.selectProjects("p2", "p2")
+	h.enableOn(g, "p2", "p2")
 	g.disabled["p2"] = true
 	if err := h.run("dns", "zone", "list"); err != nil {
 		t.Fatalf("zone list = %v, want no error", err)
 	}
-	if !strings.Contains(h.stderr.String(), "skipped 1 project(s)") || strings.Contains(h.stderr.String(), "project remove") {
+	if !strings.Contains(h.stderr.String(), "skipped 1 project(s)") || strings.Contains(h.stderr.String(), "project disable") {
 		t.Errorf("stderr = %q", h.stderr.String())
 	}
 	c, err := openAccount(context.Background(), h.rt, "lab")
@@ -443,25 +485,140 @@ func TestZoneListSkipsProjectWithoutTheAPI(t *testing.T) {
 	}
 }
 
-// An account without a stored selection (every login before the selection
-// existed) has exactly its one project selected.
-func TestAccountWithoutSelectionUsesItsProject(t *testing.T) {
+// An account covers every active project its credentials see, the default
+// first: nothing has to be chosen, and a login made while an account held a
+// selection (the metadata "projects") covers the projects that were not
+// selected as well.
+func TestAccountCoversEveryVisibleProject(t *testing.T) {
 	h, g := multiDNS(t)
-	h.selectProjects("p1", "p1")
-	if _, ok := h.labMeta()["projects"]; ok {
-		t.Fatalf("metadata = %v, want no projects key", h.labMeta())
-	}
+	h.enableOn(g, "p2", "p1", "p2", "p3")
+	h.editMeta(func(meta map[string]string) { meta[legacyProjects] = "p2" })
 	g.addZone("p1", "one", "one.example", "public")
 	g.addZone("p2", "two", "two.example", "public")
+	g.addZone("p3", "three", "three.example", "public")
 	g.reset()
 	if _, err := h.sync(platform.ResZone, platform.ResDNSRecord); err != nil {
 		t.Fatal(err)
 	}
-	if got := g.projectsCalled(); got != "p1" {
-		t.Errorf("projects asked = %s, want p1 alone", got)
+	if got := g.projectsCalled(); got != "p1,p2,p3" {
+		t.Errorf("projects asked = %s, want all three", got)
 	}
-	if got := strings.Join(h.rowsOf(platform.ResZone), "; "); got != "p1/one p1" {
+	g.mu.Lock()
+	lists := strings.Count(strings.Join(g.calls, "\n")+"\n", "GET /v1/projects\n")
+	g.mu.Unlock()
+	if lists != 1 {
+		t.Errorf("the projects were listed %d times in one sync of two types, want once", lists)
+	}
+	if got := strings.Join(h.rowsOf(platform.ResZone), "; "); got != "p1/one p1; p2/two p2; p3/three p3" {
 		t.Errorf("zones = %s", got)
+	}
+	c, err := openAccount(context.Background(), h.rt, "lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := c.enabledProjects(context.Background()); err != nil || strings.Join(got, ",") != "p2,p1,p3" {
+		t.Errorf("enabledProjects = %v, %v; want the default first", got, err)
+	}
+}
+
+// A project that appears is covered by the next sync without anything
+// being configured, and one that disappears loses its rows there.
+func TestProjectsThatAppearAndDisappear(t *testing.T) {
+	h, g := multiDNS(t)
+	for _, p := range []string{"p1", "p2", "p3"} {
+		g.addZone(p, "main", p+".example", "public")
+	}
+	if _, err := h.sync(platform.ResZone); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(h.rowsOf(platform.ResZone), "; "); got != "p1/main p1; p2/main p2" {
+		t.Fatalf("zones = %s", got)
+	}
+	h.enableOn(g, "p1", "p1", "p3")
+	reps, err := h.sync(platform.ResZone)
+	if err != nil || reps[0].Err != nil {
+		t.Fatalf("sync = %+v, %v", reps, err)
+	}
+	if got := strings.Join(h.rowsOf(platform.ResZone), "; "); got != "p1/main p1; p3/main p3" {
+		t.Errorf("zones = %s, want p3 added and p2 gone", got)
+	}
+}
+
+// A disabled project is never asked; with all but the default disabled the
+// account behaves as one of a single project. The default project named as
+// disabled (a config.yaml edited by hand) stays enabled.
+func TestDisabledProjectsAreNotSynced(t *testing.T) {
+	h, g := multiDNS(t)
+	h.enableOn(g, "p1", "p1", "p2", "p3")
+	for _, p := range []string{"p1", "p2", "p3"} {
+		g.addZone(p, "main", p+".example", "public")
+	}
+	h.disableProjects("p3")
+	g.reset()
+	if _, err := h.sync(platform.ResZone); err != nil {
+		t.Fatal(err)
+	}
+	if got := g.projectsCalled(); got != "p1,p2" {
+		t.Errorf("projects asked = %s, want p1 and p2", got)
+	}
+	h.editMeta(func(meta map[string]string) { meta[metaDisabledProjects] = "p1,p2,p3" })
+	g.reset()
+	if _, err := h.sync(platform.ResZone); err != nil {
+		t.Fatal(err)
+	}
+	if got := g.projectsCalled(); got != "p1" {
+		t.Errorf("projects asked = %s, want the default alone", got)
+	}
+	if got := strings.Join(h.rowsOf(platform.ResZone), "; "); got != "p1/main p1" {
+		t.Errorf("zones = %s", got)
+	}
+	c, err := openAccount(context.Background(), h.rt, "lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id, err := c.Verify(context.Background()); err != nil || id.Extra[metaDisabledProjects] != "p2,p3" {
+		t.Errorf("identity = %+v, %v; want the disabled projects without the default", id, err)
+	}
+}
+
+// Credentials that cannot list projects (a service account without the
+// permission), or that list none, work on the default project alone. A
+// list that fails for another reason fails the sync: falling back to the
+// default alone would drop the rows of every other project.
+func TestCredentialsThatCannotListProjects(t *testing.T) {
+	h, g := multiDNS(t)
+	g.addZone("p1", "one", "one.example", "public")
+	g.addZone("p2", "two", "two.example", "public")
+	if _, err := h.sync(platform.ResZone); err != nil {
+		t.Fatal(err)
+	}
+	for _, code := range []int{http.StatusInternalServerError, http.StatusTooManyRequests, http.StatusUnauthorized} {
+		g.listFail = code
+		reps, err := h.sync(platform.ResZone)
+		if err == nil && len(reps) == 1 {
+			err = reps[0].Err
+		}
+		if err == nil || platform.AsRegionSyncError(err) != nil || !strings.Contains(err.Error(), "list the projects of gcp/lab") ||
+			(code == http.StatusUnauthorized) != (exitClass(err) == "auth") {
+			t.Fatalf("list answering %d: %+v, %v; want a plain failure naming the list", code, reps, err)
+		}
+		if got := strings.Join(h.rowsOf(platform.ResZone), "; "); got != "p1/one p1; p2/two p2" {
+			t.Errorf("zones after a failed list = %s, want them kept", got)
+		}
+	}
+	g.listFail = http.StatusForbidden
+	g.reset()
+	if reps, err := h.sync(platform.ResZone); err != nil || reps[0].Err != nil {
+		t.Fatalf("sync without the permission to list = %+v, %v", reps, err)
+	}
+	if got := g.projectsCalled(); got != "p1" {
+		t.Errorf("projects asked = %s, want the default alone", got)
+	}
+	g.listFail = 0
+	h.enableOn(g, "p1")
+	g.reset()
+	if _, err := h.sync(platform.ResZone); err != nil || g.projectsCalled() != "p1" {
+		t.Errorf("sync with an empty list = %v, asked %s", err, g.projectsCalled())
 	}
 }
 
@@ -553,7 +710,7 @@ func TestZoneOfTwoProjectsIsAmbiguous(t *testing.T) {
 // taken silently. The managed zone name tells them apart.
 func TestSplitHorizonDNSNameIsAmbiguous(t *testing.T) {
 	h, g := multiDNS(t)
-	h.selectProjects("p1", "p1")
+	h.enableOn(g, "p1", "p1")
 	g.addZone("p1", "pub", "example.com", "public")
 	g.addZone("p1", "priv", "example.com", "private")
 	h.nonInteractive()
@@ -573,41 +730,107 @@ func TestSplitHorizonDNSNameIsAmbiguous(t *testing.T) {
 	p.Done()
 }
 
-// --project may name a project outside the selection: it is read live and
-// nothing of it is written to the inventory.
-func TestUnselectedProjectIsReadLiveAndNotCached(t *testing.T) {
+// --project may name a disabled project: it is read live and nothing of
+// it is written to the inventory.
+func TestDisabledProjectIsReadLiveAndNotCached(t *testing.T) {
 	h, g := multiDNS(t)
 	h.nonInteractive()
+	h.enableOn(g, "p1", "p1", "p2", "p3")
+	h.disableProjects("p3")
 	g.addZone("p1", "one", "one.example", "public")
 	g.addZone("p3", "three", "three.example", "public")
 	g.addRRSet("p3", "three", &dns.ResourceRecordSet{Name: "www.three.example.", Type: "A", Ttl: 300, Rrdatas: []string{"192.0.2.3"}})
+	g.reset()
+	if err := h.run("dns", "zone", "list", "--project", "p3"); err != nil || !strings.Contains(h.stdout.String(), "three.example") || strings.Contains(h.stdout.String(), "one.example") {
+		t.Fatalf("zone list --project p3 = %v\n%s", err, h.stdout.String())
+	}
+	if got := g.projectsCalled(); got != "p3" {
+		t.Errorf("projects asked = %s, want the disabled one alone", got)
+	}
+	if err := h.run("dns", "record", "list", "three", "--project", "p3"); err != nil || !strings.Contains(h.stdout.String(), "192.0.2.3") {
+		t.Fatalf("record list --project p3 = %v\n%s", err, h.stdout.String())
+	}
+	if err := h.run("dns", "record", "upsert", "three", "--project", "p3", "--type", "A", "--name", "api", "--value", "192.0.2.4"); err != nil {
+		t.Fatalf("record upsert --project p3 = %v", err)
+	}
+	if z, r := h.rowsOf(platform.ResZone), h.rowsOf(platform.ResDNSRecord); len(z)+len(r) != 0 {
+		t.Errorf("rows of a disabled project were cached: %v %v", z, r)
+	}
+	if err := h.run("dns", "zone", "get", "nosuch", "--project", "p3"); !errors.Is(err, platform.ErrNotFound) {
+		t.Errorf("missing zone = %v", err)
+	}
+	// Without --project the zone of the disabled project is not found.
+	if err := h.run("dns", "record", "list", "three"); exitClass(err) != "notfound" {
+		t.Errorf("zone of a disabled project without --project = %v", err)
+	}
+	// A pin that is enabled reads the cache of the account and shows its
+	// own project only.
+	if err := h.run("dns", "zone", "list", "--project", "p1"); err != nil || !strings.Contains(h.stdout.String(), "one.example") {
+		t.Fatalf("zone list --project p1 = %v\n%s", err, h.stdout.String())
+	}
+	if got := strings.Join(h.rowsOf(platform.ResZone), "; "); got != "p1/one p1" {
+		t.Errorf("cache after an enabled pin = %s", got)
+	}
+	// With --offline the disabled project cannot be read.
+	h.rt.Flags.Offline = true
+	if err := h.run("dns", "zone", "list", "--project", "p3"); exitClass(err) != "offline" {
+		t.Errorf("zone list --project p3 --offline = %v", err)
+	}
+}
+
+// A service account that cannot list projects works on its default
+// project; another project it reaches is named with --project, read live
+// and never cached, since no sync of the account covers it.
+func TestUnlistedProjectIsReadLiveAndNotCached(t *testing.T) {
+	h, g := multiDNS(t)
+	h.nonInteractive()
+	g.listFail = http.StatusForbidden
+	g.addZone("p1", "one", "one.example", "public")
+	g.addZone("p3", "three", "three.example", "public")
+	g.addRRSet("p3", "three", &dns.ResourceRecordSet{Name: "www.three.example.", Type: "A", Ttl: 300, Rrdatas: []string{"192.0.2.3"}})
+	if err := h.run("dns", "zone", "list"); err != nil || !strings.Contains(h.stdout.String(), "one.example") || strings.Contains(h.stdout.String(), "three.example") {
+		t.Fatalf("zone list = %v\n%s", err, h.stdout.String())
+	}
 	if err := h.run("dns", "zone", "list", "--project", "p3"); err != nil || !strings.Contains(h.stdout.String(), "three.example") || strings.Contains(h.stdout.String(), "one.example") {
 		t.Fatalf("zone list --project p3 = %v\n%s", err, h.stdout.String())
 	}
 	if err := h.run("dns", "record", "list", "three", "--project", "p3"); err != nil || !strings.Contains(h.stdout.String(), "192.0.2.3") {
 		t.Fatalf("record list --project p3 = %v\n%s", err, h.stdout.String())
 	}
-	if z, r := h.rowsOf(platform.ResZone), h.rowsOf(platform.ResDNSRecord); len(z)+len(r) != 0 {
-		t.Errorf("rows of an unselected project were cached: %v %v", z, r)
+	if err := h.run("dns", "record", "upsert", "three", "--project", "p3", "--type", "A", "--name", "api", "--value", "192.0.2.4"); err != nil {
+		t.Fatalf("record upsert --project p3 = %v", err)
 	}
-	if err := h.run("dns", "zone", "get", "nosuch", "--project", "p3"); !errors.Is(err, platform.ErrNotFound) {
-		t.Errorf("missing zone = %v", err)
+	if z, r := h.rowsOf(platform.ResZone), h.rowsOf(platform.ResDNSRecord); strings.Join(z, "; ") != "p1/one p1" || len(r) != 0 {
+		t.Errorf("cached rows = %v %v, want the zone of the default project alone", z, r)
 	}
-	// A selected pin reads the cache of the whole selection and shows its
-	// own project only.
+	// The default project pinned is served from the cache, without asking
+	// which projects there are.
+	g.reset()
 	if err := h.run("dns", "zone", "list", "--project", "p1"); err != nil || !strings.Contains(h.stdout.String(), "one.example") {
 		t.Fatalf("zone list --project p1 = %v\n%s", err, h.stdout.String())
 	}
-	if got := strings.Join(h.rowsOf(platform.ResZone), "; "); got != "p1/one p1" {
-		t.Errorf("cache after a selected pin = %s", got)
+	if n := len(g.calls); n != 0 {
+		t.Errorf("a cached list of the default project made %d call(s): %v", n, g.calls)
+	}
+	// The list of projects says why it cannot be shown.
+	if err := h.run("project", "list"); exitClass(err) != "auth" || !has(err, "cannot list projects", "default project p1 alone") {
+		t.Errorf("project list = %v", err)
+	}
+	if err := h.run("project", "enable", "p3"); exitClass(err) != "notfound" || !has(err, "--project", "polyctl gcp project use p3") {
+		t.Errorf("enable of a project that cannot be listed = %v", err)
+	}
+	if err := h.run("project", "disable", "p1"); exitClass(err) != "usage" || !has(err, "disable every project") {
+		t.Errorf("disable of the default of such an account = %v", err)
 	}
 }
 
-// project list marks the selection and the default; current names both.
-func TestProjectListMarksSelection(t *testing.T) {
+// project list says which projects are enabled and marks the default;
+// current names the default and the disabled ones.
+func TestProjectListMarksEnabled(t *testing.T) {
 	h, g := multiDNS(t)
 	h.nonInteractive()
-	g.visible = []string{"p0", "p1", "p3"}
+	h.enableOn(g, "p1", "p0", "p1", "p3")
+	h.disableProjects("p3", "p2")
 	if err := h.run("project", "list"); err != nil {
 		t.Fatal(err)
 	}
@@ -615,15 +838,25 @@ func TestProjectListMarksSelection(t *testing.T) {
 	h.jsonOut(&rows)
 	got := ""
 	for _, r := range rows {
-		got += fmt.Sprintf("%s:%v:%v ", r.ProjectID, r.Selected, r.Default)
+		got += fmt.Sprintf("%s:%v:%v ", r.ProjectID, r.Enabled, r.Default)
+		if r.Selected != r.Enabled {
+			t.Errorf("%s: selected %v, enabled %v; the deprecated field must say the same", r.ProjectID, r.Selected, r.Enabled)
+		}
 	}
-	// p2 is selected but not listed: it is appended.
-	if got != "p0:false:false p1:true:true p3:false:false p2:true:false " {
+	// p2 is disabled but not listed: it is appended.
+	if got != "p0:true:false p1:true:true p3:false:false p2:false:false " {
 		t.Errorf("rows = %s", got)
 	}
+	if out := h.stdout.String(); !strings.Contains(out, `"enabled": true`) || !strings.Contains(out, `"selected": true`) {
+		t.Errorf("JSON = %s", out)
+	}
+	wantErr := "note: disabled project p2 is not visible to the credentials (to forget it: polyctl gcp project enable p2)\n4 project(s) via gcp/lab, 2 enabled, 2 disabled\n"
+	if h.stderr.String() != wantErr {
+		t.Errorf("stderr = %q\nwant     %q", h.stderr.String(), wantErr)
+	}
 	grid := projectGrid(rows)
-	if strings.Join(grid.Headers, " ") != "PROJECT_ID NAME NUMBER STATE SELECTED" || strings.Join(grid.Rows[1], "|") != "p1 *|Project p1|101|ACTIVE|yes" ||
-		strings.Join(grid.Rows[3], "|") != "p2||||yes" || strings.Join(grid.Rows[0], "|") != "p0|Project p0|100|ACTIVE|" {
+	if strings.Join(grid.Headers, " ") != "PROJECT_ID NAME NUMBER STATE ENABLED" || strings.Join(grid.Rows[1], "|") != "p1 *|Project p1|101|ACTIVE|yes" ||
+		strings.Join(grid.Rows[3], "|") != "p2||||no" || strings.Join(grid.Rows[0], "|") != "p0|Project p0|100|ACTIVE|yes" || strings.Join(grid.Rows[2], "|") != "p3|Project p3|102|ACTIVE|no" {
 		t.Errorf("grid = %+v", grid)
 	}
 	if err := h.run("project", "current"); err != nil {
@@ -631,24 +864,54 @@ func TestProjectListMarksSelection(t *testing.T) {
 	}
 	var cur currentProject
 	h.jsonOut(&cur)
-	if cur.Project != "p1" || strings.Join(cur.Projects, ",") != "p1,p2" {
-		t.Errorf("current = %+v", cur)
+	if cur.Project != "p1" || strings.Join(cur.Disabled, ",") != "p2,p3" || strings.Contains(h.stdout.String(), `"projects"`) {
+		t.Errorf("current = %+v\n%s", cur, h.stdout.String())
 	}
+	// With nothing disabled the field is an empty list, never null.
+	h.disableProjects()
+	if err := h.run("project", "current"); err != nil || !strings.Contains(h.stdout.String(), `"disabled_projects": []`) {
+		t.Errorf("current = %v\n%s", err, h.stdout.String())
+	}
+	// A default project the credentials do not list is shown, enabled.
+	h.enableOn(g, "p1", "p0")
+	if err := h.run("project", "list"); err != nil {
+		t.Fatal(err)
+	}
+	h.jsonOut(&rows)
+	if len(rows) != 2 || rows[1].ProjectID != "p1" || !rows[1].Enabled || !rows[1].Default || rows[1].Name != "" {
+		t.Errorf("rows = %+v", rows)
+	}
+	// current asks nothing of Google Cloud.
+	g.reset()
+	h.rt.Flags.Offline = true
+	if err := h.run("project", "current"); err != nil || len(g.calls) != 0 {
+		t.Errorf("current --offline = %v, calls %v", err, g.calls)
+	}
+	if err := h.run("project", "list"); exitClass(err) != "offline" {
+		t.Errorf("list --offline = %v", err)
+	}
+	h.rt.Flags.Offline = false
 	if err := h.run("project", "list", "--project", "p1"); err == nil {
 		t.Error("gcp project takes no --project")
 	}
 }
 
-// use, add and remove change the selection without a login; the cache of
-// the account is made due, and the rows of a removed project are dropped.
-func TestProjectUseAddRemove(t *testing.T) {
+// use, enable and disable change the account without a login: the rows of
+// a disabled project are dropped, and the cache of the account is made due
+// when a project is enabled again or the default changes.
+func TestProjectUseEnableDisable(t *testing.T) {
 	h, g := multiDNS(t)
 	h.nonInteractive()
+	h.enableOn(g, "p1", "p1", "p2", "p3")
+	h.editMeta(func(meta map[string]string) { meta[legacyProjects] = "p1,p2" })
 	g.addZone("p1", "one", "one.example", "public")
 	g.addZone("p2", "two", "two.example", "public")
 	g.addZone("p3", "three", "three.example", "public")
-	if _, err := h.sync(platform.ResZone); err != nil {
-		t.Fatal(err)
+	sync := func() {
+		t.Helper()
+		if _, err := h.sync(platform.ResZone); err != nil {
+			t.Fatal(err)
+		}
 	}
 	fresh := func() bool {
 		db, _ := h.rt.DB()
@@ -658,120 +921,191 @@ func TestProjectUseAddRemove(t *testing.T) {
 		}
 		return st.ExpiresAt.After(st.SyncedAt)
 	}
-	meta := func() string { m := h.labMeta(); return m["project"] + " [" + m["projects"] + "]" }
+	run := func(args ...string) error {
+		h.stderr.Reset()
+		return h.run(append([]string{"project"}, args...)...)
+	}
+	sync()
 	if !fresh() {
 		t.Fatal("the set must be fresh after the sync")
 	}
 
-	// use: a selected project becomes the default.
-	if err := h.run("project", "use", "p2"); err != nil || meta() != "p2 [p2,p1]" {
-		t.Fatalf("use p2 = %v, %s", err, meta())
+	// use: another project becomes the default; the key of the former
+	// selection goes with the first save.
+	if err := run("use", "p2"); err != nil || h.labProjects() != "p2 []" {
+		t.Fatalf("use p2 = %v, %s", err, h.labProjects())
 	}
-	if fresh() {
-		t.Error("use must make the cached sets due")
+	if _, ok := h.labMeta()[legacyProjects]; ok || fresh() {
+		t.Errorf("use must drop the former selection and make the cached sets due: %v", h.labMeta())
 	}
-	// use: an unselected one is added, after its access was checked.
+	// use: the credentials must reach the project.
 	g.fail["p9"] = http.StatusForbidden
-	if err := h.run("project", "use", "p9"); exitClass(err) != "auth" || meta() != "p2 [p2,p1]" {
-		t.Errorf("use of an unreachable project = %v, %s", err, meta())
+	if err := run("use", "p9"); exitClass(err) != "auth" || h.labProjects() != "p2 []" {
+		t.Errorf("use of an unreachable project = %v, %s", err, h.labProjects())
 	}
 	h.rt.Flags.Offline = true
-	if err := h.run("project", "use", "p9"); err != nil || meta() != "p9 [p9,p2,p1]" || !strings.Contains(h.stderr.String(), "was not checked") {
-		t.Errorf("use --offline = %v, %s / %s", err, meta(), h.stderr.String())
+	if err := run("use", "p9"); err != nil || h.labProjects() != "p9 []" || !strings.Contains(h.stderr.String(), "was not checked") {
+		t.Errorf("use --offline = %v, %s / %s", err, h.labProjects(), h.stderr.String())
 	}
 	h.rt.Flags.Offline = false
-	if err := h.run("project", "use", "p9"); err != nil || !strings.Contains(h.stderr.String(), "already the default") {
+	if err := run("use", "p9"); err != nil || !strings.Contains(h.stderr.String(), "already the default") {
 		t.Errorf("use of the default = %v / %s", err, h.stderr.String())
 	}
-
-	// add: several at once; one that is selected already is nothing to do.
-	if err := h.run("project", "add", "p3", "p1"); err != nil || meta() != "p9 [p9,p2,p1,p3]" {
-		t.Errorf("add = %v, %s", err, meta())
-	}
-	if err := h.run("project", "add", "p3"); exitClass(err) != "nothing" {
-		t.Errorf("add again = %v", err)
-	}
-	if err := h.run("project", "add", "p8"); err != nil {
-		t.Errorf("add p8 = %v", err)
-	}
-	if err := h.run("project", "add", "a/b"); exitClass(err) != "usage" {
-		t.Errorf("add of a bad id = %v", err)
-	}
-	if err := h.run("project", "add"); err == nil {
-		t.Error("add without an id must fail in the non-interactive flow")
+	if err := run("use", "p1"); err != nil || h.labProjects() != "p1 []" {
+		t.Fatalf("use p1 = %v, %s", err, h.labProjects())
 	}
 
-	// remove: not selected is not found; the default needs --default; all
-	// of them is a usage error.
-	if err := h.run("project", "remove", "nosuch"); exitClass(err) != "notfound" {
-		t.Errorf("remove of an unselected project = %v", err)
-	}
-	if err := h.run("project", "remove", "p9"); exitClass(err) != "usage" || !strings.Contains(err.Error(), "--default <id>") {
-		t.Errorf("remove of the default = %v", err)
-	}
-	if err := h.run("project", "remove", "p9", "--default", "p9"); exitClass(err) != "usage" {
-		t.Errorf("--default of a removed project = %v", err)
-	}
-	if err := h.run("project", "remove", "p9", "p8", "--default", "p1"); err != nil || meta() != "p1 [p1,p2,p3]" {
-		t.Errorf("remove with --default = %v, %s", err, meta())
-	}
-	if err := h.run("project", "remove", "p1", "p2", "p3"); exitClass(err) != "usage" || !strings.Contains(err.Error(), "auth logout") {
-		t.Errorf("remove of every project = %v", err)
-	}
-	// The rows of a removed project go, the others stay; --offline works.
-	if _, err := h.sync(platform.ResZone); err != nil {
-		t.Fatal(err)
-	}
+	// disable: several at once. Their rows go, the others stay, and the
+	// sets are not made due: nothing has to be read again.
+	sync()
 	if got := strings.Join(h.rowsOf(platform.ResZone), "; "); got != "p1/one p1; p2/two p2; p3/three p3" {
 		t.Fatalf("zones = %s", got)
 	}
+	if err := run("disable", "p3", "p2"); err != nil || h.labProjects() != "p1 [p2,p3]" || !strings.Contains(h.stderr.String(), "disabled p2, p3 for gcp/lab") {
+		t.Fatalf("disable = %v, %s / %s", err, h.labProjects(), h.stderr.String())
+	}
+	if got := strings.Join(h.rowsOf(platform.ResZone), "; "); got != "p1/one p1" || !fresh() {
+		t.Errorf("zones after disable = %s (fresh %v), want the rows of p1 in a set that is still fresh", got, fresh())
+	}
+	var cur currentProject
+	h.jsonOut(&cur)
+	if cur.Project != "p1" || strings.Join(cur.Disabled, ",") != "p2,p3" {
+		t.Errorf("disable printed %+v", cur)
+	}
+	if err := run("disable", "p3"); exitClass(err) != "nothing" || !has(err, "already disabled for gcp/lab") {
+		t.Errorf("disable again = %v", err)
+	}
+	if err := run("disable", "nosuch"); exitClass(err) != "notfound" || !has(err, "project nosuch is not visible to the credentials of gcp/lab") {
+		t.Errorf("disable of a project that is not visible = %v", err)
+	}
+	if err := run("disable", "a/b"); exitClass(err) != "usage" {
+		t.Errorf("disable of a bad id = %v", err)
+	}
+	for _, sub := range []string{"enable", "disable", "add", "remove"} {
+		if err := run(sub); err == nil || !has(err, "arg(s)") {
+			t.Errorf("%s without an id in the non-interactive flow = %v, want the error of a missing argument", sub, err)
+		}
+	}
+
+	// enable: back in every sync; the sets are due. One that is enabled
+	// already is nothing to do, one the credentials do not see not found.
+	g.reset()
+	if err := run("enable", "p3"); err != nil || h.labProjects() != "p1 [p2]" || !strings.Contains(h.stderr.String(), "enabled p3 for gcp/lab") || fresh() {
+		t.Errorf("enable = %v, %s / %s (fresh %v)", err, h.labProjects(), h.stderr.String(), fresh())
+	}
+	if len(g.calls) != 0 {
+		t.Errorf("enabling a disabled project asked Google Cloud: %v", g.calls)
+	}
+	if err := run("enable", "p3", "p1"); exitClass(err) != "nothing" || !has(err, "already enabled for gcp/lab") {
+		t.Errorf("enable again = %v", err)
+	}
+	if err := run("enable", "nosuch"); exitClass(err) != "notfound" || !has(err, "nothing to enable", "--project", "polyctl gcp project use nosuch") {
+		t.Errorf("enable of a project that is not visible = %v", err)
+	}
+
+	// add and remove are the names enable and disable had: hidden, and
+	// still working.
+	if err := run("add", "p2"); err != nil || h.labProjects() != "p1 []" {
+		t.Errorf("add = %v, %s", err, h.labProjects())
+	}
+	if err := run("remove", "p2"); err != nil || h.labProjects() != "p1 [p2]" {
+		t.Errorf("remove = %v, %s", err, h.labProjects())
+	}
+
+	// The default project needs --default, naming one that stays enabled.
+	if err := run("disable", "p1"); exitClass(err) != "usage" || !has(err, "p1 is the default project of gcp/lab", "--default <id>", "(one of: p3)") {
+		t.Errorf("disable of the default = %v", err)
+	}
+	for _, def := range []string{"p1", "p2", "nosuch"} {
+		if err := run("disable", "p1", "--default", def); exitClass(err) != "usage" || !has(err, "--default "+def+": not one of the projects that stay enabled (p3)") {
+			t.Errorf("--default %s = %v", def, err)
+		}
+	}
+	if err := run("disable", "p1", "--default", "p3"); err != nil || h.labProjects() != "p3 [p1,p2]" || !strings.Contains(h.stderr.String(), "project p3 is now the default project of gcp/lab") || fresh() {
+		t.Errorf("disable with --default = %v, %s / %s", err, h.labProjects(), h.stderr.String())
+	}
+	if err := run("disable", "p3"); exitClass(err) != "usage" || !has(err, "disable every project of gcp/lab", "auth logout gcp --profile lab") {
+		t.Errorf("disable of every project = %v", err)
+	}
+	// use: a disabled project that becomes the default is enabled again.
+	if err := run("use", "p2"); err != nil || h.labProjects() != "p2 [p1]" || !strings.Contains(h.stderr.String(), "project p2 was disabled and is enabled again") {
+		t.Errorf("use of a disabled project = %v, %s / %s", err, h.labProjects(), h.stderr.String())
+	}
+
+	// --offline: nothing is checked, which is said; a disabled project is
+	// enabled without the network.
 	h.rt.Flags.Offline = true
-	if err := h.run("project", "remove", "p2", "p3"); err != nil || meta() != "p1 []" {
-		t.Errorf("remove = %v, %s", err, meta())
+	if err := run("disable", "p3", "p7"); err != nil || h.labProjects() != "p2 [p1,p3,p7]" || !strings.Contains(h.stderr.String(), "was not checked") {
+		t.Errorf("disable --offline = %v, %s / %s", err, h.labProjects(), h.stderr.String())
+	}
+	if err := run("enable", "p1"); err != nil || h.labProjects() != "p2 [p3,p7]" {
+		t.Errorf("enable --offline = %v, %s", err, h.labProjects())
+	}
+	if err := run("disable", "p2"); exitClass(err) != "usage" || !has(err, "--default <id>") {
+		t.Errorf("disable of the default --offline = %v", err)
+	}
+	if err := run("disable", "p2", "--default", "p3"); exitClass(err) != "usage" {
+		t.Errorf("--default of a disabled project --offline = %v", err)
 	}
 	h.rt.Flags.Offline = false
-	if got := strings.Join(h.rowsOf(platform.ResZone), "; "); got != "p1/one p1" {
-		t.Errorf("zones after remove = %s", got)
+	// A disabled project that is no longer visible is forgotten by enable.
+	if err := run("enable", "p7"); err != nil || h.labProjects() != "p2 [p3]" {
+		t.Errorf("enable of a disabled project that is not visible = %v, %s", err, h.labProjects())
 	}
-	for _, sub := range []string{"use", "add", "remove"} {
-		if c, _, err := Command(h.rt).Find([]string{"project", sub}); err != nil || c.Annotations[app.NoDryRunAnnotation] == "" {
+
+	root := Command(h.rt)
+	for sub, hidden := range map[string]bool{"use": false, "enable": false, "disable": false, "add": true, "remove": true} {
+		c, _, err := root.Find([]string{"project", sub})
+		if err != nil || c.Name() != sub || c.Hidden != hidden {
+			t.Errorf("project %s: %v, hidden %v, want %v", sub, err, c.Hidden, hidden)
+			continue
+		}
+		if c.Annotations[app.NoDryRunAnnotation] == "" {
 			t.Errorf("project %s must refuse --dry-run", sub)
+		}
+		if sub != "use" && c.Flags().Lookup("default") == nil {
+			t.Errorf("project %s has no --default", sub)
 		}
 	}
 }
 
 // Without arguments the interactive flow picks from a list: the visible
-// projects for use and add, the selected ones for remove, and the new
-// default when the default goes.
+// projects for use, the disabled ones for enable, the enabled ones for
+// disable, and the new default when the default goes.
 func TestProjectCommandsPick(t *testing.T) {
 	h, g := multiDNS(t)
-	g.visible = []string{"p1", "p2", "p3", "p4"}
-	meta := func() string { m := h.labMeta(); return m["project"] + " [" + m["projects"] + "]" }
+	h.enableOn(g, "p1", "p1", "p2", "p3", "p4")
+	h.disableProjects("p2")
 
 	p := h.answer("p3")
-	if err := h.run("project", "use"); err != nil || meta() != "p3 [p3,p1,p2]" {
-		t.Fatalf("use = %v, %s", err, meta())
+	if err := h.run("project", "use"); err != nil || h.labProjects() != "p3 [p2]" {
+		t.Fatalf("use = %v, %s", err, h.labProjects())
 	}
 	p.Done()
-	if a := p.Asked[0]; a.Default != "p1" || !strings.Contains(prompttest.Labels(a.Options), "p1  Project p1  default") || !strings.Contains(prompttest.Labels(a.Options), "p2  Project p2  selected") {
+	if a := p.Asked[0]; a.Default != "p1" || !strings.Contains(prompttest.Labels(a.Options), "p1  Project p1  default") || !strings.Contains(prompttest.Labels(a.Options), "p2  Project p2  disabled") {
 		t.Errorf("use asked %+v", a)
 	}
 
-	p = h.answer([]string{"p4"})
-	if err := h.run("project", "add"); err != nil || meta() != "p3 [p3,p1,p2,p4]" {
-		t.Fatalf("add = %v, %s", err, meta())
+	p = h.answer([]string{"p2"})
+	if err := h.run("project", "enable"); err != nil || h.labProjects() != "p3 []" {
+		t.Fatalf("enable = %v, %s", err, h.labProjects())
 	}
-	if a := p.Asked[0]; a.Kind != "multi" || prompttest.Values(a.Options) != "p4" {
-		t.Errorf("add offered %+v", a)
+	if a := p.Asked[0]; a.Kind != "multi" || prompttest.Values(a.Options) != "p2" || !strings.Contains(prompttest.Labels(a.Options), "p2  Project p2  disabled") {
+		t.Errorf("enable offered %+v", a)
+	}
+	// Nothing is disabled: there is nothing to enable.
+	h.answer()
+	if err := h.run("project", "enable"); exitClass(err) != "nothing" || !has(err, "no disabled project of gcp/lab") {
+		t.Errorf("enable with nothing disabled = %v", err)
 	}
 
 	p = h.answer([]string{"p3", "p4"}, "p2")
-	if err := h.run("project", "remove"); err != nil || meta() != "p2 [p2,p1]" {
-		t.Fatalf("remove = %v, %s", err, meta())
+	if err := h.run("project", "disable"); err != nil || h.labProjects() != "p2 [p3,p4]" {
+		t.Fatalf("disable = %v, %s", err, h.labProjects())
 	}
 	p.Done()
-	if a := p.Asked[0]; prompttest.Values(a.Options) != "p3 p1 p2 p4" || !strings.Contains(prompttest.Labels(a.Options), "p3  default") {
-		t.Errorf("remove offered %+v", a)
+	if a := p.Asked[0]; a.Kind != "multi" || prompttest.Values(a.Options) != "p3 p1 p2 p4" || !strings.Contains(prompttest.Labels(a.Options), "p3  default") {
+		t.Errorf("disable offered %+v", a)
 	}
 	if a := p.Asked[1]; a.Title != "New default project" || prompttest.Values(a.Options) != "p1 p2" {
 		t.Errorf("new default asked %+v", a)
@@ -779,10 +1113,10 @@ func TestProjectCommandsPick(t *testing.T) {
 }
 
 // Domain routing (the platform-neutral dns commands) finds a zone in any
-// selected project and reads its records there. The same DNS name in two
+// enabled project and reads its records there. The same DNS name in two
 // projects is a pick in the interactive flow and exit code 5 otherwise,
 // with a hint that names --project and the zone id.
-func TestDomainRoutingCoversSelectedProjects(t *testing.T) {
+func TestDomainRoutingCoversEnabledProjects(t *testing.T) {
 	h, g := multiDNS(t)
 	h.nonInteractive()
 	g.addZone("p1", "one", "one.example", "public")
@@ -854,28 +1188,27 @@ func TestHelpOfNameLookupsNamesProjectAmbiguity(t *testing.T) {
 	}
 }
 
-// Removing the default project when one other project stays: the
+// Disabling the default project when one other project stays enabled: the
 // non-interactive flow still needs --default (nothing is assumed), the
 // interactive flow makes the one that stays the default without a
-// question. Without a project id, use and add list the visible projects,
+// question. Without a project id the commands list the visible projects,
 // which --offline cannot.
-func TestProjectRemoveDefaultWithOneLeft(t *testing.T) {
+func TestProjectDisableDefaultWithOneLeft(t *testing.T) {
 	h, _ := multiDNS(t)
 	h.nonInteractive()
-	meta := func() string { m := h.labMeta(); return m["project"] + " [" + m["projects"] + "]" }
-	err := h.run("project", "remove", "p1")
-	if exitClass(err) != "usage" || !has(err, "--default <id>", "one of: p2") || meta() != "p1 [p1,p2]" {
-		t.Fatalf("non-interactive remove of the default = %v, %s", err, meta())
+	err := h.run("project", "disable", "p1")
+	if exitClass(err) != "usage" || !has(err, "--default <id>", "one of: p2") || h.labProjects() != "p1 []" {
+		t.Fatalf("non-interactive disable of the default = %v, %s", err, h.labProjects())
 	}
 	p := h.interactive()
-	if err := h.run("project", "remove", "p1"); err != nil || meta() != "p2 []" || !strings.Contains(h.stderr.String(), "project p2 is now the default project") {
-		t.Fatalf("interactive remove of the default = %v, %s / %s", err, meta(), h.stderr.String())
+	if err := h.run("project", "disable", "p1"); err != nil || h.labProjects() != "p2 [p1]" || !strings.Contains(h.stderr.String(), "project p2 is now the default project") {
+		t.Fatalf("interactive disable of the default = %v, %s / %s", err, h.labProjects(), h.stderr.String())
 	}
 	if len(p.Asked) != 0 {
 		t.Errorf("asked %v", p.Titles())
 	}
 	h.rt.Flags.Offline = true
-	for _, sub := range []string{"use", "add"} {
+	for _, sub := range []string{"use", "enable", "disable"} {
 		if err := h.run("project", sub); exitClass(err) != "offline" {
 			t.Errorf("project %s --offline without an id = %v", sub, err)
 		}

@@ -20,7 +20,7 @@ func twoProjects(t *testing.T) *gcpHarness {
 	t.Helper()
 	h, _ := interactiveGCP(t, nil)
 	h.nonInteractive()
-	h.selectProjects("proj", "proj", "p2")
+	h.enableProjects("proj", "proj", "p2")
 	return h
 }
 
@@ -129,30 +129,41 @@ func TestInstanceRowsCarryTheirProject(t *testing.T) {
 	}
 }
 
-// --project may name a project outside the selection: the instance is
-// found live, and nothing of that project is written to the inventory.
-func TestInstanceOfUnselectedProject(t *testing.T) {
-	h := twoProjects(t)
-	h.gce.addInstance("proj", "us-central1-a", "web", "10.0.0.1", "")
-	h.gce.addInstance("p3", "us-central1-a", "solo", "10.0.0.9", "")
-	if err := h.run("compute", "instance", "get", "solo"); exitClass(err) != "notfound" {
-		t.Fatalf("without --project = %v", err)
-	}
-	for _, args := range [][]string{{"solo", "--project", "p3"}, {"solo", "--project", "p3", "--zone", "us-central1-a"}} {
-		if err := h.run(append([]string{"compute", "instance", "get", "--field", "internal-ip"}, args...)...); err != nil || strings.TrimSpace(h.stdout.String()) != "10.0.0.9" {
-			t.Errorf("%v = %q, %v", args, h.stdout.String(), err)
+// --project may name a project the syncs of the account do not cover, a
+// disabled one or one the credentials reach without listing it: the
+// instance is found live, and nothing of that project is written to the
+// inventory.
+func TestInstanceOfProjectOutsideTheSyncs(t *testing.T) {
+	for _, disabled := range []bool{true, false} {
+		h := twoProjects(t)
+		if disabled {
+			h.enableProjects("proj", "proj", "p2", "p3")
+			h.disableProjects("p3")
 		}
-	}
-	if err := h.run("compute", "instance", "list", "--project", "p3"); err != nil || !strings.Contains(h.stdout.String(), `"name": "solo"`) || strings.Contains(h.stdout.String(), `"name": "web"`) {
-		t.Errorf("list --project p3 = %v\n%s", err, h.stdout.String())
-	}
-	for _, row := range h.rowsOf(platform.ResInstance) {
-		if strings.Contains(row, " p3") {
-			t.Errorf("a row of the unselected project was cached: %s", row)
+		h.gce.addInstance("proj", "us-central1-a", "web", "10.0.0.1", "")
+		h.gce.addInstance("p3", "us-central1-a", "solo", "10.0.0.9", "")
+		if err := h.run("compute", "instance", "get", "solo"); exitClass(err) != "notfound" {
+			t.Fatalf("disabled %v: without --project = %v", disabled, err)
 		}
-	}
-	if err := h.run("compute", "instance", "get", "web", "--project", "p3"); exitClass(err) != "notfound" || !has(err, "project p3") {
-		t.Errorf("an instance of another project under --project p3 = %v", err)
+		for _, args := range [][]string{{"solo", "--project", "p3"}, {"solo", "--project", "p3", "--zone", "us-central1-a"}} {
+			if err := h.run(append([]string{"compute", "instance", "get", "--field", "internal-ip"}, args...)...); err != nil || strings.TrimSpace(h.stdout.String()) != "10.0.0.9" {
+				t.Errorf("disabled %v: %v = %q, %v", disabled, args, h.stdout.String(), err)
+			}
+		}
+		if err := h.run("compute", "instance", "list", "--project", "p3"); err != nil || !strings.Contains(h.stdout.String(), `"name": "solo"`) || strings.Contains(h.stdout.String(), `"name": "web"`) {
+			t.Errorf("disabled %v: list --project p3 = %v\n%s", disabled, err, h.stdout.String())
+		}
+		if err := h.run("compute", "instance", "stop", "solo", "--project", "p3", "--yes"); err != nil {
+			t.Errorf("disabled %v: stop --project p3 = %v", disabled, err)
+		}
+		for _, row := range h.rowsOf(platform.ResInstance) {
+			if strings.Contains(row, " p3") {
+				t.Errorf("disabled %v: a row of a project the syncs do not cover was cached: %s", disabled, row)
+			}
+		}
+		if err := h.run("compute", "instance", "get", "web", "--project", "p3"); exitClass(err) != "notfound" || !has(err, "project p3") {
+			t.Errorf("disabled %v: an instance of another project under --project p3 = %v", disabled, err)
+		}
 	}
 }
 
@@ -164,7 +175,7 @@ func (h *gcpHarness) addFirewallIn(project, name string) {
 		SelfLink: apiBase + "projects/" + project + "/global/firewalls/" + name}
 }
 
-// Firewall rules: the list covers every selected project and names the
+// Firewall rules: the list covers every enabled project and names the
 // project of each rule; a rule one project holds is found without a flag;
 // a name two projects hold is a pick in the interactive flow and exit code
 // 5 otherwise; a create goes to the default project, or to --project.
@@ -280,7 +291,7 @@ func (h *gcpHarness) addCertIn(project, scope, name string, chain []byte) {
 	h.gce.lb().certs[project+"/"+scope+"/"+name] = sc
 }
 
-// Certificates: the list covers every selected project; a certificate two
+// Certificates: the list covers every enabled project; a certificate two
 // projects hold in one scope is exit code 5 unless --project chooses.
 func TestSSLCertificateAcrossProjects(t *testing.T) {
 	h := twoProjects(t)
@@ -342,7 +353,7 @@ func (h *gcpHarness) addRuleIn(project, region, name, ip string) {
 		SelfLink: selfLink(project, region, "forwardingRules", name), Labels: map[string]string{lbLabel: name}})
 }
 
-// Load balancers and their components: lists cover every selected project,
+// Load balancers and their components: lists cover every enabled project,
 // and a name two projects hold is exit code 5 naming --project, a pick in
 // the interactive flow.
 func TestLoadBalancerAcrossProjects(t *testing.T) {
@@ -397,7 +408,7 @@ func TestLoadBalancerAcrossProjects(t *testing.T) {
 }
 
 // The lists of a project in which the API is not enabled are empty,
-// instead of failing the whole list: with several projects selected and
+// instead of failing the whole list: with several projects enabled and
 // with that project alone. The user is told once per run.
 func TestListsSkipProjectWithoutTheAPI(t *testing.T) {
 	h := twoProjects(t)
@@ -412,7 +423,7 @@ func TestListsSkipProjectWithoutTheAPI(t *testing.T) {
 	if err := h.run("compute", "firewall", "list"); err != nil || !strings.Contains(h.stdout.String(), "allow-ssh") {
 		t.Errorf("firewall list = %v\n%s", err, h.stdout.String())
 	}
-	want := "note: gcp/lab: skipped 1 project(s) in which an API is not enabled or billing is off: p2 (Compute Engine API); they hold nothing there. To stop asking them: polyctl gcp project remove p2\n"
+	want := "note: gcp/lab: skipped 1 project(s) in which an API is not enabled or billing is off: p2 (Compute Engine API); they hold nothing there. To stop asking them: polyctl gcp project disable p2\n"
 	if got := h.stderr.String(); !strings.Contains(got, want) {
 		t.Errorf("stderr = %q\nwant it to hold %q", got, want)
 	}
@@ -433,9 +444,9 @@ func TestListsSkipProjectWithoutTheAPI(t *testing.T) {
 	}
 
 	// That project alone, its billing off: every sweep is empty, exit
-	// code 0, and the default project is not offered for removal.
+	// code 0, and the default project is not offered to be disabled.
 	resetOffNotes()
-	h.selectProjects("p2", "p2")
+	h.enableProjects("p2", "p2")
 	off(fakeErr{code: 403, reason: "billingNotEnabled", message: "This API method requires billing to be enabled."})
 	for _, args := range [][]string{
 		{"compute", "firewall", "list"},
@@ -484,11 +495,11 @@ func TestListsSkipProjectWithoutTheAPI(t *testing.T) {
 	}
 }
 
-// cert deploy covers every selected project: a due certificate of a proxy
+// cert deploy covers every enabled project: a due certificate of a proxy
 // in the second project is replaced there, and its rows name the project.
-func TestCertDeployCoversSelectedProjects(t *testing.T) {
+func TestCertDeployCoversEnabledProjects(t *testing.T) {
 	d := newGCPDeploy(t)
-	d.h.selectProjects("proj", "proj", "p2")
+	d.h.enableProjects("proj", "proj", "p2")
 	c, err := openProfile(t.Context(), d.h.rt, "lab")
 	if err != nil {
 		t.Fatal(err)

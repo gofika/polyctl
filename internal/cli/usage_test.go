@@ -36,7 +36,7 @@ func TestAuthLoginRejectsUnknownSetKeys(t *testing.T) {
 		{[]string{"aliyun", "--set", "access_key_id=LTAIone", "--set", "from_cli=-"}, `unknown login option "from_cli" for aliyun`},
 		{[]string{"namecom", "--set", "user=alice"}, `unknown login option "user" for namecom (valid: username, token, env)`},
 		{[]string{"aws", "--set", "profile=dev"}, `unknown login option "profile" for aws`},
-		{[]string{"gcp", "--set", "keyfile=k.json"}, `unknown login option "keyfile" for gcp (valid: method, project, projects, key_file, client_id, client_secret)`},
+		{[]string{"gcp", "--set", "keyfile=k.json"}, `unknown login option "keyfile" for gcp (valid: method, project, disabled_projects, projects, key_file, client_id, client_secret)`},
 		{[]string{p2, "--set", "key=K", "--set", "secret=S"}, `unknown login option "key" for ` + p2},
 		{[]string{p2, "--set", "secret=S"}, `unknown login option "secret" for ` + p2},
 	} {

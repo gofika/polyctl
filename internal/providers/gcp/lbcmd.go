@@ -301,8 +301,8 @@ func lbListCmd(rt *app.Runtime) *cobra.Command {
 	var sf scopeFlags
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List the load balancers of the selected projects, one row per forwarding rule",
-		Long: `List the load balancers of the selected projects, read live: one row per forwarding rule,
+		Short: "List the load balancers of the enabled projects, one row per forwarding rule",
+		Long: `List the load balancers of the enabled projects, read live: one row per forwarding rule,
 named after its load balancer (the polyctl-lb label of the rule, else the URL
 map of its target proxy, else the rule's own name), with the protocol, IP,
 port, backend services and the health of their instances (HEALTHY, 1/2
@@ -321,7 +321,7 @@ No load balancer is exit code 0 with an empty list and a note.`,
 			if err != nil {
 				return err
 			}
-			// Every selected project (--project: that one alone).
+			// Every enabled project (--project: that one alone).
 			type projectRows struct {
 				project     string
 				unreachable []string
@@ -394,9 +394,10 @@ func (t *lbTarget) scope() certScope { return certScope{c: t.c, region: t.region
 
 // lbScopes returns the accounts and projects whose inventory has a
 // forwarding rule of that name or of that load balancer, syncing the
-// forwarding rules of the selected accounts once when none does. With
-// --project only that project counts; an account in whose selection it is
-// not is not in the inventory and is returned to be read live.
+// forwarding rules of the accounts once when none does. With --project
+// only that project counts; an account that disabled it, or whose syncs
+// do not cover it, has nothing of it in the inventory and is returned to
+// be read live.
 func lbScopes(ctx context.Context, rt *app.Runtime, ref string) ([]scope, error) {
 	accounts, err := gcpAccounts(rt)
 	if err != nil {
@@ -409,7 +410,7 @@ func lbScopes(ctx context.Context, rt *app.Runtime, ref string) ([]scope, error)
 	var live []scope
 	var cached []config.AccountRef
 	for _, a := range accounts {
-		if pinUnselected(rt, a.Profile) {
+		if pinDisabled(rt, a.Profile) {
 			live = append(live, scope{profile: a.Profile, project: pinnedProject(rt)})
 		} else {
 			cached = append(cached, a)
@@ -426,7 +427,7 @@ func lbScopes(ctx context.Context, rt *app.Runtime, ref string) ([]scope, error)
 			if err != nil {
 				return nil, err
 			}
-			def, _, _ := accountProjects(rt, a.Profile)
+			def := defaultProject(rt, a.Profile)
 			for _, r := range rows {
 				var fr ForwardingRule
 				if r.Name != ref && (r.Decode(&fr) != nil || fr.LoadBalancer != ref) {
@@ -471,6 +472,16 @@ func lbScopes(ctx context.Context, rt *app.Runtime, ref string) ([]scope, error)
 	found, err := lookup()
 	if err != nil {
 		return nil, err
+	}
+	for _, a := range accounts {
+		if slices.ContainsFunc(found, func(sc scope) bool { return sc.profile == a.Profile }) {
+			continue
+		}
+		if uncovered, err := pinUncovered(ctx, rt, a.Profile); err != nil {
+			return nil, err
+		} else if uncovered {
+			found = append(found, scope{profile: a.Profile, project: pinnedProject(rt)})
+		}
 	}
 	if len(found) == 0 {
 		var names []string

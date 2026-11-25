@@ -26,17 +26,17 @@ func Command(rt *app.Runtime) *cobra.Command {
 		Short: "Google Cloud native commands",
 		Long: `Google Cloud commands that follow the platform's own model: Cloud DNS managed
 zones hold multi-value record sets, Compute Engine instances live in zones.
-A gcp account works on several projects: the ones selected at login or with
-"polyctl gcp project add". Lists and lookups cover every selected project, a
-create goes to the default project, and --project on the dns and compute
-commands names the project of one call (pass --profile to pick another
-account).`,
+A gcp account works on every project its credentials see, unless one was
+disabled with "polyctl gcp project disable". Lists and lookups cover every
+enabled project, a create goes to the default project, and --project on the
+dns and compute commands names the project of one call (pass --profile to pick
+another account).`,
 	}
 	dns, compute := newDNSCmd(rt), newComputeCmd(rt)
 	noteSameName(dns)
 	noteSameName(compute)
 	cmd.AddCommand(
-		app.WhoamiCommand(rt, platform.GCP, "On Google Cloud this reads the default project of the account (or, without\nthat permission, its Cloud DNS zones) and reports the default project, the\nother selected projects, the signed-in account and the login method."),
+		app.WhoamiCommand(rt, platform.GCP, "On Google Cloud this reads the default project of the account (or, without\nthat permission, its Cloud DNS zones) and reports the default project, the\ndisabled projects, the signed-in account and the login method."),
 		newProjectCmd(rt), dns, compute)
 	return cmd
 }
@@ -47,7 +47,7 @@ account).`,
 const sameNameHelp = `
 
 One gcp account works on several projects. A name that several of the
-selected projects hold (or several zones, regions or accounts) is asked on a
+enabled projects hold (or several zones, regions or accounts) is asked on a
 terminal. In the non-interactive flow it is exit code 5: the error lists the
 candidates and names what chooses one, --project <id> among them.`
 
@@ -130,17 +130,21 @@ func zoneRefOf(z platform.Zone) *zoneRef {
 }
 
 // cachedZones serves the zone list through the inventory (honouring
-// --refresh / --offline / TTL): the zones of every selected project, or of
-// the project of --project. A pinned project outside the selection is not
-// in the inventory: its zones are read live and not stored.
+// --refresh / --offline / TTL): the zones of every enabled project, or of
+// the project of --project. A pinned project that is disabled, or that
+// the syncs of the account do not cover, is not in the inventory: its
+// zones are read live and not stored.
 func cachedZones(ctx context.Context, rt *app.Runtime, profile string) ([]platform.Zone, bool, error) {
-	if pinUnselected(rt, profile) {
+	live := func() ([]platform.Zone, bool, error) {
 		c, err := openProfile(ctx, rt, profile)
 		if err != nil {
 			return nil, false, err
 		}
 		zones, err := c.ListZones(ctx)
 		return zones, false, err
+	}
+	if pinDisabled(rt, profile) {
+		return live()
 	}
 	set := inventory.Set{Platform: platform.GCP, Profile: profile, Type: platform.ResZone}
 	rows, cached, err := rt.EnsureSet(ctx, set, func(ctx context.Context) ([]platform.Resource, error) {
@@ -164,12 +168,19 @@ func cachedZones(ctx context.Context, rt *app.Runtime, profile string) ([]platfo
 		}
 		zones = append(zones, z)
 	}
+	if len(zones) == 0 {
+		if uncovered, err := pinUncovered(ctx, rt, profile); err != nil {
+			return nil, cached, err
+		} else if uncovered {
+			return live()
+		}
+	}
 	return zones, cached, nil
 }
 
 // resolveZone finds the managed zone arg names: its id
 // ("<project>/<managed zone>"), its managed zone name or its DNS name,
-// among the zones of the selected projects (of the project of --project).
+// among the zones of the enabled projects (of the project of --project).
 // The inventory is consulted first; online, an unknown managed zone name
 // is asked of each project.
 //
@@ -242,7 +253,7 @@ func resolveZone(ctx context.Context, rt *app.Runtime, profile, arg string) (*zo
 		if len(projects) == 1 && first != nil {
 			return nil, first
 		}
-		return nil, fmt.Errorf("%w: managed zone %q in the selected projects of gcp/%s (%s)", platform.ErrNotFound, arg, profile, projectNames(projects))
+		return nil, fmt.Errorf("%w: managed zone %q in the enabled projects of gcp/%s (%s)", platform.ErrNotFound, arg, profile, projectNames(projects))
 	}
 	return chooseZone(rt, profile, arg, found)
 }
@@ -315,7 +326,7 @@ func zoneGrid(zones []platform.Zone) output.Grid {
 func newZoneListCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List the managed zones of the selected projects",
+		Short: "List the managed zones of the enabled projects",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			profile, err := rt.ProfileFor(platform.GCP)
@@ -430,7 +441,8 @@ func sortRecords(recs []platform.Record) {
 }
 
 // cachedRecords serves one zone's records through the inventory. The
-// records of a zone in a project outside the selection (--project) are
+// records of a zone the inventory does not hold (a zone of a disabled
+// project, or of one the syncs do not cover, named with --project) are
 // read live and not stored.
 func cachedRecords(ctx context.Context, rt *app.Runtime, profile string, z *zoneRef) ([]platform.Record, bool, error) {
 	fetch := func(ctx context.Context) ([]platform.Resource, error) {
@@ -444,7 +456,7 @@ func cachedRecords(ctx context.Context, rt *app.Runtime, profile string, z *zone
 		}
 		return app.RecordResources(z.ID, z.Name, recs), nil
 	}
-	if !zoneSelected(rt, profile, z) {
+	if !zoneCached(ctx, rt, nil, profile, z) {
 		if rt.Flags.Offline {
 			return nil, false, app.ErrOffline
 		}
@@ -474,16 +486,41 @@ func cachedRecords(ctx context.Context, rt *app.Runtime, profile string, z *zone
 	return recs, cached, nil
 }
 
-// zoneSelected reports whether the zone is of a selected project of the
-// account, that is, whether the inventory holds it.
-func zoneSelected(rt *app.Runtime, profile string, z *zoneRef) bool {
-	_, selected, err := accountProjects(rt, profile)
-	return err == nil && slices.Contains(selected, z.Project)
+// zoneCached reports whether the inventory holds the records of the zone:
+// a zone of the default project, or of another project that is not
+// disabled and that the syncs of the account cover. The zone row tells
+// that without the network; only for a zone the inventory does not know
+// yet is the account asked for its projects: c, its opened client, when
+// the caller has one.
+func zoneCached(ctx context.Context, rt *app.Runtime, c *client, profile string, z *zoneRef) bool {
+	def, disabled, err := accountMeta(rt, profile)
+	if err != nil || slices.Contains(disabled, z.Project) {
+		return false
+	}
+	if z.Project == def {
+		return true
+	}
+	if db, err := rt.DB(); err == nil {
+		set := inventory.Set{Platform: platform.GCP, Profile: profile, Type: platform.ResZone}
+		if r, err := db.Get(ctx, set, platform.ResZone, z.ID); err == nil && r != nil {
+			return true
+		}
+	}
+	if rt.Flags.Offline {
+		return false
+	}
+	if c == nil {
+		if c, err = openAccount(ctx, rt, profile); err != nil {
+			return false
+		}
+	}
+	ok, err := c.covers(ctx, z.Project)
+	return err == nil && ok
 }
 
 // refreshRecords re-reads a zone after a mutation so the inventory matches.
 func refreshRecords(ctx context.Context, rt *app.Runtime, c *client, profile string, z *zoneRef) {
-	if !zoneSelected(rt, profile, z) {
+	if !zoneCached(ctx, rt, c, profile, z) {
 		return
 	}
 	recs, err := c.ListRecords(ctx, z.ID)
@@ -832,8 +869,9 @@ type instanceResult struct {
 }
 
 // cachedInstances serves the instance list through the inventory: the
-// instances of every selected project, or of the project of --project
-// (read live and not stored when it is outside the selection).
+// instances of every enabled project, or of the project of --project
+// (read live and not stored when it is disabled, or one the syncs of the
+// account do not cover).
 func cachedInstances(ctx context.Context, rt *app.Runtime, profile string) ([]Instance, bool, error) {
 	decode := func(id string, d func(any) error) (Instance, error) {
 		var in Instance
@@ -842,7 +880,7 @@ func cachedInstances(ctx context.Context, rt *app.Runtime, profile string) ([]In
 		}
 		return in, nil
 	}
-	if pinUnselected(rt, profile) {
+	live := func() ([]Instance, bool, error) {
 		c, err := openProfile(ctx, rt, profile)
 		if err != nil {
 			return nil, false, err
@@ -861,6 +899,9 @@ func cachedInstances(ctx context.Context, rt *app.Runtime, profile string) ([]In
 		}
 		return out, false, nil
 	}
+	if pinDisabled(rt, profile) {
+		return live()
+	}
 	set := inventory.Set{Platform: platform.GCP, Profile: profile, Type: platform.ResInstance}
 	rows, cached, err := rt.EnsureSet(ctx, set, func(ctx context.Context) ([]platform.Resource, error) {
 		c, err := openAccount(ctx, rt, profile)
@@ -872,7 +913,7 @@ func cachedInstances(ctx context.Context, rt *app.Runtime, profile string) ([]In
 	if err != nil {
 		return nil, cached, err
 	}
-	def, _, _ := accountProjects(rt, profile)
+	def := defaultProject(rt, profile)
 	out := make([]Instance, 0, len(rows))
 	for _, r := range rows {
 		in, err := decode(r.ID, r.Decode)
@@ -887,13 +928,20 @@ func cachedInstances(ctx context.Context, rt *app.Runtime, profile string) ([]In
 		}
 		out = append(out, in)
 	}
+	if len(out) == 0 {
+		if uncovered, err := pinUncovered(ctx, rt, profile); err != nil {
+			return nil, cached, err
+		} else if uncovered {
+			return live()
+		}
+	}
 	return out, cached, nil
 }
 
 func newComputeListCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List the Compute Engine instances of the selected projects across all zones",
+		Short: "List the Compute Engine instances of the enabled projects across all zones",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			profile, err := rt.ProfileFor(platform.GCP)

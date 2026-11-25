@@ -11,8 +11,8 @@ import (
 	"github.com/gofika/polyctl/internal/platform"
 )
 
-// A re-login that changes what the account covers (the selected projects of
-// a Google Cloud account) drops the rows cached for what it no longer
+// A re-login that changes what the account covers (the projects of a Google
+// Cloud account that are not disabled) drops the rows cached for what it no longer
 // covers at once, with their domain index, and makes the cached sets due:
 // a set that is still fresh must not keep routing a domain to a zone the
 // account was taken off. A re-login that changes nothing leaves the cache.

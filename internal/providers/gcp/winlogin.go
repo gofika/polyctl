@@ -468,7 +468,7 @@ func passwordResetHint(ref string) string {
 // storedInstanceProject tells the project of an instance whose credentials
 // are stored, from its inventory row: the credentials are stored by zone
 // and id, without their project. "" when the inventory does not hold the
-// instance (deleted, or of a project outside the selection).
+// instance (deleted, or of a project the syncs do not cover).
 func storedInstanceProject(rt *app.Runtime) func(ctx context.Context, profile, id string) string {
 	return func(ctx context.Context, profile, id string) string {
 		db, err := rt.DB()
@@ -484,7 +484,7 @@ func storedInstanceProject(rt *app.Runtime) func(ctx context.Context, profile, i
 			return ""
 		}
 		if in.Project == "" {
-			in.Project, _, _ = accountProjects(rt, profile)
+			in.Project = defaultProject(rt, profile)
 		}
 		return in.Project
 	}

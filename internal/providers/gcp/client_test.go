@@ -129,6 +129,9 @@ func (f *fakeGoogle) handle(w http.ResponseWriter, r *http.Request) {
 			{"projectId": "proj", "name": "Project", "projectNumber": "123", "lifecycleState": "ACTIVE"},
 			{"projectId": "other", "name": "Other", "projectNumber": "456", "lifecycleState": "ACTIVE"},
 		}})
+	case strings.Contains(path, "/projects/other/"):
+		// The second project the credentials list holds nothing.
+		writeJSON(w, map[string]any{})
 	case path == "/v1/projects/proj":
 		writeJSON(w, map[string]any{"projectId": "proj", "name": "Project", "projectNumber": "123", "lifecycleState": "ACTIVE"})
 	case path == "/dns/v1/projects/proj/managedZones":
@@ -324,7 +327,7 @@ func TestListZonesPaginates(t *testing.T) {
 	if len(zones) != 4 {
 		t.Fatalf("got %d zones: %+v", len(zones), zones)
 	}
-	if f.countRequests("managedZones?") != 2 || f.countRequests("pageToken=2") != 1 {
+	if f.countRequests("/projects/proj/managedZones?") != 2 || f.countRequests("/projects/other/managedZones?") != 1 || f.countRequests("pageToken=2") != 1 {
 		t.Errorf("pagination requests: %v", f.requests)
 	}
 	// Sorted by DNS name then zone id, trailing dot stripped, ID is
@@ -707,7 +710,7 @@ func TestListInstancesAndOperations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res) != 2 || f.countRequests("aggregated/instances") != 2 {
+	if len(res) != 2 || f.countRequests("/projects/proj/aggregated/instances") != 2 || f.countRequests("/projects/other/aggregated/instances") != 1 {
 		t.Fatalf("instances: %d, requests %v", len(res), f.requests)
 	}
 	in, ok := res[0].Data.(Instance)
@@ -845,7 +848,8 @@ func TestLoginServiceAccount(t *testing.T) {
 			t.Errorf("metadata %s leaks the key", k)
 		}
 	}
-	if res.Label != "sa@proj.iam.gserviceaccount.com (project proj)" {
+	// The fake lists two projects: both are enabled, which the label says.
+	if res.Label != "sa@proj.iam.gserviceaccount.com (default project proj; 2 projects enabled)" {
 		t.Errorf("label: %q", res.Label)
 	}
 	if f.tokens == 0 || f.countRequests("managedZones") == 0 {
@@ -933,9 +937,10 @@ func TestLoginADC(t *testing.T) {
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", keyPath)
 	p := &provider{}
 
-	// Without a picker the projects are typed, comma-separated; the ADC
-	// project is the proposal. One project: no question about the default.
-	in, errBuf := loginInput("proj\n", nil)
+	// The credentials see two projects and the ADC project is neither: the
+	// default is asked (without a picker, as a numbered list), and nothing
+	// else. Both projects are enabled, which is said.
+	in, errBuf := loginInput("2\n", nil)
 	res, err := p.Login(context.Background(), in)
 	if err != nil {
 		t.Fatal(err)
@@ -943,54 +948,90 @@ func TestLoginADC(t *testing.T) {
 	if res.Metadata["method"] != methodADC || res.Metadata["project"] != "proj" || res.Metadata["email"] != "me@example.com" {
 		t.Errorf("metadata: %+v / %s", res.Metadata, errBuf.String())
 	}
-	if _, ok := res.Metadata["projects"]; ok {
-		t.Errorf("one project must not store a selection: %+v", res.Metadata)
+	if len(res.Metadata) != 3 {
+		t.Errorf("a login stores the default project and no list of projects: %+v", res.Metadata)
 	}
 	if len(res.Secret) != 0 {
 		t.Errorf("adc must not store secrets: %v", res.Secret)
 	}
-	if !strings.Contains(errBuf.String(), "Google Cloud projects to work on") || !strings.Contains(errBuf.String(), "[adc-proj]") {
-		t.Errorf("project prompt: %s", errBuf.String())
+	if out := errBuf.String(); !strings.Contains(out, "Default project (new resources are created there; every project is synced unless disabled)") ||
+		strings.Contains(out, "projects to work on") ||
+		!strings.Contains(out, "2 projects are enabled (everything the credentials see); keep the ones that are not used out of every sync with polyctl gcp project disable") {
+		t.Errorf("project prompt: %s", out)
+	}
+	if res.Label != "me@example.com (default project proj; 2 projects enabled)" {
+		t.Errorf("label = %q", res.Label)
+	}
+	// The other projects are not probed at a login.
+	if n := f.countRequests("/projects/other/"); n != 0 {
+		t.Errorf("the login asked the project that is not the default %d time(s)", n)
 	}
 
 	// --set project skips the prompt entirely.
 	in, _ = loginInput("", map[string]string{"project": "proj"})
-	if res, err := p.Login(context.Background(), in); err != nil || res.Metadata["project"] != "proj" || res.Label != "me@example.com (project proj)" {
+	if res, err := p.Login(context.Background(), in); err != nil || res.Metadata["project"] != "proj" || res.Label != "me@example.com (default project proj; 2 projects enabled)" {
 		t.Errorf("explicit project: %v %+v", err, res)
 	}
 
-	// --set projects is the selection; without project the first listed is
-	// the default, which is said.
+	// --set disabled_projects sets the disabled projects; the default is
+	// never one of them.
+	in, _ = loginInput("", map[string]string{"project": "proj", "disabled_projects": "other, gone,other"})
+	if res, err := p.Login(context.Background(), in); err != nil || res.Metadata["disabled_projects"] != "gone,other" ||
+		res.Label != "me@example.com (default project proj; 1 project enabled, 2 disabled)" {
+		t.Errorf("--set disabled_projects: %v %+v", err, res)
+	}
+	in, _ = loginInput("", map[string]string{"project": "proj", "disabled_projects": "other,proj"})
+	if _, err := p.Login(context.Background(), in); !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "the default project, which is always enabled") {
+		t.Errorf("--set disabled_projects naming the default = %v, want a usage error", err)
+	}
+	in, _ = loginInput("", map[string]string{"project": "proj", "disabled_projects": "a/b"})
+	if _, err := p.Login(context.Background(), in); !errors.Is(err, app.ErrUsage) {
+		t.Errorf("bad disabled project id = %v, want a usage error", err)
+	}
+	// A re-login keeps the disabled projects, without the new default; an
+	// empty --set disabled_projects enables all of them again. The key of
+	// the former selection is not written again.
+	stored := map[string]string{"method": "adc", "project": "other", "projects": "other,third", "disabled_projects": "proj,old"}
+	in, _ = loginInput("", map[string]string{"project": "proj"})
+	in.Existing = stored
+	if res, err := p.Login(context.Background(), in); err != nil || res.Metadata["project"] != "proj" || res.Metadata["disabled_projects"] != "old" {
+		t.Errorf("re-login --set project: %v %+v", err, res)
+	} else if _, ok := res.Metadata["projects"]; ok {
+		t.Errorf("the former selection was stored again: %+v", res.Metadata)
+	}
+	in, _ = loginInput("", map[string]string{"disabled_projects": ""})
+	in.Existing = stored
+	if res, err := p.Login(context.Background(), in); err != nil || res.Metadata["project"] != "other" {
+		t.Errorf("re-login --set disabled_projects=: %v %+v", err, res)
+	} else if _, ok := res.Metadata["disabled_projects"]; ok {
+		t.Errorf("an empty --set disabled_projects must enable everything: %+v", res.Metadata)
+	}
+
+	// --set projects, which chose the projects of an account in polyctl
+	// 0.4.0, is accepted and no longer used, which is said. Without
+	// project it still names the default: its first project.
 	in, errBuf = loginInput("", map[string]string{"projects": "proj,other"})
-	if res, err := p.Login(context.Background(), in); err != nil || res.Metadata["project"] != "proj" || res.Metadata["projects"] != "proj,other" ||
-		res.Label != "me@example.com (project proj, +1 more)" || !strings.Contains(errBuf.String(), "using proj as the default project") ||
-		// A selected project that cannot be reached stays selected, with a
-		// warning that says how to take it out.
-		!strings.Contains(errBuf.String(), "warning: project other:") || !strings.Contains(errBuf.String(), "polyctl gcp project remove other") {
+	if res, err := p.Login(context.Background(), in); err != nil || res.Metadata["project"] != "proj" || len(res.Metadata) != 3 ||
+		!strings.Contains(errBuf.String(), "note: --set projects is no longer used: every project the credentials see is enabled") ||
+		!strings.Contains(errBuf.String(), "--set disabled_projects=<id>,... or polyctl gcp project disable") ||
+		!strings.Contains(errBuf.String(), "using proj as the default project") || strings.Contains(errBuf.String(), "warning:") {
 		t.Errorf("--set projects: %v %+v / %s", err, res, errBuf.String())
 	}
-	// project and projects: the default joins the selection, first.
 	in, _ = loginInput("", map[string]string{"project": "proj", "projects": "other"})
-	if res, err := p.Login(context.Background(), in); err != nil || res.Metadata["project"] != "proj" || res.Metadata["projects"] != "proj,other" {
+	if res, err := p.Login(context.Background(), in); err != nil || res.Metadata["project"] != "proj" || len(res.Metadata) != 3 {
 		t.Errorf("--set project and projects: %v %+v", err, res)
 	}
-	// A re-login with --set project keeps the stored selection, with it.
-	in, _ = loginInput("", map[string]string{"project": "proj"})
-	in.Existing = map[string]string{"method": "adc", "project": "other", "projects": "other,third"}
-	if res, err := p.Login(context.Background(), in); err != nil || res.Metadata["project"] != "proj" || res.Metadata["projects"] != "proj,other,third" {
-		t.Errorf("re-login --set project: %v %+v", err, res)
-	}
-	// --set projects without project keeps the stored default when it is
-	// still selected.
+	// Without project the stored default is kept when the list holds it.
 	in, errBuf = loginInput("", map[string]string{"projects": "other,proj"})
 	in.Existing = map[string]string{"method": "adc", "project": "proj"}
-	if res, err := p.Login(context.Background(), in); err != nil || res.Metadata["project"] != "proj" || res.Metadata["projects"] != "proj,other" || strings.Contains(errBuf.String(), "as the default project") {
+	if res, err := p.Login(context.Background(), in); err != nil || res.Metadata["project"] != "proj" || strings.Contains(errBuf.String(), "as the default project") {
 		t.Errorf("--set projects, stored default: %v %+v / %s", err, res, errBuf.String())
 	}
-	// The non-interactive re-login asks nothing and keeps the selection.
+	// The non-interactive re-login asks nothing and keeps the default and
+	// the disabled projects.
 	in, _ = loginInput("", nil)
-	in.Existing = map[string]string{"method": "adc", "project": "proj", "projects": "proj,other"}
-	if res, err := p.Login(context.Background(), in); err != nil || res.Metadata["project"] != "proj" || res.Metadata["projects"] != "proj,other" {
+	in.Existing = map[string]string{"method": "adc", "project": "proj", "disabled_projects": "other"}
+	if res, err := p.Login(context.Background(), in); err != nil || res.Metadata["project"] != "proj" || res.Metadata["disabled_projects"] != "other" {
 		t.Errorf("non-interactive re-login: %v %+v", err, res)
 	}
 	in, _ = loginInput("", map[string]string{"projects": "a/b"})
@@ -1007,18 +1048,18 @@ func TestLoginADC(t *testing.T) {
 	}
 }
 
-// The interactive login ticks projects in a multi-select: a first login
-// ticks one project at most (the ADC one), a re-login what was selected
-// before; several selected projects are followed by the question for the
-// default, one is not.
-func TestLoginProjectMultiSelect(t *testing.T) {
+// The interactive login chooses the default project and nothing else:
+// every project the credentials see is enabled. A first login asks which
+// of several visible projects is the default; a re-login keeps the default
+// it had and asks again only when the credentials no longer list it.
+func TestLoginAsksTheDefaultProjectOnly(t *testing.T) {
 	f := newFake(t)
 	withFakeEndpoints(t, f)
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", writeServiceAccountKey(t, f, "proj"))
 	p := &provider{}
-	login := func(existing map[string]string, answers ...any) (*platform.LoginResult, *prompttest.Picker) {
+	login := func(existing map[string]string, answers ...any) (*platform.LoginResult, *prompttest.Picker, string) {
 		t.Helper()
-		in, _ := loginInput("x", map[string]string{"method": "adc"})
+		in, errBuf := loginInput("x", map[string]string{"method": "adc"})
 		pk := prompttest.New(t, answers...)
 		in.Picker, in.Existing = pk, existing
 		res, err := p.Login(context.Background(), in)
@@ -1026,39 +1067,56 @@ func TestLoginProjectMultiSelect(t *testing.T) {
 			t.Fatalf("login: %v", err)
 		}
 		pk.Done()
-		return res, pk
+		return res, pk, errBuf.String()
 	}
 
-	// First login: the ADC project is ticked, never every visible one.
-	res, pk := login(nil, []string{"other", "proj"}, "proj")
-	multi := pk.Asked[0]
-	if multi.Kind != "multi" || prompttest.Values(multi.Options) != "other proj" || strings.Join(multi.Preset, ",") != "proj" {
-		t.Errorf("first login asked %+v", multi)
+	// First login: one question, the ADC project proposed.
+	res, pk, _ := login(nil, "other")
+	if len(pk.Asked) != 1 {
+		t.Fatalf("asked %v, want the default project alone", pk.Titles())
 	}
-	if def := pk.Asked[1]; def.Kind != "select" || def.Default != "proj" || prompttest.Values(def.Options) != "other proj" {
+	if def := pk.Asked[0]; def.Kind != "select" || def.Default != "proj" || prompttest.Values(def.Options) != "other proj" ||
+		!strings.HasPrefix(def.Title, "Default project") || !strings.Contains(prompttest.Labels(def.Options), "proj  Project") {
 		t.Errorf("default question %+v", def)
 	}
-	if res.Metadata["project"] != "proj" || res.Metadata["projects"] != "proj,other" || res.Label != "me@example.com (project proj, +1 more)" {
+	if res.Metadata["project"] != "other" || len(res.Metadata) != 3 || res.Label != "me@example.com (default project other; 2 projects enabled)" {
 		t.Errorf("result %+v %q", res.Metadata, res.Label)
 	}
 
-	// Re-login: the stored selection is ticked, the stored default proposed;
-	// a selected project the list does not show stays offered.
-	res, pk = login(map[string]string{"method": "adc", "project": "proj", "projects": "proj,hidden"}, []string{"other", "proj", "hidden"}, "proj")
-	if multi := pk.Asked[0]; strings.Join(multi.Preset, ",") != "proj,hidden" || prompttest.Values(multi.Options) != "other proj hidden" {
-		t.Errorf("re-login asked %+v", multi)
+	// Re-login: the default and the disabled projects are kept, nothing is
+	// asked, and the kept default is said with the command that changes it.
+	res, pk, out := login(map[string]string{"method": "adc", "project": "other", "projects": "other,proj", "disabled_projects": "proj,hidden"})
+	if len(pk.Asked) != 0 || res.Metadata["project"] != "other" || res.Metadata["disabled_projects"] != "hidden,proj" ||
+		!strings.Contains(out, "default project other kept (change it with polyctl gcp project use)") {
+		t.Errorf("re-login: %+v, asked %v / %s", res.Metadata, pk.Titles(), out)
 	}
-	if def := pk.Asked[1]; def.Default != "proj" || prompttest.Values(def.Options) != "other proj hidden" {
-		t.Errorf("default question %+v", def)
+	if _, ok := res.Metadata["projects"]; ok {
+		t.Errorf("the former selection was stored again: %+v", res.Metadata)
 	}
-	if res.Metadata["projects"] != "proj,other,hidden" {
-		t.Errorf("result %+v", res.Metadata)
+	if res.Label != "me@example.com (default project other; 1 project enabled, 2 disabled)" || strings.Contains(out, "projects are enabled") {
+		t.Errorf("label %q / %s", res.Label, out)
 	}
 
-	// One project ticked: nothing more is asked, and no selection stored.
-	res, pk = login(map[string]string{"method": "adc", "project": "other", "projects": "other,proj"}, []string{"proj"})
-	if _, ok := res.Metadata["projects"]; ok || res.Metadata["project"] != "proj" || len(pk.Asked) != 1 {
-		t.Errorf("one project: %+v, asked %v", res.Metadata, pk.Titles())
+	// Re-login with a default the credentials no longer list: it is said
+	// and the default is asked again.
+	res, pk, out = login(map[string]string{"method": "adc", "project": "gone", "disabled_projects": "x"}, "proj")
+	if len(pk.Asked) != 1 || res.Metadata["project"] != "proj" || res.Metadata["disabled_projects"] != "x" ||
+		!strings.Contains(out, "the default project gone is not among the projects the credentials list") {
+		t.Errorf("re-login with a default that is gone: %+v, asked %v / %s", res.Metadata, pk.Titles(), out)
+	}
+
+	// Credentials that cannot list projects: a re-login keeps the default
+	// without a question, a first login asks for the id.
+	f.mu.Lock()
+	f.status["/v1/projects"] = http.StatusForbidden
+	f.mu.Unlock()
+	res, pk, _ = login(map[string]string{"method": "adc", "project": "proj"})
+	if len(pk.Asked) != 0 || res.Metadata["project"] != "proj" || res.Label != "me@example.com (project proj)" {
+		t.Errorf("re-login without a list: %+v %q, asked %v", res.Metadata, res.Label, pk.Titles())
+	}
+	in, errBuf := loginInput("\n", map[string]string{"method": "adc"})
+	if res, err := p.Login(context.Background(), in); err != nil || res.Metadata["project"] != "proj" || !strings.Contains(errBuf.String(), "Google Cloud project id [proj]") {
+		t.Errorf("first login without a list: %v %+v / %s", err, res, errBuf.String())
 	}
 }
 

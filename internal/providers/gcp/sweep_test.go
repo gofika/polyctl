@@ -10,15 +10,16 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/api/cloudresourcemanager/v1"
 	"google.golang.org/api/googleapi"
 )
 
-// sweepClient is a client of an account with n selected projects p0..,
-// which asks no API.
+// sweepClient is a client of an account whose credentials list the
+// projects p0.., all enabled, which asks no API.
 func sweepClient(n int) *client {
-	cov := &coverage{profile: "lab", def: "p0"}
+	cov := &coverage{profile: "lab", def: "p0", listed: true, canList: true}
 	for i := range n {
-		cov.selected = append(cov.selected, fmt.Sprintf("p%d", i))
+		cov.visible = append(cov.visible, &cloudresourcemanager.Project{ProjectId: fmt.Sprintf("p%d", i)})
 	}
 	return &client{project: "p0", cov: cov}
 }
@@ -95,7 +96,7 @@ func TestSweepProjectsSkipsAndFails(t *testing.T) {
 	if err != nil || strings.Join(rows, ",") != "p1,p3,p4" {
 		t.Fatalf("sweep = %v, %v", rows, err)
 	}
-	want := "note: gcp/lab: skipped 3 project(s) in which an API is not enabled or billing is off: p0 (Compute Engine API), p2 (Compute Engine API), p5 (Compute Engine API); they hold nothing there. To stop asking them: polyctl gcp project remove p2 p5"
+	want := "note: gcp/lab: skipped 3 project(s) in which an API is not enabled or billing is off: p0 (Compute Engine API), p2 (Compute Engine API), p5 (Compute Engine API); they hold nothing there. To stop asking them: polyctl gcp project disable p2 p5"
 	if len(*notes) != 1 || (*notes)[0] != want {
 		t.Errorf("notes = %q\nwant    %q", *notes, want)
 	}

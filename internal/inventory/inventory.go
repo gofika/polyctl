@@ -668,8 +668,8 @@ func (d *DB) Purge(ctx context.Context, p platform.ID, profile string) error {
 }
 
 // PurgeTree removes what is cached for one tree of parents of a profile
-// (see ReplaceKeepingTrees): the rows of a Google Cloud project that left
-// the selection of its account, or those of a Cloudflare account that did
+// (see ReplaceKeepingTrees): the rows of a Google Cloud project that was
+// disabled, or those of a Cloudflare account that left the selection
 // (its zone rows, and the record rows under the ids of those zones), with
 // their index entries and the sync state of the scopes among them.
 // Instance secrets stay.
@@ -703,7 +703,7 @@ func (d *DB) PurgeTree(ctx context.Context, p platform.ID, profile, tree string)
 }
 
 // Expire marks every synced set of a profile as due: the rows stay, and the
-// next read that may go online syncs again (the selection of the account
+// next read that may go online syncs again (what the account covers
 // changed).
 func (d *DB) Expire(ctx context.Context, p platform.ID, profile string) error {
 	_, err := d.sql.ExecContext(ctx, `UPDATE sync_state SET expires_at = 0 WHERE platform=? AND profile=?`, string(p), profile)

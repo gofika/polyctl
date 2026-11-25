@@ -332,11 +332,12 @@ func loginAccount(ctx context.Context, rt *app.Runtime, prov platform.Provider, 
 }
 
 // forgetUncovered brings the inventory in line with a re-login that changed
-// what the account covers (platform.CoverageChanger: the selected projects
-// of a Google Cloud account): the rows cached for what it no longer covers
-// are dropped (the trees the provider names, and what it drops itself as an
-// app.CoverageForgetter), and its cached sets are made due. The login has succeeded by
-// now, so a failure here is a warning that says how to get there by hand.
+// what the account covers (platform.CoverageChanger: the projects of a
+// Google Cloud account that are not disabled): the rows cached for what it
+// no longer covers are dropped (the trees the provider names, and what it
+// drops itself as an app.CoverageForgetter), and its cached sets are made
+// due. The login has succeeded by now, so a failure here is a warning that
+// says how to get there by hand.
 func forgetUncovered(ctx context.Context, rt *app.Runtime, prov platform.Provider, name string, before, after map[string]string) {
 	cc, ok := prov.(platform.CoverageChanger)
 	if !ok {

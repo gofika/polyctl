@@ -10,21 +10,28 @@ import (
 	"strings"
 	"sync"
 
+	"google.golang.org/api/cloudresourcemanager/v1"
 	"google.golang.org/api/googleapi"
 
 	"github.com/gofika/polyctl/internal/platform"
 )
 
-// A GCP account works on several projects: the selection, stored as the
-// metadata "projects" (comma-separated), with the default project, stored
-// as "project", among them. An account without "projects" (every login
-// before the selection existed) has exactly its one project selected.
+// A GCP account works on every project its credentials see: all of them
+// are enabled unless the user disabled them, the ones created later
+// included. Only the disabled ones are stored, as the metadata
+// "disabled_projects" (comma-separated), next to the default project,
+// "project", which is always enabled. The enabled projects are what the
+// credentials list now, minus the disabled ones (enabledProjects).
 
-// metaProject and metaProjects are the metadata keys of the default
-// project and of the selection.
+// metaProject and metaDisabledProjects are the metadata keys of the
+// default project and of the disabled projects. legacyProjects is the key
+// that held the selected projects before every visible project was
+// enabled: it is not read any more and is dropped when the metadata of
+// the account is written.
 const (
-	metaProject  = "project"
-	metaProjects = "projects"
+	metaProject          = "project"
+	metaDisabledProjects = "disabled_projects"
+	legacyProjects       = "projects"
 )
 
 // splitProjects splits a comma-separated list of project ids, dropping
@@ -39,38 +46,37 @@ func splitProjects(s string) []string {
 	return out
 }
 
-// selectedProjects returns the selection of an account from its metadata:
-// the default project first, then the others in stored order. It always
-// holds the default project, and is empty only without one.
-func selectedProjects(meta map[string]string) []string {
+// disabledProjects returns the disabled projects of an account from its
+// metadata. The default project is never one of them, whatever a
+// config.yaml edited by hand says.
+func disabledProjects(meta map[string]string) []string {
 	def := strings.TrimSpace(meta[metaProject])
 	var out []string
-	if def != "" {
-		out = append(out, def)
-	}
-	for _, p := range splitProjects(meta[metaProjects]) {
-		if !slices.Contains(out, p) {
+	for _, p := range splitProjects(meta[metaDisabledProjects]) {
+		if p != def {
 			out = append(out, p)
 		}
 	}
 	return out
 }
 
-// setSelection writes the default project and the selection into meta. A
-// selection of the default project alone is stored without "projects", as
-// a login before the selection existed stored it.
-func setSelection(meta map[string]string, def string, selected []string) {
+// setProjects writes the default project and the disabled projects into
+// meta: the list sorted and without the default, the key absent when
+// nothing is disabled. The key of the former selection is dropped.
+func setProjects(meta map[string]string, def string, disabled []string) {
 	meta[metaProject] = def
-	sel := selectedProjects(map[string]string{metaProject: def, metaProjects: strings.Join(selected, ",")})
-	if len(sel) <= 1 {
-		delete(meta, metaProjects)
+	delete(meta, legacyProjects)
+	list := disabledProjects(map[string]string{metaProject: def, metaDisabledProjects: strings.Join(disabled, ",")})
+	if len(list) == 0 {
+		delete(meta, metaDisabledProjects)
 		return
 	}
-	meta[metaProjects] = strings.Join(sel, ",")
+	sort.Strings(list)
+	meta[metaDisabledProjects] = strings.Join(list, ",")
 }
 
 // checkProjectID refuses what cannot be a project id where one is given
-// (--project, project use/add/remove, --set projects).
+// (--project, the project commands, --set project).
 func checkProjectID(id string) error {
 	if id == "" || strings.ContainsAny(id, "/|, \t\r\n") {
 		return fmt.Errorf("%q is not a project id", id)
@@ -98,18 +104,66 @@ func (c *client) pin(project string) *client {
 	return &cp
 }
 
+// visibleProjects lists the active projects the credentials see, once per
+// opened account. canList is false for credentials that may not list
+// projects (a 403: no permission, or the Resource Manager API is not
+// enabled for the caller): such an account works on its default project
+// alone. Any other failure is returned and asked again by the next call.
+func (c *client) visibleProjects(ctx context.Context) (projects []*cloudresourcemanager.Project, canList bool, err error) {
+	cov := c.cov
+	if cov == nil {
+		return nil, false, nil
+	}
+	cov.listMu.Lock()
+	defer cov.listMu.Unlock()
+	if cov.listed {
+		return cov.visible, cov.canList, nil
+	}
+	if c.crm == nil {
+		return nil, false, nil
+	}
+	projects, err = listProjects(ctx, c.crm)
+	var ge *googleapi.Error
+	switch {
+	case err == nil:
+		cov.visible, cov.canList = projects, true
+	case errors.As(err, &ge) && ge.Code == http.StatusForbidden && !isCapacity(googleReason(err)) && !isCapacityMessage(ge.Message):
+		cov.cannotList = err
+	default:
+		return nil, false, fmt.Errorf("list the projects of %s: %w", c.accountLabel(), err)
+	}
+	cov.listed = true
+	return cov.visible, cov.canList, nil
+}
+
 // enabledProjects are the projects of the account that syncs, lists and
-// lookups cover, the default project first: the selection, or the
-// client's project alone for an account without one. It may ask the
-// network (never more than once per opened account), hence the error.
+// lookups cover, the default project first and the others sorted by id:
+// every active project the credentials see but the disabled ones. With
+// credentials that cannot list projects, or see none, it is the default
+// project alone. It asks the network once per opened account, hence the
+// error.
 func (c *client) enabledProjects(ctx context.Context) ([]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if c.cov == nil || len(c.cov.selected) == 0 {
+	if c.cov == nil {
 		return []string{c.project}, nil
 	}
-	return c.cov.selected, nil
+	def := c.cov.def
+	if def == "" {
+		def = c.project
+	}
+	visible, _, err := c.visibleProjects(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := []string{def}
+	for _, p := range visible {
+		if p.ProjectId != def && !slices.Contains(c.cov.disabled, p.ProjectId) {
+			out = append(out, p.ProjectId)
+		}
+	}
+	return out, nil
 }
 
 // sweep are the projects a list or lookup of the client reads: the
@@ -134,11 +188,42 @@ func (c *client) covers(ctx context.Context, project string) (bool, error) {
 
 // cacheable reports whether what was read of the client's project may be
 // written to the inventory: only a project the syncs cover, since the
-// next sync would not refresh the rows of another. When that cannot be
-// told, nothing is written.
+// next sync would not refresh the rows of another. A disabled project is
+// not covered, and the default project and one the inventory holds rows
+// of (markHeld) are, without asking; when it cannot be told of another,
+// nothing is written.
 func (c *client) cacheable(ctx context.Context) bool {
+	if c.cov != nil {
+		switch {
+		case slices.Contains(c.cov.disabled, c.project):
+			return false
+		case c.project == c.cov.def, c.isHeld():
+			return true
+		}
+	}
 	ok, err := c.covers(ctx, c.project)
 	return err == nil && ok
+}
+
+// markHeld records that the inventory holds a row of the client's
+// project, which only a sync that covers the project stored: what is read
+// of it may be cached without asking the account for its projects.
+func (c *client) markHeld() {
+	if c.cov == nil {
+		return
+	}
+	c.cov.mu.Lock()
+	defer c.cov.mu.Unlock()
+	if c.cov.held == nil {
+		c.cov.held = map[string]bool{}
+	}
+	c.cov.held[c.project] = true
+}
+
+func (c *client) isHeld() bool {
+	c.cov.mu.Lock()
+	defer c.cov.mu.Unlock()
+	return c.cov.held[c.project]
 }
 
 // projectOr returns p, or the client's project for the rows stored before
@@ -218,7 +303,7 @@ func detailReasons(ge *googleapi.Error) []string {
 // projectConcurrency bounds the projects read at the same time.
 const projectConcurrency = 4
 
-// eachProject runs fn for every selected project and returns the rows of
+// eachProject runs fn for every enabled project and returns the rows of
 // all of them, for the inventory. api is the API fn asks (apiDNS,
 // apiCompute).
 //
@@ -226,7 +311,7 @@ const projectConcurrency = 4
 //     holds nothing of the type: it contributes no rows and no failure,
 //     also when it is the only project. The later types of the same run
 //     do not ask it again, and the user is told once (noteOff);
-//   - with one project selected any other answer is fn's result as it is;
+//   - with one project enabled any other answer is fn's result as it is;
 //   - with several, a project that fails is a failure of its whole tree
 //     (platform.RegionError.Tree): the rows stored for it are kept and the
 //     rows of the other projects replace theirs;
@@ -276,7 +361,7 @@ func (c *client) eachProject(ctx context.Context, api string, fn func(ctx contex
 				first = r.err
 			}
 			failures = append(failures, platform.RegionError{Region: r.project, Tree: true,
-				Err: fmt.Errorf("%w (if the project is not to be used any more: polyctl gcp project remove %s)", r.err, r.project)})
+				Err: fmt.Errorf("%w (if the project is not to be used any more: polyctl gcp project disable %s)", r.err, r.project)})
 		}
 	}
 	if len(failures) == 0 {
@@ -285,7 +370,7 @@ func (c *client) eachProject(ctx context.Context, api string, fn func(ctx contex
 	sort.SliceStable(failures, func(i, j int) bool { return failures[i].Region < failures[j].Region })
 	e := &platform.RegionSyncError{Failures: failures, Noun: "project or zone"}
 	if failed == len(projects) {
-		return nil, fmt.Errorf("every selected project failed (%s): %w", e.Error(), first)
+		return nil, fmt.Errorf("every enabled project failed (%s): %w", e.Error(), first)
 	}
 	return out, e
 }

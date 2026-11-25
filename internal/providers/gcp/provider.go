@@ -7,8 +7,10 @@
 //	method       "adc", "service_account" or "oauth"
 //	project      the default Google Cloud project id: the one a command
 //	             works on when nothing else names a project
-//	projects     the selected projects, comma-separated, the default one
-//	             among them; absent when only the default is selected
+//	disabled_projects
+//	             the projects kept out of every sync, list and lookup,
+//	             comma-separated; absent when none is disabled. Every
+//	             other project the credentials see is enabled
 //	email        the user account email (adc / oauth), when known
 //	client_email the service account email (service_account)
 //	oauth_client "builtin" when the account was logged in with the OAuth
@@ -34,6 +36,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
@@ -66,21 +69,25 @@ client_secret=- (the secret read from stdin), an OAuth client of your own
 (type "Desktop app"); method=service_account stores a JSON key file (--set
 key_file=PATH); method=adc uses Application Default Credentials from "gcloud
 auth application-default login". A re-login keeps the method of the account.
-One account works on several projects: a terminal login ticks them in a list
-(what was selected before is ticked) and asks which one is the default, the
-one new resources are created in. --set project=ID sets the default project
-without prompting and --set projects=ID,ID,... the selected projects (the
-default is one of them); change them later with "polyctl gcp project use, add,
-remove". Non-interactive: nothing is asked and the default method is adc;
-key_file, the project (for oauth, or when several are visible) and, without a
-built-in client, client_id and client_secret must be given, the projects
-selected before stay selected, and the oauth flow prints the URL and waits up
-to 5 minutes for the browser to return.`
+One account works on every project its credentials see, the ones created
+later included; "polyctl gcp project disable" keeps the ones that are not used
+out of every sync. A login chooses the default project only, the one new
+resources are created in: on a terminal it is asked when several projects are
+visible, and a re-login keeps the one it had. --set project=ID sets it without
+prompting; change it later with "polyctl gcp project use". --set
+disabled_projects=ID,ID,... sets the disabled projects (an empty value enables
+all of them again); without it a re-login keeps them. --set projects=..., which
+chose the projects of an account in polyctl 0.4.0, is accepted and no longer
+used, apart from naming the default project when project is not given.
+Non-interactive: nothing is asked and the default method is adc; key_file, the
+project (for oauth, or when several are visible) and, without a built-in
+client, client_id and client_secret must be given, and the oauth flow prints
+the URL and waits up to 5 minutes for the browser to return.`
 }
 
 // LoginOptions lists the --set keys of the login (see LoginHelp).
 func (*provider) LoginOptions() []string {
-	return []string{"method", "project", "projects", "key_file", "client_id", "client_secret"}
+	return []string{"method", "project", "disabled_projects", "projects", "key_file", "client_id", "client_secret"}
 }
 
 // RecordTypes are the record types Cloud DNS can write.
@@ -111,22 +118,23 @@ func (*provider) OwnerHint(kind platform.ResourceType, ids []string) string {
 
 var _ platform.CoverageChanger = (*provider)(nil)
 
-// CoverageChange compares the selections of an account before and after a
-// re-login: the projects that left it are dropped from the inventory, and
-// any change of the selection makes the cached sets due.
+// CoverageChange compares what an account covers before and after a
+// re-login: the projects disabled by it are dropped from the inventory,
+// and a change of the default project or of the disabled projects makes
+// the cached sets due, as does the first login after every visible
+// project became enabled (the stored selection is gone).
 func (*provider) CoverageChange(before, after map[string]string) (dropped []string, changed bool) {
-	was, is := selectedProjects(before), selectedProjects(after)
-	for _, p := range was {
-		if !slices.Contains(is, p) {
+	was, is := disabledProjects(before), disabledProjects(after)
+	for _, p := range is {
+		if !slices.Contains(was, p) {
 			dropped = append(dropped, p)
 		}
 	}
-	for _, p := range is {
-		if !slices.Contains(was, p) {
-			changed = true
-		}
-	}
-	return dropped, changed || len(dropped) > 0
+	_, legacyWas := before[legacyProjects]
+	_, legacyIs := after[legacyProjects]
+	changed = len(dropped) > 0 || len(was) != len(is) || legacyWas != legacyIs ||
+		strings.TrimSpace(before[metaProject]) != strings.TrimSpace(after[metaProject])
+	return dropped, changed
 }
 
 func (*provider) ResourceTypes() []platform.ResourceType {
@@ -180,7 +188,7 @@ func (*provider) Open(ctx context.Context, p platform.Profile) (platform.Client,
 	if err != nil {
 		return nil, err
 	}
-	c.cov.profile, c.cov.selected = p.Name, selectedProjects(p.Metadata)
+	c.cov.profile, c.cov.disabled = p.Name, disabledProjects(p.Metadata)
 	return c, nil
 }
 

@@ -101,6 +101,9 @@ func openAccount(ctx context.Context, rt *app.Runtime, profile string) (*client,
 type instanceHit struct {
 	profile string
 	inst    Instance
+	// cached says the hit is a row of the inventory: its project is one
+	// the syncs of the account cover.
+	cached bool
 }
 
 // inventoryInstanceHits returns the cached instances (any status) that
@@ -120,7 +123,7 @@ func inventoryInstanceHits(ctx context.Context, rt *app.Runtime, accounts []conf
 			if err != nil {
 				return nil, err
 			}
-			def, _, _ := accountProjects(rt, a.Profile)
+			def := defaultProject(rt, a.Profile)
 			for _, r := range rows {
 				var in Instance
 				if err := r.Decode(&in); err != nil {
@@ -134,7 +137,7 @@ func inventoryInstanceHits(ctx context.Context, rt *app.Runtime, accounts []conf
 				if !keepProject(rt, a.Profile, in.Project) {
 					continue
 				}
-				h := instanceHit{profile: a.Profile, inst: in}
+				h := instanceHit{profile: a.Profile, inst: in, cached: true}
 				switch {
 				case byIP:
 					if in.InternalIP == ref || in.ExternalIP == ref {
@@ -157,13 +160,13 @@ func inventoryInstanceHits(ctx context.Context, rt *app.Runtime, accounts []conf
 			return hits, nil, err
 		}
 	}
-	// A miss syncs every selected account once: an instance created
-	// since the last sync is not in a set that is still fresh. An account
-	// whose pinned project is outside its selection has nothing to sync:
-	// that project is asked live (liveInstanceHits).
+	// A miss syncs every account once: an instance created since the last
+	// sync is not in a set that is still fresh. An account whose pinned
+	// project is disabled has nothing to sync: that project is asked live
+	// (liveInstanceHits).
 	var stale []config.AccountRef
 	for _, a := range accounts {
-		if !pinUnselected(rt, a.Profile) {
+		if !pinDisabled(rt, a.Profile) {
 			stale = append(stale, a)
 		}
 	}
@@ -201,7 +204,8 @@ func inventoryInstanceHits(ctx context.Context, rt *app.Runtime, accounts []conf
 // zone the inventory does not know yet; with no match in the zone it is
 // not found (exit code 4), naming the zones that hold the name. --project
 // keeps only the matches in that project, in the same way, and a project
-// outside the selection of its account is asked live. Several matches (a
+// that is disabled, or that the syncs of its account do not cover, is
+// asked live. Several matches (a
 // name held in several zones, projects or accounts) are settled by
 // chooseHit: the interactive flow asks which one, the non-interactive flow
 // fails with exit code 5. The instance is then read live: the inventory may
@@ -224,7 +228,8 @@ func resolveInstance(ctx context.Context, rt *app.Runtime, ref, zone string, all
 		return nil, err
 	}
 	if len(hits) == 0 {
-		// A pinned project outside the selection is not in the inventory.
+		// A pinned project that is disabled, or that the syncs do not
+		// cover, is not in the inventory.
 		live, err := liveInstanceHits(ctx, rt, accounts, ref, byIP)
 		if err != nil {
 			return nil, err
@@ -310,6 +315,9 @@ func resolveInstance(ctx context.Context, rt *app.Runtime, ref, zone string, all
 	if err != nil {
 		return nil, err
 	}
+	if h.cached {
+		c.markHeld()
+	}
 	in, err := c.getInstance(ctx, h.inst.Zone, h.inst.Name)
 	if errors.Is(err, platform.ErrNotFound) {
 		dropInstance(ctx, rt, h.profile, h.inst.ID)
@@ -322,14 +330,22 @@ func resolveInstance(ctx context.Context, rt *app.Runtime, ref, zone string, all
 	return &locatedInstance{c: c, profile: h.profile, zone: h.inst.Zone, inst: in}, nil
 }
 
-// liveInstanceHits asks the pinned project of the accounts in whose
-// selection it is not (so that the inventory does not hold it) for the
-// instance: every zone of it is listed once. Without such an account there
-// is nothing to ask.
+// liveInstanceHits asks the pinned project of the accounts whose inventory
+// does not hold it (it is disabled there, or their syncs do not cover it)
+// for the instance: every zone of it is listed once. Without such an
+// account there is nothing to ask. It runs when the inventory knows no
+// such instance.
 func liveInstanceHits(ctx context.Context, rt *app.Runtime, accounts []config.AccountRef, ref string, byIP bool) ([]instanceHit, error) {
 	var hits []instanceHit
 	for _, a := range accounts {
-		if !pinUnselected(rt, a.Profile) {
+		live := pinDisabled(rt, a.Profile)
+		if !live {
+			var err error
+			if live, err = pinUncovered(ctx, rt, a.Profile); err != nil {
+				return nil, err
+			}
+		}
+		if !live {
 			continue
 		}
 		c, err := openProfile(ctx, rt, a.Profile)
@@ -387,8 +403,9 @@ func chooseHit(rt *app.Runtime, what, ref string, hits []instanceHit) (instanceH
 
 // storeInstance writes an instance to the inventory.
 //
-// Nothing of a project outside the selection is stored (--project may name
-// one): the next sync of the account would not cover its rows.
+// Nothing of a project the syncs do not cover is stored (--project may
+// name one, a disabled project for instance): the next sync of the account
+// would not refresh its rows.
 func storeInstance(ctx context.Context, rt *app.Runtime, c *client, profile string, in *compute.Instance) {
 	if in == nil || in.Id == 0 || !c.cacheable(ctx) {
 		return

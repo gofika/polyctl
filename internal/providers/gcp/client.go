@@ -46,7 +46,7 @@ var _ platform.DNSService = (*client)(nil)
 // newClient builds the API services. opts must carry the credentials
 // (option.WithTokenSource / WithCredentials) and, in tests, the endpoint.
 func newClient(ctx context.Context, project, email, method string, opts ...option.ClientOption) (*client, error) {
-	c := &client{project: project, email: email, method: method, cov: &coverage{def: project, selected: []string{project}}}
+	c := &client{project: project, email: email, method: method, cov: &coverage{def: project}}
 	var err error
 	if c.dns, err = dns.NewService(ctx, opts...); err != nil {
 		return nil, fmt.Errorf("init Cloud DNS client: %w", err)
@@ -109,8 +109,8 @@ func isPermissionErr(err error) bool {
 // Verify checks that the credentials can see the project.
 func (c *client) Verify(ctx context.Context) (*platform.Identity, error) {
 	id := &platform.Identity{Account: c.project, User: c.email, Extra: map[string]string{"method": c.method}}
-	if sel := c.cov.selected; len(sel) > 1 && !c.pinned {
-		id.Extra["projects"] = strings.Join(sel, ",")
+	if off := c.cov.disabled; len(off) > 0 && !c.pinned {
+		id.Extra[metaDisabledProjects] = strings.Join(off, ",")
 	}
 	p, err := c.crm.Projects.Get(c.project).Context(ctx).Do()
 	if err == nil {
@@ -134,7 +134,7 @@ func (c *client) Verify(ctx context.Context) (*platform.Identity, error) {
 	return nil, mapErr(first)
 }
 
-// Sync fetches every resource of a type, of every selected project (see
+// Sync fetches every resource of a type, of every enabled project (see
 // eachProject for a project that fails).
 func (c *client) Sync(ctx context.Context, rt platform.ResourceType) ([]platform.Resource, error) {
 	var one func(ctx context.Context, pc *client) ([]platform.Resource, error)
@@ -275,7 +275,7 @@ func isPublicZone(z platform.Zone) bool {
 	return z.Status == "" || strings.EqualFold(z.Status, "public")
 }
 
-// ListZones lists every managed zone of the selected projects (of the
+// ListZones lists every managed zone of the enabled projects (of the
 // pinned project alone for a pinned client), ordered by DNS name and then
 // by zone id so split-horizon pairs sort stably. A project that fails
 // fails the list, except one whose Cloud DNS API is not enabled, which

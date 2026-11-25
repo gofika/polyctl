@@ -16,7 +16,7 @@ import (
 	"github.com/gofika/polyctl/internal/prompt"
 )
 
-// A GCP command works on the selected projects of its account, or on the
+// A GCP command works on the enabled projects of its account, or on the
 // one project --project pins. A scope is one account and one project of
 // it; lookups that search several accounts search their scopes.
 
@@ -41,7 +41,7 @@ func (f projectFlag) Set(s string) error {
 }
 
 // projectFlagHelp is the usage text of --project.
-const projectFlagHelp = "Google Cloud project of this call (default: every selected project for lookups and lists, the default project for creates); a project outside the selection is read live and not cached"
+const projectFlagHelp = "Google Cloud project of this call (default: every enabled project for lookups and lists, the default project for creates); a disabled project is read live and not cached"
 
 // addProjectFlag adds --project to a command and everything below it.
 func addProjectFlag(rt *app.Runtime, cmd *cobra.Command) {
@@ -53,9 +53,9 @@ func addProjectFlag(rt *app.Runtime, cmd *cobra.Command) {
 // given.
 func pinnedProject(rt *app.Runtime) string { return strings.TrimSpace(rt.Flags.Project) }
 
-// accountProjects returns the default project and the selection of a
+// accountMeta returns the default project and the disabled projects of a
 // profile's gcp account, from the config.
-func accountProjects(rt *app.Runtime, profile string) (def string, selected []string, err error) {
+func accountMeta(rt *app.Runtime, profile string) (def string, disabled []string, err error) {
 	cfg, err := rt.Config()
 	if err != nil {
 		return "", nil, err
@@ -64,38 +64,71 @@ func accountProjects(rt *app.Runtime, profile string) (def string, selected []st
 	if err != nil {
 		return "", nil, fmt.Errorf("%w: %v", platform.ErrNotFound, err)
 	}
-	return a.Metadata[metaProject], selectedProjects(a.Metadata), nil
+	return strings.TrimSpace(a.Metadata[metaProject]), disabledProjects(a.Metadata), nil
 }
 
-// pinUnselected reports whether --project names a project outside the
-// selection of the profile: one the inventory does not hold, read live.
-func pinUnselected(rt *app.Runtime, profile string) bool {
+// defaultProject is the default project of a profile's gcp account, ""
+// when the account cannot be read.
+func defaultProject(rt *app.Runtime, profile string) string {
+	def, _, _ := accountMeta(rt, profile)
+	return def
+}
+
+// pinDisabled reports whether --project names a disabled project of the
+// profile: one the inventory does not hold, read live. It reads the
+// config alone.
+func pinDisabled(rt *app.Runtime, profile string) bool {
 	pin := pinnedProject(rt)
 	if pin == "" {
 		return false
 	}
-	_, selected, err := accountProjects(rt, profile)
-	return err == nil && !slices.Contains(selected, pin)
+	_, disabled, err := accountMeta(rt, profile)
+	return err == nil && slices.Contains(disabled, pin)
+}
+
+// pinUncovered reports whether --project names a project the syncs of the
+// profile do not cover although it is not disabled: one the credentials
+// reach without listing it (or cannot list at all). The inventory never
+// holds it, so it is read live. This asks the account for its projects,
+// so a command calls it only when the inventory holds nothing of the
+// pinned project; the default project is covered without asking, and
+// with --offline nothing is asked.
+func pinUncovered(ctx context.Context, rt *app.Runtime, profile string) (bool, error) {
+	pin := pinnedProject(rt)
+	if pin == "" || rt.Flags.Offline {
+		return false, nil
+	}
+	def, disabled, err := accountMeta(rt, profile)
+	if err != nil || pin == def || slices.Contains(disabled, pin) {
+		return false, nil
+	}
+	c, err := openAccount(ctx, rt, profile)
+	if err != nil {
+		return false, err
+	}
+	ok, err := c.covers(ctx, pin)
+	return err == nil && !ok, err
 }
 
 // keepProject reports whether a cached row of project (empty: the default
 // project of the account, for rows stored before they carried it) is in
-// the scope of the call: the pinned project with --project, any selected
-// project without it.
+// the scope of the call: the pinned project with --project, any project
+// that is not disabled without it.
 //
-// A row of a project that is no longer selected is out of scope: the
-// selection may have changed (a new login, an edited config.yaml) while
-// the set that holds the row is still fresh, and a command must not find,
-// let alone change, a resource of a project the account was taken off.
+// A row of a disabled project is out of scope: the project may have been
+// disabled (a new login, an edited config.yaml) while the set that holds
+// the row is still fresh, and a command must not find, let alone change,
+// a resource of a project the account was taken off. This reads the
+// config alone, so it holds with --offline too.
 func keepProject(rt *app.Runtime, profile, project string) bool {
-	def, selected, err := accountProjects(rt, profile)
+	def, disabled, err := accountMeta(rt, profile)
 	if project == "" {
 		project = def
 	}
 	if pin := pinnedProject(rt); pin != "" {
 		return project == pin
 	}
-	return err != nil || slices.Contains(selected, project)
+	return err != nil || !slices.Contains(disabled, project)
 }
 
 // scope is one account and one of its projects. c, when set, is the
@@ -109,7 +142,7 @@ type scope struct {
 
 func (s scope) String() string { return "gcp/" + s.profile + " project " + s.project }
 
-// gcpScopes returns the scopes of the call: every selected project of
+// gcpScopes returns the scopes of the call: every enabled project of
 // every GCP account selected by --profile, or, with --project, that
 // project in each of them.
 func gcpScopes(ctx context.Context, rt *app.Runtime) ([]scope, error) {
@@ -252,7 +285,7 @@ func ambiguous(what, ref string, cands []cand, locFlag, alt string) *app.Ambiguo
 // without its project (a firewall rule, a network, a certificate): c is
 // the client of the account, exists tells whether a project holds it.
 //
-// With one project to look in (one selected, or --project) nothing is
+// With one project to look in (one enabled, or --project) nothing is
 // asked of the API: the client of that project is returned and the command
 // reports a missing resource as it always did. With several, every one is
 // asked: one holder is used, several are ambiguous (a pick in the
@@ -278,7 +311,7 @@ func locateProject(ctx context.Context, rt *app.Runtime, c *client, profile, wha
 	}
 	switch len(found) {
 	case 0:
-		return nil, fmt.Errorf("%w: %s %q in the selected projects of gcp/%s (%s)", platform.ErrNotFound, what, name, profile, projectNames(projects))
+		return nil, fmt.Errorf("%w: %s %q in the enabled projects of gcp/%s (%s)", platform.ErrNotFound, what, name, profile, projectNames(projects))
 	case 1:
 		return found[0], nil
 	}
@@ -305,7 +338,7 @@ func notFoundIs(err error) (bool, error) {
 }
 
 // chooseListProject asks, in the interactive flow, which project a pick
-// without a name lists from, when several are selected (the default
+// without a name lists from, when several are enabled (the default
 // project proposed). With one project, with --project and in the
 // non-interactive flow nothing is asked: the client's project is used.
 func chooseListProject(ctx context.Context, rt *app.Runtime, c *client, profile string) (*client, error) {
@@ -324,7 +357,7 @@ func chooseListProject(ctx context.Context, rt *app.Runtime, c *client, profile 
 		}
 		opts = append(opts, prompt.Option{Label: prompt.Cells(p, mark), Value: p})
 	}
-	p, err := rt.Choose(app.Choice{Title: "Project", Options: opts, Default: projects[0], Arg: "--project", What: "selected project of gcp/" + profile})
+	p, err := rt.Choose(app.Choice{Title: "Project", Options: opts, Default: projects[0], Arg: "--project", What: "enabled project of gcp/" + profile})
 	if err != nil {
 		return nil, err
 	}

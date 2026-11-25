@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"google.golang.org/api/cloudresourcemanager/v1"
 	"google.golang.org/api/googleapi"
 
 	"github.com/gofika/polyctl/internal/output"
@@ -21,11 +22,24 @@ import (
 type coverage struct {
 	// profile names the account in notes; def is its default project.
 	profile, def string
-	// selected is the stored selection of the account, the default
-	// project first.
-	selected []string
+	// disabled are the projects the user disabled: never synced, listed
+	// or searched.
+	disabled []string
+
+	// listMu guards the list of the visible projects, asked once
+	// (visibleProjects): visible are the active projects the credentials
+	// see, canList is false, and cannotList the answer, when they may not
+	// list projects.
+	listMu     sync.Mutex
+	listed     bool
+	visible    []*cloudresourcemanager.Project
+	canList    bool
+	cannotList error
 
 	mu sync.Mutex
+	// held are the projects the inventory holds rows of, as a command
+	// found: the syncs cover them, which saves asking (cacheable).
+	held map[string]bool
 	// off holds "<project>/<api>" of the projects that answered that the
 	// API is not enabled (or billing is off), so that the later types of
 	// one sync do not ask them again.
@@ -170,8 +184,7 @@ func (c *client) noteOff(project string, err error) {
 
 // flushOff tells, in one note, the projects of the client's account that
 // were skipped since the last note, and how to stop asking them. The
-// default project cannot be taken off the account, so the hint leaves it
-// out.
+// default project cannot be disabled, so the hint leaves it out.
 func (c *client) flushOff() { flushOffNotes(c.accountLabel()) }
 
 func flushOffNotes(account string) {
@@ -193,7 +206,7 @@ func flushOffNotes(account string) {
 	msg := fmt.Sprintf("note: %s: skipped %d project(s) in which an API is not enabled or billing is off: %s; they hold nothing there.",
 		account, len(list), strings.Join(names, ", "))
 	if len(others) > 0 {
-		msg += " To stop asking them: polyctl gcp project remove " + strings.Join(others, " ")
+		msg += " To stop asking them: polyctl gcp project disable " + strings.Join(others, " ")
 	}
 	notef("%s", msg)
 }

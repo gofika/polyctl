@@ -173,20 +173,20 @@ func loginADC(ctx context.Context, in platform.LoginInput, pio *prompt.IO) (*pla
 		return nil, fmt.Errorf("%w: application default credentials not found (alternatives: --set method=service_account, --set method=oauth): %v", platform.ErrUnauthorized, err)
 	}
 	email := lookupEmail(ctx, creds.TokenSource)
-	sel, err := chooseProjects(ctx, in, pio, creds.TokenSource, creds.ProjectID)
+	lp, err := chooseDefault(ctx, in, pio, creds.TokenSource, creds.ProjectID, true)
 	if err != nil {
 		return nil, err
 	}
-	c, err := verifySelection(ctx, pio, creds.TokenSource, &sel, email, methodADC)
+	c, err := verifyDefault(ctx, pio, creds.TokenSource, lp, email, methodADC)
 	if err != nil {
 		return nil, err
 	}
 	meta := map[string]string{"method": methodADC}
-	sel.store(meta)
+	lp.store(meta)
 	if email != "" {
 		meta["email"] = email
 	}
-	return &platform.LoginResult{Secret: map[string]string{}, Metadata: meta, Label: label(c.email, sel)}, nil
+	return &platform.LoginResult{Secret: map[string]string{}, Metadata: meta, Label: label(c.email, lp)}, nil
 }
 
 // serviceAccountKey is the subset of a JSON key file polyctl inspects.
@@ -223,38 +223,23 @@ func loginServiceAccount(ctx context.Context, in platform.LoginInput, pio *promp
 	if err != nil {
 		return nil, fmt.Errorf("invalid service account key: %w", err)
 	}
-	// A service account is of one project and is not asked which ones it
-	// works on: its selection is what --set gives, else the one stored,
-	// else the project of the key.
-	sel, given, err := optSelection(in, pio)
+	// A service account is never asked which project is its default: it
+	// is what --set gives, else the one stored, else the project of the
+	// key.
+	lp, err := chooseDefault(ctx, in, pio, creds.TokenSource, key.ProjectID, false)
 	if err != nil {
 		return nil, err
 	}
-	if !given {
-		project := key.ProjectID
-		if in.Existing != nil && in.Existing[metaProject] != "" {
-			project = in.Existing[metaProject]
-		}
-		if project == "" && !in.Interactive {
-			return nil, app.UsageErrf("the service account key names no project: pass --set project=<id>")
-		}
-		if project == "" {
-			if project, err = pio.Required("Google Cloud project id"); err != nil {
-				return nil, err
-			}
-		}
-		sel = keptSelection(in, project)
-	}
-	c, err := verifySelection(ctx, pio, creds.TokenSource, &sel, key.ClientEmail, methodServiceAccount)
+	c, err := verifyDefault(ctx, pio, creds.TokenSource, lp, key.ClientEmail, methodServiceAccount)
 	if err != nil {
 		return nil, err
 	}
 	meta := map[string]string{"method": methodServiceAccount, "client_email": key.ClientEmail}
-	sel.store(meta)
+	lp.store(meta)
 	return &platform.LoginResult{
 		Secret:   map[string]string{"service_account_json": string(data)},
 		Metadata: meta,
-		Label:    label(c.email, sel),
+		Label:    label(c.email, lp),
 	}, nil
 }
 
@@ -337,16 +322,16 @@ func loginOAuth(ctx context.Context, in platform.LoginInput, pio *prompt.IO) (*p
 	}
 	ts := cfg.TokenSource(ctx, tok)
 	email := lookupEmail(ctx, ts)
-	sel, err := chooseProjects(ctx, in, pio, ts, "")
+	lp, err := chooseDefault(ctx, in, pio, ts, "", true)
 	if err != nil {
 		return nil, err
 	}
-	c, err := verifySelection(ctx, pio, ts, &sel, email, methodOAuth)
+	c, err := verifyDefault(ctx, pio, ts, lp, email, methodOAuth)
 	if err != nil {
 		return nil, err
 	}
 	meta := map[string]string{"method": methodOAuth}
-	sel.store(meta)
+	lp.store(meta)
 	if email != "" {
 		meta["email"] = email
 	}
@@ -358,7 +343,7 @@ func loginOAuth(ctx context.Context, in platform.LoginInput, pio *prompt.IO) (*p
 	} else {
 		secret["client_id"], secret["client_secret"] = client.ID, client.Secret
 	}
-	return &platform.LoginResult{Secret: secret, Metadata: meta, Label: label(c.email, sel)}, nil
+	return &platform.LoginResult{Secret: secret, Metadata: meta, Label: label(c.email, lp)}, nil
 }
 
 // ownClientNote says why a re-login of an account that holds an OAuth
@@ -445,172 +430,204 @@ func lookupEmail(ctx context.Context, ts oauth2.TokenSource) string {
 	return ui.Email
 }
 
-// selection is the projects of a login: the default one and the selected
-// set, the default first.
-type selection struct {
+// loginProjects is what a login decides about the projects of the
+// account: the default one and the disabled ones. Every other project the
+// credentials see is enabled, so nothing else is chosen.
+type loginProjects struct {
 	def      string
-	projects []string
+	disabled []string
+	// listed says that the credentials listed their projects; visible
+	// are the ids of the active ones.
+	listed  bool
+	visible []string
 }
 
-func newSelection(def string, projects []string) selection {
-	return selection{def: def, projects: selectedProjects(map[string]string{metaProject: def, metaProjects: strings.Join(projects, ",")})}
-}
+// store writes the projects into the metadata of the account.
+func (p loginProjects) store(meta map[string]string) { setProjects(meta, p.def, p.disabled) }
 
-// store writes the selection into the metadata of the account.
-func (s selection) store(meta map[string]string) { setSelection(meta, s.def, s.projects) }
-
-// keptSelection is the selection of a login that names def as the default
-// project and says nothing else: the selection stored before, with def.
-func keptSelection(in platform.LoginInput, def string) selection {
-	var prev []string
-	if in.Existing != nil {
-		prev = selectedProjects(in.Existing)
+// enabled counts the projects the account covers, as far as the list
+// tells: the visible ones that are not disabled, and the default.
+func (p loginProjects) enabled() int {
+	n := 1
+	for _, v := range p.visible {
+		if v != p.def && !slices.Contains(p.disabled, v) {
+			n++
+		}
 	}
-	return newSelection(def, prev)
+	return n
 }
 
-// optSelection is the selection --set gives, if it gives one:
-//
-//   - project=X makes X the default project; the selection is the one
-//     stored before, with X;
-//   - projects=a,b,c is the selection, with the default project. Without
-//     project, the default is the one stored before when it is still
-//     selected, else the first project listed, which is said on stderr.
-func optSelection(in platform.LoginInput, pio *prompt.IO) (sel selection, given bool, err error) {
-	def := strings.TrimSpace(in.Opt("project", ""))
-	list := splitProjects(in.Opt("projects", ""))
+// optDefault is the default project --set names, "" when it names none:
+// project=X, or, for the command lines of polyctl 0.4.0, the list
+// projects=a,b,c, which then chose the projects of the account. Every
+// project the credentials see is enabled now, so the list is no longer
+// used, which is said; without project it still names the default: the
+// one stored before when the list holds it, else its first project.
+func optDefault(in platform.LoginInput, pio *prompt.IO) (string, error) {
+	def := strings.TrimSpace(in.Opt(metaProject, ""))
+	list := splitProjects(in.Opt(legacyProjects, ""))
 	for _, p := range append([]string{def}, list...) {
 		if p == "" {
 			continue
 		}
 		if err := checkProjectID(p); err != nil {
-			return sel, false, app.UsageErrf("%v (--set project=<id>, --set projects=<id>,<id>,...)", err)
+			return "", app.UsageErrf("%v (--set project=<id>)", err)
 		}
 	}
-	switch {
-	case len(list) > 0:
-		if def == "" {
-			if prev := in.Existing[metaProject]; prev != "" && slices.Contains(list, prev) {
-				def = prev
-			} else {
-				def = list[0]
-				fmt.Fprintf(pio.Err, "using %s as the default project (pass --set project=<id> to choose another)\n", def)
-			}
-		}
-		return newSelection(def, list), true, nil
-	case def != "":
-		return keptSelection(in, def), true, nil
+	if len(list) == 0 {
+		return def, nil
 	}
-	return sel, false, nil
+	fmt.Fprintln(pio.Err, "note: --set projects is no longer used: every project the credentials see is enabled; keep projects out with --set disabled_projects=<id>,... or polyctl gcp project disable")
+	if def == "" {
+		if prev := strings.TrimSpace(in.Existing[metaProject]); prev != "" && slices.Contains(list, prev) {
+			def = prev
+		} else {
+			def = list[0]
+			fmt.Fprintf(pio.Err, "using %s as the default project (pass --set project=<id> to choose another)\n", def)
+		}
+	}
+	return def, nil
 }
 
-// chooseProjects resolves the projects of the account: --set (see
-// optSelection), then, in the interactive flow, a multi-select of the
-// projects visible to the credentials, with the selection stored before
-// ticked (a first login ticks the ADC project, or the only visible one,
-// never all of them: an auto-generated project without the Compute or DNS
-// API would fail every sync), and, when several are selected, the question
-// which one is the default. Without a project list the id is asked for.
+// optDisabled is the disabled projects of a login whose default project
+// is def: the list of --set disabled_projects=a,b (given empty, nothing is
+// disabled any more), else the one stored before, without def. The default
+// project is always enabled, so naming it in the option is a usage error.
+func optDisabled(in platform.LoginInput, def string) ([]string, error) {
+	v, given := in.Options[metaDisabledProjects]
+	if !given {
+		return disabledProjects(map[string]string{metaProject: def, metaDisabledProjects: in.Existing[metaDisabledProjects]}), nil
+	}
+	list := splitProjects(v)
+	for _, p := range list {
+		if err := checkProjectID(p); err != nil {
+			return nil, app.UsageErrf("%v (--set disabled_projects=<id>,<id>,...)", err)
+		}
+	}
+	if slices.Contains(list, def) {
+		return nil, app.UsageErrf("--set disabled_projects names %s, the default project, which is always enabled (pass --set project=<id> to make another one the default)", def)
+	}
+	return list, nil
+}
+
+// chooseDefault resolves the default project of the account, the one new
+// resources are created in. Nothing else is chosen at a login: every
+// project the credentials see is enabled, and the disabled ones are kept
+// (optDisabled).
 //
-// The non-interactive flow asks nothing: the default project is the one
-// stored before or the ADC project, then the only listed project (several
-// candidates are a usage error), and the selection stored before is kept.
-func chooseProjects(ctx context.Context, in platform.LoginInput, pio *prompt.IO, ts oauth2.TokenSource, adcProject string) (selection, error) {
-	if sel, given, err := optSelection(in, pio); given || err != nil {
-		return sel, err
-	}
-	def := adcProject
-	if in.Existing != nil && in.Existing[metaProject] != "" {
-		def = in.Existing[metaProject]
-	}
-	if !in.Interactive {
-		if def != "" {
-			fmt.Fprintf(pio.Err, "using project %s (pass --set project=<id> to choose another)\n", def)
-			return keptSelection(in, def), nil
-		}
-		var ids []string
-		if crm, err := cloudresourcemanager.NewService(ctx, clientOptions(ts)...); err == nil {
-			if projects, err := listProjects(ctx, crm); err == nil {
-				for _, p := range projects {
-					ids = append(ids, p.ProjectId)
-				}
-			}
-		}
-		switch len(ids) {
-		case 0:
-			return selection{}, app.UsageErrf("gcp login needs a project: pass --set project=<id>")
-		case 1:
-			fmt.Fprintf(pio.Err, "using the only visible project: %s\n", ids[0])
-			return newSelection(ids[0], nil), nil
-		}
-		return selection{}, app.UsageErrf("several projects are visible: pass --set project=<id> to choose one (and --set projects=<id>,<id>,... to select more) of: %s", strings.Join(ids, ", "))
-	}
-	var opts []prompt.Option
-	if crm, err := cloudresourcemanager.NewService(ctx, clientOptions(ts)...); err == nil {
-		if projects, err := listProjects(ctx, crm); err == nil {
-			for _, p := range projects {
-				opts = append(opts, prompt.Option{Label: projectLabel(p.ProjectId, p.Name), Value: p.ProjectId})
-			}
-		} else {
-			fmt.Fprintf(pio.Err, "note: could not list projects (%v); enter the project id manually\n", err)
+//   - --set project=X names it (optDefault).
+//   - A re-login keeps the default stored before, which is said, unless
+//     the credentials list projects and it is not among them: then it is
+//     asked again.
+//   - A first login on a terminal uses the only visible project, asks
+//     which of several is the default (hint, the project of the
+//     Application Default Credentials, proposed), and asks for the id
+//     when the credentials list none.
+//   - The non-interactive flow asks nothing: the default stored before or
+//     hint, then the only listed project; several candidates are a usage
+//     error.
+//   - With ask false (a service account) nothing is chosen from a list:
+//     the default stored before, else hint (the project of the key), else
+//     the id is asked for on a terminal.
+func chooseDefault(ctx context.Context, in platform.LoginInput, pio *prompt.IO, ts oauth2.TokenSource, hint string, ask bool) (loginProjects, error) {
+	var lp loginProjects
+	var names map[string]string
+	var listErr error
+	if crm, err := cloudresourcemanager.NewService(ctx, clientOptions(ts)...); err != nil {
+		listErr = err
+	} else if projects, err := listProjects(ctx, crm); err != nil {
+		listErr = err
+	} else {
+		lp.listed, names = true, map[string]string{}
+		for _, p := range projects {
+			lp.visible = append(lp.visible, p.ProjectId)
+			names[p.ProjectId] = p.Name
 		}
 	}
-	if len(opts) == 0 {
+	def, err := optDefault(in, pio)
+	if err != nil {
+		return lp, err
+	}
+	prev := strings.TrimSpace(in.Existing[metaProject])
+	typed := func() (string, error) {
+		var id string
 		var err error
-		if def != "" {
-			def, err = pio.Line("Google Cloud project id", def)
+		if hint != "" {
+			id, err = pio.Line("Google Cloud project id", hint)
 		} else {
-			def, err = pio.Required("Google Cloud project id")
+			id, err = pio.Required("Google Cloud project id")
 		}
 		if err != nil {
-			return selection{}, err
+			return "", err
 		}
-		if err := checkProjectID(def); err != nil {
-			return selection{}, fmt.Errorf("%w: %v", platform.ErrInvalidInput, err)
+		if err := checkProjectID(id); err != nil {
+			return "", fmt.Errorf("%w: %v", platform.ErrInvalidInput, err)
 		}
-		return keptSelection(in, def), nil
+		return id, nil
 	}
-	// What was selected before is ticked; a first login ticks one project
-	// at most.
-	var preset []string
 	switch {
-	case in.Existing != nil && in.Existing[metaProject] != "":
-		preset = selectedProjects(in.Existing)
 	case def != "":
-		preset = []string{def}
-	case len(opts) == 1:
-		preset = []string{opts[0].Value}
-	}
-	for _, p := range preset {
-		// A selected project the list does not show (no permission to
-		// list it) stays offered.
-		if !hasOption(opts, p) {
-			opts = append(opts, prompt.Option{Label: p, Value: p})
+	case !ask:
+		if def = hint; prev != "" {
+			def = prev
+		}
+		if def == "" && !in.Interactive {
+			return lp, app.UsageErrf("the service account key names no project: pass --set project=<id>")
+		}
+		if def == "" {
+			if def, err = typed(); err != nil {
+				return lp, err
+			}
+		}
+	case !in.Interactive:
+		if def = hint; prev != "" {
+			def = prev
+		}
+		switch {
+		case def != "":
+			fmt.Fprintf(pio.Err, "using project %s (pass --set project=<id> to choose another)\n", def)
+		case len(lp.visible) == 0:
+			return lp, app.UsageErrf("gcp login needs a project: pass --set project=<id>")
+		case len(lp.visible) == 1:
+			def = lp.visible[0]
+			fmt.Fprintf(pio.Err, "using the only visible project: %s\n", def)
+		default:
+			return lp, app.UsageErrf("several projects are visible: pass --set project=<id> to choose the default of: %s", strings.Join(lp.visible, ", "))
+		}
+	case prev != "" && (len(lp.visible) == 0 || slices.Contains(lp.visible, prev)):
+		def = prev
+		fmt.Fprintf(pio.Err, "default project %s kept (change it with polyctl gcp project use)\n", def)
+	case len(lp.visible) == 0:
+		if listErr != nil {
+			fmt.Fprintf(pio.Err, "note: could not list projects (%v); enter the project id manually\n", listErr)
+		}
+		if def, err = typed(); err != nil {
+			return lp, err
+		}
+	default:
+		if prev != "" {
+			fmt.Fprintf(pio.Err, "note: the default project %s is not among the projects the credentials list; choose the default again\n", prev)
+		}
+		if len(lp.visible) == 1 {
+			def = lp.visible[0]
+			fmt.Fprintf(pio.Err, "using the only visible project: %s\n", def)
+			break
+		}
+		opts := make([]prompt.Option, 0, len(lp.visible))
+		for _, id := range lp.visible {
+			opts = append(opts, prompt.Option{Label: projectLabel(id, names[id]), Value: id})
+		}
+		preset := ""
+		if slices.Contains(lp.visible, hint) {
+			preset = hint
+		}
+		if def, err = in.Select(pio, "Default project (new resources are created there; every project is synced unless disabled)", opts, preset); err != nil {
+			return lp, err
 		}
 	}
-	chosen, err := in.MultiSelect(pio, "Google Cloud projects to work on (the inventory covers them all)", opts, preset)
-	if err != nil {
-		return selection{}, err
-	}
-	switch len(chosen) {
-	case 0:
-		return selection{}, fmt.Errorf("%w: no project was selected", platform.ErrInvalidInput)
-	case 1:
-		return newSelection(chosen[0], nil), nil
-	}
-	if !slices.Contains(chosen, def) {
-		def = chosen[0]
-	}
-	var defOpts []prompt.Option
-	for _, o := range opts {
-		if slices.Contains(chosen, o.Value) {
-			defOpts = append(defOpts, o)
-		}
-	}
-	if def, err = in.Select(pio, "Default project (where new resources are created)", defOpts, def); err != nil {
-		return selection{}, err
-	}
-	return newSelection(def, chosen), nil
+	lp.def = def
+	lp.disabled, err = optDisabled(in, def)
+	return lp, err
 }
 
 // projectLabel: "my-project  My Project".
@@ -621,32 +638,18 @@ func projectLabel(id, name string) string {
 	return prompt.Cells(id, name)
 }
 
-func hasOption(opts []prompt.Option, v string) bool {
-	for _, o := range opts {
-		if o.Value == v {
-			return true
-		}
-	}
-	return false
-}
-
-// verifySelection checks the credentials against the default project,
-// which must be reachable, and against the other selected projects, where
-// a failure is a warning: the project stays selected (its API may be
-// enabled later) and the warning says how to take it out.
-func verifySelection(ctx context.Context, pio *prompt.IO, ts oauth2.TokenSource, sel *selection, email, method string) (*client, error) {
-	c, err := verifyAccess(ctx, ts, sel.def, email, method)
+// verifyDefault checks the credentials against the default project, which
+// must be reachable, and says how many projects the account covers when
+// the credentials list more than that one. The other projects are not
+// probed: every sync skips the ones that hold nothing.
+func verifyDefault(ctx context.Context, pio *prompt.IO, ts oauth2.TokenSource, lp loginProjects, email, method string) (*client, error) {
+	c, err := verifyAccess(ctx, ts, lp.def, email, method)
 	if err != nil {
 		return nil, err
 	}
-	c.cov.selected = sel.projects
-	for _, p := range sel.projects {
-		if p == sel.def {
-			continue
-		}
-		if err := c.inProject(p).checkAccess(ctx); err != nil {
-			fmt.Fprintf(pio.Err, "warning: project %s: %v (it stays selected; remove it with `polyctl gcp project remove %s`)\n", p, err, p)
-		}
+	c.cov.disabled = lp.disabled
+	if n := lp.enabled(); lp.listed && n > 1 {
+		fmt.Fprintf(pio.Err, "%d projects are enabled (everything the credentials see); keep the ones that are not used out of every sync with polyctl gcp project disable\n", n)
 	}
 	return c, nil
 }
@@ -689,12 +692,19 @@ func (c *client) checkAccess(ctx context.Context) error {
 	return fmt.Errorf("%w: credentials cannot access project %s (Cloud DNS, Compute Engine and Resource Manager all denied): %v", platform.ErrUnauthorized, project, errors.Join(errs...))
 }
 
-// label names the account after a login: "me@example.com (project p1, +2
-// more)".
-func label(email string, sel selection) string {
-	project := "project " + sel.def
-	if n := len(sel.projects) - 1; n > 0 {
-		project += fmt.Sprintf(", +%d more", n)
+// label names the account after a login: "me@example.com (default project
+// p1; 3 projects enabled, 1 disabled)", or "me@example.com (project p1)"
+// when the account covers that project alone and disables none.
+func label(email string, lp loginProjects) string {
+	project := "project " + lp.def
+	if n, d := lp.enabled(), len(lp.disabled); lp.listed && (n > 1 || d > 0) {
+		project = fmt.Sprintf("default project %s; %d projects enabled", lp.def, n)
+		if n == 1 {
+			project = fmt.Sprintf("default project %s; 1 project enabled", lp.def)
+		}
+		if d > 0 {
+			project += fmt.Sprintf(", %d disabled", d)
+		}
 	}
 	if email == "" {
 		return project

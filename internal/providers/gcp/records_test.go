@@ -235,9 +235,23 @@ func TestParseServiceAccountKey(t *testing.T) {
 }
 
 func TestLabelAndHelpers(t *testing.T) {
-	one, three := newSelection("p", nil), newSelection("p", []string{"q", "p", "r"})
-	if label("", one) != "project p" || label("a@b", one) != "a@b (project p)" || label("a@b", three) != "a@b (project p, +2 more)" {
-		t.Error("label")
+	for _, tc := range []struct {
+		email string
+		lp    loginProjects
+		want  string
+	}{
+		{"", loginProjects{def: "p"}, "project p"},
+		{"a@b", loginProjects{def: "p"}, "a@b (project p)"},
+		// Without a list nothing is known about the other projects.
+		{"a@b", loginProjects{def: "p", disabled: []string{"x"}}, "a@b (project p)"},
+		{"a@b", loginProjects{def: "p", listed: true, visible: []string{"p"}}, "a@b (project p)"},
+		{"a@b", loginProjects{def: "p", listed: true, visible: []string{"p", "q", "r"}}, "a@b (default project p; 3 projects enabled)"},
+		{"a@b", loginProjects{def: "p", listed: true, visible: []string{"q", "r", "x"}, disabled: []string{"x", "gone"}}, "a@b (default project p; 3 projects enabled, 2 disabled)"},
+		{"", loginProjects{def: "p", listed: true, visible: []string{"p", "x"}, disabled: []string{"x"}}, "default project p; 1 project enabled, 1 disabled"},
+	} {
+		if got := label(tc.email, tc.lp); got != tc.want {
+			t.Errorf("label(%q, %+v) = %q, want %q", tc.email, tc.lp, got, tc.want)
+		}
 	}
 	if lastSegment("a/b/c") != "c" || lastSegment("plain") != "plain" {
 		t.Error("lastSegment")

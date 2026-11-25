@@ -301,7 +301,7 @@ func cachedRuleHits(ctx context.Context, rt *app.Runtime, ref string) ([]ruleHit
 		if err != nil {
 			return nil, err
 		}
-		def, _, _ := accountProjects(rt, sc.profile)
+		def := defaultProject(rt, sc.profile)
 		for _, r := range rows {
 			var fr ForwardingRule
 			if (r.Name != ref && r.ID != ref) || r.Decode(&fr) != nil {

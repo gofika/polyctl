@@ -358,7 +358,7 @@ func TestPlatformTreeShapes(t *testing.T) {
 
 	exists := []string{
 		// The projects of a Google Cloud account.
-		"gcp project list", "gcp project current", "gcp project use", "gcp project add", "gcp project remove",
+		"gcp project list", "gcp project current", "gcp project use", "gcp project enable", "gcp project disable", "gcp project add", "gcp project remove",
 		// The accounts of a Cloudflare login.
 		"cloudflare account list", "cloudflare account current", "cloudflare account use", "cloudflare account add", "cloudflare account remove",
 		// One identity check, at the top of every tree.
@@ -753,7 +753,7 @@ func TestGCPProjectFlag(t *testing.T) {
 	if code, _, stderr := mainExit(t.TempDir(), "gcp", "dns", "zone", "list", "--project", "a/b"); code != ExitUsage || !strings.Contains(stderr, "not a project id") {
 		t.Errorf("--project a/b: exit %d, %s", code, stderr)
 	}
-	for _, sub := range []string{"use", "add", "remove"} {
+	for _, sub := range []string{"use", "enable", "disable", "add", "remove"} {
 		if code, _, stderr := mainExit(t.TempDir(), "gcp", "project", sub, "p1", "--dry-run"); code != ExitUsage || !strings.Contains(stderr, "does not support --dry-run") {
 			t.Errorf("gcp project %s --dry-run: exit %d, %s", sub, code, stderr)
 		}

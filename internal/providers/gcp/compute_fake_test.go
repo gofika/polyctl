@@ -96,6 +96,11 @@ type fakeCompute struct {
 	// carries warning UNREACHABLE instead. Its resources are left out.
 	unreachable        string
 	unreachableWarning bool
+	// visible are the projects Resource Manager lists (none: the account
+	// works on its default project alone); listFail answers the list
+	// with that status instead.
+	visible  []string
+	listFail int
 }
 
 func newFakeCompute(t *testing.T) *fakeCompute {
@@ -357,6 +362,18 @@ func (f *fakeCompute) serve(w http.ResponseWriter, r *http.Request) {
 			apiError(w, e)
 			return
 		}
+	}
+	if path == "/v1/projects" {
+		if f.listFail != 0 {
+			apiError(w, fakeErr{f.listFail, "forced", "forced failure of the project list"})
+			return
+		}
+		out := []map[string]any{}
+		for i, p := range f.visible {
+			out = append(out, map[string]any{"projectId": p, "name": "Project " + p, "projectNumber": fmt.Sprint(100 + i), "lifecycleState": "ACTIVE"})
+		}
+		writeJSONStatus(w, 200, map[string]any{"projects": out})
+		return
 	}
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	if len(parts) < 2 || parts[0] != "projects" {
