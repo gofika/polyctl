@@ -456,6 +456,17 @@ func (c zoneCand) String() string {
 	return s
 }
 
+// cells is the candidate as an option of the pick that settles the lookup:
+// "<zone id>  active  account acc1  Acme  cloudflare/work". A fact the
+// candidate does not have shows "-" in its cell.
+func (c zoneCand) cells() string {
+	account := ""
+	if c.account != "" {
+		account = "account " + c.account
+	}
+	return prompt.Cells(c.id, c.status, account, c.accountName, "cloudflare/"+c.profile)
+}
+
 func candOfZone(profile string, z platform.Zone) zoneCand {
 	return zoneCand{profile: profile, account: zoneAccount(z), accountName: zoneAccountName(z), id: z.ID, status: z.Status}
 }
@@ -515,7 +526,7 @@ func pickAmbiguousZone(rt *app.Runtime, profile, ref string, zs []apiZone, byID 
 	for _, z := range zs {
 		cands = append(cands, candOfAPIZone(profile, z))
 	}
-	z, err := disambiguate(rt, ambiguousZone(ref, cands, byID), zs, func(z apiZone) string { return candOfAPIZone(profile, z).String() })
+	z, err := disambiguate(rt, ambiguousZone(ref, cands, byID), zs, func(z apiZone) string { return candOfAPIZone(profile, z).cells() })
 	if err != nil {
 		return nil, err
 	}

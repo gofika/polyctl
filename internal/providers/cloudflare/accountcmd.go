@@ -403,16 +403,10 @@ func (b *accountBook) check(ctx context.Context, ids []string) error {
 	return nil
 }
 
-// accountOption labels an account for a pick: "Acme (acc1)  default".
+// accountOption labels an account for a pick, as cells: "Acme  acc1
+// default". An account without a known name shows "-" in the name cell.
 func accountOption(id, name, mark string) prompt.Option {
-	label := id
-	if name != "" {
-		label = name + " (" + id + ")"
-	}
-	if mark != "" {
-		label += "  " + mark
-	}
-	return prompt.Option{Label: label, Value: id}
+	return prompt.Option{Label: prompt.Cells(name, id, mark), Value: id}
 }
 
 // options are the accounts the credentials see, as options labelled with

@@ -14,13 +14,15 @@ import (
 	"github.com/gofika/polyctl/internal/prompt"
 )
 
-// zoneLabel is how a zone is shown in a pick: "example.com  active  <id>".
-func zoneLabel(z platform.Zone) string {
-	parts := []string{z.Name}
-	if z.Status != "" {
-		parts = append(parts, z.Status)
+// zoneLabel is how a zone is shown in a pick, as cells:
+// "example.com  active  <id>  account Acme  cloudflare/work". The status
+// and the account ("" when the pick does not show accounts) keep their
+// cell: a zone without one shows "-" there.
+func zoneLabel(z platform.Zone, account, profile string) string {
+	if account != "" {
+		account = "account " + account
 	}
-	return strings.Join(append(parts, z.ID), "  ")
+	return prompt.Cells(z.Name, z.Status, z.ID, account, "cloudflare/"+profile)
 }
 
 // pickCachedZone asks for one of the zones of the scope of a profile (the
@@ -32,11 +34,11 @@ func pickCachedZone(rt *app.Runtime, zones []platform.Zone, sc acctScope) (strin
 	several := severalAccounts(sorted)
 	var opts []prompt.Option
 	for _, z := range sorted {
-		label := zoneLabel(z)
+		account := ""
 		if acc := zoneAccount(z); several && acc != "" {
-			label += "  account " + nonEmpty(zoneAccountName(z), acc)
+			account = nonEmpty(zoneAccountName(z), acc)
 		}
-		opts = append(opts, prompt.Option{Label: label + "  cloudflare/" + sc.profile, Value: z.ID})
+		opts = append(opts, prompt.Option{Label: zoneLabel(z, account, sc.profile), Value: z.ID})
 	}
 	what := "zone in cloudflare/" + sc.profile
 	if sc.pin != "" {
@@ -55,11 +57,11 @@ func pickLiveZone(ctx context.Context, rt *app.Runtime, scopes map[string]acctSc
 		Filter: keep,
 		Label: func(r inventory.Resource) string {
 			z := rowZone(r)
-			label := zoneLabel(z)
+			account := ""
 			if acc := rowAccount(r); acc != "" && scopes[r.Profile].several() {
-				label += "  account " + nonEmpty(zoneAccountName(z), acc)
+				account = nonEmpty(zoneAccountName(z), acc)
 			}
-			return label + "  cloudflare/" + r.Profile
+			return zoneLabel(z, account, r.Profile)
 		}})
 }
 
@@ -107,9 +109,9 @@ func askPurge(rt *app.Runtime) (everything bool, urls, hosts, tags, prefixes []s
 }
 
 // pickSetting asks for a setting of the zone of s: the settings the zone
-// lists (only the editable ones for a change), with their current values,
-// plus argo_smart_routing and foundation_dns, which have endpoints of their
-// own.
+// lists (only the editable ones for a change), with their current values
+// as a second cell, plus argo_smart_routing and foundation_dns, which have
+// endpoints of their own and show what they are as a third cell.
 func pickSetting(ctx context.Context, rt *app.Runtime, s *zoneScope, editable bool) (string, error) {
 	settings, err := s.c.api.listSettings(ctx, s.z.ID)
 	if err != nil {
@@ -121,10 +123,10 @@ func pickSetting(ctx context.Context, rt *app.Runtime, s *zoneScope, editable bo
 		if editable && !st.Editable {
 			continue
 		}
-		opts = append(opts, prompt.Option{Label: st.ID + " = " + settingText(st.Value), Value: st.ID})
+		opts = append(opts, prompt.Option{Label: prompt.Cells(st.ID, settingText(st.Value)), Value: st.ID})
 	}
-	opts = append(opts, prompt.Option{Label: settingArgo + "  (Argo Smart Routing)", Value: settingArgo},
-		prompt.Option{Label: settingFoundationDNS + "  (Foundation DNS)", Value: settingFoundationDNS})
+	opts = append(opts, prompt.Option{Label: prompt.Cells(settingArgo, "", "Argo Smart Routing"), Value: settingArgo},
+		prompt.Option{Label: prompt.Cells(settingFoundationDNS, "", "Foundation DNS"), Value: settingFoundationDNS})
 	return rt.Choose(app.Choice{Title: "Setting of " + s.name(), Options: opts, Arg: "<setting>"})
 }
 
@@ -203,10 +205,11 @@ func bucketArgs(ctx context.Context, rt *app.Runtime, args []string) ([]string, 
 	}
 	var opts []prompt.Option
 	for _, r := range found {
-		label := r.Name + "  cloudflare/" + r.Profile
+		account := ""
 		if len(accounts[r.Profile]) > 1 {
-			label += "  account " + r.AccountID
+			account = "account " + r.AccountID
 		}
+		label := prompt.Cells(r.Name, "cloudflare/"+r.Profile, account)
 		value := r.Name
 		if names[r.Name] > 1 {
 			// A bucket name has no slash: the value cannot be a name.
@@ -225,6 +228,23 @@ func bucketArgs(ctx context.Context, rt *app.Runtime, args []string) ([]string, 
 	return []string{v}, nil
 }
 
+// bucketDomainLabel is how a custom domain of a bucket is shown in a pick,
+// as cells: "cdn.example.com  enabled  tls 1.2  zone example.com". A
+// domain without a minimum TLS version shows "-" in its cell.
+func bucketDomainLabel(d r2CustomDomain) string {
+	state, tls, zone := "disabled", "", ""
+	if d.Enabled {
+		state = "enabled"
+	}
+	if d.MinTLS != "" {
+		tls = "tls " + d.MinTLS
+	}
+	if d.ZoneName != "" {
+		zone = "zone " + d.ZoneName
+	}
+	return prompt.Cells(d.Domain, state, tls, zone)
+}
+
 // pickBucketDomain asks for one of the custom domains bound to bucket.
 func pickBucketDomain(ctx context.Context, rt *app.Runtime, a *r2Acct, bucket string) (string, error) {
 	ds, err := a.api.listCustomDomains(ctx, a.account, bucket)
@@ -234,17 +254,7 @@ func pickBucketDomain(ctx context.Context, rt *app.Runtime, a *r2Acct, bucket st
 	sort.SliceStable(ds, func(i, j int) bool { return ds[i].Domain < ds[j].Domain })
 	var opts []prompt.Option
 	for _, d := range ds {
-		label := d.Domain + "  disabled"
-		if d.Enabled {
-			label = d.Domain + "  enabled"
-		}
-		if d.MinTLS != "" {
-			label += "  tls " + d.MinTLS
-		}
-		if d.ZoneName != "" {
-			label += "  zone " + d.ZoneName
-		}
-		opts = append(opts, prompt.Option{Label: label, Value: d.Domain})
+		opts = append(opts, prompt.Option{Label: bucketDomainLabel(d), Value: d.Domain})
 	}
 	return rt.Choose(app.Choice{Title: "Custom domain of " + bucket, Options: opts, Arg: "<domain>", What: "custom domain of bucket " + bucket})
 }
@@ -259,7 +269,7 @@ func askDomainUpdate(rt *app.Runtime, cur r2CustomDomain) (*bool, string, error)
 	}
 	what, err := rt.Choose(app.Choice{Title: "What to change on " + cur.Domain, Arg: "--enabled / --min-tls", Options: []prompt.Option{
 		{Label: toggle, Value: "toggle"},
-		{Label: "Minimum TLS version (now " + nonEmpty(cur.MinTLS, "default") + ")...", Value: "tls"},
+		{Label: prompt.Cells("Minimum TLS version...", "now "+nonEmpty(cur.MinTLS, "default")), Value: "tls"},
 	}})
 	if err != nil {
 		return nil, "", err
@@ -321,7 +331,7 @@ func newZoneDomain(ctx context.Context, rt *app.Runtime, args []string) (string,
 					continue
 				}
 				seen[e.Domain] = true
-				opts = append(opts, prompt.Option{Label: fmt.Sprintf("%s  registered at %s/%s", e.Domain, e.Platform, e.Profile), Value: e.Domain})
+				opts = append(opts, prompt.Option{Label: prompt.Cells(e.Domain, fmt.Sprintf("registered at %s/%s", e.Platform, e.Profile)), Value: e.Domain})
 			}
 		}
 	}

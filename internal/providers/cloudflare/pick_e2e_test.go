@@ -46,7 +46,8 @@ func TestZoneSettingSetPicks(t *testing.T) {
 	if a := p.Find("Zone"); len(a.Options) != 1 || !strings.Contains(a.Options[0].Label, "example.com  active  "+z.id) {
 		t.Errorf("zone options %+v", a.Options)
 	}
-	if a := p.Find("Setting of example.com"); !strings.Contains(prompttest.Labels(a.Options), "always_use_https = off") ||
+	if a := p.Find("Setting of example.com"); !strings.Contains(prompttest.Labels(a.Options), "always_use_https  off\n") ||
+		!strings.Contains(prompttest.Labels(a.Options), "argo_smart_routing  -  Argo Smart Routing\nfoundation_dns  -  Foundation DNS") ||
 		!strings.Contains(prompttest.Values(a.Options), "argo_smart_routing foundation_dns") {
 		t.Errorf("setting options %+v", a.Options)
 	}
@@ -105,7 +106,7 @@ func TestR2DomainUpdatePicks(t *testing.T) {
 	if a := p.Find("Custom domain of assets"); len(a.Options) != 1 || !strings.Contains(a.Options[0].Label, "cdn.example.com  enabled") {
 		t.Errorf("domain options %+v", a.Options)
 	}
-	if a := p.Find("What to change on cdn.example.com"); a.Options[0].Label != "Disable the domain" {
+	if a := p.Find("What to change on cdn.example.com"); a.Options[0].Label != "Disable the domain" || !strings.HasPrefix(a.Options[1].Label, "Minimum TLS version...  now ") {
 		t.Errorf("change options %+v", a.Options)
 	}
 	p.Done()

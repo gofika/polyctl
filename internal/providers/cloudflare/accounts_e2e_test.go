@@ -394,7 +394,7 @@ func TestZoneNameInTwoAccounts(t *testing.T) {
 	if code != cli.ExitOK || !strings.Contains(stdout, `"id": "zone-dup"`) {
 		t.Errorf("pick: exit %d, %s%s", code, stdout, stderr)
 	}
-	if a := p.Find(`Ambiguous zone "example.com"; use which one?`); a == nil || len(a.Options) != 2 || !strings.Contains(prompttest.Labels(a.Options), "account acc2 (Beta)") {
+	if a := p.Find(`Ambiguous zone "example.com"; use which one?`); a == nil || len(a.Options) != 2 || !strings.Contains(prompttest.Labels(a.Options), "zone-dup  pending  account acc2  Beta  cloudflare/both") {
 		t.Errorf("questions asked: %v", p.Titles())
 	}
 	p.Done()
@@ -510,7 +510,7 @@ func TestRoutedZoneSeveralAccounts(t *testing.T) {
 	if code != cli.ExitOK || !strings.Contains(stdout, `"value": "strict"`) {
 		t.Errorf("pick: exit %d, %s%s", code, stdout, stderr)
 	}
-	if a := p.Find(`Ambiguous cloudflare zone "example.com"; use which one?`); a == nil || len(a.Options) != 2 || !strings.Contains(prompttest.Labels(a.Options), "account acc2 (Account acc2)") {
+	if a := p.Find(`Ambiguous cloudflare zone "example.com"; use which one?`); a == nil || len(a.Options) != 2 || !strings.Contains(prompttest.Labels(a.Options), dup.id+"  pending  account acc2  Account acc2  cloudflare/") {
 		t.Errorf("questions asked: %v", p.Titles())
 	}
 	p.Done()
@@ -858,7 +858,7 @@ func TestR2BucketNameInTwoAccounts(t *testing.T) {
 		t.Errorf("pick: exit %d, %s%s", code, stdout, stderr)
 	}
 	if a := p.Find(`Ambiguous R2 bucket "assets" (several accounts hold a bucket of that name); use which one?`); a == nil || len(a.Options) != 2 ||
-		!strings.Contains(prompttest.Labels(a.Options), "cloudflare/both account acc1") {
+		!strings.Contains(prompttest.Labels(a.Options), "cloudflare/both  account acc1") {
 		t.Errorf("questions asked: %v", p.Titles())
 	}
 	p.Done()
@@ -1444,8 +1444,8 @@ func TestAccountCommandsPick(t *testing.T) {
 	}
 	p.Done()
 	if a := p.Asked[0]; a.Title != "Default account" || a.Default != "acc1" || prompttest.Values(a.Options) != "acc1 acc2 acc3" ||
-		!strings.Contains(prompttest.Labels(a.Options), "Acme (acc1)  default") || !strings.Contains(prompttest.Labels(a.Options), "Beta (acc2)  selected") ||
-		!strings.Contains(prompttest.Labels(a.Options), "Gamma (acc3)\n") && !strings.HasSuffix(prompttest.Labels(a.Options), "Gamma (acc3)") {
+		!strings.Contains(prompttest.Labels(a.Options), "Acme  acc1  default") || !strings.Contains(prompttest.Labels(a.Options), "Beta  acc2  selected") ||
+		!strings.HasSuffix(prompttest.Labels(a.Options), "Gamma  acc3") {
 		t.Errorf("use asked %+v", a)
 	}
 
@@ -1466,7 +1466,7 @@ func TestAccountCommandsPick(t *testing.T) {
 		t.Fatalf("remove: exit %d, %s, %s", code, e.selection("all"), stderr)
 	}
 	p.Done()
-	if a := p.Asked[0]; a.Title != "Accounts to remove" || prompttest.Values(a.Options) != "acc3 acc1 acc2" || !strings.Contains(prompttest.Labels(a.Options), "Gamma (acc3)  default") {
+	if a := p.Asked[0]; a.Title != "Accounts to remove" || prompttest.Values(a.Options) != "acc3 acc1 acc2" || !strings.Contains(prompttest.Labels(a.Options), "Gamma  acc3  default\n-  acc1\n-  acc2") {
 		t.Errorf("remove offered %+v", a)
 	}
 	if a := p.Asked[1]; a.Title != "New default account" || prompttest.Values(a.Options) != "acc1 acc2" {

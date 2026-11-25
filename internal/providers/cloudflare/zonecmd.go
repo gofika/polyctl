@@ -199,6 +199,7 @@ func routeZone(ctx context.Context, rt *app.Runtime, ref string) (*Client, inven
 	// selection changed, an account that was added may hold a zone of it too.
 	lookup := app.ResourceLookup{Platform: platform.Cloudflare, Kind: platform.ResZone, Ref: ref, Keep: keep, SyncDue: strings.Contains(ref, "."),
 		Candidate: func(r inventory.Resource) string { return cand(r).String() },
+		Option:    func(r inventory.Resource) string { return cand(r).cells() },
 		Hint: func(found []inventory.Resource) string {
 			cands := make([]zoneCand, 0, len(found))
 			for _, r := range found {
@@ -337,7 +338,7 @@ func openAccount(ctx context.Context, rt *app.Runtime) (s *session, account stri
 	// The interactive flow asks, for this run only.
 	var opts []prompt.Option
 	for _, a := range accounts {
-		opts = append(opts, prompt.Option{Label: fmt.Sprintf("%s  %s", a.Name, a.ID), Value: a.ID})
+		opts = append(opts, prompt.Option{Label: prompt.Cells(a.Name, a.ID), Value: a.ID})
 	}
 	id, err := rt.Choose(app.Choice{Title: "Cloudflare account of the new zone", Options: opts, Arg: "--account"})
 	if err != nil {

@@ -16,6 +16,7 @@ import (
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/output"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt"
 )
 
 // newR2Cmd is `polyctl cloudflare r2`: R2 buckets and the custom domains
@@ -88,6 +89,12 @@ func (a *r2Acct) where() string {
 
 // cand is the account as a candidate of an ambiguous bucket name.
 func (a *r2Acct) cand() string { return "cloudflare/" + a.profile + " account " + a.account }
+
+// candCells is the candidate as an option of the pick that settles the
+// lookup: "cloudflare/work  account acc1".
+func (a *r2Acct) candCells() string {
+	return prompt.Cells("cloudflare/"+a.profile, "account "+a.account)
+}
 
 // newR2Acct is the account of a scope's profile, opened as c.
 func newR2Acct(c *Client, sc acctScope, account, jurisdiction string) *r2Acct {
@@ -275,7 +282,7 @@ func findBucket(ctx context.Context, rt *app.Runtime, bucket, jurisdiction strin
 		return hits[0], nil
 	case 0:
 	default:
-		a, err := disambiguate(rt, ambiguousBucket(bucket, hits), hits, (*r2Acct).cand)
+		a, err := disambiguate(rt, ambiguousBucket(bucket, hits), hits, (*r2Acct).candCells)
 		if err != nil {
 			return nil, err
 		}

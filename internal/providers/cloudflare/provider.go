@@ -629,13 +629,14 @@ func chooseAccounts(in platform.LoginInput, pio *prompt.IO, accounts []account, 
 	}
 	opts := make([]prompt.Option, 0, len(accounts))
 	for _, acc := range accounts {
-		opts = append(opts, prompt.Option{Label: fmt.Sprintf("%s (%s)", acc.Name, acc.ID), Value: acc.ID})
+		opts = append(opts, prompt.Option{Label: prompt.Cells(acc.Name, acc.ID), Value: acc.ID})
 	}
 	preset := c.kept()
 	for _, id := range preset {
-		// A selected account the list does not show stays offered.
+		// A selected account the list does not show stays offered, its id
+		// in the cell of the ids.
 		if c.find(id) == nil {
-			opts = append(opts, prompt.Option{Label: id, Value: id})
+			opts = append(opts, prompt.Option{Label: prompt.Cells("", id), Value: id})
 		}
 	}
 	switch len(opts) {
