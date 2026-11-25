@@ -17,6 +17,10 @@ Every command can be written with `cf` in place of `cloudflare` (`polyctl cf zon
 ```text
 cloudflare whoami                 # verifies the API token (id, status, expiry) or the browser authorization (granted scopes)
 cloudflare account list
+cloudflare account current
+cloudflare account use <account>
+cloudflare account add <account>...
+cloudflare account remove <account>... [--default <account>]
 cloudflare zone list              cloudflare zone get <zone|id>
 cloudflare zone create <domain> [--foundation-dns[=false]]
 cloudflare zone ensure <domain> [--preset optimized] [--ssl flexible|strict] [--foundation-dns[=false]]
@@ -72,7 +76,7 @@ polyctl cf zone ensure example.com --preset optimized --dry-run -o json
 polyctl cf zone delete example.com --yes
 ```
 
-A login works on its selected accounts, one of them the default account. `--account <id or name>` on the `zone`, `dns`, `cache`, `redirect`, `dev-mode`, `ssl-mode` and `r2` commands names one account for the call: lookups and lists cover that account instead of every selected one, and a new zone goes to it instead of the default account. An account outside the selection is read live with `--account` and nothing of it is stored in the inventory; without the flag its zones are not found (exit code 4, naming the account). A zone id given with the `--account` of another account is a usage error (exit code 2).
+A login works on its selected accounts, one of them the default account. The login selects them ([Accounts](../accounts.md#cloudflare)); `account use <account>` makes an account (id or name) the default, `account add` and `account remove` change the selection without a new login (local configuration only, no confirmation, no `--dry-run`), and `account current` shows it. `account list` marks the selected accounts (`SELECTED`) and the default one (`*`; `selected` and `default` in JSON). An account that leaves the selection, by `account remove` or by a new login, loses its cached zones, records and R2 buckets at once; removing the default account needs `--default <account>` (asked on a terminal), and removing every account is a usage error. `--account <id or name>` on the `zone`, `dns`, `cache`, `redirect`, `dev-mode`, `ssl-mode` and `r2` commands names one account for the call: lookups and lists cover that account instead of every selected one, and a new zone goes to it instead of the default account. An account outside the selection is read live with `--account` and nothing of it is stored in the inventory; without the flag its zones are not found (exit code 4, naming the account). A zone id given with the `--account` of another account is a usage error (exit code 2).
 
 A zone name that two accounts in the scope of the call hold a zone of (an active zone in one, a pending one in the other) is asked about on a terminal and exit code 5 otherwise, listing each zone with its account: `--account`, `--profile` when the zones are in different logins, or the zone id choose. `zone list` shows an `ACCOUNT` column when its zones are of several accounts.
 

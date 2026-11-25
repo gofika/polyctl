@@ -1061,7 +1061,7 @@ func TestCommandTree(t *testing.T) {
 	if cmd.Use != "cloudflare" || !reflect.DeepEqual(cmd.Aliases, []string{"cf"}) {
 		t.Fatalf("use: %s, aliases: %v", cmd.Use, cmd.Aliases)
 	}
-	want := []string{"whoami", "zone list", "zone get", "dns list", "dns create", "dns update", "dns delete", "cache purge", "dev-mode", "ssl-mode", "account list"}
+	want := []string{"whoami", "zone list", "zone get", "dns list", "dns create", "dns update", "dns delete", "cache purge", "dev-mode", "ssl-mode", "account list", "account current", "account use", "account add", "account remove"}
 	for _, w := range want {
 		c, _, err := cmd.Find(strings.Fields(w))
 		if err != nil || c == nil || c == cmd {
@@ -1075,7 +1075,7 @@ func TestCommandTree(t *testing.T) {
 	// --account is on the commands that work on zones and on R2, and only
 	// there.
 	for path, has := range map[string]bool{"r2 bucket list": true, "r2 domain attach": true, "zone list": true, "zone setting get": true, "dns create": true, "cache purge": true, "cache rule list": true,
-		"redirect rule set": true, "dev-mode": true, "ssl-mode": true, "account list": false, "whoami": false} {
+		"redirect rule set": true, "dev-mode": true, "ssl-mode": true, "account list": false, "account current": false, "account use": false, "account add": false, "account remove": false, "whoami": false} {
 		c, _, err := cmd.Find(strings.Fields(path))
 		if err != nil {
 			t.Fatalf("%s: %v", path, err)

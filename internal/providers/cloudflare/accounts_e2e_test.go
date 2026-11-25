@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gofika/polyctl/internal/cli"
 	"github.com/gofika/polyctl/internal/config"
@@ -1168,5 +1169,326 @@ func TestAccountListMarksSelection(t *testing.T) {
 	}
 	if code, _, _ := e.run("cloudflare", "account", "list", "--profile", "both", "--offline"); code != cli.ExitOffline {
 		t.Errorf("offline: exit %d", code)
+	}
+}
+
+// loginAll adds a third account and logs the profile "all" in with a token
+// that sees the three, selecting acc1 alone.
+func (e *r2Env) loginAll() {
+	e.t.Helper()
+	e.f.accounts["acc3"] = &r2Account{id: "acc3", name: "Gamma", domains: map[string][]map[string]any{}}
+	e.f.tokens["tok-all"] = "acc1,acc2,acc3"
+	e.f.zones = append(e.f.zones, r2Zone{"zone-gamma", "example.org", "active", "acc3"})
+	if code, _, stderr := e.run("auth", "login", "cloudflare", "--profile", "all", "--set", "token=tok-all", "--set", "account_id=acc1"); code != cli.ExitOK {
+		e.t.Fatalf("login all: exit %d, %s", code, stderr)
+	}
+	e.f.reset()
+}
+
+// selection reads "default|name|accounts" of a profile's Cloudflare login.
+func (e *r2Env) selection(profile string) string {
+	e.t.Helper()
+	cfg, err := config.Load(filepath.Join(e.dir, "config.yaml"))
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	m := cfg.Profiles[profile].Platforms[platform.Cloudflare].Metadata
+	return m["account_id"] + "|" + m["account_name"] + "|" + m["accounts"]
+}
+
+// account use, add and remove change the selection of a login without a
+// new login, check what they select, drop what the inventory holds of an
+// account that leaves and make the cached sets due.
+func TestAccountUseAddRemove(t *testing.T) {
+	e := newR2Env(t)
+	e.loginAll()
+	e.f.addRecord("zone-beta", "rec-beta", "www.example.net", "A", "192.0.2.2")
+	e.f.accounts["acc2"].buckets = []string{"media"}
+	acct := func(args ...string) (int, string) {
+		t.Helper()
+		code, stdout, stderr := e.run(append([]string{"cloudflare", "account", "--profile", "all"}, args...)...)
+		return code, stdout + stderr
+	}
+	sync := func() {
+		t.Helper()
+		if code, _, stderr := e.run("sync", "--profile", "all", "--platform", "cloudflare"); code != cli.ExitOK {
+			t.Fatalf("sync: exit %d, %s", code, stderr)
+		}
+		e.f.reset()
+	}
+	// due reports whether the zone set is asked for again.
+	due := func() bool {
+		t.Helper()
+		e.f.reset()
+		if code, _, stderr := e.run("cloudflare", "zone", "list", "--profile", "all"); code != cli.ExitOK {
+			t.Fatalf("zone list: exit %d, %s", code, stderr)
+		}
+		return e.f.count("GET /zones") > 0
+	}
+	sync()
+	if due() {
+		t.Fatal("the zone set must be fresh after the sync")
+	}
+
+	// add: by name and by id, after the credentials were asked for them.
+	code, out := acct("add", "beta", "acc3")
+	if code != cli.ExitOK || e.selection("all") != "acc1|Acme|acc1,acc2,acc3" || !strings.Contains(out, "added acc2, acc3 to the accounts of cloudflare/all") {
+		t.Fatalf("add: exit %d, %s, %s", code, e.selection("all"), out)
+	}
+	if !due() {
+		t.Error("add must make the cached sets due")
+	}
+	// One that is selected already is nothing to do.
+	if code, out = acct("add", "acc2"); code != cli.ExitOK || !strings.Contains(out, "acc2: already selected for cloudflare/all") {
+		t.Errorf("add again: exit %d, %s", code, out)
+	}
+	// One the credentials do not see is not found, unless nothing can be
+	// checked, which is said.
+	if code, out = acct("add", "acc9"); code != cli.ExitNotFound || !strings.Contains(out, "is not visible to the credentials of cloudflare/all (visible: acc1=Acme, acc2=Beta, acc3=Gamma)") {
+		t.Errorf("add of an account that is not visible: exit %d, %s", code, out)
+	}
+	if code, out = acct("add", "acc9", "--offline"); code != cli.ExitOK || !strings.Contains(out, "--offline: access to acc9 was not checked") || e.selection("all") != "acc1|Acme|acc1,acc2,acc3,acc9" {
+		t.Errorf("add --offline: exit %d, %s, %s", code, e.selection("all"), out)
+	}
+	if code, out = acct("add", "No Such Name", "--offline"); code != cli.ExitOffline {
+		t.Errorf("add of an unknown name --offline: exit %d, %s", code, out)
+	}
+	if code, out = acct("add"); code != cli.ExitUsage {
+		t.Errorf("add without an account: exit %d, %s", code, out)
+	}
+
+	// use: a selected account becomes the default, with its name.
+	if code, out = acct("use", "Gamma"); code != cli.ExitOK || e.selection("all") != "acc3|Gamma|acc3,acc1,acc2,acc9" || !strings.Contains(out, "account acc3 is now the default account of cloudflare/all") {
+		t.Fatalf("use: exit %d, %s, %s", code, e.selection("all"), out)
+	}
+	if code, out = acct("use", "acc3"); code != cli.ExitOK || !strings.Contains(out, "account acc3 is already the default account of cloudflare/all") {
+		t.Errorf("use of the default: exit %d, %s", code, out)
+	}
+	if code, out = acct("use", "acc8"); code != cli.ExitNotFound || !strings.HasPrefix(e.selection("all"), "acc3|") {
+		t.Errorf("use of an account that is not visible: exit %d, %s", code, out)
+	}
+	if code, out = acct("use"); code != cli.ExitUsage {
+		t.Errorf("use without an account: exit %d, %s", code, out)
+	}
+
+	// current shows it without a request.
+	e.f.reset()
+	code, stdout, stderr := e.run("cloudflare", "account", "current", "--profile", "all", "--offline", "-o", "json")
+	var cur struct {
+		Profile     string
+		AccountID   string `json:"account_id"`
+		AccountName string `json:"account_name"`
+		Accounts    []string
+		Method      string
+	}
+	if err := json.Unmarshal([]byte(stdout), &cur); code != cli.ExitOK || err != nil {
+		t.Fatalf("current: exit %d, %v, %s%s", code, err, stdout, stderr)
+	}
+	if cur.Profile != "all" || cur.AccountID != "acc3" || cur.AccountName != "Gamma" || cur.Method != "api_token" || !reflect.DeepEqual(cur.Accounts, []string{"acc3", "acc1", "acc2", "acc9"}) {
+		t.Errorf("current = %+v", cur)
+	}
+	if e.f.count("") != 0 {
+		t.Errorf("current asked Cloudflare")
+	}
+
+	// remove: not selected is not found; the default needs --default; all
+	// of them is a usage error.
+	sync()
+	if got := e.rows("all", platform.ResZone); !slices.Contains(got, "zone-beta acc2") || !slices.Contains(got, "zone-gamma acc3") {
+		t.Fatalf("zones: %v", got)
+	}
+	if code, out = acct("remove", "nosuch"); code != cli.ExitNotFound || !strings.Contains(out, "nosuch is not selected for cloudflare/all (selected: acc3, acc1, acc2, acc9)") {
+		t.Errorf("remove of an unselected account: exit %d, %s", code, out)
+	}
+	if code, out = acct("remove", "acc3"); code != cli.ExitUsage || !strings.Contains(out, "--default <id>") || !strings.Contains(out, "one of: acc1, acc2, acc9") {
+		t.Errorf("remove of the default: exit %d, %s", code, out)
+	}
+	if code, out = acct("remove", "acc3", "--default", "acc3"); code != cli.ExitUsage || !strings.Contains(out, "not one of the accounts that stay selected") {
+		t.Errorf("--default of a removed account: exit %d, %s", code, out)
+	}
+	// Works offline, and by a name the cached zones carry.
+	if code, out = acct("remove", "acc3", "beta", "acc9", "--default", "Acme", "--offline"); code != cli.ExitOK || e.selection("all") != "acc1|Acme|" ||
+		!strings.Contains(out, "removed acc3, acc2, acc9 from the accounts of cloudflare/all") || !strings.Contains(out, "account acc1 is now the default account of cloudflare/all") {
+		t.Fatalf("remove with --default: exit %d, %s, %s", code, e.selection("all"), out)
+	}
+	if e.f.count("") != 0 {
+		t.Errorf("remove --offline asked Cloudflare")
+	}
+	// What the inventory held of the accounts that left is gone.
+	if got, want := e.rows("all", platform.ResZone), []string{"zone-a acc1", "zone-couk acc1", "zone-ex acc1", "zone-pend acc1"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("zones after the removal: %v", got)
+	}
+	if got := e.rows("all", platform.ResDNSRecord); len(got) != 0 {
+		t.Errorf("records after the removal: %v", got)
+	}
+	if got := e.rows("all", platform.ResR2Bucket); len(got) != 0 {
+		t.Errorf("buckets after the removal: %v", got)
+	}
+	if got := e.domains("all"); slices.Contains(got, "example.net") || slices.Contains(got, "example.org") || !slices.Contains(got, "example.com") {
+		t.Errorf("domains after the removal: %v", got)
+	}
+	if !due() {
+		t.Error("remove must make the cached sets due")
+	}
+	if code, out = acct("remove", "acc1"); code != cli.ExitUsage || !strings.Contains(out, "polyctl auth logout cloudflare --profile all") {
+		t.Errorf("remove of every account: exit %d, %s", code, out)
+	}
+	// The other logins were not touched.
+	if e.selection("acme") != "acc1|Acme|" || e.selection("beta") != "acc2|Beta|" {
+		t.Errorf("other logins: %s, %s", e.selection("acme"), e.selection("beta"))
+	}
+}
+
+// The rows of a zone and of a bucket stored before the rows had their
+// account as parent leave the inventory with their account too.
+func TestAccountRemoveDropsRowsWithoutAParent(t *testing.T) {
+	e := newR2Env(t)
+	e.f.addRecord("zone-beta", "rec-beta", "www.example.net", "A", "192.0.2.2")
+	e.f.accounts["acc2"].buckets = []string{"media"}
+	e.loginBoth("acc1", "acc1", "acc2")
+	if code, _, stderr := e.run("sync", "--profile", "both", "--platform", "cloudflare"); code != cli.ExitOK {
+		t.Fatalf("sync: exit %d, %s", code, stderr)
+	}
+	// Store the zone and the bucket of acc2 again as they were stored then.
+	db, err := inventory.Open(filepath.Join(e.dir, "inventory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for _, typ := range []platform.ResourceType{platform.ResZone, platform.ResR2Bucket} {
+		set := inventory.Set{Platform: platform.Cloudflare, Profile: "both", Type: typ}
+		rows, err := db.List(ctx, inventory.Query{Platform: platform.Cloudflare, Profile: "both", Type: typ})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var res []platform.Resource
+		for _, r := range rows {
+			pr := platform.Resource{Type: typ, ID: r.ID, Name: r.Name, ParentID: r.ParentID, Domain: r.Domain, Data: json.RawMessage(r.Data)}
+			if r.ParentID == "acc2" {
+				pr.ParentID = ""
+				if typ == platform.ResR2Bucket {
+					pr.ID = r.Name
+				}
+			}
+			res = append(res, pr)
+		}
+		if err := db.Replace(ctx, set, res, time.Hour); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+	if got := e.rows("both", platform.ResZone); !slices.Contains(got, "zone-beta ") {
+		t.Fatalf("zones: %v", got)
+	}
+	if got := e.rows("both", platform.ResR2Bucket); !reflect.DeepEqual(got, []string{"media "}) {
+		t.Fatalf("buckets: %v", got)
+	}
+
+	if code, _, stderr := e.run("cloudflare", "account", "remove", "acc2", "--profile", "both"); code != cli.ExitOK {
+		t.Fatalf("remove: exit %d, %s", code, stderr)
+	}
+	if got, want := e.rows("both", platform.ResZone), []string{"zone-a acc1", "zone-couk acc1", "zone-ex acc1", "zone-pend acc1"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("zones: %v", got)
+	}
+	if got := e.rows("both", platform.ResDNSRecord); len(got) != 0 {
+		t.Errorf("records: %v", got)
+	}
+	if got := e.rows("both", platform.ResR2Bucket); len(got) != 0 {
+		t.Errorf("buckets: %v", got)
+	}
+	if got := e.domains("both"); slices.Contains(got, "example.net") {
+		t.Errorf("domains: %v", got)
+	}
+}
+
+// On a terminal use, add and remove offer the accounts when none is named:
+// the visible ones, those not selected yet, the selected ones; remove of
+// the default account asks for the new default.
+func TestAccountCommandsPick(t *testing.T) {
+	e := newR2Env(t)
+	e.loginAll()
+	if code, _, stderr := e.run("cloudflare", "account", "add", "acc2", "--profile", "all"); code != cli.ExitOK {
+		t.Fatalf("add: exit %d, %s", code, stderr)
+	}
+
+	p := prompttest.New(t, "acc3")
+	if code, _, stderr := e.runPick(p, "cloudflare", "account", "use", "--profile", "all"); code != cli.ExitOK || e.selection("all") != "acc3|Gamma|acc3,acc1,acc2" {
+		t.Fatalf("use: exit %d, %s, %s", code, e.selection("all"), stderr)
+	}
+	p.Done()
+	if a := p.Asked[0]; a.Title != "Default account" || a.Default != "acc1" || prompttest.Values(a.Options) != "acc1 acc2 acc3" ||
+		!strings.Contains(prompttest.Labels(a.Options), "Acme (acc1)  default") || !strings.Contains(prompttest.Labels(a.Options), "Beta (acc2)  selected") ||
+		!strings.Contains(prompttest.Labels(a.Options), "Gamma (acc3)\n") && !strings.HasSuffix(prompttest.Labels(a.Options), "Gamma (acc3)") {
+		t.Errorf("use asked %+v", a)
+	}
+
+	if code, _, stderr := e.run("cloudflare", "account", "remove", "acc2", "--profile", "all"); code != cli.ExitOK {
+		t.Fatalf("remove: exit %d, %s", code, stderr)
+	}
+	p = prompttest.New(t, []string{"acc2"})
+	if code, _, stderr := e.runPick(p, "cloudflare", "account", "add", "--profile", "all"); code != cli.ExitOK || e.selection("all") != "acc3|Gamma|acc3,acc1,acc2" {
+		t.Fatalf("add: exit %d, %s, %s", code, e.selection("all"), stderr)
+	}
+	p.Done()
+	if a := p.Asked[0]; a.Kind != "multi" || a.Title != "Accounts to add" || prompttest.Values(a.Options) != "acc2" {
+		t.Errorf("add offered %+v", a)
+	}
+
+	p = prompttest.New(t, []string{"acc3"}, "acc2")
+	if code, _, stderr := e.runPick(p, "cloudflare", "account", "remove", "--profile", "all"); code != cli.ExitOK || e.selection("all") != "acc2|Beta|acc2,acc1" {
+		t.Fatalf("remove: exit %d, %s, %s", code, e.selection("all"), stderr)
+	}
+	p.Done()
+	if a := p.Asked[0]; a.Title != "Accounts to remove" || prompttest.Values(a.Options) != "acc3 acc1 acc2" || !strings.Contains(prompttest.Labels(a.Options), "Gamma (acc3)  default") {
+		t.Errorf("remove offered %+v", a)
+	}
+	if a := p.Asked[1]; a.Title != "New default account" || prompttest.Values(a.Options) != "acc1 acc2" {
+		t.Errorf("new default asked %+v", a)
+	}
+
+	// With one account left there is nothing to ask.
+	p = prompttest.New(t)
+	if code, _, stderr := e.runPick(p, "cloudflare", "account", "remove", "acc2", "--profile", "all"); code != cli.ExitOK || e.selection("all") != "acc1|Acme|" {
+		t.Fatalf("remove of the default with one left: exit %d, %s, %s", code, e.selection("all"), stderr)
+	}
+	p.Done()
+}
+
+// A login that is not bound to an account gets one with use or add: it
+// becomes the default, and the login works on it alone from then on.
+func TestAccountUseOnALoginWithoutAnAccount(t *testing.T) {
+	e := newR2Env(t)
+	unbind := func() {
+		t.Helper()
+		e.loginBoth("acc1")
+		cfg, err := config.Load(filepath.Join(e.dir, "config.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		meta := cfg.Profiles["both"].Platforms[platform.Cloudflare].Metadata
+		delete(meta, "account_id")
+		delete(meta, "account_name")
+		if err := cfg.Save(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unbind()
+	code, stdout, stderr := e.run("cloudflare", "account", "current", "--profile", "both")
+	if code != cli.ExitOK || !strings.Contains(stdout, "(none: every account the credentials see)") {
+		t.Errorf("current: exit %d, %s%s", code, stdout, stderr)
+	}
+	if code, _, stderr = e.run("cloudflare", "account", "remove", "acc1", "--profile", "both"); code != cli.ExitNotFound || !strings.Contains(stderr, "(selected: none)") {
+		t.Errorf("remove: exit %d, %s", code, stderr)
+	}
+	if code, _, stderr = e.run("cloudflare", "account", "add", "Beta", "acc1", "--profile", "both"); code != cli.ExitOK || e.selection("both") != "acc2|Beta|acc2,acc1" ||
+		!strings.Contains(stderr, "account acc2 is now the default account of cloudflare/both") {
+		t.Errorf("add: exit %d, %s, %s", code, e.selection("both"), stderr)
+	}
+	unbind()
+	if code, _, stderr = e.run("cloudflare", "account", "use", "acc2", "--profile", "both"); code != cli.ExitOK || e.selection("both") != "acc2|Beta|" {
+		t.Errorf("use: exit %d, %s, %s", code, e.selection("both"), stderr)
+	}
+	if code, stdout, stderr = e.run("cloudflare", "zone", "list", "--profile", "both", "-o", "json"); code != cli.ExitOK || !strings.Contains(stdout, "example.net") || strings.Contains(stdout, "example.com") {
+		t.Errorf("zone list: exit %d, %s%s", code, stdout, stderr)
 	}
 }

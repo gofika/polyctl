@@ -185,10 +185,18 @@ func resolveAccountRef(ctx context.Context, rt *app.Runtime, profile, ref string
 	if err != nil {
 		return "", err
 	}
-	accounts, complete, err := visibleAccounts(ctx, c.api)
-	if err != nil || len(accounts) == 0 {
+	accounts, complete, _ := visibleAccounts(ctx, c.api)
+	return matchAccount(profile, ref, "--account: ", accounts, complete)
+}
+
+// matchAccount finds the account a reference names among the accounts the
+// credentials of a profile see (see resolveAccountRef); complete says the
+// list is not one read off the zones. prefix starts the usage error of a
+// name that cannot be looked up.
+func matchAccount(profile, ref, prefix string, accounts []account, complete bool) (string, error) {
+	if len(accounts) == 0 {
 		if cerr := checkAccountID(ref); cerr != nil {
-			return "", app.UsageErrf("--account: the credentials of cloudflare/%s cannot list accounts, so an account name cannot be looked up: pass the account id", profile)
+			return "", app.UsageErrf("%sthe credentials of cloudflare/%s cannot list accounts, so an account name cannot be looked up: pass the account id", prefix, profile)
 		}
 		return ref, nil
 	}
