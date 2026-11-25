@@ -304,3 +304,140 @@ func TestPurgeTreeAndExpire(t *testing.T) {
 		t.Errorf("Expire dropped rows: %v", got)
 	}
 }
+
+// cfZone is a zone row the way Cloudflare stores it: the id is the zone
+// id and the parent the account.
+func cfZone(id, account, domain string) platform.Resource {
+	return platform.Resource{Type: platform.ResZone, ID: id, Name: domain, ParentID: account, Domain: domain, Data: map[string]string{}}
+}
+
+// A failed tree also keeps the rows whose parent is a row of the tree: the
+// records of the zones of a Cloudflare account, which have the zone id as
+// their parent and nothing of the account in it.
+func TestReplaceKeepingTreesChildRows(t *testing.T) {
+	db, _ := openDB(t)
+	zones := inventory.Set{Platform: platform.Cloudflare, Profile: "a", Type: platform.ResZone}
+	recs := inventory.Set{Platform: platform.Cloudflare, Profile: "a", Type: platform.ResDNSRecord}
+	other := inventory.Set{Platform: platform.Cloudflare, Profile: "b", Type: platform.ResZone}
+	if err := db.Replace(ctx, zones, []platform.Resource{
+		cfZone("z1", "acc1", "one.example"),
+		cfZone("z2", "acc2", "two.example"),
+		cfZone("z3", "acc2", "three.example"),
+	}, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	// Another profile holds a zone of the failed account under the id of a
+	// zone that answered here: it must not keep the records of that zone.
+	if err := db.Replace(ctx, other, []platform.Resource{cfZone("z1", "acc2", "one.example")}, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Replace(ctx, recs, []platform.Resource{
+		ipRes(platform.ResDNSRecord, "r1", "z1", ref(platform.IPInternal, "10.0.0.1")),
+		ipRes(platform.ResDNSRecord, "r1-gone", "z1", ref(platform.IPInternal, "10.0.0.5")),
+		ipRes(platform.ResDNSRecord, "r2", "z2", ref(platform.IPInternal, "10.0.0.2")),
+		ipRes(platform.ResDNSRecord, "r3", "z3", ref(platform.IPInternal, "10.0.0.3")),
+		ipRes(platform.ResDNSRecord, "r4", "z-unknown", ref(platform.IPInternal, "10.0.0.4")),
+	}, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	// acc2 failed as a whole; acc1 answered with one record of z1.
+	if err := db.ReplaceKeepingTrees(ctx, recs, []platform.Resource{
+		ipRes(platform.ResDNSRecord, "r1", "z1", ref(platform.IPInternal, "10.0.0.9")),
+	}, time.Hour, nil, []string{"acc2"}); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := db.GetState(ctx, recs); err != nil || st == nil || st.Fresh(time.Now()) {
+		t.Errorf("state after a partial sync = %+v, %v; want stale", st, err)
+	}
+	if got := rowIDs(t, db, recs); strings.Join(got, ",") != "r1,r2,r3" {
+		t.Fatalf("records = %v, want r1 (replaced), r2 and r3 (kept); r1-gone and r4 are gone", got)
+	}
+	if got := rowIDs(t, db, zones); strings.Join(got, ",") != "z1,z2,z3" {
+		t.Errorf("zones = %v; a sync of the records must leave them", got)
+	}
+	for ip, want := range map[string]int{"10.0.0.1": 0, "10.0.0.9": 1, "10.0.0.2": 1, "10.0.0.3": 1, "10.0.0.4": 0, "10.0.0.5": 0} {
+		hits, err := db.LookupIP(ctx, netip.MustParseAddr(ip))
+		if err != nil || len(hits) != want {
+			t.Errorf("LookupIP(%s) = %d hit(s), %v; want %d", ip, len(hits), err, want)
+		}
+	}
+	// The same sync of the zones keeps the zone rows of the failed account.
+	if err := db.ReplaceKeepingTrees(ctx, zones, []platform.Resource{cfZone("z1", "acc1", "one.example")}, time.Hour, nil, []string{"acc2"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := rowIDs(t, db, zones); strings.Join(got, ",") != "z1,z2,z3" {
+		t.Errorf("zones after their partial sync = %v, want all three", got)
+	}
+	// Later syncs find no leftover of the temporary table of the trees.
+	if err := db.ReplaceKeepingTrees(ctx, recs, nil, time.Hour, nil, []string{"acc1"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := rowIDs(t, db, recs); strings.Join(got, ",") != "r1" {
+		t.Errorf("records with acc1 kept = %v, want r1", got)
+	}
+}
+
+// PurgeTree drops the rows under the rows of the tree as well, with their
+// index entries and the state of the scopes named after those rows.
+func TestPurgeTreeChildRows(t *testing.T) {
+	db, _ := openDB(t)
+	zones := inventory.Set{Platform: platform.Cloudflare, Profile: "a", Type: platform.ResZone}
+	recs := inventory.Set{Platform: platform.Cloudflare, Profile: "a", Type: platform.ResDNSRecord}
+	other := inventory.Set{Platform: platform.Cloudflare, Profile: "b", Type: platform.ResDNSRecord}
+	if err := db.Replace(ctx, zones, []platform.Resource{
+		cfZone("z1", "acc1", "one.example"),
+		cfZone("z2", "acc2", "two.example"),
+	}, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	scoped := func(set inventory.Set, zone, id, ip string) inventory.Set {
+		t.Helper()
+		set.Scope = zone
+		if err := db.Replace(ctx, set, []platform.Resource{ipRes(platform.ResDNSRecord, id, zone, ref(platform.IPInternal, ip))}, time.Hour); err != nil {
+			t.Fatal(err)
+		}
+		return set
+	}
+	s1 := scoped(recs, "z1", "r1", "10.0.0.1")
+	s2 := scoped(recs, "z2", "r2", "10.0.0.2")
+	// The same zone id under another profile is not of this tree.
+	sb := scoped(other, "z2", "rb", "10.0.0.3")
+	if err := db.PurgeTree(ctx, platform.Cloudflare, "a", "acc2"); err != nil {
+		t.Fatal(err)
+	}
+	if got := rowIDs(t, db, zones); strings.Join(got, ",") != "z1" {
+		t.Errorf("zones after PurgeTree = %v, want z1", got)
+	}
+	if got := rowIDs(t, db, recs); strings.Join(got, ",") != "r1" {
+		t.Errorf("records after PurgeTree = %v, want r1", got)
+	}
+	if got := rowIDs(t, db, other); strings.Join(got, ",") != "rb" {
+		t.Errorf("records of the other profile = %v, want rb", got)
+	}
+	for ip, want := range map[string]int{"10.0.0.1": 1, "10.0.0.2": 0, "10.0.0.3": 1} {
+		hits, err := db.LookupIP(ctx, netip.MustParseAddr(ip))
+		if err != nil || len(hits) != want {
+			t.Errorf("LookupIP(%s) = %d hit(s), %v; want %d", ip, len(hits), err, want)
+		}
+	}
+	for dom, want := range map[string]int{"one.example": 1, "two.example": 0} {
+		if es, err := db.LookupDomain(ctx, []string{dom}, platform.ResZone); err != nil || len(es) != want {
+			t.Errorf("LookupDomain(%s) = %d, %v; want %d", dom, len(es), err, want)
+		}
+	}
+	if st, err := db.GetState(ctx, s2); err != nil || st != nil {
+		t.Errorf("scope of a zone of the purged account = %+v, %v; want none", st, err)
+	}
+	for _, s := range []inventory.Set{s1, sb, zones} {
+		if st, err := db.GetState(ctx, s); err != nil || st == nil {
+			t.Errorf("state of %+v = %+v, %v; want kept", s, st, err)
+		}
+	}
+	// A second purge finds no leftover of the temporary table.
+	if err := db.PurgeTree(ctx, platform.Cloudflare, "a", "acc1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := rowIDs(t, db, recs); len(got) != 0 {
+		t.Errorf("records after the second PurgeTree = %v, want none", got)
+	}
+}

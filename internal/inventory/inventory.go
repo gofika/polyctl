@@ -255,7 +255,10 @@ func (d *DB) ReplaceKeeping(ctx context.Context, s Set, resources []platform.Res
 // ReplaceKeepingTrees is ReplaceKeeping with whole trees of parents kept
 // as well: a tree t keeps the rows whose ParentID is t or starts with
 // t + "/" (a Google Cloud project that failed, whose rows have the parent
-// "<project>" or "<project>/<zone or region>").
+// "<project>" or "<project>/<zone or region>"), and the rows whose
+// ParentID is the id of a stored row of the tree, of any type of the same
+// profile (a Cloudflare account that failed: its zone rows have the parent
+// "<account>", and its record rows the id of their zone).
 func (d *DB) ReplaceKeepingTrees(ctx context.Context, s Set, resources []platform.Resource, ttl time.Duration, keep, trees []string) error {
 	if s.Scope != "" {
 		keep, trees = nil, nil
@@ -264,7 +267,8 @@ func (d *DB) ReplaceKeepingTrees(ctx context.Context, s Set, resources []platfor
 }
 
 // keptCond is the SQL condition of the rows a partial sync keeps, with its
-// arguments: parent_id in keep, or in one of trees.
+// arguments: parent_id in keep, or in one of trees, or the id of a row of
+// one of trees (collectTreeRows must have run in the transaction).
 func keptCond(keep, trees []string) (string, []any) {
 	var parts []string
 	var args []any
@@ -278,12 +282,45 @@ func keptCond(keep, trees []string) (string, []any) {
 		parts = append(parts, treeCond)
 		args = append(args, t, t, t)
 	}
+	if len(trees) > 0 {
+		parts = append(parts, treeChildCond)
+	}
 	return `(` + strings.Join(parts, " OR ") + `)`, args
 }
 
 // treeCond matches the rows of one tree of parents (three arguments, the
 // tree each time).
 const treeCond = `(parent_id = ? OR substr(parent_id, 1, length(?) + 1) = ? || '/')`
+
+// treeChildCond matches the rows whose parent is a row of the trees that
+// collectTreeRows gathered (no argument).
+const treeChildCond = `parent_id IN (SELECT id FROM temp.tree_rows)`
+
+// collectTreeRows gathers, in a temporary table of the transaction, the
+// ids of the stored rows of the trees of a profile, whatever their type:
+// the parents treeChildCond matches. The table is read instead of the
+// resources themselves, so that a statement deleting resources does not
+// search the rows it deletes. dropTreeRows removes it.
+func collectTreeRows(ctx context.Context, tx *sql.Tx, p platform.ID, profile string, trees []string) error {
+	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE IF NOT EXISTS tree_rows (id TEXT PRIMARY KEY)`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM temp.tree_rows`); err != nil {
+		return err
+	}
+	for _, t := range trees {
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO temp.tree_rows SELECT resource_id FROM resources WHERE platform=? AND profile=? AND `+treeCond,
+			string(p), profile, t, t, t); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func dropTreeRows(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS temp.tree_rows`)
+	return err
+}
 
 func (d *DB) replace(ctx context.Context, s Set, resources []platform.Resource, ttl time.Duration, keep, trees []string) error {
 	now := d.now()
@@ -298,6 +335,11 @@ func (d *DB) replace(ctx context.Context, s Set, resources []platform.Resource, 
 	if s.Scope == "" && kept {
 		// Only the rows outside the kept parents go, and their index
 		// entries before them.
+		if len(trees) > 0 {
+			if err := collectTreeRows(ctx, tx, s.Platform, s.Profile, trees); err != nil {
+				return err
+			}
+		}
 		cond, condArgs := keptCond(keep, trees)
 		args := append([]any{string(s.Platform), s.Profile, string(s.Type)}, condArgs...)
 		dropped := `SELECT resource_id FROM resources WHERE platform=? AND profile=? AND resource_type=? AND NOT ` + cond
@@ -309,6 +351,11 @@ func (d *DB) replace(ctx context.Context, s Set, resources []platform.Resource, 
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM resources WHERE platform=? AND profile=? AND resource_type=? AND NOT `+cond, args...); err != nil {
 			return err
+		}
+		if len(trees) > 0 {
+			if err := dropTreeRows(ctx, tx); err != nil {
+				return err
+			}
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM sync_state WHERE platform=? AND profile=? AND resource_type=?`, string(s.Platform), s.Profile, string(s.Type)); err != nil {
 			return err
@@ -605,24 +652,34 @@ func (d *DB) Purge(ctx context.Context, p platform.ID, profile string) error {
 
 // PurgeTree removes what is cached for one tree of parents of a profile
 // (see ReplaceKeepingTrees): the rows of a Google Cloud project that left
-// the selection of its account. Instance secrets stay.
+// the selection of its account, or those of a Cloudflare account that did
+// (its zone rows, and the record rows under the ids of those zones), with
+// their index entries and the sync state of the scopes among them.
+// Instance secrets stay.
 func (d *DB) PurgeTree(ctx context.Context, p platform.ID, profile, tree string) error {
 	tx, err := d.sql.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	rows := `SELECT resource_type || char(0) || resource_id FROM resources WHERE platform=? AND profile=? AND ` + treeCond
+	if err := collectTreeRows(ctx, tx, p, profile, []string{tree}); err != nil {
+		return err
+	}
+	cond := `(` + treeCond + ` OR ` + treeChildCond + `)`
+	rows := `SELECT resource_type || char(0) || resource_id FROM resources WHERE platform=? AND profile=? AND ` + cond
 	args := []any{string(p), profile, string(p), profile, tree, tree, tree}
 	for _, t := range []string{"domain_index", "ip_index"} {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM `+t+` WHERE platform=? AND profile=? AND resource_type || char(0) || resource_id IN (`+rows+`)`, args...); err != nil {
 			return err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM resources WHERE platform=? AND profile=? AND `+treeCond, string(p), profile, tree, tree, tree); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM resources WHERE platform=? AND profile=? AND `+cond, string(p), profile, tree, tree, tree); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM sync_state WHERE platform=? AND profile=? AND `+strings.ReplaceAll(treeCond, "parent_id", "scope"), string(p), profile, tree, tree, tree); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sync_state WHERE platform=? AND profile=? AND `+strings.ReplaceAll(cond, "parent_id", "scope"), string(p), profile, tree, tree, tree); err != nil {
+		return err
+	}
+	if err := dropTreeRows(ctx, tx); err != nil {
 		return err
 	}
 	return tx.Commit()

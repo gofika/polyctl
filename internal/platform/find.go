@@ -350,7 +350,10 @@ type RegionError struct {
 	// Tree marks a failure of a whole tree of parents: the stored rows
 	// whose parent is Region or starts with Region + "/" are kept (a
 	// Google Cloud project, whose rows have the parent "<project>" or
-	// "<project>/<zone or region>").
+	// "<project>/<zone or region>"), and so are the rows whose parent is
+	// the id of a stored row of the tree (a Cloudflare account, whose zone
+	// rows have the parent "<account>" and whose record rows the id of
+	// their zone).
 	Tree bool
 }
 
