@@ -225,9 +225,11 @@ func listenerArg(ctx context.Context, rt *app.Runtime, args []string, region str
 }
 
 // certOptionLabel: "example.com  +2 names  ISSUED  expires 2027-03-01
-// [where]  arn:...  in use": "-" for what a certificate does not have, the
-// mark "in use" last. where, when set, is the cell of the account and
-// region in a list over several of them.
+// in use  arn:...  [where]": "-" for what a certificate does not have. The
+// ARN is longer than most terminals have columns left and a label is cut at
+// its end, so the short facts, the mark "in use" among them, come before
+// it. where, when set, is the cell of the account and region in a list over
+// several of them; the ARN names both as well.
 func certOptionLabel(c platform.Certificate, where ...string) string {
 	more := ""
 	if n := len(c.Names) - 1; n > 0 {
@@ -241,7 +243,7 @@ func certOptionLabel(c platform.Certificate, where ...string) string {
 	if c.InUse {
 		use = "in use"
 	}
-	return prompt.Cells(slices.Concat([]string{c.Domain, more, c.Status, exp}, where, []string{c.ID, use})...)
+	return prompt.Cells(slices.Concat([]string{c.Domain, more, c.Status, exp, use, c.ID}, where)...)
 }
 
 // pickCert asks for the certificate of a TLS or HTTPS listener (--cert) in

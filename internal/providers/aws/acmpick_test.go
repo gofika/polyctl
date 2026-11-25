@@ -21,7 +21,7 @@ func TestACMGetPick(t *testing.T) {
 	if err := h.run("acm", "certificate", "get"); err != nil {
 		t.Fatalf("get: %v\n%s", err, h.stderr.String())
 	}
-	if l := prompttest.Labels(p.Asked[0].Options); !strings.Contains(l, "example.com  -  ISSUED  expires 2027-05-01  aws/lab/ap-east-1  arn:") || !strings.Contains(l, "aws/lab/ap-east-1") {
+	if l := prompttest.Labels(p.Asked[0].Options); !strings.Contains(l, "example.com  -  ISSUED  expires 2027-05-01  -  arn:") || !strings.HasSuffix(strings.TrimSpace(l), "  aws/lab/ap-east-1") {
 		t.Errorf("labels: %s", l)
 	}
 	h.rt.Picker = nil

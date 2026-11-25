@@ -224,7 +224,7 @@ Amazon-issued certificates are renewed by ACM and never replaced.`,
 					// new certificate (--new).
 					var opts []prompt.Option
 					for _, e := range cands {
-						opts = append(opts, prompt.Option{Label: certOptionLabel(e), Value: e.ID})
+						opts = append(opts, prompt.Option{Label: reimportOptionLabel(e), Value: e.ID})
 					}
 					opts = append(opts, prompt.Option{Label: "Import as a new certificate (a new ARN)", Value: ""})
 					pick, err := rt.Pick().Select("Re-import into which certificate?", opts, "")
@@ -353,4 +353,16 @@ func askImportDomain(rt *app.Runtime, files, staging bool) (string, error) {
 	}
 	return rt.Choose(app.Choice{Title: "Certificate of the local store to import", Options: opts, Arg: "<domain>",
 		Empty: app.NothingToDof("the store %s holds no unexpired certificate (run `polyctl cert ensure <domain>`, or pass --cert-file and --key-file)", st.Base)})
+}
+
+// reimportOptionLabel: "arn:...  example.com  expires 2027-03-01  in use".
+// The candidates are the imported certificates of one domain in one region:
+// the ARN is what tells them apart, so it comes first, where a label that
+// is cut at its end keeps it.
+func reimportOptionLabel(c platform.Certificate) string {
+	use := ""
+	if c.InUse {
+		use = "in use"
+	}
+	return prompt.Cells(c.ID, c.Domain, "expires "+timeStr(c.NotAfter), use)
 }

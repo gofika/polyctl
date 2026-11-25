@@ -1,6 +1,7 @@
 package aws
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -57,10 +58,10 @@ func TestOptionLabelsKeepTheirCells(t *testing.T) {
 			"db-b  mysql 8.0.36  db.t3.micro  creating  -  aws/lab/ap-east-1"},
 		"certificate of one name that is in use": {
 			certOptionLabel(platform.Certificate{ID: "arn:1", Domain: "example.com", Names: []string{"example.com"}, Status: "ISSUED", NotAfter: &exp, InUse: true}),
-			"example.com  -  ISSUED  expires 2027-03-01  arn:1  in use"},
+			"example.com  -  ISSUED  expires 2027-03-01  in use  arn:1"},
 		"pending certificate of an account": {
 			certOptionLabel(platform.Certificate{ID: "arn:2", Domain: "example.org", Names: []string{"example.org", "a.example.org", "b.example.org"}, Status: "PENDING_VALIDATION"}, "aws/lab/ap-east-1"),
-			"example.org  +2 names  PENDING_VALIDATION  -  aws/lab/ap-east-1  arn:2"},
+			"example.org  +2 names  PENDING_VALIDATION  -  -  arn:2  aws/lab/ap-east-1"},
 		"Identity Center account": {
 			ssoAccount{ID: "123456789012", Name: "Production", Email: "ops@example.com"}.cells(),
 			"Production  123456789012  ops@example.com"},
@@ -95,5 +96,29 @@ func TestRecordSetLabelShowsTheSetIdentifier(t *testing.T) {
 	}
 	if got, want := recordSetLabel("www.example.com.", "A", "", []string{"198.51.100.2", "198.51.100.3"}, 60), "www.example.com.  A  -  198.51.100.2, 198.51.100.3  ttl 60"; got != want {
 		t.Errorf("set without an identifier:\n got %q\nwant %q", got, want)
+	}
+}
+
+// An ACM ARN takes 83 columns. What a terminal shows of a certificate row
+// must still say whether the certificate is in use, and in the list of the
+// certificates to re-import into, which are of one domain, which one it is.
+func TestCertificateLabelsShowWhatTellsThemApart(t *testing.T) {
+	exp := time.Date(2027, 3, 1, 0, 0, 0, 0, time.UTC)
+	cert := func(id string, inUse bool) platform.Certificate {
+		return platform.Certificate{ID: "arn:aws:acm:ap-east-1:123456789012:certificate/" + id, Domain: "example.com",
+			Names: []string{"example.com", "a.example.com", "b.example.com"}, Status: "ISSUED", NotAfter: &exp, InUse: inUse}
+	}
+	used, free := cert("11111111-2222-3333-4444-555555555555", true), cert("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", false)
+	for name, where := range map[string][]string{"one region": nil, "several accounts": {"aws/lab/ap-east-1"}} {
+		a, b := shown(certOptionLabel(used, where...)), shown(certOptionLabel(free, where...))
+		if !strings.Contains(a, "  in use") || a == b {
+			t.Errorf("%s: the mark of a certificate in use is not shown:\n%q\n%q", name, a, b)
+		}
+	}
+	if a, b := shown(reimportOptionLabel(used)), shown(reimportOptionLabel(free)); a == b {
+		t.Errorf("two certificates to re-import into are shown as the same row: %q", a)
+	}
+	if got, want := reimportOptionLabel(used), "arn:aws:acm:ap-east-1:123456789012:certificate/11111111-2222-3333-4444-555555555555  example.com  expires "+timeStr(&exp)+"  in use"; got != want {
+		t.Errorf("re-import label:\n got %q\nwant %q", got, want)
 	}
 }
