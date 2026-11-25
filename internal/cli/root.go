@@ -43,13 +43,17 @@ func ExitCodeFor(err error) int {
 	var partial *platform.PartialError
 	var invalidCfg *config.InvalidError
 	switch {
-	case err == nil, errors.Is(err, errNothingToDo):
+	case err == nil:
 		return ExitOK
 	case errors.As(err, &partial):
 		// A batch that went on after failed items fails as a whole with
 		// the general code, whatever the first failure was: the items
-		// failed for different reasons, and the report lists them.
+		// failed for different reasons, and the report lists them. It
+		// comes before "nothing to do": a first item the user declined
+		// does not make the other failures a success.
 		return ExitError
+	case errors.Is(err, errNothingToDo):
+		return ExitOK
 	case errors.As(err, &amb), errors.Is(err, platform.ErrAmbiguous):
 		return ExitAmbiguous
 	case errors.Is(err, platform.ErrUnauthorized), errors.Is(err, platform.ErrForbidden):
@@ -272,8 +276,8 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return ExitOK
 	}
 	code := ExitCodeFor(err)
-	if errors.Is(err, errNothingToDo) {
-		fmt.Fprintf(stderr, "%v\n", err) // a note, not an error
+	if code == ExitOK {
+		fmt.Fprintf(stderr, "%v\n", err) // nothing to do: a note, not an error
 		return code
 	}
 	fmt.Fprintf(stderr, "error: %v\n", err)

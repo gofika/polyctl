@@ -464,6 +464,9 @@ func TestExitCodeFor(t *testing.T) {
 		{"ambiguous", &app.AmbiguousError{What: "x", Candidates: []string{"a", "b"}}, ExitAmbiguous},
 		{"ambiguous wrapped", fmt.Errorf("resolve: %w", &app.AmbiguousError{What: "x"}), ExitAmbiguous},
 		{"context", context.Canceled, ExitError},
+		// A batch whose first failure was declined still failed.
+		{"partial after a decline", &platform.PartialError{Failed: 2, Total: 3, First: platform.ErrNothingToDo}, ExitError},
+		{"partial after a decline wrapped", fmt.Errorf("deploy: %w", &platform.PartialError{Failed: 2, Total: 3, First: nothingToDo("no")}), ExitError},
 	}
 	for _, c := range cases {
 		if got := ExitCodeFor(c.err); got != c.want {

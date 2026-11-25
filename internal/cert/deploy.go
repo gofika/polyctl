@@ -112,10 +112,12 @@ type DeployReport struct {
 // run.
 type bundleResult struct {
 	cert *platform.DeployCert
-	// skip is why the targets of the root are skipped (no DNS account);
-	// err why they fail.
+	// skip is why the targets of the root are skipped (no DNS account,
+	// or the user declined the ACME registration); err why they fail.
 	skip string
 	err  error
+	// declined is the "nothing to do" error of a declined registration.
+	declined error
 }
 
 // deployRun is the state of one Deploy.
@@ -170,6 +172,10 @@ func Deploy(ctx context.Context, env *DeployEnv, o DeployOptions) (*DeployReport
 	if !o.All {
 		// A named domain: its certificate first, whatever the targets.
 		b := r.bundle(ctx, o.Domain)
+		if b.declined != nil {
+			// The user said no: nothing to deploy, not a failure.
+			return r.rep, b.declined
+		}
 		if b.skip != "" {
 			return r.rep, fmt.Errorf("%w: no certificate of %s in the local store, and %s", platform.ErrNotFound, o.Domain, b.skip)
 		}
@@ -582,6 +588,12 @@ func (r *deployRun) bundle(ctx context.Context, root string) *bundleResult {
 		if !r.o.DryRun && r.env.Notify != nil {
 			r.env.Notify(ctx, app.Failure{Event: "cert.deploy.failed", Domain: root, Target: certRes, Error: detail})
 		}
+	case err != nil && errors.Is(err, ErrDeclined) && ctx.Err() == nil:
+		// The CA's terms or the e-mail address were declined at the
+		// prompt: the user chose not to issue, so the targets of root are
+		// skipped, not failed, and no failure is notified.
+		b.skip, b.declined = strings.TrimPrefix(err.Error(), platform.ErrNothingToDo.Error()+": "), err
+		r.add(platform.Change{Resource: certRes, Action: platform.Skipped, Detail: b.skip})
 	case err != nil:
 		b.err = err
 		r.total++

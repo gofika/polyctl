@@ -369,6 +369,46 @@ func TestDeployEnsureOutcomes(t *testing.T) {
 	}
 }
 
+// A registration the user declined at the prompt skips the targets of its
+// root: not a failure, no notification, and the failure of another root
+// still fails the run with exit code 1 (a PartialError whose first error is
+// not the decline).
+func TestDeployDeclinedRegistrationSkips(t *testing.T) {
+	h := newDeployHarness(t, "acme")
+	d := &fakeDeployer{id: "fake-lb", platform: platform.AWS, targets: map[string][]*fakeTarget{"acme": {
+		{id: "l1", name: "lb-1", domains: []string{"declined.com"}, notAfter: days(5), serial: "01"},
+		{id: "l2", name: "lb-2", domains: []string{"broken.com"}, notAfter: days(5), serial: "02"},
+	}}}
+	h.ensureFn = func(root string, days int) (*Result, error) {
+		if root == "declined.com" {
+			return nil, fmt.Errorf("%w: the terms of service of the CA were not accepted; no certificate was issued", ErrDeclined)
+		}
+		return nil, errors.New("rate limited")
+	}
+	rep, err := h.run(DeployOptions{All: true}, d)
+	var partial *platform.PartialError
+	if !errors.As(err, &partial) || partial.Failed != 2 || errors.Is(partial.First, ErrDeclined) {
+		t.Fatalf("err = %v", err)
+	}
+	rows := deployRows(rep)
+	if !slices.Contains(rows, "cert/declined.com skipped the terms of service of the CA were not accepted; no certificate was issued") ||
+		!slices.ContainsFunc(rows, func(r string) bool { return strings.HasPrefix(r, "fake-lb/acme/lb-1 skipped the terms of service") }) {
+		t.Errorf("rows = %v", rows)
+	}
+	if len(h.notified) != 1 || h.notified[0].Domain != "broken.com" {
+		t.Errorf("notified = %+v", h.notified)
+	}
+	// Only the declined root: no failure at all.
+	d.targets["acme"] = d.targets["acme"][:1]
+	if _, err := h.run(DeployOptions{All: true}, d); err != nil || len(h.notified) != 0 {
+		t.Errorf("declined only = %v, notified %+v", err, h.notified)
+	}
+	// A named domain the user declined: the decline, not "not found".
+	if _, err := h.run(DeployOptions{Domain: "declined.com"}, d); !errors.Is(err, ErrDeclined) || errors.Is(err, platform.ErrNotFound) {
+		t.Errorf("domain mode = %v", err)
+	}
+}
+
 func TestDeployDomainMode(t *testing.T) {
 	h := newDeployHarness(t, "acme")
 	b := deployBundle(t, "example.com", 90)
