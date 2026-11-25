@@ -215,7 +215,7 @@ size <cores>H<memory>G.`,
 					in, err := l.c.waitStatus(ctx, l.zone, name, statusTerminated, timeout)
 					if in != nil {
 						l.inst = in
-						storeInstance(ctx, rt, l.profile, in)
+						storeInstance(ctx, rt, l.c, l.profile, in)
 					}
 					if err != nil {
 						return platform.Change{}, err
@@ -246,7 +246,7 @@ size <cores>H<memory>G.`,
 					in, err := l.c.waitStatus(ctx, l.zone, name, statusRunning, timeout)
 					if in != nil {
 						l.inst = in
-						storeInstance(ctx, rt, l.profile, in)
+						storeInstance(ctx, rt, l.c, l.profile, in)
 					}
 					if err != nil {
 						return platform.Change{}, err

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"net/netip"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -790,5 +791,60 @@ func TestOpenForgetsGoDaddyRecordsOfVersion1(t *testing.T) {
 	}
 	if rows, err := db.List(ctx, inventory.Query{Platform: platform.NameCom, Type: platform.ResDNSRecord}); err != nil || len(rows) != 1 {
 		t.Errorf("records of other platforms must stay: %+v, %v", rows, err)
+	}
+}
+
+// Rows of Google Cloud did not carry their project before data version 3
+// (zone ids were bare managed zone names, parents bare zones). Opening an
+// older database drops everything cached for gcp, sync state included, and
+// keeps the other platforms and the instance secrets.
+func TestOpenForgetsGCPRowsOfVersion2(t *testing.T) {
+	db, path := openDB(t)
+	zones := inventory.Set{Platform: platform.GCP, Profile: "p", Type: platform.ResZone}
+	mustReplace(t, db, zones, time.Hour, zoneRes("example-zone", "example.com"))
+	insts := inventory.Set{Platform: platform.GCP, Profile: "p", Type: platform.ResInstance}
+	mustReplace(t, db, insts, time.Hour, ipRes(platform.ResInstance, "42", "us-central1-a", ref(platform.IPInternal, "10.0.0.1")))
+	mustReplace(t, db, scoped("p", platform.ResDNSRecord, "z1"), time.Hour, recRes("r1", "z1", "example.org", "www.example.org", "5.6.7.8"))
+	secret := inventory.SecretRow{SecretKey: inventory.SecretKey{Platform: platform.GCP, Profile: "p", Location: "us-central1-a", InstanceID: "42"},
+		Name: "web", User: "admin", Nonce: []byte{1}, Sealed: []byte{2}}
+	if err := db.PutSecret(ctx, secret); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`PRAGMA user_version = 2`); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if db, err = inventory.Open(path); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if rows, err := db.List(ctx, inventory.Query{Platform: platform.GCP}); err != nil || len(rows) != 0 {
+		t.Errorf("gcp rows after the upgrade: %+v, %v", rows, err)
+	}
+	for _, s := range []inventory.Set{zones, insts} {
+		if st, err := db.GetState(ctx, s); err != nil || st != nil {
+			t.Errorf("gcp sync state of %s after the upgrade: %+v, %v", s.Type, st, err)
+		}
+	}
+	if es, err := db.LookupDomain(ctx, []string{"example.com"}, ""); err != nil || len(es) != 0 {
+		t.Errorf("gcp domain index after the upgrade: %+v, %v", es, err)
+	}
+	if hits, err := db.LookupIP(ctx, netip.MustParseAddr("10.0.0.1")); err != nil || len(hits) != 0 {
+		t.Errorf("gcp ip index after the upgrade: %+v, %v", hits, err)
+	}
+	if rows, err := db.List(ctx, inventory.Query{Platform: platform.NameCom, Type: platform.ResDNSRecord}); err != nil || len(rows) != 1 {
+		t.Errorf("records of other platforms must stay: %+v, %v", rows, err)
+	}
+	if got, err := db.GetSecret(ctx, secret.SecretKey); err != nil || got == nil {
+		t.Errorf("the instance secret must stay: %+v, %v", got, err)
 	}
 }

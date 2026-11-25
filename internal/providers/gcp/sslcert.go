@@ -718,7 +718,10 @@ func portRangeCovers(pr string, port int) bool {
 // SSLCertificate is the inventory form of a certificate resource. Region
 // is empty for a global certificate.
 type SSLCertificate struct {
-	Name              string   `json:"name" yaml:"name"`
+	Name string `json:"name" yaml:"name"`
+	// Project is the project of the certificate (empty in rows stored
+	// before an account could hold several: the default project).
+	Project           string   `json:"project,omitempty" yaml:"project,omitempty"`
 	Scope             string   `json:"scope" yaml:"scope"`
 	Region            string   `json:"region,omitempty" yaml:"region,omitempty"`
 	Type              string   `json:"type" yaml:"type"`
@@ -744,12 +747,21 @@ func sslCertificateFrom(sc *compute.SslCertificate) SSLCertificate {
 	return v
 }
 
-// certInventoryID is the inventory id of a certificate: "<region>/<name>",
-// or "global/<name>".
-func certInventoryID(region, name string) string { return fallbackID("", "", region, name) }
+// certOf flattens a certificate of the client's project.
+func (c *client) certOf(sc *compute.SslCertificate) SSLCertificate {
+	v := sslCertificateFrom(sc)
+	v.Project = c.project
+	return v
+}
+
+// certInventoryID is the inventory id of a certificate:
+// "<project>/<region>/<name>", or "<project>/global/<name>".
+func certInventoryID(project, region, name string) string {
+	return fallbackID(project, "", "", region, name)
+}
 
 func (v SSLCertificate) resource() platform.Resource {
-	return platform.Resource{Type: platform.ResCertificate, ID: certInventoryID(v.Region, v.Name), Name: v.Name, ParentID: v.Region, Data: v}
+	return platform.Resource{Type: platform.ResCertificate, ID: certInventoryID(v.Project, v.Region, v.Name), Name: v.Name, ParentID: parentOf(v.Project, v.Region), Data: v}
 }
 
 // listAllCerts lists the certificates of every scope.
@@ -786,9 +798,9 @@ func (c *client) syncCertificates(ctx context.Context) ([]platform.Resource, err
 	}
 	out := make([]platform.Resource, 0, len(certs))
 	for _, sc := range certs {
-		out = append(out, sslCertificateFrom(sc).resource())
+		out = append(out, c.certOf(sc).resource())
 	}
-	return out, unreachableErr(unreachable)
+	return out, c.unreachableErr(unreachable)
 }
 
 // proxyUsers maps the resource key of every certificate to the target

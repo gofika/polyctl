@@ -12,8 +12,11 @@ import (
 
 // Instance is the inventory representation of a Compute Engine instance.
 type Instance struct {
-	Name              string            `json:"name" yaml:"name"`
-	ID                string            `json:"id" yaml:"id"`
+	Name string `json:"name" yaml:"name"`
+	ID   string `json:"id" yaml:"id"`
+	// Project is the project of the instance (empty in rows stored before
+	// an account could hold several: the default project).
+	Project           string            `json:"project,omitempty" yaml:"project,omitempty"`
 	Zone              string            `json:"zone" yaml:"zone"`
 	MachineType       string            `json:"machine_type" yaml:"machine_type"`
 	Status            string            `json:"status" yaml:"status"`
@@ -68,17 +71,24 @@ func instanceFromAPI(in *compute.Instance) Instance {
 	return out
 }
 
-// instanceResource wraps an Instance for the inventory, with every address
-// of every interface for the IP index. Its parent is its zone, the scope an
-// aggregated list reports unreachable.
-func instanceResource(i Instance) platform.Resource {
-	return platform.Resource{Type: platform.ResInstance, ID: i.ID, Name: i.Name, ParentID: i.Zone, Data: i, IPs: i.ipSet().Refs()}
+// instanceOf flattens an instance of the client's project.
+func (c *client) instanceOf(in *compute.Instance) Instance {
+	v := instanceFromAPI(in)
+	v.Project = c.project
+	return v
 }
 
-// ListInstances lists every instance of the project across all zones.
-// Unreachable zones are region failures, as for the inventory sync.
+// instanceResource wraps an Instance for the inventory, with every address
+// of every interface for the IP index. Its parent is "<project>/<zone>",
+// the scope an aggregated list reports unreachable.
+func instanceResource(i Instance) platform.Resource {
+	return platform.Resource{Type: platform.ResInstance, ID: i.ID, Name: i.Name, ParentID: parentOf(i.Project, i.Zone), Data: i, IPs: i.ipSet().Refs()}
+}
+
+// ListInstances lists every instance of the selected projects across all
+// zones. Unreachable zones are region failures, as for the inventory sync.
 func (c *client) ListInstances(ctx context.Context) ([]platform.Resource, error) {
-	return c.syncInstances(ctx)
+	return c.Sync(ctx, platform.ResInstance)
 }
 
 // syncInstances lists every instance of the project, for the inventory.
@@ -89,7 +99,7 @@ func (c *client) syncInstances(ctx context.Context) ([]platform.Resource, error)
 		u := resp.Unreachables
 		for scope, scoped := range resp.Items {
 			for _, in := range scoped.Instances {
-				out = append(out, instanceResource(instanceFromAPI(in)))
+				out = append(out, instanceResource(c.instanceOf(in)))
 			}
 			if scoped.Warning != nil {
 				u = append(u, warnedUnreachable(scope, scoped.Warning.Code)...)
@@ -100,7 +110,7 @@ func (c *client) syncInstances(ctx context.Context) ([]platform.Resource, error)
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return out, unreachableErr(unreachable)
+	return out, c.unreachableErr(unreachable)
 }
 
 // OperationResult summarises a zonal operation for output.

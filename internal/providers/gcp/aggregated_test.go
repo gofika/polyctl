@@ -23,8 +23,8 @@ func TestSyncInstancesReportsUnreachableZone(t *testing.T) {
 		f.unreachableWarning = warning
 		res, err := c.syncInstances(context.Background())
 		rse := platform.AsRegionSyncError(err)
-		if rse == nil || len(rse.Failures) != 1 || rse.Failures[0].Region != "europe-west1-b" {
-			t.Fatalf("warning=%v: err = %v, want a region failure of europe-west1-b", warning, err)
+		if rse == nil || len(rse.Failures) != 1 || rse.Failures[0].Region != "proj/europe-west1-b" {
+			t.Fatalf("warning=%v: err = %v, want a region failure of proj/europe-west1-b", warning, err)
 		}
 		if len(res) != 1 || res[0].Name != "web-1" {
 			t.Errorf("warning=%v: resources %+v", warning, res)
@@ -44,7 +44,7 @@ func TestSyncAddressesReportsUnreachableRegion(t *testing.T) {
 		f.unreachableWarning = warning
 		res, err := c.syncAddresses(context.Background())
 		rse := platform.AsRegionSyncError(err)
-		if rse == nil || rse.Failures[0].Region != "europe-west1" || len(res) != 1 {
+		if rse == nil || rse.Failures[0].Region != "proj/europe-west1" || len(res) != 1 {
 			t.Errorf("warning=%v: res %+v err %v", warning, res, err)
 		}
 	}

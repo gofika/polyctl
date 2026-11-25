@@ -268,7 +268,7 @@ func runLBEnsure(ctx context.Context, rt *app.Runtime, e *lbEnsure, plan *platfo
 			if e.ip == "" {
 				e.ip = fr.IPAddress
 			}
-			storeRule(ctx, rt, e.profile, fr, e.names.lb)
+			storeRule(ctx, rt, e.c, e.profile, fr, e.names.lb)
 		}
 	}
 	res := lbEnsureResult{Target: lbEnsureTarget{Target: target, Project: e.c.project}, DryRun: rep.DryRun, LoadBalancer: e.summary(), Changes: rep.Changes}
@@ -938,8 +938,7 @@ the selected accounts are offered.`,
 						}
 						for _, e := range t.entries {
 							if string(kindRule)+"/"+e.rule.Name == ch.Resource {
-								v := forwardingRuleFrom(e.rule)
-								_ = db.Delete(ctx, set, platform.ResLoadBalancer, fallbackID(v.ID, v.SelfLink, v.Region, v.Name))
+								_ = db.Delete(ctx, set, platform.ResLoadBalancer, t.c.ruleOf(e.rule).inventoryID())
 							}
 						}
 					}

@@ -116,7 +116,7 @@ func TestSSLCertificateCreate(t *testing.T) {
 	// The inventory knows it.
 	db, _ := h.rt.DB()
 	inv, _ := db.List(t.Context(), inventory.Query{Platform: platform.GCP, Profile: "lab", Type: platform.ResCertificate})
-	if len(inv) != 1 || inv[0].ID != "us-central1/example-com-cert-20260101" {
+	if len(inv) != 1 || inv[0].ID != "proj/us-central1/example-com-cert-20260101" || inv[0].ParentID != "proj/us-central1" {
 		t.Errorf("inventory = %+v", inv)
 	}
 	// Again: exists, a general failure.
@@ -390,7 +390,7 @@ func TestSSLCertificateErrorsAndSync(t *testing.T) {
 		t.Fatal(err)
 	}
 	res, err := c.Sync(t.Context(), platform.ResCertificate)
-	if err != nil || len(res) != 2 || res[0].ID != "global/b" || res[1].ID != "us-central1/a" {
+	if err != nil || len(res) != 2 || res[0].ID != "proj/global/b" || res[1].ID != "proj/us-central1/a" || res[0].ParentID != "proj" {
 		t.Errorf("sync = %+v, %v", res, err)
 	}
 }

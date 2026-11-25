@@ -20,11 +20,18 @@ import (
 	"github.com/gofika/polyctl/internal/platform"
 )
 
-// client is an authenticated Google Cloud session bound to one project.
+// client is an authenticated Google Cloud session of one account, bound to
+// one project: every call of it goes to project. projects is the selection
+// of the account (the projects the inventory covers), with the default
+// project first; a client moved to another project (inProject) keeps it.
 type client struct {
-	project string
-	email   string
-	method  string
+	project  string
+	projects []string
+	// pinned marks a client moved to the project of --project: its lists
+	// read that project alone.
+	pinned bool
+	email  string
+	method string
 
 	dns     *dns.Service
 	compute *compute.Service
@@ -37,7 +44,7 @@ var _ platform.DNSService = (*client)(nil)
 // newClient builds the API services. opts must carry the credentials
 // (option.WithTokenSource / WithCredentials) and, in tests, the endpoint.
 func newClient(ctx context.Context, project, email, method string, opts ...option.ClientOption) (*client, error) {
-	c := &client{project: project, email: email, method: method}
+	c := &client{project: project, projects: []string{project}, email: email, method: method}
 	var err error
 	if c.dns, err = dns.NewService(ctx, opts...); err != nil {
 		return nil, fmt.Errorf("init Cloud DNS client: %w", err)
@@ -122,62 +129,121 @@ func (c *client) Verify(ctx context.Context) (*platform.Identity, error) {
 	return nil, mapErr(first)
 }
 
-// Sync fetches every resource of a type.
+// Sync fetches every resource of a type, of every selected project (see
+// eachProject for a project that fails).
 func (c *client) Sync(ctx context.Context, rt platform.ResourceType) ([]platform.Resource, error) {
+	var one func(ctx context.Context, pc *client) ([]platform.Resource, error)
 	switch rt {
 	case platform.ResZone:
-		zones, err := c.ListZones(ctx)
-		if err != nil {
-			return nil, err
-		}
-		res := app.ZoneResources(zones)
-		// Only public zones take part in domain routing: a private zone may
-		// share its dnsName with a public one (split-horizon) and must never
-		// be picked by the platform-neutral `polyctl dns ...` commands. It
-		// stays in the inventory and is still addressable by managed zone
-		// name through `polyctl gcp dns ...`.
-		for i := range res {
-			if !isPublicZone(zones[i]) {
-				res[i].Domain = ""
-			}
-		}
-		return res, nil
+		one = func(ctx context.Context, pc *client) ([]platform.Resource, error) { return pc.syncZones(ctx) }
 	case platform.ResDNSRecord:
-		zones, err := c.ListZones(ctx)
-		if err != nil {
-			return nil, err
-		}
-		var out []platform.Resource
-		for _, z := range zones {
-			recs, err := c.ListRecords(ctx, z.ID)
-			if err != nil {
-				return nil, fmt.Errorf("zone %s: %w", z.ID, err)
-			}
-			out = append(out, app.RecordResources(z.ID, z.Name, recs)...)
-		}
-		return out, nil
+		one = func(ctx context.Context, pc *client) ([]platform.Resource, error) { return pc.syncRecords(ctx) }
 	case platform.ResInstance:
-		return c.syncInstances(ctx)
+		one = func(ctx context.Context, pc *client) ([]platform.Resource, error) { return pc.syncInstances(ctx) }
 	case platform.ResLoadBalancer:
-		return c.syncForwardingRules(ctx)
+		one = func(ctx context.Context, pc *client) ([]platform.Resource, error) { return pc.syncForwardingRules(ctx) }
 	case platform.ResEIP:
-		return c.syncAddresses(ctx)
+		one = func(ctx context.Context, pc *client) ([]platform.Resource, error) { return pc.syncAddresses(ctx) }
 	case platform.ResCertificate:
-		return c.syncCertificates(ctx)
+		one = func(ctx context.Context, pc *client) ([]platform.Resource, error) { return pc.syncCertificates(ctx) }
+	default:
+		return nil, fmt.Errorf("%s: %w", rt, platform.ErrNotSupported)
 	}
-	return nil, fmt.Errorf("%s: %w", rt, platform.ErrNotSupported)
+	return c.eachProject(ctx, one)
+}
+
+// syncZones lists the managed zones of the client's project for the
+// inventory. Their parent is the project.
+func (c *client) syncZones(ctx context.Context) ([]platform.Resource, error) {
+	zones, err := c.projectZones(ctx)
+	if err != nil {
+		return nil, err
+	}
+	res := app.ZoneResources(zones)
+	// Only public zones take part in domain routing: a private zone may
+	// share its dnsName with a public one (split-horizon) and must never
+	// be picked by the platform-neutral `polyctl dns ...` commands. It
+	// stays in the inventory and is still addressable by managed zone
+	// name through `polyctl gcp dns ...`.
+	for i := range res {
+		res[i].ParentID = c.project
+		if !isPublicZone(zones[i]) {
+			res[i].Domain = ""
+		}
+	}
+	return res, nil
+}
+
+// syncRecords lists the records of every managed zone of the client's
+// project for the inventory.
+func (c *client) syncRecords(ctx context.Context) ([]platform.Resource, error) {
+	zones, err := c.projectZones(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []platform.Resource
+	for _, z := range zones {
+		recs, err := c.ListRecords(ctx, z.ID)
+		if err != nil {
+			return nil, fmt.Errorf("zone %s: %w", z.ID, err)
+		}
+		out = append(out, app.RecordResources(z.ID, z.Name, recs)...)
+	}
+	return out, nil
+}
+
+// zoneID is the id of a managed zone everywhere outside the Cloud DNS API:
+// "<project>/<managed zone>". Neither part can hold a slash.
+func zoneID(project, zone string) string { return project + "/" + zone }
+
+// splitZoneID splits a zone id into its project and managed zone name. A
+// bare managed zone name has no project ("").
+func splitZoneID(id string) (project, zone string) {
+	if i := strings.Index(id, "/"); i >= 0 {
+		return id[:i], id[i+1:]
+	}
+	return "", id
+}
+
+// zonePath returns the project and managed zone name of a zone id. A bare
+// managed zone name (what polyctl used as the id before it knew several
+// projects, and what a user types) is a zone of the client's project.
+func (c *client) zonePath(id string) (project, zone string) {
+	if project, zone = splitZoneID(id); project == "" {
+		project = c.project
+	}
+	return project, zone
+}
+
+// qualifyZone returns the full id of a zone given by its id or by its bare
+// managed zone name.
+func (c *client) qualifyZone(id string) string { return zoneID(c.zonePath(id)) }
+
+// sameZone reports whether two zone ids, full or bare, name one zone.
+func (c *client) sameZone(a, b string) bool { return c.qualifyZone(a) == c.qualifyZone(b) }
+
+// qualifyRecordID returns a record id with the full zone id; an id built
+// with a bare managed zone name is of the client's project.
+func (c *client) qualifyRecordID(id string) string {
+	i := strings.Index(id, "|")
+	if i < 0 {
+		return id
+	}
+	return c.qualifyZone(id[:i]) + id[i:]
 }
 
 // zoneFromManaged converts a managed zone into the neutral Zone type.
-func zoneFromManaged(mz *dns.ManagedZone) platform.Zone {
+func zoneFromManaged(project string, mz *dns.ManagedZone) platform.Zone {
 	z := platform.Zone{
-		ID:          mz.Name,
+		ID:          zoneID(project, mz.Name),
 		Name:        platform.NormalizeDomain(mz.DnsName),
 		Nameservers: mz.NameServers,
 		Status:      mz.Visibility,
 		Extra: map[string]any{
-			"description": mz.Description,
-			"id":          strconv.FormatUint(mz.Id, 10),
+			"description":  mz.Description,
+			"id":           strconv.FormatUint(mz.Id, 10),
+			"project":      project,
+			"managed_zone": mz.Name,
 		},
 	}
 	if mz.CreationTime != "" {
@@ -199,42 +265,73 @@ func isPublicZone(z platform.Zone) bool {
 	return z.Status == "" || strings.EqualFold(z.Status, "public")
 }
 
-// ListZones lists every managed zone of the project, ordered by DNS name
-// and then by managed zone name so split-horizon pairs sort stably.
+// ListZones lists every managed zone of the selected projects (of the
+// pinned project alone for a pinned client), ordered by DNS name and then
+// by zone id so split-horizon pairs sort stably. A project that fails
+// fails the list, except one whose Cloud DNS API is not enabled when
+// several are selected, which holds no zones.
 func (c *client) ListZones(ctx context.Context) ([]platform.Zone, error) {
+	projects := c.listProjects()
 	var out []platform.Zone
-	err := c.dns.ManagedZones.List(c.project).Pages(ctx, func(resp *dns.ManagedZonesListResponse) error {
-		for _, mz := range resp.ManagedZones {
-			out = append(out, zoneFromManaged(mz))
+	for _, p := range projects {
+		zones, err := c.inProject(p).projectZones(ctx)
+		if err != nil {
+			if len(projects) > 1 && isAPIDisabled(err) {
+				continue
+			}
+			if len(projects) > 1 {
+				return nil, fmt.Errorf("project %s: %w", p, err)
+			}
+			return nil, err
 		}
-		return nil
-	})
-	if err != nil {
-		return nil, mapErr(err)
+		out = append(out, zones...)
 	}
+	sortZones(out)
+	return out, nil
+}
+
+func sortZones(out []platform.Zone) {
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Name != out[j].Name {
 			return out[i].Name < out[j].Name
 		}
 		return out[i].ID < out[j].ID
 	})
-	return out, nil
 }
 
-// GetZone fetches one managed zone by name.
-func (c *client) GetZone(ctx context.Context, zoneID string) (*platform.Zone, error) {
-	mz, err := c.dns.ManagedZones.Get(c.project, zoneID).Context(ctx).Do()
+// projectZones lists the managed zones of the client's project.
+func (c *client) projectZones(ctx context.Context) ([]platform.Zone, error) {
+	var out []platform.Zone
+	err := c.dns.ManagedZones.List(c.project).Pages(ctx, func(resp *dns.ManagedZonesListResponse) error {
+		for _, mz := range resp.ManagedZones {
+			out = append(out, zoneFromManaged(c.project, mz))
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	z := zoneFromManaged(mz)
+	sortZones(out)
+	return out, nil
+}
+
+// GetZone fetches one managed zone by its id ("<project>/<managed zone>")
+// or, in the client's project, by its managed zone name.
+func (c *client) GetZone(ctx context.Context, zoneID string) (*platform.Zone, error) {
+	project, name := c.zonePath(zoneID)
+	mz, err := c.dns.ManagedZones.Get(project, name).Context(ctx).Do()
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	z := zoneFromManaged(project, mz)
 	return &z, nil
 }
 
 // listRRSets returns the raw record sets of a zone, optionally filtered by
 // name (Cloud DNS form, with trailing dot) and type.
 func (c *client) listRRSets(ctx context.Context, zoneID, name, typ string) ([]*dns.ResourceRecordSet, error) {
-	call := c.dns.ResourceRecordSets.List(c.project, zoneID)
+	project, zone := c.zonePath(zoneID)
+	call := c.dns.ResourceRecordSets.List(project, zone)
 	if name != "" {
 		call = call.Name(name)
 	}
@@ -254,6 +351,7 @@ func (c *client) listRRSets(ctx context.Context, zoneID, name, typ string) ([]*d
 
 // ListRecords lists every record value in a zone (one Record per rrdata).
 func (c *client) ListRecords(ctx context.Context, zoneID string) ([]platform.Record, error) {
+	zoneID = c.qualifyZone(zoneID)
 	sets, err := c.listRRSets(ctx, zoneID, "", "")
 	if err != nil {
 		return nil, err
@@ -347,7 +445,8 @@ func (c *client) applyOps(ctx context.Context, zoneID string, ops []rrOp) error 
 	if len(change.Additions) == 0 && len(change.Deletions) == 0 {
 		return nil
 	}
-	if _, err := c.dns.Changes.Create(c.project, zoneID, change).Context(ctx).Do(); err != nil {
+	project, zone := c.zonePath(zoneID)
+	if _, err := c.dns.Changes.Create(project, zone, change).Context(ctx).Do(); err != nil {
 		return mapErr(err)
 	}
 	return nil
@@ -359,6 +458,7 @@ func (c *client) CreateRecord(ctx context.Context, zoneID string, r platform.Rec
 	if err != nil {
 		return nil, err
 	}
+	zoneID = c.qualifyZone(zoneID)
 	typ := strings.ToUpper(r.Type)
 	fqdn := platform.NormalizeDomain(r.Name)
 	if err := c.applyOps(ctx, zoneID, []rrOp{{fqdn: fqdn, typ: typ, add: []string{raw}, ttl: int64(r.TTL)}}); err != nil {
@@ -374,7 +474,8 @@ func (c *client) UpdateRecord(ctx context.Context, zoneID string, r platform.Rec
 	if err != nil {
 		return nil, err
 	}
-	if oldZone != zoneID {
+	zoneID = c.qualifyZone(zoneID)
+	if !c.sameZone(oldZone, zoneID) {
 		return nil, fmt.Errorf("record %s belongs to managed zone %q, not %q", r.ID, oldZone, zoneID)
 	}
 	if oldRaw == routingPolicyMarker {
@@ -413,7 +514,8 @@ func (c *client) DeleteRecord(ctx context.Context, zoneID, recordID string) erro
 	if err != nil {
 		return err
 	}
-	if idZone != zoneID {
+	zoneID = c.qualifyZone(zoneID)
+	if !c.sameZone(idZone, zoneID) {
 		return fmt.Errorf("record %s belongs to managed zone %q, not %q", recordID, idZone, zoneID)
 	}
 	if raw == routingPolicyMarker {
@@ -455,12 +557,13 @@ func (c *client) RRSetRecords(ctx context.Context, zoneID, fqdn, typ string) ([]
 	if rs.RoutingPolicy != nil {
 		return nil, fmt.Errorf("%w: %s %s uses a routing policy; manage it with gcloud or the console", platform.ErrNotSupported, fqdn, strings.ToUpper(typ))
 	}
-	return recordsFromRRSet(zoneID, rs), nil
+	return recordsFromRRSet(c.qualifyZone(zoneID), rs), nil
 }
 
 // findRecord re-reads a record after a change so callers get the live state.
 // The managed zone is taken from the id.
 func (c *client) findRecord(ctx context.Context, id string) (*platform.Record, error) {
+	id = c.qualifyRecordID(id)
 	zoneID, typ, fqdn, _, err := decodeRecordID(id)
 	if err != nil {
 		return nil, err

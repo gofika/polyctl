@@ -456,8 +456,7 @@ func componentDeleteCmd(rt *app.Runtime, spec componentSpec) *cobra.Command {
 			}
 			if spec.kind == kindRule {
 				if db, derr := rt.DB(); derr == nil {
-					v := forwardingRuleFrom(l.obj.(*compute.ForwardingRule))
-					_ = db.Delete(ctx, inventorySetLB(l.profile), platform.ResLoadBalancer, fallbackID(v.ID, v.SelfLink, v.Region, v.Name))
+					_ = db.Delete(ctx, inventorySetLB(l.profile), platform.ResLoadBalancer, l.c.ruleOf(l.obj.(*compute.ForwardingRule)).inventoryID())
 				}
 			}
 			rt.Infof("deleted %s in project %s via gcp/%s", res, l.c.project, l.profile)

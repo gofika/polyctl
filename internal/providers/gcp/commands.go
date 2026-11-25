@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -44,6 +45,9 @@ func openClient(ctx context.Context, rt *app.Runtime) (*client, platform.Profile
 	gc, ok := c.(*client)
 	if !ok {
 		return nil, prof, fmt.Errorf("unexpected client type %T for gcp", c)
+	}
+	if pin := pinnedProject(rt); pin != "" {
+		gc = gc.pin(pin)
 	}
 	return gc, prof, nil
 }
@@ -143,21 +147,40 @@ func newDNSCmd(rt *app.Runtime) *cobra.Command {
 	record := &cobra.Command{Use: "record", Short: "Record sets of a managed zone"}
 	record.AddCommand(newRecordListCmd(rt), newRecordUpsertCmd(rt), newRecordDeleteCmd(rt))
 	cmd.AddCommand(zone, record)
+	addProjectFlag(rt, cmd)
 	return cmd
 }
 
-// zoneRef is a resolved managed zone: its API name and DNS name.
+// zoneRef is a resolved managed zone: its id ("<project>/<managed zone>"),
+// its DNS name, and the two parts of the id.
 type zoneRef struct {
-	ID   string
-	Name string
+	ID      string
+	Name    string
+	Project string
+	Zone    string
+}
+
+func zoneRefOf(z platform.Zone) *zoneRef {
+	project, zone := splitZoneID(z.ID)
+	return &zoneRef{ID: z.ID, Name: z.Name, Project: project, Zone: zone}
 }
 
 // cachedZones serves the zone list through the inventory (honouring
-// --refresh / --offline / TTL).
+// --refresh / --offline / TTL): the zones of every selected project, or of
+// the project of --project. A pinned project outside the selection is not
+// in the inventory: its zones are read live and not stored.
 func cachedZones(ctx context.Context, rt *app.Runtime, profile string) ([]platform.Zone, bool, error) {
+	if pinUnselected(rt, profile) {
+		c, err := openProfile(ctx, rt, profile)
+		if err != nil {
+			return nil, false, err
+		}
+		zones, err := c.ListZones(ctx)
+		return zones, false, err
+	}
 	set := inventory.Set{Platform: platform.GCP, Profile: profile, Type: platform.ResZone}
 	rows, cached, err := rt.EnsureSet(ctx, set, func(ctx context.Context) ([]platform.Resource, error) {
-		c, _, err := openClient(ctx, rt)
+		c, err := openAccount(ctx, rt, profile)
 		if err != nil {
 			return nil, err
 		}
@@ -172,13 +195,25 @@ func cachedZones(ctx context.Context, rt *app.Runtime, profile string) ([]platfo
 		if err := r.Decode(&z); err != nil {
 			return nil, cached, fmt.Errorf("decode cached zone %s: %w", r.ID, err)
 		}
+		if project, _ := splitZoneID(z.ID); !keepProject(rt, profile, project) {
+			continue
+		}
 		zones = append(zones, z)
 	}
 	return zones, cached, nil
 }
 
-// resolveZone accepts a managed zone name or a DNS name. The inventory is
-// consulted first; online, an unknown managed zone name is fetched directly.
+// resolveZone finds the managed zone arg names: its id
+// ("<project>/<managed zone>"), its managed zone name or its DNS name,
+// among the zones of the selected projects (of the project of --project).
+// The inventory is consulted first; online, an unknown managed zone name
+// is asked of each project.
+//
+// A managed zone name wins over a DNS name. A name that several zones
+// answer to (the same managed zone name in two projects, a split-horizon
+// pair of one DNS name) is ambiguous: the interactive flow asks which one,
+// the non-interactive flow fails with exit code 5, naming --project or the
+// zone ids.
 func resolveZone(ctx context.Context, rt *app.Runtime, profile, arg string) (*zoneRef, error) {
 	arg = strings.TrimSpace(arg)
 	if arg == "" {
@@ -188,24 +223,97 @@ func resolveZone(ctx context.Context, rt *app.Runtime, profile, arg string) (*zo
 	if err != nil && !errors.Is(err, inventory.ErrNeverSynced) {
 		return nil, err
 	}
-	dnsName := platform.NormalizeDomain(arg)
-	for _, z := range zones {
-		if z.ID == arg || z.Name == dnsName {
-			return &zoneRef{ID: z.ID, Name: z.Name}, nil
-		}
+	if found := matchZones(zones, arg); len(found) > 0 {
+		return chooseZone(rt, profile, arg, found)
 	}
-	if rt.Flags.Offline || strings.Contains(arg, ".") {
+	full := strings.Contains(arg, "/")
+	if rt.Flags.Offline || (strings.Contains(arg, ".") && !full) {
 		return nil, fmt.Errorf("%w: managed zone %q in gcp/%s (run with --refresh if it was created recently)", platform.ErrNotFound, arg, profile)
 	}
-	c, _, err := openClient(ctx, rt)
+	c, err := openProfile(ctx, rt, profile)
 	if err != nil {
 		return nil, err
 	}
-	z, err := c.GetZone(ctx, arg)
+	if full {
+		z, err := c.GetZone(ctx, arg)
+		if err != nil {
+			return nil, err
+		}
+		return zoneRefOf(*z), nil
+	}
+	var found []platform.Zone
+	var first error
+	projects := c.listProjects()
+	for _, p := range projects {
+		z, err := c.GetZone(ctx, zoneID(p, arg))
+		switch {
+		case err == nil:
+			found = append(found, *z)
+		case errors.Is(err, platform.ErrNotFound), len(projects) > 1 && isAPIDisabled(err):
+			if first == nil {
+				first = err
+			}
+		default:
+			return nil, err
+		}
+	}
+	if len(found) == 0 {
+		if len(projects) == 1 && first != nil {
+			return nil, first
+		}
+		return nil, fmt.Errorf("%w: managed zone %q in the selected projects of gcp/%s (%s)", platform.ErrNotFound, arg, profile, strings.Join(projects, ", "))
+	}
+	return chooseZone(rt, profile, arg, found)
+}
+
+// matchZones returns the zones arg names: the one of that id, else those
+// of that managed zone name, else those of that DNS name.
+func matchZones(zones []platform.Zone, arg string) []platform.Zone {
+	var byName, byDNS []platform.Zone
+	dnsName := platform.NormalizeDomain(arg)
+	for _, z := range zones {
+		_, name := splitZoneID(z.ID)
+		switch {
+		case z.ID == arg:
+			return []platform.Zone{z}
+		case name == arg:
+			byName = append(byName, z)
+		case z.Name == dnsName:
+			byDNS = append(byDNS, z)
+		}
+	}
+	if len(byName) > 0 {
+		return byName
+	}
+	return byDNS
+}
+
+// chooseZone settles the zones a name stands for: one is used, several
+// are ambiguous.
+func chooseZone(rt *app.Runtime, profile, arg string, found []platform.Zone) (*zoneRef, error) {
+	if len(found) == 1 {
+		return zoneRefOf(found[0]), nil
+	}
+	sort.Slice(found, func(i, j int) bool { return found[i].ID < found[j].ID })
+	cands := make([]cand, 0, len(found))
+	for _, z := range found {
+		project, name := splitZoneID(z.ID)
+		cands = append(cands, cand{profile: profile, project: project, id: "zone " + name, detail: joinLabel(z.Name, z.Status)})
+	}
+	z, err := disambiguate(rt, ambiguous("managed zone", arg, cands, "", "the zone id <project>/<managed zone>"), found, func(z platform.Zone) string {
+		return zoneLabel(z)
+	})
 	if err != nil {
 		return nil, err
 	}
-	return &zoneRef{ID: z.ID, Name: z.Name}, nil
+	return zoneRefOf(z), nil
+}
+
+// zoneLabel: "example-zone  example.com  public  4 nameservers  project
+// p1".
+func zoneLabel(z platform.Zone) string {
+	project, name := splitZoneID(z.ID)
+	return joinLabel(name, z.Name, z.Status, fmt.Sprintf("%d nameservers", len(z.Nameservers)), "project "+project)
 }
 
 type zoneResult struct {
@@ -215,9 +323,10 @@ type zoneResult struct {
 }
 
 func zoneGrid(zones []platform.Zone) output.Grid {
-	g := output.Grid{Headers: []string{"ZONE", "DNS_NAME", "VISIBILITY", "NAMESERVERS", "DESCRIPTION"}, Empty: "no managed zones"}
+	g := output.Grid{Headers: []string{"ZONE", "PROJECT", "DNS_NAME", "VISIBILITY", "NAMESERVERS", "DESCRIPTION"}, Empty: "no managed zones"}
 	for _, z := range zones {
-		g.Rows = append(g.Rows, []string{z.ID, z.Name, z.Status, strings.Join(z.Nameservers, ","), output.Str(z.Extra["description"])})
+		project, name := splitZoneID(z.ID)
+		g.Rows = append(g.Rows, []string{name, project, z.Name, z.Status, strings.Join(z.Nameservers, ","), output.Str(z.Extra["description"])})
 	}
 	return g
 }
@@ -257,6 +366,10 @@ terminal, without <zone> the managed zones of the profile are offered.`,
 			if args, err = zoneArg(cmd.Context(), rt, args, profile, false); err != nil {
 				return err
 			}
+			ref, err := resolveZone(cmd.Context(), rt, profile, args[0])
+			if err != nil {
+				return err
+			}
 			var z *platform.Zone
 			cached := false
 			if rt.Flags.Offline || !rt.Flags.Refresh {
@@ -264,11 +377,9 @@ terminal, without <zone> the managed zones of the profile are offered.`,
 				if err != nil && !errors.Is(err, inventory.ErrNeverSynced) {
 					return err
 				}
-				cached = fromCache
-				want := platform.NormalizeDomain(args[0])
 				for i := range zones {
-					if zones[i].ID == args[0] || zones[i].Name == want {
-						z = &zones[i]
+					if zones[i].ID == ref.ID {
+						z, cached = &zones[i], fromCache
 						break
 					}
 				}
@@ -277,23 +388,19 @@ terminal, without <zone> the managed zones of the profile are offered.`,
 				if rt.Flags.Offline {
 					return fmt.Errorf("%w: managed zone %q in gcp/%s", platform.ErrNotFound, args[0], profile)
 				}
-				ref, err := resolveZone(cmd.Context(), rt, profile, args[0])
-				if err != nil {
-					return err
-				}
-				c, _, err := openClient(cmd.Context(), rt)
+				c, err := openProfile(cmd.Context(), rt, profile)
 				if err != nil {
 					return err
 				}
 				if z, err = c.GetZone(cmd.Context(), ref.ID); err != nil {
 					return err
 				}
-				cached = false
 			}
-			rt.Infof("zone %s via gcp/%s%s", z.ID, profile, cacheNote(cached))
+			rt.Infof("zone %s in project %s via gcp/%s%s", ref.Zone, ref.Project, profile, cacheNote(cached))
 			return rt.Render(z, func() output.Grid {
 				return output.KV(
-					"zone", z.ID,
+					"zone", ref.Zone,
+					"project", ref.Project,
 					"dns_name", z.Name,
 					"visibility", z.Status,
 					"nameservers", strings.Join(z.Nameservers, ","),
@@ -338,11 +445,12 @@ func sortRecords(recs []platform.Record) {
 	})
 }
 
-// cachedRecords serves one zone's records through the inventory.
+// cachedRecords serves one zone's records through the inventory. The
+// records of a zone in a project outside the selection (--project) are
+// read live and not stored.
 func cachedRecords(ctx context.Context, rt *app.Runtime, profile string, z *zoneRef) ([]platform.Record, bool, error) {
-	set := inventory.Set{Platform: platform.GCP, Profile: profile, Type: platform.ResDNSRecord, Scope: z.ID}
-	rows, cached, err := rt.EnsureSet(ctx, set, func(ctx context.Context) ([]platform.Resource, error) {
-		c, _, err := openClient(ctx, rt)
+	fetch := func(ctx context.Context) ([]platform.Resource, error) {
+		c, err := openAccount(ctx, rt, profile)
 		if err != nil {
 			return nil, err
 		}
@@ -351,7 +459,23 @@ func cachedRecords(ctx context.Context, rt *app.Runtime, profile string, z *zone
 			return nil, err
 		}
 		return app.RecordResources(z.ID, z.Name, recs), nil
-	})
+	}
+	if !zoneSelected(rt, profile, z) {
+		if rt.Flags.Offline {
+			return nil, false, app.ErrOffline
+		}
+		res, err := fetch(ctx)
+		if err != nil {
+			return nil, false, err
+		}
+		recs := make([]platform.Record, 0, len(res))
+		for _, r := range res {
+			recs = append(recs, r.Data.(platform.Record))
+		}
+		return recs, false, nil
+	}
+	set := inventory.Set{Platform: platform.GCP, Profile: profile, Type: platform.ResDNSRecord, Scope: z.ID}
+	rows, cached, err := rt.EnsureSet(ctx, set, fetch)
 	if err != nil {
 		return nil, cached, err
 	}
@@ -366,8 +490,18 @@ func cachedRecords(ctx context.Context, rt *app.Runtime, profile string, z *zone
 	return recs, cached, nil
 }
 
+// zoneSelected reports whether the zone is of a selected project of the
+// account, that is, whether the inventory holds it.
+func zoneSelected(rt *app.Runtime, profile string, z *zoneRef) bool {
+	_, selected, err := accountProjects(rt, profile)
+	return err == nil && slices.Contains(selected, z.Project)
+}
+
 // refreshRecords re-reads a zone after a mutation so the inventory matches.
 func refreshRecords(ctx context.Context, rt *app.Runtime, c *client, profile string, z *zoneRef) {
+	if !zoneSelected(rt, profile, z) {
+		return
+	}
 	recs, err := c.ListRecords(ctx, z.ID)
 	if err != nil {
 		rt.Verbosef("warning: refresh inventory for zone %s: %v", z.ID, err)
@@ -509,7 +643,7 @@ not asked.`,
 				}
 				raw = append(raw, rd)
 			}
-			if done, err := rt.WouldWrite(platform.Target{Platform: platform.GCP, Profile: profile, Domain: z.Name}, platform.Change{Resource: app.RecordResource(fqdn, typ), Action: platform.Updated, Detail: "set to " + strings.Join(values, ",")}); done || err != nil {
+			if done, err := rt.WouldWrite(platform.Target{Platform: platform.GCP, Profile: profile, Project: z.Project, Domain: z.Name}, platform.Change{Resource: app.RecordResource(fqdn, typ), Action: platform.Updated, Detail: "set to " + strings.Join(values, ",")}); done || err != nil {
 				return err
 			}
 			c, _, err := openClient(cmd.Context(), rt)
@@ -627,7 +761,7 @@ of one record. --dry-run asks nothing.`,
 			case value != "":
 				change.Detail = value
 			}
-			if done, err := rt.WouldWrite(platform.Target{Platform: platform.GCP, Profile: profile, Domain: z.Name}, change); done || err != nil {
+			if done, err := rt.WouldWrite(platform.Target{Platform: platform.GCP, Profile: profile, Project: z.Project, Domain: z.Name}, change); done || err != nil {
 				return err
 			}
 			c, _, err := openClient(cmd.Context(), rt)
@@ -700,6 +834,7 @@ func newComputeCmd(rt *app.Runtime) *cobra.Command {
 		newComputePowerCmd(rt, "start"), newComputePowerCmd(rt, "stop"), computePasswordCmd(rt), computeSSHKeyCmd(rt))
 	cmd.AddCommand(instance, newFirewallCmd(rt), newNetworkCmd(rt), newSubnetCmd(rt), newSSLCertificateCmd(rt), newLoadBalancerCmd(rt),
 		newBackendServiceCmd(rt), newForwardingRuleCmd(rt), newHealthCheckCmd(rt), newInstanceGroupCmd(rt))
+	addProjectFlag(rt, cmd)
 	return cmd
 }
 
@@ -709,11 +844,35 @@ type instanceResult struct {
 	Instances []Instance `json:"instances" yaml:"instances"`
 }
 
-// cachedInstances serves the instance list through the inventory.
+// cachedInstances serves the instance list through the inventory: the
+// instances of every selected project, or of the project of --project
+// (read live and not stored when it is outside the selection).
 func cachedInstances(ctx context.Context, rt *app.Runtime, profile string) ([]Instance, bool, error) {
+	decode := func(id string, d func(any) error) (Instance, error) {
+		var in Instance
+		if err := d(&in); err != nil {
+			return in, fmt.Errorf("decode cached instance %s: %w", id, err)
+		}
+		return in, nil
+	}
+	if pinUnselected(rt, profile) {
+		c, err := openProfile(ctx, rt, profile)
+		if err != nil {
+			return nil, false, err
+		}
+		res, err := c.syncInstances(ctx)
+		if err != nil {
+			return nil, false, err
+		}
+		out := make([]Instance, 0, len(res))
+		for _, r := range res {
+			out = append(out, r.Data.(Instance))
+		}
+		return out, false, nil
+	}
 	set := inventory.Set{Platform: platform.GCP, Profile: profile, Type: platform.ResInstance}
 	rows, cached, err := rt.EnsureSet(ctx, set, func(ctx context.Context) ([]platform.Resource, error) {
-		c, _, err := openClient(ctx, rt)
+		c, err := openAccount(ctx, rt, profile)
 		if err != nil {
 			return nil, err
 		}
@@ -722,11 +881,18 @@ func cachedInstances(ctx context.Context, rt *app.Runtime, profile string) ([]In
 	if err != nil {
 		return nil, cached, err
 	}
+	def, _, _ := accountProjects(rt, profile)
 	out := make([]Instance, 0, len(rows))
 	for _, r := range rows {
-		var in Instance
-		if err := r.Decode(&in); err != nil {
-			return nil, cached, fmt.Errorf("decode cached instance %s: %w", r.ID, err)
+		in, err := decode(r.ID, r.Decode)
+		if err != nil {
+			return nil, cached, err
+		}
+		if !keepProject(rt, profile, in.Project) {
+			continue
+		}
+		if in.Project == "" {
+			in.Project = def
 		}
 		out = append(out, in)
 	}
@@ -748,6 +914,9 @@ func newComputeListCmd(rt *app.Runtime) *cobra.Command {
 				return err
 			}
 			sort.Slice(list, func(i, j int) bool {
+				if list[i].Project != list[j].Project {
+					return list[i].Project < list[j].Project
+				}
 				if list[i].Zone != list[j].Zone {
 					return list[i].Zone < list[j].Zone
 				}
@@ -755,9 +924,9 @@ func newComputeListCmd(rt *app.Runtime) *cobra.Command {
 			})
 			rt.Infof("%d instance(s) via gcp/%s%s", len(list), profile, cacheNote(cached))
 			return rt.Render(instanceResult{Profile: profile, Cached: cached, Instances: list}, func() output.Grid {
-				g := output.Grid{Headers: []string{"NAME", "ZONE", "MACHINE_TYPE", "STATUS", "INTERNAL_IP", "EXTERNAL_IP", "ID"}, Empty: "no instances"}
+				g := output.Grid{Headers: []string{"NAME", "PROJECT", "ZONE", "MACHINE_TYPE", "STATUS", "INTERNAL_IP", "EXTERNAL_IP", "ID"}, Empty: "no instances"}
 				for _, in := range list {
-					g.Rows = append(g.Rows, []string{in.Name, in.Zone, in.MachineType, in.Status, in.InternalIP, in.ExternalIP, in.ID})
+					g.Rows = append(g.Rows, []string{in.Name, in.Project, in.Zone, in.MachineType, in.Status, in.InternalIP, in.ExternalIP, in.ID})
 				}
 				return g
 			})

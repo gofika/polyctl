@@ -326,15 +326,15 @@ func TestListZonesPaginates(t *testing.T) {
 	if f.countRequests("managedZones?") != 2 || f.countRequests("pageToken=2") != 1 {
 		t.Errorf("pagination requests: %v", f.requests)
 	}
-	// Sorted by DNS name then managed zone name, trailing dot stripped, ID
-	// is the managed zone name.
-	if zones[0].Name != "corp.internal" || zones[0].ID != "internal-zone" || zones[0].Status != "private" {
+	// Sorted by DNS name then zone id, trailing dot stripped, ID is
+	// "<project>/<managed zone>".
+	if zones[0].Name != "corp.internal" || zones[0].ID != "proj/internal-zone" || zones[0].Status != "private" {
 		t.Errorf("zone[0]: %+v", zones[0])
 	}
-	if zones[1].Name != "example.com" || zones[1].ID != "example-private" || zones[1].Extra["id"] != "4" {
+	if zones[1].Name != "example.com" || zones[1].ID != "proj/example-private" || zones[1].Extra["id"] != "4" {
 		t.Errorf("zone[1]: %+v", zones[1])
 	}
-	if zones[2].Name != "example.com" || zones[2].ID != "example-zone" || zones[2].Extra["id"] != "1" {
+	if zones[2].Name != "example.com" || zones[2].ID != "proj/example-zone" || zones[2].Extra["id"] != "1" {
 		t.Errorf("zone[2]: %+v", zones[2])
 	}
 
@@ -346,12 +346,12 @@ func TestListZonesPaginates(t *testing.T) {
 	// the inventory without a Domain so `polyctl dns ...` never picks them.
 	domains := map[string]string{}
 	for _, r := range res {
-		if r.Type != platform.ResZone {
-			t.Errorf("sync zone type: %+v", r)
+		if r.Type != platform.ResZone || r.ParentID != "proj" {
+			t.Errorf("sync zone type or parent: %+v", r)
 		}
 		domains[r.ID] = r.Domain
 	}
-	want := map[string]string{"example-zone": "example.com", "third-zone": "third.example", "internal-zone": "", "example-private": ""}
+	want := map[string]string{"proj/example-zone": "example.com", "proj/third-zone": "third.example", "proj/internal-zone": "", "proj/example-private": ""}
 	for id, d := range want {
 		if got, ok := domains[id]; !ok || got != d {
 			t.Errorf("zone %s domain = %q (present %v), want %q", id, got, ok, d)
@@ -379,22 +379,22 @@ func TestListRecordsAndSync(t *testing.T) {
 		if strings.HasSuffix(r.Name, ".") {
 			t.Errorf("record name has trailing dot: %q", r.Name)
 		}
-		if r.ZoneID != "example-zone" {
+		if r.ZoneID != "proj/example-zone" {
 			t.Errorf("zone id: %q", r.ZoneID)
 		}
 		byID[r.ID] = r
 	}
-	mx := byID["example-zone|MX|example.com|10+mail.example.com."]
+	mx := byID["proj/example-zone|MX|example.com|10+mail.example.com."]
 	if mx.Value != "mail.example.com" || mx.Priority == nil || *mx.Priority != 10 || mx.TTL != 3600 {
 		t.Errorf("MX: %+v", mx)
 	}
 	// TXT content is shown the way a user would type it; the raw quoted
 	// rrdata stays in Extra and in the id.
-	txt := byID[`example-zone|TXT|example.com|%22v%3Dspf1+-all%22`]
+	txt := byID[`proj/example-zone|TXT|example.com|%22v%3Dspf1+-all%22`]
 	if txt.Value != `v=spf1 -all` || txt.Extra["rrdata"] != `"v=spf1 -all"` {
 		t.Errorf("TXT: %+v", txt)
 	}
-	geo := byID["example-zone|A|geo.example.com|routing-policy"]
+	geo := byID["proj/example-zone|A|geo.example.com|routing-policy"]
 	if geo.Name != "geo.example.com" || geo.Value != routingPolicyValue || geo.TTL != 60 || geo.Extra["routing_policy"] == nil {
 		t.Errorf("geo: %+v", geo)
 	}
@@ -419,9 +419,9 @@ func TestListRecordsAndSync(t *testing.T) {
 	}
 	// Split-horizon: the same www A 1.1.1.1 exists in both zones and must
 	// keep two distinct inventory rows, each pointing at its own zone.
-	pub, ok1 := ids["example-zone|A|www.example.com|1.1.1.1"]
-	priv, ok2 := ids["example-private|A|www.example.com|1.1.1.1"]
-	if !ok1 || !ok2 || pub.ParentID != "example-zone" || priv.ParentID != "example-private" {
+	pub, ok1 := ids["proj/example-zone|A|www.example.com|1.1.1.1"]
+	priv, ok2 := ids["proj/example-private|A|www.example.com|1.1.1.1"]
+	if !ok1 || !ok2 || pub.ParentID != "proj/example-zone" || priv.ParentID != "proj/example-private" {
 		t.Errorf("split-horizon rows: %v %+v / %v %+v", ok1, pub, ok2, priv)
 	}
 	if _, err := c.Sync(context.Background(), platform.ResDomain); !errors.Is(err, platform.ErrNotSupported) {
@@ -439,7 +439,7 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.ID != "example-zone|A|www.example.com|3.3.3.3" || created.Value != "3.3.3.3" || created.TTL != 300 {
+	if created.ID != "proj/example-zone|A|www.example.com|3.3.3.3" || created.Value != "3.3.3.3" || created.TTL != 300 {
 		t.Errorf("created: %+v", created)
 	}
 	ch := f.lastChange()
@@ -470,11 +470,11 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 	}
 
 	// Update replaces one value in place and can change the TTL.
-	upd, err := c.UpdateRecord(ctx, "example-zone", platform.Record{ID: "example-zone|A|www.example.com|2.2.2.2", Name: "www.example.com", Type: "A", Value: "9.9.9.9", TTL: 60})
+	upd, err := c.UpdateRecord(ctx, "example-zone", platform.Record{ID: "proj/example-zone|A|www.example.com|2.2.2.2", Name: "www.example.com", Type: "A", Value: "9.9.9.9", TTL: 60})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if upd.ID != "example-zone|A|www.example.com|9.9.9.9" || upd.TTL != 60 {
+	if upd.ID != "proj/example-zone|A|www.example.com|9.9.9.9" || upd.TTL != 60 {
 		t.Errorf("updated: %+v", upd)
 	}
 	if rs := f.rrset("example-zone", "www.example.com.", "A"); strings.Join(rs.Rrdatas, ",") != "1.1.1.1,3.3.3.3,9.9.9.9" || rs.Ttl != 60 {
@@ -482,16 +482,16 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 	}
 
 	// Update with a priority change on MX rewrites the rrdata.
-	mx, err := c.UpdateRecord(ctx, "example-zone", platform.Record{ID: "example-zone|MX|example.com|10+mail.example.com.", Name: "example.com", Type: "MX", Value: "mail.example.com", Priority: intp(20)})
+	mx, err := c.UpdateRecord(ctx, "example-zone", platform.Record{ID: "proj/example-zone|MX|example.com|10+mail.example.com.", Name: "example.com", Type: "MX", Value: "mail.example.com", Priority: intp(20)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if *mx.Priority != 20 || mx.ID != "example-zone|MX|example.com|20+mail.example.com." {
+	if *mx.Priority != 20 || mx.ID != "proj/example-zone|MX|example.com|20+mail.example.com." {
 		t.Errorf("mx update: %+v", mx)
 	}
 
 	// Update moving a value to another name creates a two-set change.
-	moved, err := c.UpdateRecord(ctx, "example-zone", platform.Record{ID: "example-zone|A|www.example.com|9.9.9.9", Name: "api.example.com", Type: "A", Value: "9.9.9.9"})
+	moved, err := c.UpdateRecord(ctx, "example-zone", platform.Record{ID: "proj/example-zone|A|www.example.com|9.9.9.9", Name: "api.example.com", Type: "A", Value: "9.9.9.9"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -503,13 +503,13 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 	}
 
 	// Delete removes one value; deleting the last value deletes the set.
-	if err := c.DeleteRecord(ctx, "example-zone", "example-zone|A|www.example.com|1.1.1.1"); err != nil {
+	if err := c.DeleteRecord(ctx, "example-zone", "proj/example-zone|A|www.example.com|1.1.1.1"); err != nil {
 		t.Fatal(err)
 	}
 	if rs := f.rrset("example-zone", "www.example.com.", "A"); strings.Join(rs.Rrdatas, ",") != "3.3.3.3" {
 		t.Errorf("after delete: %+v", rs)
 	}
-	if err := c.DeleteRecord(ctx, "example-zone", "example-zone|A|www.example.com|3.3.3.3"); err != nil {
+	if err := c.DeleteRecord(ctx, "example-zone", "proj/example-zone|A|www.example.com|3.3.3.3"); err != nil {
 		t.Fatal(err)
 	}
 	if f.rrset("example-zone", "www.example.com.", "A") != nil {
@@ -519,7 +519,7 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 	if len(ch.Additions) != 0 || len(ch.Deletions) != 1 {
 		t.Errorf("last delete change: %+v", ch)
 	}
-	if err := c.DeleteRecord(ctx, "example-zone", "example-zone|A|www.example.com|3.3.3.3"); !errors.Is(err, platform.ErrNotFound) {
+	if err := c.DeleteRecord(ctx, "example-zone", "proj/example-zone|A|www.example.com|3.3.3.3"); !errors.Is(err, platform.ErrNotFound) {
 		t.Errorf("deleting a missing value: %v", err)
 	}
 	if err := c.DeleteRecord(ctx, "example-zone", "garbage"); err == nil {
@@ -529,10 +529,10 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 	// An id from another managed zone is refused instead of being applied
 	// to the zone given as argument (split-horizon safety).
 	before = f.countRequests("/changes")
-	if err := c.DeleteRecord(ctx, "example-zone", "example-private|A|www.example.com|10.0.0.1"); err == nil || errors.Is(err, platform.ErrNotFound) {
+	if err := c.DeleteRecord(ctx, "example-zone", "proj/example-private|A|www.example.com|10.0.0.1"); err == nil || errors.Is(err, platform.ErrNotFound) {
 		t.Errorf("cross-zone delete: %v", err)
 	}
-	if _, err := c.UpdateRecord(ctx, "example-zone", platform.Record{ID: "example-private|A|www.example.com|10.0.0.1", Value: "10.0.0.2"}); err == nil {
+	if _, err := c.UpdateRecord(ctx, "example-zone", platform.Record{ID: "proj/example-private|A|www.example.com|10.0.0.1", Value: "10.0.0.2"}); err == nil {
 		t.Error("cross-zone update should fail")
 	}
 	if f.countRequests("/changes") != before {
@@ -551,10 +551,10 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 	if err := c.SetRRSet(ctx, "example-zone", "geo.example.com", "A", 0, []string{"1.2.3.4"}); !errors.Is(err, platform.ErrNotSupported) {
 		t.Errorf("upsert on routing policy set: %v", err)
 	}
-	if err := c.DeleteRecord(ctx, "example-zone", "example-zone|A|geo.example.com|routing-policy"); !errors.Is(err, platform.ErrNotSupported) {
+	if err := c.DeleteRecord(ctx, "example-zone", "proj/example-zone|A|geo.example.com|routing-policy"); !errors.Is(err, platform.ErrNotSupported) {
 		t.Errorf("delete of routing policy record: %v", err)
 	}
-	if _, err := c.UpdateRecord(ctx, "example-zone", platform.Record{ID: "example-zone|A|geo.example.com|routing-policy", Value: "1.2.3.4"}); !errors.Is(err, platform.ErrNotSupported) {
+	if _, err := c.UpdateRecord(ctx, "example-zone", platform.Record{ID: "proj/example-zone|A|geo.example.com|routing-policy", Value: "1.2.3.4"}); !errors.Is(err, platform.ErrNotSupported) {
 		t.Errorf("update of routing policy record: %v", err)
 	}
 	if f.countRequests("/changes") != before {

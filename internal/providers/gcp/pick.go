@@ -37,9 +37,13 @@ func joinLabel(parts ...string) string {
 }
 
 // instanceOptionLabel: "web-1  1234  RUNNING  e2-medium  us-central1-a
-// 10.128.0.5  203.0.113.10  gcp/lab".
+// 10.128.0.5  203.0.113.10  project p1  gcp/lab".
 func instanceOptionLabel(in Instance, profile string) string {
-	return joinLabel(in.Name, in.ID, in.Status, in.MachineType, in.Zone, in.InternalIP, in.ExternalIP, "gcp/"+profile)
+	project := ""
+	if in.Project != "" {
+		project = "project " + in.Project
+	}
+	return joinLabel(in.Name, in.ID, in.Status, in.MachineType, in.Zone, in.InternalIP, in.ExternalIP, project, "gcp/"+profile)
 }
 
 // statusIn keeps the instances in one of the statuses.
@@ -66,6 +70,9 @@ func pickInstanceRef(ctx context.Context, rt *app.Runtime, arg, zone, what strin
 				return false
 			}
 			if zone != "" && in.Zone != zone {
+				return false
+			}
+			if !keepProject(rt, r.Profile, in.Project) {
 				return false
 			}
 			return keep == nil || keep(in)
@@ -231,7 +238,10 @@ func pickZone(ctx context.Context, rt *app.Runtime, c *client, profile string) (
 	if db, err := rt.DB(); err == nil {
 		rows, _ := db.List(ctx, inventory.Query{Platform: platform.GCP, Profile: profile, Type: platform.ResInstance})
 		for _, r := range rows {
-			used[r.ParentID]++
+			// Only the instances of the project the new one goes to count.
+			if project, zone := locationOf(r.ParentID); project == c.project {
+				used[zone]++
+			}
 		}
 	}
 	var opts []prompt.Option
@@ -473,8 +483,8 @@ func inlineErr(err error) error {
 // zoneArg fills in a missing <zone> of a gcp dns command in the
 // interactive flow with a managed zone of the profile (from the
 // inventory, synced when stale), labelled "<zone>  <dns name>
-// <visibility>  <N> nameservers"; the value is the managed zone name,
-// which resolveZone finds again. required (upsert) turns an empty list
+// <visibility>  <N> nameservers  project <id>"; the value is the zone id
+// ("<project>/<managed zone>"), which resolveZone finds again. required (upsert) turns an empty list
 // into a usage error naming <zone> (polyctl cannot create managed zones)
 // instead of "nothing to do". With the argument given, args is returned.
 func zoneArg(ctx context.Context, rt *app.Runtime, args []string, profile string, required bool) ([]string, error) {
@@ -491,7 +501,7 @@ func zoneArg(ctx context.Context, rt *app.Runtime, args []string, profile string
 	sort.Slice(zones, func(i, j int) bool { return zones[i].ID < zones[j].ID })
 	var opts []prompt.Option
 	for _, z := range zones {
-		opts = append(opts, prompt.Option{Label: joinLabel(z.ID, z.Name, z.Status, fmt.Sprintf("%d nameservers", len(z.Nameservers))), Value: z.ID})
+		opts = append(opts, prompt.Option{Label: zoneLabel(z), Value: z.ID})
 	}
 	def := ""
 	if len(opts) == 1 {

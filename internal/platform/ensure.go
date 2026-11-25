@@ -82,9 +82,11 @@ type Change struct {
 type Target struct {
 	Platform ID     `json:"platform" yaml:"platform"`
 	Profile  string `json:"profile" yaml:"profile"`
-	Region   string `json:"region,omitempty" yaml:"region,omitempty"`
-	Zone     string `json:"zone,omitempty" yaml:"zone,omitempty"`
-	Domain   string `json:"domain,omitempty" yaml:"domain,omitempty"`
+	// Project is the Google Cloud project of the change.
+	Project string `json:"project,omitempty" yaml:"project,omitempty"`
+	Region  string `json:"region,omitempty" yaml:"region,omitempty"`
+	Zone    string `json:"zone,omitempty" yaml:"zone,omitempty"`
+	Domain  string `json:"domain,omitempty" yaml:"domain,omitempty"`
 }
 
 // Report is the result of a write command: what it changed, or in a dry

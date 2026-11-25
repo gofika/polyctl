@@ -39,7 +39,7 @@ func (l *locatedInstance) region() string   { return regionOf(l.zone) }
 func (l *locatedInstance) resource() string { return "instance/" + l.inst.Name }
 
 func (l *locatedInstance) target() platform.Target {
-	return platform.Target{Platform: platform.GCP, Profile: l.profile, Zone: l.zone}
+	return platform.Target{Platform: platform.GCP, Profile: l.profile, Project: l.c.project, Zone: l.zone}
 }
 
 func (l *locatedInstance) label() string {
@@ -67,8 +67,23 @@ func gcpAccounts(rt *app.Runtime) ([]config.AccountRef, error) {
 	return out, nil
 }
 
-// openProfile opens the GCP client of a profile.
+// openProfile opens the GCP client of a profile for a command: bound to
+// the default project of the account, or, with --project, pinned to that
+// one.
 func openProfile(ctx context.Context, rt *app.Runtime, profile string) (*client, error) {
+	c, err := openAccount(ctx, rt, profile)
+	if err != nil {
+		return nil, err
+	}
+	if pin := pinnedProject(rt); pin != "" {
+		return c.pin(pin), nil
+	}
+	return c, nil
+}
+
+// openAccount opens the GCP client of a profile as the inventory sync
+// uses it: bound to the default project, whatever --project says.
+func openAccount(ctx context.Context, rt *app.Runtime, profile string) (*client, error) {
 	c, _, err := rt.Open(ctx, profile, platform.GCP)
 	if err != nil {
 		return nil, err
@@ -81,6 +96,8 @@ func openProfile(ctx context.Context, rt *app.Runtime, profile string) (*client,
 }
 
 // instanceHit is an inventory row that matches the instance asked for.
+// inst.Project is always set: rows stored without it are of the default
+// project of the account.
 type instanceHit struct {
 	profile string
 	inst    Instance
@@ -103,9 +120,18 @@ func inventoryInstanceHits(ctx context.Context, rt *app.Runtime, accounts []conf
 			if err != nil {
 				return nil, err
 			}
+			def, _, _ := accountProjects(rt, a.Profile)
 			for _, r := range rows {
 				var in Instance
 				if err := r.Decode(&in); err != nil {
+					continue
+				}
+				if in.Project == "" {
+					in.Project = def
+				}
+				// --project pins the instance: one of the same name in
+				// another project is another machine.
+				if !keepProject(rt, a.Profile, in.Project) {
 					continue
 				}
 				h := instanceHit{profile: a.Profile, inst: in}
@@ -132,8 +158,18 @@ func inventoryInstanceHits(ctx context.Context, rt *app.Runtime, accounts []conf
 		}
 	}
 	// A miss syncs every selected account once: an instance created
-	// since the last sync is not in a set that is still fresh.
-	stale := accounts
+	// since the last sync is not in a set that is still fresh. An account
+	// whose pinned project is outside its selection has nothing to sync:
+	// that project is asked live (liveInstanceHits).
+	var stale []config.AccountRef
+	for _, a := range accounts {
+		if !pinUnselected(rt, a.Profile) {
+			stale = append(stale, a)
+		}
+	}
+	if len(stale) == 0 {
+		return nil, nil, nil
+	}
 	rt.Infof("looking up instance %q: syncing the instances of %d account(s)...", ref, len(stale))
 	for _, a := range stale {
 		reps, err := rt.SyncAccount(ctx, a, []platform.ResourceType{platform.ResInstance})
@@ -163,9 +199,13 @@ func inventoryInstanceHits(ctx context.Context, rt *app.Runtime, accounts []conf
 // only the matches in that zone (a name is unique only within a zone, so
 // a match elsewhere is another machine), and finds an instance of that
 // zone the inventory does not know yet; with no match in the zone it is
-// not found (exit code 4), naming the zones that hold the name. Several matches are ambiguous (exit code 5); the
-// interactive flow lets the user choose among the matches of an IP. The
-// instance is then read live: the inventory may be stale.
+// not found (exit code 4), naming the zones that hold the name. --project
+// keeps only the matches in that project, in the same way, and a project
+// outside the selection of its account is asked live. Several matches (a
+// name held in several zones, projects or accounts) are settled by
+// chooseHit: the interactive flow asks which one, the non-interactive flow
+// fails with exit code 5. The instance is then read live: the inventory may
+// be stale.
 func resolveInstance(ctx context.Context, rt *app.Runtime, ref, zone string, allowIP bool) (*locatedInstance, error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
@@ -183,6 +223,14 @@ func resolveInstance(ctx context.Context, rt *app.Runtime, ref, zone string, all
 	if err != nil {
 		return nil, err
 	}
+	if len(hits) == 0 {
+		// A pinned project outside the selection is not in the inventory.
+		live, err := liveInstanceHits(ctx, rt, accounts, ref, byIP)
+		if err != nil {
+			return nil, err
+		}
+		hits = live
+	}
 	// An explicit --zone pins the instance: names are unique only within
 	// a zone, so a match in another zone is another machine.
 	var elsewhere []string
@@ -198,27 +246,34 @@ func resolveInstance(ctx context.Context, rt *app.Runtime, ref, zone string, all
 		hits = inZone
 	}
 	if len(hits) == 0 && zone != "" && !byIP {
-		// Not cached yet: ask each account in that zone.
+		// Not cached yet: ask each project of each account in that zone.
+		scopes, err := scopesOf(rt, accounts)
+		if err != nil {
+			return nil, err
+		}
 		var found []*locatedInstance
-		for _, a := range accounts {
-			c, err := openProfile(ctx, rt, a.Profile)
+		for _, sc := range scopes {
+			c, err := openScope(ctx, rt, sc)
 			if err != nil {
 				return nil, err
 			}
 			in, err := c.findInstance(ctx, zone, ref)
 			if err != nil {
+				if len(scopes) > 1 && isAPIDisabled(err) {
+					continue
+				}
 				return nil, err
 			}
 			if in != nil {
-				found = append(found, &locatedInstance{c: c, profile: a.Profile, zone: zone, inst: in})
+				found = append(found, &locatedInstance{c: c, profile: sc.profile, zone: zone, inst: in})
 			}
 		}
 		if len(found) == 1 {
-			storeInstance(ctx, rt, found[0].profile, found[0].inst)
+			storeInstance(ctx, rt, found[0].c, found[0].profile, found[0].inst)
 			return found[0], nil
 		}
 		for _, f := range found {
-			hits = append(hits, instanceHit{profile: f.profile, inst: instanceFromAPI(f.inst)})
+			hits = append(hits, instanceHit{profile: f.profile, inst: f.c.instanceOf(f.inst)})
 		}
 	}
 	what := "instance"
@@ -237,6 +292,9 @@ func resolveInstance(ctx context.Context, rt *app.Runtime, ref, zone string, all
 		if syncErr != nil {
 			return nil, fmt.Errorf("cannot tell where %s %q is: %w", what, ref, syncErr)
 		}
+		if pin := pinnedProject(rt); pin != "" {
+			return nil, fmt.Errorf("%w: %s %q in project %s of the selected GCP accounts", platform.ErrNotFound, what, ref, pin)
+		}
 		return nil, fmt.Errorf("%w: %s %q in the selected GCP accounts", platform.ErrNotFound, what, ref)
 	case len(hits) > 1:
 		h, err := chooseHit(rt, what, ref, hits)
@@ -246,49 +304,91 @@ func resolveInstance(ctx context.Context, rt *app.Runtime, ref, zone string, all
 		hits = []instanceHit{h}
 	}
 	h := hits[0]
-	c, err := openProfile(ctx, rt, h.profile)
+	c, err := openScope(ctx, rt, scope{h.profile, h.inst.Project})
 	if err != nil {
 		return nil, err
 	}
 	in, err := c.getInstance(ctx, h.inst.Zone, h.inst.Name)
 	if errors.Is(err, platform.ErrNotFound) {
 		dropInstance(ctx, rt, h.profile, h.inst.ID)
-		return nil, fmt.Errorf("%w: instance %s in zone %s of gcp/%s no longer exists (the local inventory was stale)", platform.ErrNotFound, h.inst.Name, h.inst.Zone, h.profile)
+		return nil, fmt.Errorf("%w: instance %s in zone %s of project %s (gcp/%s) no longer exists (the local inventory was stale)", platform.ErrNotFound, h.inst.Name, h.inst.Zone, c.project, h.profile)
 	}
 	if err != nil {
 		return nil, err
 	}
-	storeInstance(ctx, rt, h.profile, in)
+	storeInstance(ctx, rt, c, h.profile, in)
 	return &locatedInstance{c: c, profile: h.profile, zone: h.inst.Zone, inst: in}, nil
 }
 
-// chooseHit settles several matches: the interactive flow asks which one
-// (a name held in several zones or accounts, an IP that several projects
-// share); otherwise the matches are ambiguous (exit code 5).
+// liveInstanceHits asks the pinned project of the accounts in whose
+// selection it is not (so that the inventory does not hold it) for the
+// instance: every zone of it is listed once. Without such an account there
+// is nothing to ask.
+func liveInstanceHits(ctx context.Context, rt *app.Runtime, accounts []config.AccountRef, ref string, byIP bool) ([]instanceHit, error) {
+	var hits []instanceHit
+	for _, a := range accounts {
+		if !pinUnselected(rt, a.Profile) {
+			continue
+		}
+		c, err := openProfile(ctx, rt, a.Profile)
+		if err != nil {
+			return nil, err
+		}
+		res, err := c.syncInstances(ctx)
+		if err != nil && platform.AsRegionSyncError(err) == nil {
+			return nil, err
+		}
+		var byID, other []instanceHit
+		for _, r := range res {
+			in := r.Data.(Instance)
+			h := instanceHit{profile: a.Profile, inst: in}
+			switch {
+			case byIP:
+				if in.InternalIP == ref || in.ExternalIP == ref {
+					other = append(other, h)
+				}
+			case in.ID == ref:
+				byID = append(byID, h)
+			case in.Name == ref:
+				other = append(other, h)
+			}
+		}
+		if len(byID) > 0 {
+			other = byID
+		}
+		hits = append(hits, other...)
+	}
+	return hits, nil
+}
+
+// chooseHit settles several matches (a name held in several zones,
+// projects or accounts, an IP that several projects share): the
+// interactive flow asks which one, with a pick that shows the project and
+// the zone of each; the non-interactive flow fails with exit code 5,
+// listing the candidates and the flags that choose one (--profile,
+// --project, --zone, whichever differ among them) or the instance id.
 func chooseHit(rt *app.Runtime, what, ref string, hits []instanceHit) (instanceHit, error) {
 	sort.Slice(hits, func(i, j int) bool {
 		if hits[i].profile != hits[j].profile {
 			return hits[i].profile < hits[j].profile
 		}
-		return hits[i].inst.Zone+"/"+hits[i].inst.Name < hits[j].inst.Zone+"/"+hits[j].inst.Name
+		a, b := hits[i].inst, hits[j].inst
+		return a.Project+"/"+a.Zone+"/"+a.Name < b.Project+"/"+b.Zone+"/"+b.Name
 	})
-	var names []string
-	profiles := map[string]bool{}
+	cands := make([]cand, 0, len(hits))
 	for _, h := range hits {
-		names = append(names, fmt.Sprintf("gcp/%s/%s/%s (%s, %s)", h.profile, h.inst.Zone, h.inst.Name, h.inst.ID, h.inst.Status))
-		profiles[h.profile] = true
+		cands = append(cands, cand{profile: h.profile, project: h.inst.Project, where: h.inst.Zone, id: h.inst.ID, detail: h.inst.Status})
 	}
-	hint := "pass --profile <name> or --zone <zone> to choose"
-	if len(profiles) == 1 {
-		hint = "pass --zone <zone>, or the instance id, to choose"
-	}
-	amb := &app.AmbiguousError{What: fmt.Sprintf("%s %q", what, ref), Candidates: names, Hint: hint}
+	amb := ambiguous(what, ref, cands, "--zone <zone>", "the instance id")
 	return disambiguate(rt, amb, hits, func(h instanceHit) string { return instanceOptionLabel(h.inst, h.profile) })
 }
 
 // storeInstance writes an instance to the inventory.
-func storeInstance(ctx context.Context, rt *app.Runtime, profile string, in *compute.Instance) {
-	if in == nil || in.Id == 0 {
+//
+// Nothing of a project outside the selection is stored (--project may name
+// one): the next sync of the account would not cover its rows.
+func storeInstance(ctx context.Context, rt *app.Runtime, c *client, profile string, in *compute.Instance) {
+	if in == nil || in.Id == 0 || !c.selected() {
 		return
 	}
 	db, err := rt.DB()
@@ -300,7 +400,7 @@ func storeInstance(ctx context.Context, rt *app.Runtime, profile string, in *com
 	if cfg != nil {
 		ttl = cfg.TTLFor(platform.ResInstance)
 	}
-	_ = db.Upsert(ctx, inventory.Set{Platform: platform.GCP, Profile: profile, Type: platform.ResInstance}, instanceResource(instanceFromAPI(in)), ttl)
+	_ = db.Upsert(ctx, inventory.Set{Platform: platform.GCP, Profile: profile, Type: platform.ResInstance}, instanceResource(c.instanceOf(in)), ttl)
 }
 
 // dropInstance removes an instance from the inventory.
@@ -318,7 +418,7 @@ func (l *locatedInstance) reread(ctx context.Context, rt *app.Runtime) {
 	} else {
 		rt.Verbosef("re-read instance %s: %v", l.inst.Name, err)
 	}
-	storeInstance(ctx, rt, l.profile, l.inst)
+	storeInstance(ctx, rt, l.c, l.profile, l.inst)
 }
 
 // ips returns the internal and external IP of an instance's first NIC.
@@ -1182,7 +1282,7 @@ func runCreate(cmd *cobra.Command, rt *app.Runtime, o *createOptions, name strin
 		plan.Add(platform.Step{Resource: "instance/" + name + "/status", Action: platform.Created, Desc: statusRunning, Apply: func(ctx context.Context) (platform.Change, error) {
 			in, err := c.waitStatus(ctx, zone, name, statusRunning, timeout)
 			if in != nil {
-				storeInstance(ctx, rt, profile, in)
+				storeInstance(ctx, rt, c, profile, in)
 			}
 			if err != nil {
 				return platform.Change{}, fmt.Errorf("instance %s was created but did not become RUNNING: %w", name, err)
@@ -1210,7 +1310,7 @@ func runCreate(cmd *cobra.Command, rt *app.Runtime, o *createOptions, name strin
 	}
 	if err == nil && !wait && !rt.DryRun() {
 		if in, gerr := c.getInstance(ctx, zone, name); gerr == nil {
-			storeInstance(ctx, rt, profile, in)
+			storeInstance(ctx, rt, c, profile, in)
 		}
 	}
 	if err != nil && !rt.DryRun() && o.staticIP && (extIP != "" || intIP != "") {
@@ -1587,7 +1687,7 @@ value marked).`,
 			in, err := l.c.setIPForward(ctx, l.zone, l.inst, ipForward)
 			if in != nil {
 				l.inst = in
-				storeInstance(ctx, rt, l.profile, in)
+				storeInstance(ctx, rt, l.c, l.profile, in)
 			}
 			if err != nil {
 				return err

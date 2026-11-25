@@ -202,7 +202,7 @@ func (e *lbEnsure) plan(ctx context.Context) (*platform.Plan, error) {
 					return platform.Change{}, err
 				}
 				if sc, err := s.getCert(ctx, e.sslCert); err == nil {
-					storeSSLCert(ctx, e.rt, e.profile, sc)
+					storeSSLCert(ctx, e.rt, e.c, e.profile, sc)
 				}
 				return platform.Change{Resource: "ssl-certificate/" + e.sslCert, Action: platform.Created, ID: s.certURL(e.sslCert)}, nil
 			}})
@@ -269,7 +269,7 @@ func (e *lbEnsure) firewallSteps(ctx context.Context) ([]platform.Step, error) {
 		return nil, err
 	}
 	rt, profile := e.rt, e.profile
-	tagStep := e.c.EnsureInstanceTag(e.zone, e.inst, tag, true, e.timeout, func(in *compute.Instance) { storeInstance(ctx, rt, profile, in) })
+	tagStep := e.c.EnsureInstanceTag(e.zone, e.inst, tag, true, e.timeout, func(in *compute.Instance) { storeInstance(ctx, rt, e.c, profile, in) })
 	return []platform.Step{fw, tagStep}, nil
 }
 
@@ -1095,16 +1095,16 @@ type lbEnsureTarget struct {
 
 // storeRule upserts a forwarding rule into the inventory as a load
 // balancer row named after the rule, with the load balancer name.
-func storeRule(ctx context.Context, rt *app.Runtime, profile string, fr *compute.ForwardingRule, lb string) {
+func storeRule(ctx context.Context, rt *app.Runtime, c *client, profile string, fr *compute.ForwardingRule, lb string) {
 	db, err := rt.DB()
-	if err != nil || fr == nil {
+	if err != nil || fr == nil || !c.selected() {
 		return
 	}
 	cfg, err := rt.Config()
 	if err != nil {
 		return
 	}
-	v := forwardingRuleFrom(fr)
+	v := c.ruleOf(fr)
 	if v.LoadBalancer == "" {
 		v.LoadBalancer = lb
 	}

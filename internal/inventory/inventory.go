@@ -86,7 +86,21 @@ func Open(path string) (*DB, error) {
 // user_version. Version 1 names a DNS record's data "value"; polyctl 0.1.x
 // wrote it as "content". Version 2 drops the cached GoDaddy DNS records,
 // whose ids did not carry the zone before (see forgetGoDaddyRecords).
-const dataVersion = 2
+// Version 3 drops everything cached for Google Cloud, whose rows did not
+// carry their project before (see forgetGCPRows).
+const dataVersion = 3
+
+// forgetGCPRows drops the rows cached for Google Cloud before an account
+// could hold several projects: zone, record and certificate ids and the
+// parents of every row now start with the project, so the old rows would
+// neither be found nor be replaced by a sync. The sets are synced again on
+// their next use. Instance secrets are not cached data and stay.
+var forgetGCPRows = []string{
+	`DELETE FROM resources WHERE platform = 'gcp'`,
+	`DELETE FROM domain_index WHERE platform = 'gcp'`,
+	`DELETE FROM ip_index WHERE platform = 'gcp'`,
+	`DELETE FROM sync_state WHERE platform = 'gcp'`,
+}
 
 // forgetGoDaddyRecords drops the GoDaddy DNS records cached before their
 // ids carried the zone: the same record in two domains of one account
@@ -150,6 +164,13 @@ func migrateData(db *sql.DB) error {
 	}
 	if v < 2 {
 		for _, q := range forgetGoDaddyRecords {
+			if _, err := tx.Exec(q); err != nil {
+				return err
+			}
+		}
+	}
+	if v < 3 {
+		for _, q := range forgetGCPRows {
 			if _, err := tx.Exec(q); err != nil {
 				return err
 			}

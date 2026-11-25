@@ -32,7 +32,10 @@ type Flags struct {
 	Profile   string
 	// Platform restricts domain routing (dns / domain commands) to one
 	// platform; it tells apart two accounts of one profile.
-	Platform  string
+	Platform string
+	// Project pins the Google Cloud project of one call (--project on the
+	// gcp dns and gcp compute commands). No other platform reads it.
+	Project   string
 	Refresh   bool
 	Offline   bool
 	Output    string

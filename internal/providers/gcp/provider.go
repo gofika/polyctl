@@ -5,7 +5,10 @@
 // Profile metadata keys (stored in plaintext config.yaml, never sensitive):
 //
 //	method       "adc", "service_account" or "oauth"
-//	project      the Google Cloud project id every command operates on
+//	project      the default Google Cloud project id: the one a command
+//	             works on when nothing else names a project
+//	projects     the selected projects, comma-separated, the default one
+//	             among them; absent when only the default is selected
 //	email        the user account email (adc / oauth), when known
 //	client_email the service account email (service_account)
 //	oauth_client "builtin" when the account was logged in with the OAuth
@@ -128,7 +131,12 @@ func (*provider) Open(ctx context.Context, p platform.Profile) (platform.Client,
 	default:
 		return nil, fmt.Errorf("unknown gcp login method %q in profile %q", method, p.Name)
 	}
-	return newClient(ctx, project, email, method, clientOptions(ts)...)
+	c, err := newClient(ctx, project, email, method, clientOptions(ts)...)
+	if err != nil {
+		return nil, err
+	}
+	c.projects = selectedProjects(p.Metadata)
+	return c, nil
 }
 
 // oauthFromSecret rebuilds the OAuth config and token of a stored account.

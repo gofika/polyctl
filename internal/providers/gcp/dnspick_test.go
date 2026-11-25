@@ -27,7 +27,7 @@ func dnsHarness(t *testing.T) (*gcpHarness, *fakeGoogle) {
 // is cancelled; the non-interactive flow still needs <zone>.
 func TestDNSZonePick(t *testing.T) {
 	h, g := dnsHarness(t)
-	p := h.answer("third-zone")
+	p := h.answer("proj/third-zone")
 	if err := h.run("dns", "zone", "get"); err != nil || !strings.Contains(h.stdout.String(), `"third.example"`) {
 		t.Fatalf("zone get = %v\n%s", err, h.stdout.String())
 	}
@@ -63,7 +63,7 @@ func TestDNSZonePick(t *testing.T) {
 // still names --type and --value.
 func TestDNSRecordUpsertAsks(t *testing.T) {
 	h, g := dnsHarness(t)
-	p := h.answer("example-zone", "A", "not-an-ip", "192.0.2.7")
+	p := h.answer("proj/example-zone", "A", "not-an-ip", "192.0.2.7")
 	if err := h.run("dns", "record", "upsert", "--name", "www"); err != nil {
 		t.Fatalf("upsert: %v\n%s", err, h.stderr.String())
 	}
@@ -84,7 +84,7 @@ func TestDNSRecordUpsertAsks(t *testing.T) {
 // apex SOA and NS left out), then the whole set or one value.
 func TestDNSRecordDeletePicks(t *testing.T) {
 	h, g := dnsHarness(t)
-	p := h.answer("example-zone", prompttest.Label("www.example.com  A"), prompttest.Label("Only 2.2.2.2"))
+	p := h.answer("proj/example-zone", prompttest.Label("www.example.com  A"), prompttest.Label("Only 2.2.2.2"))
 	if err := h.run("dns", "record", "delete"); err != nil {
 		t.Fatalf("delete: %v\n%s", err, h.stderr.String())
 	}
@@ -99,7 +99,7 @@ func TestDNSRecordDeletePicks(t *testing.T) {
 	}
 
 	// The MX set has one value: it goes whole.
-	p = h.answer("example-zone", prompttest.Label("MX"))
+	p = h.answer("proj/example-zone", prompttest.Label("MX"))
 	h.rt.Stdin = strings.NewReader("y\n") // the confirmation of the whole set
 	if err := h.run("dns", "record", "delete"); err != nil {
 		t.Fatalf("delete mx: %v", err)

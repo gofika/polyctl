@@ -103,9 +103,9 @@ func sslTarget(profile, region string) platform.Target {
 }
 
 // storeSSLCert upserts a certificate into the inventory.
-func storeSSLCert(ctx context.Context, rt *app.Runtime, profile string, sc *compute.SslCertificate) {
+func storeSSLCert(ctx context.Context, rt *app.Runtime, c *client, profile string, sc *compute.SslCertificate) {
 	db, err := rt.DB()
-	if err != nil || sc == nil {
+	if err != nil || sc == nil || !c.selected() {
 		return
 	}
 	cfg, err := rt.Config()
@@ -113,16 +113,16 @@ func storeSSLCert(ctx context.Context, rt *app.Runtime, profile string, sc *comp
 		return
 	}
 	set := inventory.Set{Platform: platform.GCP, Profile: profile, Type: platform.ResCertificate}
-	if err := db.Upsert(ctx, set, sslCertificateFrom(sc).resource(), cfg.TTLFor(platform.ResCertificate)); err != nil {
+	if err := db.Upsert(ctx, set, c.certOf(sc).resource(), cfg.TTLFor(platform.ResCertificate)); err != nil {
 		rt.Verbosef("inventory: %v", err)
 	}
 }
 
 // dropSSLCert removes a certificate from the inventory.
-func dropSSLCert(ctx context.Context, rt *app.Runtime, profile, region, name string) {
+func dropSSLCert(ctx context.Context, rt *app.Runtime, c *client, profile, region, name string) {
 	if db, err := rt.DB(); err == nil {
 		set := inventory.Set{Platform: platform.GCP, Profile: profile, Type: platform.ResCertificate}
-		if err := db.Delete(ctx, set, platform.ResCertificate, certInventoryID(region, name)); err != nil {
+		if err := db.Delete(ctx, set, platform.ResCertificate, certInventoryID(c.project, region, name)); err != nil {
 			rt.Verbosef("inventory: %v", err)
 		}
 	}
@@ -350,7 +350,7 @@ as it is typed against the certificates of the scope.`,
 				return err
 			}
 			if sc, err := s.getCert(ctx, name); err == nil {
-				storeSSLCert(ctx, rt, profile, sc)
+				storeSSLCert(ctx, rt, c, profile, sc)
 			}
 			rt.Infof("created certificate %s (%s) in project %s via gcp/%s", name, s.label(), c.project, profile)
 			return rt.RenderReport(platform.Report{Target: sslTarget(profile, region), Changes: []platform.Change{change}})
@@ -493,10 +493,10 @@ func recordCertChanges(ctx context.Context, rt *app.Runtime, profile string, s c
 		switch ch.Action {
 		case platform.Created:
 			if sc, err := s.getCert(ctx, name); err == nil {
-				storeSSLCert(ctx, rt, profile, sc)
+				storeSSLCert(ctx, rt, s.c, profile, sc)
 			}
 		case platform.Deleted:
-			dropSSLCert(ctx, rt, profile, s.region, name)
+			dropSSLCert(ctx, rt, s.c, profile, s.region, name)
 		}
 	}
 }
@@ -579,7 +579,7 @@ without --region / --global is looked up in every scope.`,
 				}
 				return err
 			}
-			dropSSLCert(ctx, rt, profile, region, name)
+			dropSSLCert(ctx, rt, c, profile, region, name)
 			rt.Infof("deleted certificate %s in project %s via gcp/%s", name, c.project, profile)
 			return rt.RenderReport(platform.Report{Target: sslTarget(profile, region), Changes: []platform.Change{change}})
 		},

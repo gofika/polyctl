@@ -645,7 +645,7 @@ submits them.`,
 			plan.Add(step)
 			if located != nil {
 				l := located
-				plan.Add(c.EnsureInstanceTag(l.zone, l.inst, tag, wait, timeout, func(in *compute.Instance) { storeInstance(ctx, rt, l.profile, in) }))
+				plan.Add(c.EnsureInstanceTag(l.zone, l.inst, tag, wait, timeout, func(in *compute.Instance) { storeInstance(ctx, rt, l.c, l.profile, in) }))
 			}
 			return rt.Ensure(ctx, "gcp.compute.firewall.ensure", platform.Target{Platform: platform.GCP, Profile: profile, Region: region}, &plan)
 		},

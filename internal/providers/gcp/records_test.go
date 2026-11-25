@@ -187,9 +187,10 @@ func TestRRDataRoundTrip(t *testing.T) {
 }
 
 func TestZoneFromManaged(t *testing.T) {
-	z := zoneFromManaged(&dns.ManagedZone{Name: "example-zone", DnsName: "example.com.", Id: 12345, Visibility: "public",
+	z := zoneFromManaged("proj", &dns.ManagedZone{Name: "example-zone", DnsName: "example.com.", Id: 12345, Visibility: "public",
 		Description: "d", NameServers: []string{"ns-1.googledomains.com."}, Labels: map[string]string{"env": "prod"}})
-	if z.ID != "example-zone" || z.Name != "example.com" || z.Status != "public" || z.Extra["id"] != "12345" || z.Extra["description"] != "d" {
+	if z.ID != "proj/example-zone" || z.Name != "example.com" || z.Status != "public" || z.Extra["id"] != "12345" || z.Extra["description"] != "d" ||
+		z.Extra["project"] != "proj" || z.Extra["managed_zone"] != "example-zone" {
 		t.Errorf("zone: %+v", z)
 	}
 	if lbl, ok := z.Extra["labels"].(map[string]string); !ok || lbl["env"] != "prod" {

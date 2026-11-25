@@ -117,12 +117,12 @@ func (i Instance) ipSet() *platform.IPSet {
 	return s
 }
 
-// unreachableErr turns the scopes an aggregated list could not reach into
-// region failures of a sync (nil when there are none). The inventory keeps
-// the rows of a failed region by their parent, which is empty for a global
-// resource, so an unreachable global scope fails the whole list instead:
-// no row of the type is replaced.
-func unreachableErr(scopes []string) error {
+// unreachableErr turns the scopes an aggregated list of the client's
+// project could not reach into region failures of a sync (nil when there
+// are none): the stored rows of "<project>/<zone or region>" are kept. An
+// unreachable global scope fails the whole list of the project instead:
+// no row of the project is replaced.
+func (c *client) unreachableErr(scopes []string) error {
 	if len(scopes) == 0 {
 		return nil
 	}
@@ -134,7 +134,7 @@ func unreachableErr(scopes []string) error {
 	}
 	e := &platform.RegionSyncError{}
 	for _, s := range scopes {
-		e.Failures = append(e.Failures, platform.RegionError{Region: lastSegment(s), Err: fmt.Errorf("unreachable")})
+		e.Failures = append(e.Failures, platform.RegionError{Region: parentOf(c.project, lastSegment(s)), Err: fmt.Errorf("unreachable")})
 	}
 	return e
 }
@@ -146,8 +146,11 @@ const lbLabel = "polyctl-lb"
 // ForwardingRule is the inventory form of a forwarding rule: the address
 // of a load balancer. Region is empty for a global rule.
 type ForwardingRule struct {
-	ID                  string `json:"id" yaml:"id"`
-	Name                string `json:"name" yaml:"name"`
+	ID   string `json:"id" yaml:"id"`
+	Name string `json:"name" yaml:"name"`
+	// Project is the project of the rule (empty in rows stored before an
+	// account could hold several: the default project).
+	Project             string `json:"project,omitempty" yaml:"project,omitempty"`
 	Region              string `json:"region,omitempty" yaml:"region,omitempty"`
 	IPAddress           string `json:"ip_address" yaml:"ip_address"`
 	IPProtocol          string `json:"ip_protocol,omitempty" yaml:"ip_protocol,omitempty"`
@@ -167,17 +170,17 @@ type ForwardingRule struct {
 }
 
 // fallbackID is the inventory id of a resource: its numeric id, else its
-// self link, else "<region or global>/<name>".
-func fallbackID(id, selfLink, region, name string) string {
+// self link, else "<project>/<region or global>/<name>".
+func fallbackID(project, id, selfLink, region, name string) string {
 	switch {
 	case id != "" && id != "0":
 		return id
 	case selfLink != "":
 		return selfLink
 	case region == "":
-		return "global/" + name
+		region = "global"
 	}
-	return region + "/" + name
+	return project + "/" + region + "/" + name
 }
 
 // internalScheme reports a load balancing scheme of internal addresses.
@@ -190,6 +193,18 @@ func forwardingRuleFrom(fr *compute.ForwardingRule) ForwardingRule {
 		Subnetwork: lastSegment(fr.Subnetwork), SelfLink: fr.SelfLink, Labels: fr.Labels, LoadBalancer: fr.Labels[lbLabel]}
 }
 
+// ruleOf flattens a forwarding rule of the client's project.
+func (c *client) ruleOf(fr *compute.ForwardingRule) ForwardingRule {
+	v := forwardingRuleFrom(fr)
+	v.Project = c.project
+	return v
+}
+
+// inventoryID is the id of the rule's inventory row.
+func (f ForwardingRule) inventoryID() string {
+	return fallbackID(f.Project, f.ID, f.SelfLink, f.Region, f.Name)
+}
+
 func (f ForwardingRule) kind() platform.IPKind {
 	if internalScheme(f.LoadBalancingScheme) {
 		return platform.IPInternal
@@ -200,8 +215,7 @@ func (f ForwardingRule) kind() platform.IPKind {
 func (f ForwardingRule) resource() platform.Resource {
 	var s platform.IPSet
 	s.Add(f.kind(), f.IPAddress)
-	id := fallbackID(f.ID, f.SelfLink, f.Region, f.Name)
-	return platform.Resource{Type: platform.ResLoadBalancer, ID: id, Name: f.Name, ParentID: f.Region, Data: f, IPs: s.Refs()}
+	return platform.Resource{Type: platform.ResLoadBalancer, ID: f.inventoryID(), Name: f.Name, ParentID: parentOf(f.Project, f.Region), Data: f, IPs: s.Refs()}
 }
 
 // proxyURLMaps maps the target HTTP and HTTPS proxies of every scope
@@ -264,7 +278,7 @@ func (c *client) syncForwardingRules(ctx context.Context) ([]platform.Resource, 
 					continue
 				}
 				seen[key] = true
-				v := forwardingRuleFrom(fr)
+				v := c.ruleOf(fr)
 				if v.LoadBalancer == "" {
 					if urlMaps == nil && fr.Target != "" {
 						urlMaps = c.proxyURLMaps(ctx)
@@ -279,14 +293,17 @@ func (c *client) syncForwardingRules(ctx context.Context) ([]platform.Resource, 
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return out, unreachableErr(unreachable)
+	return out, c.unreachableErr(unreachable)
 }
 
 // StaticAddress is the inventory form of a reserved address. Region is
 // empty for a global address; Users are the URLs of the resources using it.
 type StaticAddress struct {
-	ID           string   `json:"id" yaml:"id"`
-	Name         string   `json:"name" yaml:"name"`
+	ID   string `json:"id" yaml:"id"`
+	Name string `json:"name" yaml:"name"`
+	// Project is the project of the address (empty in rows stored before
+	// an account could hold several: the default project).
+	Project      string   `json:"project,omitempty" yaml:"project,omitempty"`
 	Region       string   `json:"region,omitempty" yaml:"region,omitempty"`
 	Address      string   `json:"address" yaml:"address"`
 	PrefixLength int64    `json:"prefix_length,omitempty" yaml:"prefix_length,omitempty"`
@@ -331,8 +348,8 @@ func (a StaticAddress) resource() platform.Resource {
 		}
 		refs = append(refs, r)
 	}
-	id := fallbackID(a.ID, a.SelfLink, a.Region, a.Name)
-	return platform.Resource{Type: platform.ResEIP, ID: id, Name: a.Name, ParentID: a.Region, Data: a, IPs: refs}
+	id := fallbackID(a.Project, a.ID, a.SelfLink, a.Region, a.Name)
+	return platform.Resource{Type: platform.ResEIP, ID: id, Name: a.Name, ParentID: parentOf(a.Project, a.Region), Data: a, IPs: refs}
 }
 
 // syncAddresses lists every reserved address of the project; the
@@ -355,7 +372,9 @@ func (c *client) syncAddresses(ctx context.Context) ([]platform.Resource, error)
 					continue
 				}
 				seen[key] = true
-				out = append(out, staticAddressFrom(a).resource())
+				v := staticAddressFrom(a)
+				v.Project = c.project
+				out = append(out, v.resource())
 			}
 		}
 		return resp.NextPageToken, u
@@ -363,7 +382,7 @@ func (c *client) syncAddresses(ctx context.Context) ([]platform.Resource, error)
 	if err != nil {
 		return nil, mapErr(err)
 	}
-	return out, unreachableErr(unreachable)
+	return out, c.unreachableErr(unreachable)
 }
 
 // FindTypes are the inventory types whose rows carry addresses.

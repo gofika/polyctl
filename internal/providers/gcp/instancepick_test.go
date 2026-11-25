@@ -50,7 +50,7 @@ func TestInstanceStartStopPick(t *testing.T) {
 	p.Done()
 	a := p.Find("Instance")
 	if l := prompttest.Labels(a.Options); strings.Contains(l, "web-1") || !strings.Contains(l, "old-1") ||
-		!strings.Contains(l, "TERMINATED  e2-small  us-central1-b  10.128.0.6  gcp/lab") {
+		!strings.Contains(l, "TERMINATED  e2-small  us-central1-b  10.128.0.6  project proj  gcp/lab") {
 		t.Errorf("start offered:\n%s", l)
 	}
 	if in := h.gce.instance("us-central1-b", "old-1"); in.Status != statusRunning {
