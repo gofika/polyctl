@@ -76,6 +76,35 @@ func TestSweepProjectsIsBoundedAndOrdered(t *testing.T) {
 	}
 }
 
+// A run that finds two APIs switched off, each in another project, tells
+// each project once, in the note of the listing that skipped it: the
+// notes are not gathered into one.
+func TestSweepsOfTwoAPIsNoteEachProjectOnce(t *testing.T) {
+	notes := captureNotes(t)
+	off := func(api string) error {
+		return computeErr(&googleapi.Error{Code: 403, Message: api + " has not been used in project 7 before or it is disabled.", Errors: []googleapi.ErrorItem{{Reason: "accessNotConfigured"}}})
+	}
+	c := sweepClient(4)
+	sweep := func(fail map[string]error) {
+		t.Helper()
+		if _, err := sweepProjects(context.Background(), c, func(ctx context.Context, pc *client) ([]string, error) {
+			return []string{pc.project}, fail[pc.project]
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sweep(map[string]error{"p1": off("Cloud DNS API")})
+	// p1 has neither API: it was told already.
+	sweep(map[string]error{"p1": off("Compute Engine API"), "p2": off("Compute Engine API"), "p3": off("Compute Engine API")})
+	want := []string{
+		"note: gcp/lab: skipped 1 project(s) in which an API is not enabled or billing is off: p1 (Cloud DNS API); they hold nothing there. To stop asking them: polyctl gcp project disable p1",
+		"note: gcp/lab: skipped 2 project(s) in which an API is not enabled or billing is off: p2 (Compute Engine API), p3 (Compute Engine API); they hold nothing there. To stop asking them: polyctl gcp project disable p2 p3",
+	}
+	if strings.Join(*notes, "\n") != strings.Join(want, "\n") {
+		t.Errorf("notes = %q\nwant    %q", *notes, want)
+	}
+}
+
 // A project whose API is not enabled is skipped and named in one note; a
 // project that fails for another reason fails the sweep, named after it;
 // the project of --project is never skipped.

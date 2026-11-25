@@ -34,8 +34,9 @@ func TestDocsDescribeEnabledProjectsAndAccounts(t *testing.T) {
 		},
 		{
 			doc:  "docs/platforms/gcp.md",
-			gone: []string{"A disabled API or a missing permission ("},
+			gone: []string{"A disabled API or a missing permission (", "one note per run on stderr names the skipped projects", "acme-dns (Compute Engine API), acme-lab (Cloud DNS API)"},
 			has: []string{
+				"Each project is named once per run. The projects one listing skipped share a note",
 				"A command that works on one project (a change, or a list or lookup of the project named with `--project`) and meets a disabled API is exit code 3",
 				"A list, lookup or sync over the enabled projects does not fail for it",
 			},

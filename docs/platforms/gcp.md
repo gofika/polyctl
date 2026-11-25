@@ -69,12 +69,14 @@ polyctl gcp project disable acme-lab --dry-run -o json     # report only
 - `polyctl gcp project add` and `remove`, the names of 0.4.0, still work as hidden names of `enable` and `disable`, with the same flags. With every project enabled from the start, `add` only has something to do for a project that was disabled.
 - Whatever changed the disabled projects (also an edited `config.yaml`, or `--set disabled_projects` of a new login), the `gcp` commands never find or change a resource through a cached row of a disabled project; `--project` still reaches it. A default project listed in `disabled_projects` by hand is ignored there.
 
-**Projects in which an API is not enabled.** An enabled project in which the API of a type is not enabled, or whose billing is off, holds nothing of that type (a DNS-only project does not fail the instance sync), also when it is the only project of the account. Syncs and lists skip it with exit code 0, and one note per run on stderr names the skipped projects, the API, and `polyctl gcp project disable <id>...`, which stops asking them:
+**Projects in which an API is not enabled.** An enabled project in which the API of a type is not enabled, or whose billing is off, holds nothing of that type (a DNS-only project does not fail the instance sync), also when it is the only project of the account. Syncs and lists skip it with exit code 0, and a note on stderr names the skipped projects, the API, and `polyctl gcp project disable <id>...`, which stops asking them. Each project is named once per run. The projects one listing skipped share a note; a run that reads several types (a `polyctl sync` of DNS zones and of instances) prints a note for each API it found switched off:
 
 ```text
-note: gcp/acme: skipped 2 project(s) in which an API is not enabled or billing is off: acme-dns (Compute Engine API), acme-lab (Cloud DNS API); they hold nothing there. To stop asking them: polyctl gcp project disable acme-dns acme-lab
+note: gcp/acme: skipped 1 project(s) in which an API is not enabled or billing is off: acme-lab (Cloud DNS API); they hold nothing there. To stop asking them: polyctl gcp project disable acme-lab
+note: gcp/acme: skipped 2 project(s) in which an API is not enabled or billing is off: acme-dns (Compute Engine API), acme-old (Compute Engine API); they hold nothing there. To stop asking them: polyctl gcp project disable acme-dns acme-old
 ```
 
+- The default project cannot be disabled, so the hint of a note leaves it out.
 - A sync asks such a project once per API and run, not once per resource type.
 - A list or lookup read live from the project of `--project` keeps the error (exit code 3): you asked for that project.
 - Any other failure of one project (a removed permission, a quota or rate limit, the network) is a real failure: a warning names the project and `polyctl gcp project disable <id>`, the rows cached for that project are kept, the other projects are synced, and the set is synced again on its next use. When every enabled project fails, the sync fails and replaces nothing. A project list that fails for another reason than a missing permission fails the sync of the account, and nothing is replaced.
