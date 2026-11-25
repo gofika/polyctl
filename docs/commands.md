@@ -113,7 +113,7 @@ polyctl dns delete example.com --all --type TXT --dry-run
 - A record that cannot be deleted is `failed` and the rest continue (exit code 1). Nothing to delete prints `no records to clean up` (exit code 0).
 - In JSON, each deleted record keeps its full data in `attrs` (`value`, `ttl`, `priority`, `proxied`), so it can be restored with `dns ensure`; `summary` counts `deleted`, `skipped` and `failed`.
 
-**Cloudflare R2 custom domains.** The CNAME Cloudflare creates for an R2 bucket's custom domain cannot be deleted through the DNS API. `dns delete` (and `cloudflare dns delete`) removes it by unbinding the domain from its bucket; the question and the dry run say so. The bucket is looked up in the zone's account first, then in the other selected accounts of the same login, then in the other Cloudflare profiles. Without R2 permission, with R2 not enabled or with no bucket named in the record, the record stays and the command fails.
+**Cloudflare R2 custom domains.** The CNAME Cloudflare creates for an R2 bucket's custom domain cannot be deleted through the DNS API. `dns delete` (and `cloudflare dns delete`) removes it by unbinding the domain from its bucket; the question and the dry run say so. The bucket is looked up in the zone's account first, then in the other enabled accounts of the same login, then in the other Cloudflare profiles. Without R2 permission, with R2 not enabled or with no bucket named in the record, the record stays and the command fails.
 
 ## Domains
 
@@ -269,7 +269,7 @@ polyctl cert deploy example.com --deployer gcp-lb --region asia-east2
 
 **Failures** are handled per target and the run goes on. Each is sent to `hooks.on_failure` as `{"event": "cert.deploy.failed", "platform", "profile", "deployer", "target", "domain", "error", "time"}`. Exit code 1 when anything failed, 3 when every failure was a credential or permission error, 0 otherwise (no targets at all is 0). Nothing is rolled back; the next run finishes the job.
 
-**Report rows**: `<deployer>/<profile>/<target>` (for example `aliyun-alb/acme/lb-example(HTTPS:443)`, `gcp-lb/acme/acme-prod/global/proxy-web`, `aws-acm/acme/us-east-1/<arn>`). A `gcp-lb` target starts with its project: the deployer covers every selected project of the account ([GCP: Projects](platforms/gcp.md#projects)); until this version the target had no project part. Each JSON row's `attrs` holds `deployer`, `platform`, `profile`, `region`, `domain`, `old_cert_id`, `old_days_left`, `new_not_after` and `cert_name`.
+**Report rows**: `<deployer>/<profile>/<target>` (for example `aliyun-alb/acme/lb-example(HTTPS:443)`, `gcp-lb/acme/acme-prod/global/proxy-web`, `aws-acm/acme/us-east-1/<arn>`). A `gcp-lb` target starts with its project: the deployer covers every enabled project of the account ([GCP: Projects](platforms/gcp.md#projects)); until this version the target had no project part. Each JSON row's `attrs` holds `deployer`, `platform`, `profile`, `region`, `domain`, `old_cert_id`, `old_days_left`, `new_not_after` and `cert_name`.
 
 ## Finding resources by IP or DNS name
 
@@ -297,7 +297,7 @@ matched 2 resource(s) (local inventory, synced 4m ago)
 Platform coverage:
 
 - **AWS**: EC2 instances, ELBv2 load balancers, elastic IPs and unattached network interfaces (NAT gateways, ...), RDS instances. Every enabled region is synced.
-- **GCP**: instances, forwarding rules (regional and global), reserved addresses, of every selected project of an account. JSON matches carry `project`, and the console link opens the resource in its own project.
+- **GCP**: instances, forwarding rules (regional and global), reserved addresses, of every enabled project of an account. JSON matches carry `project`, and the console link opens the resource in its own project.
 - **Alibaba Cloud**: ECS instances, ALB load balancers, EIPs. Every region is synced; a failing region is reported and the others are kept.
 
 `-o json` fields: `query`, `kind` (`ip` / `dns`), `cached`, `synced_at`, `matches` and `errors`. Each match has `platform`, `profile`, `type`, `id`, `name`, `region`, `zone`, `state`, `matched_field`, `internal_ips`, `external_ips`, `network`, `url` and, where they apply, `dns_names`, `subnet`, `note`, `addresses` and `detail`.
@@ -335,7 +335,7 @@ Each platform has its own subtree: `cloudflare` (alias `cf`), `namecom`, `godadd
 
 - **Account**: `--profile` (it must have an account on that platform, otherwise exit code 3) > `current_profile` (if it has one) > the only profile that has one > an error listing the candidates (exit code 5).
 - **Cache**: list commands honour `--refresh` / `--offline` as the neutral commands do; writes always go to the platform.
-- **`<platform> whoami`** checks the credentials against the platform and prints `profile`, `platform` and `identity` (`account`, `user`, `extra`). It needs the network (exit code 6 with `--offline`); credentials that no longer work are exit code 3.
+- **`<platform> whoami`** checks the credentials against the platform and prints `profile`, `platform` and `identity` (`account`, `user`, `extra`). On GCP `account` is the default project and on Cloudflare the default account; `extra.disabled_projects` / `extra.disabled_accounts` hold the ids of the disabled ones, comma-separated, when there are any. It needs the network (exit code 6 with `--offline`); credentials that no longer work are exit code 3.
 
 The same operation has the same verb and shape on every platform:
 
