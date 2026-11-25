@@ -348,7 +348,7 @@ func newZoneGetCmd(rt *app.Runtime) *cobra.Command {
 		Use:   "get <zone>",
 		Short: "Show one managed zone (by zone id, managed zone name or DNS name)",
 		Long: `Show one managed zone, given by its id (<project>/<managed zone>), its
-managed zone name or its DNS name. A name several zones of the selected
+managed zone name or its DNS name. A name several zones of the enabled
 projects answer to is asked on a terminal and is exit code 5 otherwise;
 --project or the zone id chooses. On a terminal, without <zone> the managed
 zones of the profile are offered.`,
