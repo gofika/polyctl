@@ -291,3 +291,35 @@ func TestLock(t *testing.T) {
 	}
 	again()
 }
+
+// A failed install of the new bundle keeps it in the staging directory and
+// says where; the archived renames go through renameDir (fsutil.Rename,
+// which retries a busy directory on Windows).
+func TestStoreSaveInstallFailureKeepsStaging(t *testing.T) {
+	ca := certtest.New("Fake R1")
+	st := OpenStore(t.TempDir(), LetsEncryptProduction)
+	if err := st.Save(testBundle(t, ca, "example.com", Names("example.com"), time.Now().Add(80*24*time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	var calls []string
+	old := renameDir
+	renameDir = func(from, to string) error {
+		calls = append(calls, filepath.Base(from))
+		if strings.Contains(filepath.Base(from), ".staging-") {
+			return &os.LinkError{Op: "rename", Old: from, New: to, Err: os.ErrPermission}
+		}
+		return old(from, to)
+	}
+	t.Cleanup(func() { renameDir = old })
+	err := st.Save(testBundle(t, ca, "example.com", Names("example.com"), time.Now().Add(90*24*time.Hour)))
+	if err == nil || len(calls) != 2 {
+		t.Fatalf("save = %v, renames %v", err, calls)
+	}
+	staging := filepath.Join(st.Base, "live", calls[1])
+	if !strings.Contains(err.Error(), staging) {
+		t.Errorf("error does not name the staging directory %s: %v", staging, err)
+	}
+	if _, serr := os.Stat(filepath.Join(staging, fileFullchain)); serr != nil {
+		t.Errorf("staging directory removed: %v", serr)
+	}
+}

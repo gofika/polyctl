@@ -15,7 +15,14 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/gofika/polyctl/internal/fsutil"
 )
+
+// renameDir moves a bundle directory. On Windows a rename fails while
+// another process (an antivirus scanning the new PEM files) has a file of
+// the directory open; fsutil.Rename tries again for about a second.
+var renameDir = fsutil.Rename
 
 // Well-known ACME directories.
 const (
@@ -148,7 +155,7 @@ func (s *Store) Load(root string, repair bool) (*Bundle, error) {
 		if err := os.MkdirAll(filepath.Dir(live), 0o700); err != nil {
 			return nil, err
 		}
-		if err := os.Rename(latest, live); err != nil {
+		if err := renameDir(latest, live); err != nil {
 			return nil, fmt.Errorf("restore %s from %s: %w", live, latest, err)
 		}
 		s.warnf("warning: %s was missing (an interrupted replacement); restored it from %s", live, latest)
@@ -298,13 +305,13 @@ func (s *Store) Save(b *Bundle) error {
 			}
 			dst = filepath.Join(arch, fmt.Sprintf("%s-%d", now.Format("20060102T150405Z"), i))
 		}
-		if err := os.Rename(live, dst); err != nil {
+		if err := renameDir(live, dst); err != nil {
 			_ = os.RemoveAll(staging)
 			return fmt.Errorf("archive %s: %w", live, err)
 		}
 	}
-	if err := os.Rename(staging, live); err != nil {
-		return fmt.Errorf("install %s: %w", live, err)
+	if err := renameDir(staging, live); err != nil {
+		return fmt.Errorf("install %s (the new certificate is kept in %s): %w", live, staging, err)
 	}
 	b.Path, b.IssuedAt, b.ACMEDirectory = live, now, s.Directory
 	if names, err := s.archiveNames(root); err == nil && len(names) > archiveKeep {
