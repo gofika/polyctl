@@ -237,7 +237,8 @@ func sshKeyMechanism(sc SSHKeyCommand) string {
 		"listed too, and remove deletes the key from both files.\n\n" +
 		"Login: --identity-file, when given, is the only key (an encrypted one asks\n" +
 		"for its passphrase on a terminal, and is exit code 2 in the non-interactive\n" +
-		"flow, where an SSH agent (SSH_AUTH_SOCK) is the way). Otherwise only the\n" +
+		"flow, where an SSH agent is the way: SSH_AUTH_SOCK, or on Windows the\n" +
+		"OpenSSH agent pipe \\\\.\\pipe\\openssh-ssh-agent). Otherwise only the\n" +
 		"local private key of the instance's key pair is offered: the key of the SSH\n" +
 		"agent, of ~/.ssh/id_ed25519, id_ecdsa or id_rsa, or of ~/.ssh/<key pair>.pem\n" +
 		"or ~/.ssh/<key pair> whose public key is the key pair's (an encrypted file\n" +

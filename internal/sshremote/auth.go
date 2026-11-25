@@ -6,9 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"golang.org/x/crypto/ssh"
@@ -28,7 +29,8 @@ type Signer struct {
 // --identity-file is given, in this order (as OpenSSH tries them).
 var DefaultKeyNames = []string{"id_ed25519", "id_ecdsa", "id_rsa"}
 
-// EnvAgent is the environment variable that names the SSH agent socket.
+// EnvAgent is the environment variable that names the SSH agent socket (on
+// Windows, also a named pipe; WindowsAgentPipe when it is not set).
 const EnvAgent = "SSH_AUTH_SOCK"
 
 // maxKeyFile bounds what is read from a private key file.
@@ -81,7 +83,8 @@ func (k *KeySet) Close() {
 }
 
 // LoadKeys gathers the signers of opts: the --identity-file alone, else the
-// keys of the SSH agent (SSH_AUTH_SOCK) followed by the unencrypted default
+// keys of the SSH agent (SSH_AUTH_SOCK, or on Windows the OpenSSH agent
+// pipe) followed by the unencrypted default
 // keys of ~/.ssh. Encrypted default keys go to Locked. A private key is
 // read into memory only; nothing is ever written.
 func LoadKeys(opts KeyOptions) (*KeySet, error) {
@@ -95,11 +98,17 @@ func LoadKeys(opts KeyOptions) (*KeySet, error) {
 		return ks, nil
 	}
 	if !opts.NoAgent {
-		if sock := os.Getenv(EnvAgent); sock != "" {
-			conn, err := net.Dial("unix", sock)
-			if err != nil {
+		env, set := os.LookupEnv(EnvAgent)
+		if sock, explicit := agentAddress(runtime.GOOS == "windows", env, set); sock != "" {
+			conn, err := dialAgent(sock)
+			switch {
+			case err != nil && !explicit && errors.Is(err, fs.ErrNotExist):
+				// No agent service running: nothing was asked for.
+			case err != nil && explicit:
 				ks.Notes = append(ks.Notes, fmt.Sprintf("note: the SSH agent at %s=%s did not answer: %v", EnvAgent, sock, err))
-			} else {
+			case err != nil:
+				ks.Notes = append(ks.Notes, fmt.Sprintf("note: the SSH agent at %s did not answer: %v", sock, err))
+			default:
 				signers, err := agent.NewClient(conn).Signers()
 				if err != nil {
 					_ = conn.Close()
@@ -189,7 +198,7 @@ func (k *KeySet) unlockMatching(path string, data []byte, opts KeyOptions) (know
 		}
 	}
 	if opts.Passphrase == nil {
-		k.Notes = append(k.Notes, fmt.Sprintf("note: %s holds the instance's key pair but is encrypted, and polyctl cannot ask for its passphrase in the non-interactive flow: add it to an SSH agent (ssh-add) and run polyctl with %s set", homeRel(path), EnvAgent))
+		k.Notes = append(k.Notes, fmt.Sprintf("note: %s holds the instance's key pair but is encrypted, and polyctl cannot ask for its passphrase in the non-interactive flow: add it to an SSH agent (ssh-add) that polyctl reaches (%s, or on Windows the OpenSSH agent service)", homeRel(path), EnvAgent))
 		return true, nil
 	}
 	s, err := unlock(path, data, opts.Passphrase, true)
@@ -257,7 +266,7 @@ func loadIdentity(path string, passphrase func(string) (string, error)) (Signer,
 	switch {
 	case errors.As(err, &missing):
 		if passphrase == nil {
-			return Signer{}, fmt.Errorf("%w: --identity-file %s is encrypted, and polyctl cannot ask for its passphrase in the non-interactive flow: add the key to an SSH agent (ssh-add) and run polyctl with %s set, without --identity-file", platform.ErrInvalidInput, path, EnvAgent)
+			return Signer{}, fmt.Errorf("%w: --identity-file %s is encrypted, and polyctl cannot ask for its passphrase in the non-interactive flow: add the key to an SSH agent (ssh-add) that polyctl reaches (%s, or on Windows the OpenSSH agent service) and run polyctl without --identity-file", platform.ErrInvalidInput, path, EnvAgent)
 		}
 		s, err = unlock(full, data, passphrase, false)
 		if err != nil {

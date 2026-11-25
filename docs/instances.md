@@ -70,6 +70,8 @@ The key used to reach the instance is chosen in this order:
 
 1. **`--identity-file`**: when given, the only key used.
 2. **The local private key of the instance's key pair**: from the SSH agent, `~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa`, `~/.ssh/<key pair>.pem` or `~/.ssh/<key pair>`, when its public key matches the key pair. An encrypted file is matched through its `.pub` file; only the match asks for a passphrase (on a terminal; non-interactive: use an SSH agent). No other local key is tried.
+
+   The SSH agent is the one `SSH_AUTH_SOCK` names. On Windows it may name a named pipe (`\\.\pipe\<name>`, also written `//./pipe/<name>`, as Pageant or another agent prints it); when it is not set, polyctl uses the Windows OpenSSH agent service (`\\.\pipe\openssh-ssh-agent`, which 1Password also serves), and says nothing when that service is not running.
 3. **The platform's temporary access**, when there is no matching local key (no key pair, an unreadable one, or no private key on this machine) or the instance refuses it: on AWS Systems Manager Run Command, then EC2 Instance Connect; on Alibaba Cloud, Cloud Assistant. A one-time key is generated in memory; nothing is stored. See [AWS](platforms/aws.md) and [Alibaba Cloud](platforms/aliyun.md) for requirements and permissions.
 
 The target user is `--user`, else the first default user that exists on the instance. A listing that may have been cut by the platform's output limit is refused with exit code 7.
@@ -80,7 +82,7 @@ When nothing works, the error names each way tried and why, and suggests `--iden
 
 - **Address**: the public IP, else the private IP (with a note; you must reach the private network). `--address` and `--port` (default 22) override.
 - **Login user**: `--login-user`, else the instance's default users tried in order (see the platform page); a note names the one used. When none works, the error lists each user and why.
-- **Encrypted `--identity-file`**: asks for the passphrase on a terminal; non-interactive is exit code 2, use an SSH agent (`SSH_AUTH_SOCK`). Private keys are never stored or printed. Password authentication is never used.
+- **Encrypted `--identity-file`**: asks for the passphrase on a terminal; non-interactive is exit code 2, use an SSH agent instead. Private keys are never stored or printed. Password authentication is never used.
 - **Another user** (`--user`): edited through `sudo -n -u <user>`. A sudo that asks for a password or is not allowed is exit code 1 (log in as that user, or allow passwordless sudo). A user the instance does not have is exit code 4.
 - **Host key**: checked against `~/.ssh/known_hosts` (and `/etc/ssh/ssh_known_hosts`). A changed or `@revoked` key is refused (exit code 1) and never replaced; run `ssh-keygen -R <host>` when the change is expected. An unknown host shows its SHA256 fingerprint and asks (default no; declining is exit code 0). The non-interactive flow needs `--accept-new-host-key`, else exit code 2. A trusted key is appended to `~/.ssh/known_hosts` (a dry run trusts it for that run only). `--yes` does not trust host keys.
 - **The edit** creates `~/.ssh` (`0700`) and `authorized_keys` (`0600`) when missing, replaces the file atomically, keeps every other line byte for byte (comments, options, CRLF), refuses a symbolic link, and retries once when the file changed since it was read. SELinux contexts are restored.
