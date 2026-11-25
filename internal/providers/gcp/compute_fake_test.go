@@ -919,6 +919,12 @@ func newGCPHarness(t *testing.T, flags app.Flags, defaults map[string]any) *gcpH
 		flags.NonInteractive, flags.NonInteractiveSet = true, true
 	}
 	h := &gcpHarness{t: t, gce: f, stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, dir: dir}
+	// The notes about skipped projects go to the harness, and every test
+	// starts as a new run that has told nothing yet.
+	oldNotef := notef
+	notef = func(format string, args ...any) { fmt.Fprintf(h.stderr, format+"\n", args...) }
+	resetOffNotes()
+	t.Cleanup(func() { notef = oldNotef })
 	h.rt = app.New(flags, strings.NewReader(""), h.stdout, h.stderr)
 	if err := h.rt.Init(); err != nil {
 		t.Fatalf("Init: %v", err)

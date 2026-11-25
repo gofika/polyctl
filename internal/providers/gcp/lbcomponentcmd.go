@@ -176,7 +176,8 @@ func componentsOf(ctx context.Context, rt *app.Runtime, kind lbKind, name string
 		}
 		list, unreachable, err := c.listComponents(ctx, kind)
 		if err != nil {
-			if len(scopes) > 1 && isAPIDisabled(err) {
+			if !c.pinned && isAPIDisabled(err) {
+				c.noteOff(c.project, err)
 				continue
 			}
 			return nil, nil, fmt.Errorf("%w (%s)", err, sc)
@@ -190,6 +191,7 @@ func componentsOf(ctx context.Context, rt *app.Runtime, kind lbKind, name string
 			}
 		}
 	}
+	flushScopes(scopes)
 	return hits, searched, nil
 }
 

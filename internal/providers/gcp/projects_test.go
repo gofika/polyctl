@@ -37,13 +37,15 @@ type fakeDNS struct {
 	// answers 403 accessNotConfigured.
 	fail     map[string]int
 	disabled map[string]bool
+	// billingOff answers 403 with a BILLING_DISABLED detail.
+	billingOff map[string]bool
 	// visible are the projects Resource Manager lists.
 	visible []string
 	calls   []string
 }
 
 func newFakeDNS(t *testing.T) *fakeDNS {
-	f := &fakeDNS{t: t, zones: map[string][]*dns.ManagedZone{}, rrsets: map[string][]*dns.ResourceRecordSet{}, fail: map[string]int{}, disabled: map[string]bool{}}
+	f := &fakeDNS{t: t, zones: map[string][]*dns.ManagedZone{}, rrsets: map[string][]*dns.ResourceRecordSet{}, fail: map[string]int{}, disabled: map[string]bool{}, billingOff: map[string]bool{}}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.handle))
 	t.Cleanup(f.srv.Close)
 	return f
@@ -113,6 +115,11 @@ func (f *fakeDNS) handle(w http.ResponseWriter, r *http.Request) {
 	if f.disabled[project] {
 		w.WriteHeader(http.StatusForbidden)
 		fmt.Fprint(w, `{"error":{"code":403,"message":"Cloud DNS API has not been used in project before or it is disabled","errors":[{"reason":"accessNotConfigured","message":"disabled"}]}}`)
+		return
+	}
+	if f.billingOff[project] {
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprint(w, `{"error":{"code":403,"message":"This API method requires billing to be enabled. Please enable billing on the project.","errors":[{"reason":"forbidden","message":"billing"}],"details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"BILLING_DISABLED","domain":"googleapis.com"}]}}`)
 		return
 	}
 	if code := f.fail[project]; code != 0 {
@@ -337,20 +344,102 @@ func TestSyncOfFailedProjectKeepsItsRows(t *testing.T) {
 	}
 }
 
-// A selected project without the API of a type holds nothing of the type;
-// it does not make the sync of the type fail for ever.
+// A project in which the API of the type is not enabled, or whose billing
+// is off, holds nothing of the type: it never fails a sync, also when it
+// is the only project, it is asked once per run, and the user is told
+// once which projects were skipped.
 func TestSyncCountsDisabledAPIAsEmpty(t *testing.T) {
 	h, g := multiDNS(t)
 	g.addZone("p1", "one", "one.example", "public")
+	g.addRRSet("p1", "one", &dns.ResourceRecordSet{Name: "www.one.example.", Type: "A", Ttl: 300, Rrdatas: []string{"192.0.2.1"}})
 	g.disabled["p2"] = true
-	reps, err := h.sync(platform.ResZone)
-	if err != nil || reps[0].Err != nil || reps[0].Count != 1 {
-		t.Fatalf("sync = %+v, %v; want one zone and no error", reps, err)
+	g.reset()
+	reps, err := h.sync(platform.ResZone, platform.ResDNSRecord)
+	if err != nil || reps[0].Err != nil || reps[0].Count != 1 || reps[1].Err != nil || reps[1].Count != 1 {
+		t.Fatalf("sync = %+v, %v; want one zone, one record and no error", reps, err)
 	}
-	// With that project alone selected the answer is the error it is.
+	// The record sync reuses the zones of p1 and does not ask p2 again.
+	g.mu.Lock()
+	calls := strings.Join(g.calls, "\n")
+	g.mu.Unlock()
+	if n := strings.Count(calls, "/projects/p2/"); n != 1 {
+		t.Errorf("p2 was asked %d times in one run, want once:\n%s", n, calls)
+	}
+	if n := strings.Count(calls, "GET /dns/v1/projects/p1/managedZones\n"); n != 1 {
+		t.Errorf("the zones of p1 were listed %d times in one run, want once:\n%s", n, calls)
+	}
+	want := "note: gcp/lab: skipped 1 project(s) in which an API is not enabled or billing is off: p2 (Cloud DNS API); they hold nothing there. To stop asking them: polyctl gcp project remove p2\n"
+	if got := h.stderr.String(); got != want {
+		t.Errorf("stderr = %q\nwant     %q", got, want)
+	}
+	// A second sweep of the same run does not tell it again.
+	h.stderr.Reset()
+	if _, err := h.sync(platform.ResZone); err != nil || h.stderr.Len() != 0 {
+		t.Errorf("second sync = %v, stderr %q; want nothing told twice", err, h.stderr.String())
+	}
+
+	// The only project of the account: still no failure, and no hint to
+	// take the default project off.
+	resetOffNotes()
 	h.selectProjects("p2", "p2")
-	if reps, err = h.sync(platform.ResZone); err == nil && reps[0].Err == nil {
-		t.Errorf("one project, API disabled: %+v, %v; want an error", reps, err)
+	reps, err = h.sync(platform.ResZone, platform.ResDNSRecord)
+	if err != nil || reps[0].Err != nil || reps[0].Count != 0 || reps[1].Err != nil || reps[1].Count != 0 {
+		t.Fatalf("one project, API not enabled: %+v, %v; want nothing and no error", reps, err)
+	}
+	want = "note: gcp/lab: skipped 1 project(s) in which an API is not enabled or billing is off: p2 (Cloud DNS API); they hold nothing there.\n"
+	if got := h.stderr.String(); got != want {
+		t.Errorf("stderr = %q\nwant     %q", got, want)
+	}
+
+	// Billing off is the same case; several projects are one note.
+	resetOffNotes()
+	h.stderr.Reset()
+	g.billingOff["p3"] = true
+	h.selectProjects("p1", "p1", "p3", "p2")
+	if reps, err = h.sync(platform.ResZone); err != nil || reps[0].Err != nil || reps[0].Count != 1 {
+		t.Fatalf("billing off: %+v, %v; want one zone and no error", reps, err)
+	}
+	want = "note: gcp/lab: skipped 2 project(s) in which an API is not enabled or billing is off: p2 (Cloud DNS API), p3 (an API); they hold nothing there. To stop asking them: polyctl gcp project remove p2 p3\n"
+	if got := h.stderr.String(); got != want {
+		t.Errorf("stderr = %q\nwant     %q", got, want)
+	}
+
+	// A real failure stays one: nothing is skipped.
+	resetOffNotes()
+	h.stderr.Reset()
+	delete(g.billingOff, "p3")
+	g.fail["p3"] = 403
+	if reps, err = h.sync(platform.ResZone); err != nil || reps[0].Err == nil || strings.Contains(h.stderr.String(), "p3") {
+		t.Errorf("permission denied in p3: %+v, %v, stderr %q; want a partial failure", reps, err, h.stderr.String())
+	}
+}
+
+// The zone list and the lookup of a managed zone name skip a project
+// without Cloud DNS, also the only one; a list pinned to it and read live
+// keeps the error.
+func TestZoneListSkipsProjectWithoutTheAPI(t *testing.T) {
+	h, g := multiDNS(t)
+	h.nonInteractive()
+	h.selectProjects("p2", "p2")
+	g.disabled["p2"] = true
+	if err := h.run("dns", "zone", "list"); err != nil {
+		t.Fatalf("zone list = %v, want no error", err)
+	}
+	if !strings.Contains(h.stderr.String(), "skipped 1 project(s)") || strings.Contains(h.stderr.String(), "project remove") {
+		t.Errorf("stderr = %q", h.stderr.String())
+	}
+	c, err := openAccount(context.Background(), h.rt, "lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if zones, err := c.ListZones(context.Background()); err != nil || len(zones) != 0 {
+		t.Errorf("ListZones = %v, %v; want none and no error", zones, err)
+	}
+	if _, err := c.pin("p2").ListZones(context.Background()); exitClass(err) != "auth" {
+		t.Errorf("pinned ListZones = %v, want the error of the project", err)
+	}
+	if err := h.run("dns", "record", "list", "main"); exitClass(err) != "notfound" {
+		t.Errorf("record list of an unknown zone = %v, want not found", err)
 	}
 }
 

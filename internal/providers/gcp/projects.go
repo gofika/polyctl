@@ -189,26 +189,41 @@ func detailReasons(ge *googleapi.Error) []string {
 const projectConcurrency = 4
 
 // eachProject runs fn for every selected project and returns the rows of
-// all of them, for the inventory.
+// all of them, for the inventory. api is the API fn asks (apiDNS,
+// apiCompute).
 //
-// With one project selected it is fn's result as it is. With several:
-//
-//   - a project that fails is a failure of its whole tree
+//   - a project in which the API is not enabled, or whose billing is off,
+//     holds nothing of the type: it contributes no rows and no failure,
+//     also when it is the only project. The later types of the same run
+//     do not ask it again, and the user is told once (noteOff);
+//   - with one project selected any other answer is fn's result as it is;
+//   - with several, a project that fails is a failure of its whole tree
 //     (platform.RegionError.Tree): the rows stored for it are kept and the
 //     rows of the other projects replace theirs;
 //   - an unreachable zone or region of a project (a *RegionSyncError of
 //     fn) keeps the rows of that scope only;
-//   - a project in which the API of the type is not enabled holds nothing
-//     of the type: a DNS-only project does not fail every instance sync;
 //   - when every project fails the result is a plain error wrapping the
 //     first one, so that nothing is replaced and the exit code is kept.
-func (c *client) eachProject(ctx context.Context, fn func(ctx context.Context, pc *client) ([]platform.Resource, error)) ([]platform.Resource, error) {
+func (c *client) eachProject(ctx context.Context, api string, fn func(ctx context.Context, pc *client) ([]platform.Resource, error)) ([]platform.Resource, error) {
 	projects := c.projects
 	if len(projects) == 0 {
 		projects = []string{c.project}
 	}
+	defer c.flushOff()
+	one := func(ctx context.Context, pc *client) ([]platform.Resource, error) {
+		if c.isOff(pc.project, api) {
+			return nil, nil
+		}
+		res, err := fn(ctx, pc)
+		if isAPIDisabled(err) {
+			c.markOff(pc.project, api)
+			c.noteOff(pc.project, err)
+			return nil, nil
+		}
+		return res, err
+	}
 	if len(projects) == 1 {
-		return fn(ctx, c.inProject(projects[0]))
+		return one(ctx, c.inProject(projects[0]))
 	}
 	type result struct {
 		res []platform.Resource
@@ -227,7 +242,7 @@ func (c *client) eachProject(ctx context.Context, fn func(ctx context.Context, p
 				results[i] = result{err: err}
 				return
 			}
-			res, err := fn(ctx, c.inProject(p))
+			res, err := one(ctx, c.inProject(p))
 			results[i] = result{res: res, err: err}
 		}()
 	}
@@ -246,7 +261,6 @@ func (c *client) eachProject(ctx context.Context, fn func(ctx context.Context, p
 		case rse != nil:
 			out = append(out, r.res...)
 			failures = append(failures, rse.Failures...)
-		case isAPIDisabled(r.err):
 		default:
 			failed++
 			if first == nil {
@@ -269,20 +283,22 @@ func (c *client) eachProject(ctx context.Context, fn func(ctx context.Context, p
 
 // forProjects runs fn with the client of every project the lists of the
 // client cover (listProjects). A project whose API is not enabled is
-// skipped when there are several; any other failure ends the walk, named
-// after its project.
+// skipped (noteOff), unless it is the project of --project; any other
+// failure ends the walk, named after its project when there are several.
 func (c *client) forProjects(ctx context.Context, fn func(pc *client) error) error {
 	projects := c.listProjects()
+	defer c.flushOff()
 	for _, p := range projects {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if err := fn(c.inProject(p)); err != nil {
+			if !c.pinned && isAPIDisabled(err) {
+				c.noteOff(p, err)
+				continue
+			}
 			if len(projects) == 1 {
 				return err
-			}
-			if isAPIDisabled(err) {
-				continue
 			}
 			return fmt.Errorf("project %s: %w", p, err)
 		}

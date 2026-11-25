@@ -56,7 +56,8 @@ func lbTargets(ctx context.Context, rt *app.Runtime, region string, all bool, ke
 		}
 		x, err := c.loadLBIndex(ctx)
 		if err != nil {
-			if len(scopes) > 1 && isAPIDisabled(err) {
+			if !c.pinned && isAPIDisabled(err) {
+				c.noteOff(c.project, err)
 				continue
 			}
 			return nil, fmt.Errorf("%w (%s)", err, sc)
@@ -85,6 +86,7 @@ func lbTargets(ctx context.Context, rt *app.Runtime, region string, all bool, ke
 			}
 		}
 	}
+	flushScopes(scopes)
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].profile != out[j].profile {
 			return out[i].profile < out[j].profile

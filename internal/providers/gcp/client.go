@@ -32,6 +32,8 @@ type client struct {
 	pinned bool
 	email  string
 	method string
+	// cov is shared by every copy of the client (inProject, pin).
+	cov *coverage
 
 	dns     *dns.Service
 	compute *compute.Service
@@ -44,7 +46,7 @@ var _ platform.DNSService = (*client)(nil)
 // newClient builds the API services. opts must carry the credentials
 // (option.WithTokenSource / WithCredentials) and, in tests, the endpoint.
 func newClient(ctx context.Context, project, email, method string, opts ...option.ClientOption) (*client, error) {
-	c := &client{project: project, projects: []string{project}, email: email, method: method}
+	c := &client{project: project, projects: []string{project}, email: email, method: method, cov: &coverage{def: project}}
 	var err error
 	if c.dns, err = dns.NewService(ctx, opts...); err != nil {
 		return nil, fmt.Errorf("init Cloud DNS client: %w", err)
@@ -152,7 +154,7 @@ func (c *client) Sync(ctx context.Context, rt platform.ResourceType) ([]platform
 	default:
 		return nil, fmt.Errorf("%s: %w", rt, platform.ErrNotSupported)
 	}
-	return c.eachProject(ctx, one)
+	return c.eachProject(ctx, apiOfType(rt), one)
 }
 
 // syncZones lists the managed zones of the client's project for the
@@ -162,6 +164,7 @@ func (c *client) syncZones(ctx context.Context) ([]platform.Resource, error) {
 	if err != nil {
 		return nil, err
 	}
+	c.keepZones(zones)
 	res := app.ZoneResources(zones)
 	// Only public zones take part in domain routing: a private zone may
 	// share its dnsName with a public one (split-horizon) and must never
@@ -178,11 +181,15 @@ func (c *client) syncZones(ctx context.Context) ([]platform.Resource, error) {
 }
 
 // syncRecords lists the records of every managed zone of the client's
-// project for the inventory.
+// project for the inventory. The zones are those the zone sync of the
+// same run just listed, when there was one.
 func (c *client) syncRecords(ctx context.Context) ([]platform.Resource, error) {
-	zones, err := c.projectZones(ctx)
-	if err != nil {
-		return nil, err
+	zones, ok := c.takeZones()
+	if !ok {
+		var err error
+		if zones, err = c.projectZones(ctx); err != nil {
+			return nil, err
+		}
 	}
 	var out []platform.Resource
 	for _, z := range zones {
@@ -271,15 +278,17 @@ func isPublicZone(z platform.Zone) bool {
 // ListZones lists every managed zone of the selected projects (of the
 // pinned project alone for a pinned client), ordered by DNS name and then
 // by zone id so split-horizon pairs sort stably. A project that fails
-// fails the list, except one whose Cloud DNS API is not enabled when
-// several are selected, which holds no zones.
+// fails the list, except one whose Cloud DNS API is not enabled, which
+// holds no zones (the project of --project keeps that error).
 func (c *client) ListZones(ctx context.Context) ([]platform.Zone, error) {
 	projects := c.listProjects()
+	defer c.flushOff()
 	var out []platform.Zone
 	for _, p := range projects {
 		zones, err := c.inProject(p).projectZones(ctx)
 		if err != nil {
-			if len(projects) > 1 && isAPIDisabled(err) {
+			if !c.pinned && isAPIDisabled(err) {
+				c.noteOff(p, err)
 				continue
 			}
 			if len(projects) > 1 {

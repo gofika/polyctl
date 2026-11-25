@@ -230,7 +230,8 @@ func resolveLB(ctx context.Context, rt *app.Runtime, ref, region string, all boo
 				continue
 			}
 		}
-		if len(scopes) > 1 && isAPIDisabled(err) {
+		if c != nil && !c.pinned && isAPIDisabled(err) {
+			c.noteOff(c.project, err)
 			continue
 		}
 		rt.Infof("warning: %s: %v", sc, err)
@@ -238,6 +239,7 @@ func resolveLB(ctx context.Context, rt *app.Runtime, ref, region string, all boo
 			firstErr = fmt.Errorf("%s: %w", sc, err)
 		}
 	}
+	flushScopes(scopes)
 	switch len(hits) {
 	case 0:
 		if firstErr != nil {

@@ -259,7 +259,8 @@ func resolveInstance(ctx context.Context, rt *app.Runtime, ref, zone string, all
 			}
 			in, err := c.findInstance(ctx, zone, ref)
 			if err != nil {
-				if len(scopes) > 1 && isAPIDisabled(err) {
+				if !c.pinned && isAPIDisabled(err) {
+					c.noteOff(c.project, err)
 					continue
 				}
 				return nil, err
@@ -268,6 +269,7 @@ func resolveInstance(ctx context.Context, rt *app.Runtime, ref, zone string, all
 				found = append(found, &locatedInstance{c: c, profile: sc.profile, zone: zone, inst: in})
 			}
 		}
+		flushScopes(scopes)
 		if len(found) == 1 {
 			storeInstance(ctx, rt, found[0].c, found[0].profile, found[0].inst)
 			return found[0], nil

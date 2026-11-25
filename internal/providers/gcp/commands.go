@@ -219,7 +219,10 @@ func resolveZone(ctx context.Context, rt *app.Runtime, profile, arg string) (*zo
 		switch {
 		case err == nil:
 			found = append(found, *z)
-		case errors.Is(err, platform.ErrNotFound), len(projects) > 1 && isAPIDisabled(err):
+		case !c.pinned && isAPIDisabled(err):
+			// A project without Cloud DNS holds no zone.
+			c.noteOff(p, err)
+		case errors.Is(err, platform.ErrNotFound):
 			if first == nil {
 				first = err
 			}
@@ -227,6 +230,7 @@ func resolveZone(ctx context.Context, rt *app.Runtime, profile, arg string) (*zo
 			return nil, err
 		}
 	}
+	c.flushOff()
 	if len(found) == 0 {
 		if len(projects) == 1 && first != nil {
 			return nil, first

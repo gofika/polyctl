@@ -145,6 +145,14 @@ func openScope(ctx context.Context, rt *app.Runtime, s scope) (*client, error) {
 	return c.inProject(s.project), nil
 }
 
+// flushScopes tells, once per account, the projects a walk over scopes
+// skipped because an API is not enabled in them (noteOff).
+func flushScopes(scopes []scope) {
+	for _, s := range scopes {
+		flushOffNotes(string(platform.GCP) + "/" + s.profile)
+	}
+}
+
 // scopeLabels names scopes for a message: "gcp/a project p1, gcp/a
 // project p2".
 func scopeLabels(scopes []scope) string {
@@ -253,6 +261,7 @@ func locateProject(ctx context.Context, rt *app.Runtime, c *client, profile, wha
 		ok, err := exists(ctx, pc)
 		if err != nil {
 			if isAPIDisabled(err) {
+				c.noteOff(p, err)
 				continue
 			}
 			return nil, fmt.Errorf("project %s: %w", p, err)
@@ -261,6 +270,7 @@ func locateProject(ctx context.Context, rt *app.Runtime, c *client, profile, wha
 			found = append(found, pc)
 		}
 	}
+	c.flushOff()
 	switch len(found) {
 	case 0:
 		return nil, fmt.Errorf("%w: %s %q in the selected projects of gcp/%s (%s)", platform.ErrNotFound, what, name, profile, strings.Join(projects, ", "))

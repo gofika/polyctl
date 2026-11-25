@@ -396,17 +396,30 @@ func TestLoadBalancerAcrossProjects(t *testing.T) {
 	}
 }
 
-// The lists of a project in which the API is not enabled are empty when
-// several projects are selected, instead of failing the whole list.
+// The lists of a project in which the API is not enabled are empty,
+// instead of failing the whole list: with several projects selected and
+// with that project alone. The user is told once per run.
 func TestListsSkipProjectWithoutTheAPI(t *testing.T) {
 	h := twoProjects(t)
 	h.gce.addVPCs()
 	h.addFirewallIn("proj", "allow-ssh")
-	h.gce.mu.Lock()
-	h.gce.fail = map[string]fakeErr{"/projects/p2/": {code: 403, reason: "accessNotConfigured", message: "Compute Engine API has not been used in project p2 before or it is disabled."}}
-	h.gce.mu.Unlock()
+	off := func(e fakeErr) {
+		h.gce.mu.Lock()
+		h.gce.fail = map[string]fakeErr{"/projects/p2/": e}
+		h.gce.mu.Unlock()
+	}
+	off(fakeErr{code: 403, reason: "accessNotConfigured", message: "Compute Engine API has not been used in project p2 before or it is disabled."})
 	if err := h.run("compute", "firewall", "list"); err != nil || !strings.Contains(h.stdout.String(), "allow-ssh") {
 		t.Errorf("firewall list = %v\n%s", err, h.stdout.String())
+	}
+	want := "note: gcp/lab: skipped 1 project(s) in which an API is not enabled or billing is off: p2 (Compute Engine API); they hold nothing there. To stop asking them: polyctl gcp project remove p2\n"
+	if got := h.stderr.String(); !strings.Contains(got, want) {
+		t.Errorf("stderr = %q\nwant it to hold %q", got, want)
+	}
+	// The second sweep of the run skips it again and does not repeat the
+	// note.
+	if err := h.run("compute", "network", "list"); err != nil || strings.Contains(h.stderr.String(), "skipped") {
+		t.Errorf("network list = %v, stderr %q; want the note once per run", err, h.stderr.String())
 	}
 	if reps, err := h.sync(platform.ResInstance); err != nil || reps[0].Err != nil {
 		t.Errorf("sync = %+v, %v", reps, err)
@@ -417,6 +430,57 @@ func TestListsSkipProjectWithoutTheAPI(t *testing.T) {
 	// Pinned to it, the answer is the error it is.
 	if err := h.run("compute", "firewall", "list", "--project", "p2"); exitClass(err) != "auth" {
 		t.Errorf("list --project p2 = %v", err)
+	}
+
+	// That project alone, its billing off: every sweep is empty, exit
+	// code 0, and the default project is not offered for removal.
+	resetOffNotes()
+	h.selectProjects("p2", "p2")
+	off(fakeErr{code: 403, reason: "billingNotEnabled", message: "This API method requires billing to be enabled."})
+	for _, args := range [][]string{
+		{"compute", "firewall", "list"},
+		{"compute", "network", "list"},
+		{"compute", "subnet", "list"},
+		{"compute", "load-balancer", "list"},
+		{"compute", "ssl-certificate", "list"},
+		{"compute", "instance", "list"},
+	} {
+		h.rt.Flags.Refresh = args[1] == "instance"
+		if err := h.run(args...); err != nil {
+			t.Errorf("%v with one project whose billing is off = %v, want no error", args, err)
+		}
+		if out := strings.TrimSpace(h.stdout.String()); out != "[]" && !strings.Contains(out, `"instances": []`) {
+			t.Errorf("%v printed %s, want an empty list", args, out)
+		}
+	}
+	h.rt.Flags.Refresh = false
+	if err := h.run("compute", "firewall", "list"); err != nil || strings.Contains(h.stderr.String(), "skipped") {
+		t.Errorf("stderr of a later sweep = %q (%v); want the note once per run", h.stderr.String(), err)
+	}
+	resetOffNotes()
+	if err := h.run("compute", "firewall", "list"); err != nil {
+		t.Fatal(err)
+	}
+	want = "note: gcp/lab: skipped 1 project(s) in which an API is not enabled or billing is off: p2 (an API); they hold nothing there.\n"
+	if got := h.stderr.String(); !strings.HasPrefix(got, want) {
+		t.Errorf("stderr = %q\nwant it to start with %q", got, want)
+	}
+	if reps, err := h.sync(platform.ResInstance, platform.ResLoadBalancer, platform.ResEIP, platform.ResCertificate); err != nil {
+		t.Errorf("sync = %v", err)
+	} else {
+		for _, r := range reps {
+			if r.Err != nil || r.Count != 0 {
+				t.Errorf("sync of %s = %d rows, %v; want nothing and no error", r.Type, r.Count, r.Err)
+			}
+		}
+	}
+	// Any other refusal is still the failure it is.
+	off(fakeErr{code: 403, reason: "forbidden", message: "Required 'compute.firewalls.list' permission for 'projects/p2'"})
+	if err := h.run("compute", "firewall", "list"); exitClass(err) != "auth" {
+		t.Errorf("permission denied = %v, want an authentication error", err)
+	}
+	if err := h.run("compute", "firewall", "list", "--project", "p2"); exitClass(err) != "auth" {
+		t.Errorf("pinned, permission denied = %v", err)
 	}
 }
 

@@ -181,6 +181,7 @@ func (*provider) Open(ctx context.Context, p platform.Profile) (platform.Client,
 		return nil, err
 	}
 	c.projects = selectedProjects(p.Metadata)
+	c.cov.profile = p.Name
 	return c, nil
 }
 
