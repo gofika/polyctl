@@ -395,3 +395,40 @@ func TestOptionColumnsAlign(t *testing.T) {
 		t.Errorf("wide characters: %q", got)
 	}
 }
+
+// The title of a list, and the line below it, start in the column of the
+// option labels.
+func TestTitlesStartWhereLabelsStart(t *testing.T) {
+	opts := huhOptions([]Option{{Label: "alpha", Value: "1"}, {Label: "beta", Value: "2"}}, 60)
+	var one string
+	var many []string
+	single := huh.NewSelect[string]().Title(selectIndent + "Pick one").Options(opts...).Value(&one)
+	multi, _ := multiSelectField("Pick many", opts, &many, 80, 24)
+	for name, tc := range map[string]struct {
+		field huh.Field
+		heads []string
+	}{
+		"select":       {single, []string{"Pick one"}},
+		"multi-select": {multi, []string{"Pick many", tickHint}},
+	} {
+		form := huh.NewForm(huh.NewGroup(tc.field)).WithTheme(huh.ThemeFunc(theme))
+		form.Init()
+		form.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+		view := ansi.Strip(form.View())
+		col := func(text string) int {
+			for _, line := range strings.Split(view, "\n") {
+				if i := strings.Index(line, text); i >= 0 {
+					return ansi.StringWidth(line[:i])
+				}
+			}
+			t.Fatalf("%s: %q is not in the view:\n%s", name, text, view)
+			return -1
+		}
+		want := col("beta")
+		for _, h := range tc.heads {
+			if got := col(h); got != want {
+				t.Errorf("%s: %q starts in column %d, the labels in column %d:\n%s", name, h, got, want, view)
+			}
+		}
+	}
+}

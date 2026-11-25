@@ -657,6 +657,11 @@ func visibleRows(n, termRows, headRows int) int {
 const (
 	selectPrefix      = 4 // "┃ > "
 	multiSelectPrefix = 6 // "┃ > • "
+
+	// The title of a list, and the line below it, start in the column the
+	// option labels start in: past the cursor, and past the tick box.
+	selectIndent      = "  "
+	multiSelectIndent = "    "
 )
 
 // labelWidth is how many columns an option label may take after a prefix of
@@ -767,7 +772,7 @@ func orderValues(opts []Option, chosen []string) []string {
 }
 
 func (p *terminalPicker) Select(title string, opts []Option, def string) (string, error) {
-	title = output.Clean(title)
+	title = selectIndent + output.Clean(title)
 	if len(opts) == 0 {
 		return "", errors.New("nothing to choose from")
 	}
@@ -861,19 +866,21 @@ func (g *tickGuard) remind(on bool) {
 // multiSelectField builds the multi-select field for a terminal of cols by
 // termRows, and the guard asked before Enter confirms.
 func multiSelectField(title string, opts []huh.Option[string], values *[]string, cols, termRows int) (*huh.MultiSelect[string], *tickGuard) {
+	title = multiSelectIndent + title
 	field := huh.NewMultiSelect[string]().Title(title).Options(opts...).Value(values)
 	// The height counts the title and description rows too, however many
 	// rows they wrap to; without an explicit one short lists are cut off.
 	// The option rows are sized for the longer description, so that showing
 	// it never hides an option.
 	titleRows := textRows(title, cols)
-	rows := visibleRows(len(opts), termRows, titleRows+max(textRows(tickHint, cols), textRows(tickReminder, cols)))
+	rows := visibleRows(len(opts), termRows, titleRows+max(textRows(multiSelectIndent+tickHint, cols), textRows(multiSelectIndent+tickReminder, cols)))
 	guard := &tickGuard{
 		ticked: func() bool {
 			v, ok := field.GetValue().([]string)
 			return ok && len(v) > 0
 		},
 		describe: func(text string) {
+			text = multiSelectIndent + text
 			field.Description(text)
 			field.Height(rows + titleRows + textRows(text, cols))
 		},
