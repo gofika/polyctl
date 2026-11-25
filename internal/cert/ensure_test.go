@@ -16,6 +16,7 @@ import (
 
 	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/cert/certtest"
+	"github.com/gofika/polyctl/internal/fsutil"
 	"github.com/gofika/polyctl/internal/platform"
 )
 
@@ -691,5 +692,109 @@ func TestEnsureNamesRefusingDNSAccount(t *testing.T) {
 		if !errors.Is(err, cause) || !strings.Contains(err.Error(), "DNS account cloudflare/acme") {
 			t.Fatalf("%v: err = %v", cause, err)
 		}
+	}
+}
+
+// failRename makes renameDir fail for the moves match accepts, until the
+// test ends.
+func failRename(t *testing.T, match func(from, to string) bool) {
+	t.Helper()
+	old := renameDir
+	renameDir = func(from, to string) error {
+		if match(from, to) {
+			return &os.LinkError{Op: "rename", Old: from, New: to, Err: os.ErrPermission}
+		}
+		return old(from, to)
+	}
+	t.Cleanup(func() { renameDir = old })
+}
+
+func restoreRename(t *testing.T) {
+	t.Helper()
+	renameDir = fsutil.Rename
+}
+
+// A certificate the CA issued but Save could not install (the archive
+// cannot be written) is installed by the next run, without a new order.
+func TestEnsureInstallsKeptCertificateAfterSaveFailure(t *testing.T) {
+	fx := newEnsureFixture(t)
+	old := fx.seedCert(t, Names("example.com"), 5*24*time.Hour, KeyEC256)
+	failRename(t, func(from, to string) bool { return strings.Contains(to, "archive") })
+	if _, err := Ensure(context.Background(), fx.env, fx.opts()); err == nil || !strings.Contains(err.Error(), "without a new order") {
+		t.Fatalf("save failure: %v", err)
+	}
+	kept, err := fx.env.Store.LoadPendingBundle("example.com")
+	if err != nil || kept == nil || kept.Serial == old.Serial {
+		t.Fatalf("kept = %+v, %v", kept, err)
+	}
+	if staging, _ := fx.env.Store.stagingDirs("example.com"); len(staging) != 0 {
+		t.Errorf("staging left: %v", staging)
+	}
+	restoreRename(t)
+	res, err := Ensure(context.Background(), fx.env, fx.opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fx.iss.obtains != 1 || res.Bundle.Serial != kept.Serial || res.Changes[len(res.Changes)-1].Action != platform.Updated {
+		t.Fatalf("obtains %d, serial %s want %s, changes %+v", fx.iss.obtains, res.Bundle.Serial, kept.Serial, res.Changes)
+	}
+	if _, err := os.Stat(filepath.Dir(fx.env.Store.PendingKeyPath("example.com"))); !os.IsNotExist(err) {
+		t.Error("pending directory kept after the install")
+	}
+	if h := historyLines(t, fx.env.Store); len(h) != 1 || !strings.Contains(h[0], kept.Serial) {
+		t.Errorf("history = %v", h)
+	}
+}
+
+// --force orders a new certificate instead of installing the kept one.
+func TestEnsureForceIgnoresKeptCertificate(t *testing.T) {
+	fx := newEnsureFixture(t)
+	fx.seedCert(t, Names("example.com"), 5*24*time.Hour, KeyEC256)
+	failRename(t, func(from, to string) bool { return strings.Contains(to, "archive") })
+	if _, err := Ensure(context.Background(), fx.env, fx.opts()); err == nil {
+		t.Fatal("save did not fail")
+	}
+	restoreRename(t)
+	o := fx.opts()
+	o.Force = true
+	if _, err := Ensure(context.Background(), fx.env, o); err != nil || fx.iss.obtains != 2 {
+		t.Fatalf("force: %v, obtains %d", err, fx.iss.obtains)
+	}
+}
+
+// Interrupted between the two renames of Save (live archived, the new
+// bundle still in staging): the next run restores the new bundle, not the
+// archived one, and orders nothing.
+func TestEnsureRestoresStagingAfterInterruptedInstall(t *testing.T) {
+	fx := newEnsureFixture(t)
+	fx.seedCert(t, Names("example.com"), 5*24*time.Hour, KeyEC256)
+	failRename(t, func(from, to string) bool { return strings.Contains(from, ".staging-") })
+	if _, err := Ensure(context.Background(), fx.env, fx.opts()); err == nil {
+		t.Fatal("install did not fail")
+	}
+	staging, _ := fx.env.Store.stagingDirs("example.com")
+	if len(staging) != 1 {
+		t.Fatalf("staging = %v", staging)
+	}
+	issued, err := fx.env.Store.loadDir("example.com", staging[0], false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoreRename(t)
+	res, err := Ensure(context.Background(), fx.env, fx.opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fx.iss.obtains != 1 || res.Bundle.Serial != issued.Serial || res.Changes[0].Action != platform.Unchanged {
+		t.Fatalf("obtains %d, serial %s want %s, changes %+v", fx.iss.obtains, res.Bundle.Serial, issued.Serial, res.Changes)
+	}
+	if left, _ := fx.env.Store.stagingDirs("example.com"); len(left) != 0 {
+		t.Errorf("staging left: %v", left)
+	}
+	if _, err := os.Stat(filepath.Dir(fx.env.Store.PendingKeyPath("example.com"))); !os.IsNotExist(err) {
+		t.Error("pending directory of the restored certificate kept")
+	}
+	if !strings.Contains(strings.Join(fx.infos, "\n"), "restored it from") {
+		t.Errorf("no warning: %v", fx.infos)
 	}
 }

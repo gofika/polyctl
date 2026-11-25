@@ -218,14 +218,14 @@ Reads the store only: names, subject, issuer, serial, validity, days left, key t
   accounts/<CA host>/<id>/           account.key (0600), account.json
   live/<root>/                       fullchain.pem  cert.pem  chain.pem  privkey.pem (0600, PKCS#8)  meta.json
   archive/<root>/<UTC time>/         the last 3 previous bundles
-  pending/<root>/privkey.pem         the key of an issuance in progress
+  pending/<root>/                    privkey.pem of an issuance in progress, and fullchain.pem once issued, until installed
   locks/<root>.lock
   challenges/<root>.json             challenge records written and not deleted yet (0600)
   history.log                        one JSON line per certificate created, updated or deployed
   ca/<host>/...                      store of any other CA (staging)
 ```
 
-Replacements are atomic. A private key readable by others is reported and fixed to `0600` by `cert ensure`.
+Replacements are atomic: the new bundle is written to `live/.<root>.staging-<pid>/`, the current one moved to the archive, and the staging directory renamed to `live/<root>/` (on Windows a rename blocked by another process, such as an antivirus scan, is tried again for about a second). A certificate the CA issued is kept in `pending/<root>/` until it is installed: when installing fails, the next `cert ensure` installs it without ordering another one (unless `--force`, or it no longer has more than `--days` days left), which spares the CA's duplicate-certificate limit. When a run was interrupted between the two renames, the next `cert ensure` restores `live/<root>/` from the complete staging directory (the new certificate), else from the newest archived bundle, and removes staging directories left by interrupted runs. A private key readable by others is reported and fixed to `0600` by `cert ensure`.
 
 ## Deploying certificates
 

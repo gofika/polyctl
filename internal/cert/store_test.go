@@ -323,3 +323,50 @@ func TestStoreSaveInstallFailureKeepsStaging(t *testing.T) {
 		t.Errorf("staging directory removed: %v", serr)
 	}
 }
+
+// Staging directories an interrupted or failed Save left hold private keys:
+// a read-only Load flags them, a repairing Load and Save remove them.
+func TestStoreRemovesLeftoverStaging(t *testing.T) {
+	ca := certtest.New("Fake R1")
+	st := OpenStore(t.TempDir(), LetsEncryptProduction)
+	if err := st.Save(testBundle(t, ca, "example.com", Names("example.com"), time.Now().Add(80*24*time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	liveDir := filepath.Join(st.Base, "live")
+	partial := filepath.Join(liveDir, ".example.com.staging-4242")
+	other := filepath.Join(liveDir, ".example.com.staging-x") // not a staging name
+	for _, d := range []string{partial, other} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(partial, filePrivKey), []byte("key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b, err := st.Load("example.com", false)
+	if err != nil || !b.NeedsRepair {
+		t.Fatalf("read-only load = %+v, %v", b, err)
+	}
+	if _, err := os.Stat(partial); err != nil {
+		t.Fatal("read-only load removed a staging directory")
+	}
+	if b, err = st.Load("example.com", true); err != nil || b.NeedsRepair {
+		t.Fatalf("repair load = %+v, %v", b, err)
+	}
+	if _, err := os.Stat(partial); !os.IsNotExist(err) {
+		t.Error("staging directory kept by the repair")
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Error("a directory that is not a staging one was removed")
+	}
+	// Save removes the staging directories of other processes too.
+	if err := os.MkdirAll(partial, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Save(testBundle(t, ca, "example.com", Names("example.com"), time.Now().Add(85*24*time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(partial); !os.IsNotExist(err) {
+		t.Error("staging directory kept by Save")
+	}
+}

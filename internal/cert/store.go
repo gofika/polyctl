@@ -48,7 +48,8 @@ const archiveKeep = 3
 //	  accounts/<ca host>/<id>/  account.json, account.key (0600)
 //	  live/<root>/              fullchain.pem cert.pem chain.pem privkey.pem (0600) meta.json
 //	  archive/<root>/<time>/    the bundles live/<root> held before (the last 3)
-//	  pending/<root>/           privkey.pem of an issuance in progress
+//	  pending/<root>/           privkey.pem of an issuance in progress, and
+//	                            fullchain.pem once issued, until installed
 //	  locks/<root>.lock         serializes the issuance of one root domain
 //	  challenges/<root>.json    challenge records written and not deleted yet
 //	  history.log               one JSON line per certificate created or updated
@@ -114,6 +115,12 @@ func (s *Store) PendingKeyPath(root string) string {
 	return filepath.Join(s.Base, "pending", root, filePrivKey)
 }
 
+// PendingChainPath is the certificate chain the CA issued for the pending
+// key of root, kept until it is installed.
+func (s *Store) PendingChainPath(root string) string {
+	return filepath.Join(s.Base, "pending", root, fileFullchain)
+}
+
 // LockPath is the lock file of root.
 func (s *Store) LockPath(root string) string { return filepath.Join(s.Dir, "locks", root+".lock") }
 
@@ -132,21 +139,36 @@ type meta struct {
 // Load reads the bundle of root, or returns nil when the store has none.
 // The bundle is checked: certificate and key must parse and belong
 // together, otherwise the error is ErrCorrupt. With repair, a private key
-// readable by others is made 0600, and a live directory that is missing
-// while the archive holds a bundle (an interrupted replacement) is
-// restored from the newest archived one; both are reported through Warnf.
-// Without repair nothing is written: the same states are only reported, and
-// the archived bundle is returned from where it is.
+// readable by others is made 0600; a live directory that is missing (an
+// interrupted replacement) is restored from the newest complete staging
+// directory a Save left, else from the newest archived bundle; and staging
+// directories left by interrupted or failed Saves are removed. All of these
+// are reported through Warnf. Repair is only asked for under the lock of
+// root, so no Save is writing a staging directory meanwhile. Without repair
+// nothing is written: the same states are only reported (NeedsRepair), and
+// a restorable bundle is returned from where it is.
 func (s *Store) Load(root string, repair bool) (*Bundle, error) {
 	live := s.LivePath(root)
+	stagings, err := s.stagingDirs(root)
+	if err != nil {
+		return nil, err
+	}
 	if _, err := os.Stat(live); errors.Is(err, fs.ErrNotExist) {
-		latest, err := s.latestArchive(root)
-		if err != nil || latest == "" {
-			return nil, err
+		src := s.newestStaging(root, stagings)
+		if src == "" {
+			if src, err = s.latestArchive(root); err != nil {
+				return nil, err
+			}
+		}
+		if src == "" {
+			if repair {
+				s.removeStagings(stagings, "")
+			}
+			return nil, nil
 		}
 		if !repair {
-			s.warnf("warning: %s is missing; the newest archived certificate %s is used (the next `cert ensure` restores it)", live, latest)
-			b, err := s.loadDir(root, latest, false)
+			s.warnf("warning: %s is missing; the certificate in %s is used (the next `cert ensure` restores it)", live, src)
+			b, err := s.loadDir(root, src, false)
 			if b != nil {
 				b.NeedsRepair = true
 			}
@@ -155,14 +177,98 @@ func (s *Store) Load(root string, repair bool) (*Bundle, error) {
 		if err := os.MkdirAll(filepath.Dir(live), 0o700); err != nil {
 			return nil, err
 		}
-		if err := renameDir(latest, live); err != nil {
-			return nil, fmt.Errorf("restore %s from %s: %w", live, latest, err)
+		if err := renameDir(src, live); err != nil {
+			return nil, fmt.Errorf("restore %s from %s: %w", live, src, err)
 		}
-		s.warnf("warning: %s was missing (an interrupted replacement); restored it from %s", live, latest)
+		s.warnf("warning: %s was missing (an interrupted replacement); restored it from %s", live, src)
+		s.removeStagings(stagings, src)
+		b, err := s.loadDir(root, live, repair)
+		if b != nil {
+			s.dropPendingOf(root, b)
+		}
+		return b, err
 	} else if err != nil {
 		return nil, err
 	}
-	return s.loadDir(root, live, repair)
+	if repair {
+		s.removeStagings(stagings, "")
+	}
+	b, err := s.loadDir(root, live, repair)
+	if b != nil && !repair && len(stagings) > 0 {
+		// Under the lock, the next `cert ensure` removes them.
+		b.NeedsRepair = true
+	}
+	return b, err
+}
+
+// stagingDirs lists the staging directories Saves of root left in live/
+// (.<root>.staging-<pid>).
+func (s *Store) stagingDirs(root string) ([]string, error) {
+	dir := filepath.Join(s.Base, "live")
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	prefix := "." + root + ".staging-"
+	var out []string
+	for _, e := range entries {
+		pid, ok := strings.CutPrefix(e.Name(), prefix)
+		if !ok || !e.IsDir() || pid == "" || strings.Trim(pid, "0123456789") != "" {
+			continue
+		}
+		out = append(out, filepath.Join(dir, e.Name()))
+	}
+	return out, nil
+}
+
+// newestStaging returns the staging directory that holds every file of a
+// bundle that loads, the one expiring last, or "".
+func (s *Store) newestStaging(root string, dirs []string) string {
+	best, bestAfter := "", time.Time{}
+	for _, d := range dirs {
+		complete := true
+		for _, f := range []string{fileFullchain, fileCert, fileChain, filePrivKey, fileMeta} {
+			if _, err := os.Stat(filepath.Join(d, f)); err != nil {
+				complete = false
+				break
+			}
+		}
+		if !complete {
+			continue
+		}
+		b, err := s.loadDir(root, d, false)
+		if err != nil || b == nil || !b.NotAfter.After(bestAfter) {
+			continue
+		}
+		best, bestAfter = d, b.NotAfter
+	}
+	return best
+}
+
+// removeStagings deletes leftover staging directories (they hold private
+// keys), except keep.
+func (s *Store) removeStagings(dirs []string, keep string) {
+	for _, d := range dirs {
+		if d == keep {
+			continue
+		}
+		if err := os.RemoveAll(d); err != nil {
+			s.warnf("warning: cannot remove the leftover staging directory %s: %v", d, err)
+			continue
+		}
+		s.warnf("warning: removed the leftover staging directory %s", d)
+	}
+}
+
+// dropPendingOf removes the pending issuance of root when b, now installed,
+// is its certificate (same key).
+func (s *Store) dropPendingOf(root string, b *Bundle) {
+	if k, err := s.LoadPendingKey(root); err == nil && k != nil && samePublicKey(k.Public(), b.Key.Public()) {
+		_ = os.RemoveAll(filepath.Dir(s.PendingKeyPath(root)))
+	}
 }
 
 func (s *Store) loadDir(root, dir string, repair bool) (*Bundle, error) {
@@ -262,8 +368,14 @@ func (s *Store) Save(b *Bundle) error {
 	if err := mkdirs(s.Dir, liveDir); err != nil {
 		return err
 	}
+	// Save runs under the lock of root: any staging directory of root is
+	// left from an interrupted or failed Save, and holds a private key.
+	if old, err := s.stagingDirs(root); err == nil {
+		for _, d := range old {
+			_ = os.RemoveAll(d)
+		}
+	}
 	staging := filepath.Join(liveDir, fmt.Sprintf(".%s.staging-%d", root, os.Getpid()))
-	_ = os.RemoveAll(staging)
 	if err := os.Mkdir(staging, 0o700); err != nil {
 		return err
 	}
@@ -348,7 +460,44 @@ func (s *Store) SavePendingKey(root string, key crypto.Signer) error {
 	if err := mkdirs(s.Dir, filepath.Dir(path)); err != nil {
 		return err
 	}
+	// A chain kept from an earlier order is not installed any more once a
+	// new one is placed.
+	if err := os.Remove(s.PendingChainPath(root)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
 	return writeFileSync(path, data, 0o600)
+}
+
+// SavePendingChain keeps the certificate chain the CA issued for the pending
+// key of root until Save installs it: when installing fails, the next run
+// installs it instead of ordering another certificate.
+func (s *Store) SavePendingChain(root string, chain []byte) error {
+	path := s.PendingChainPath(root)
+	if err := mkdirs(s.Dir, filepath.Dir(path)); err != nil {
+		return err
+	}
+	return writeFileSync(path, chain, 0o600)
+}
+
+// LoadPendingBundle returns the certificate a previous run obtained for the
+// pending key of root and could not install, or nil. A chain that does not
+// belong to the pending key is an error.
+func (s *Store) LoadPendingBundle(root string) (*Bundle, error) {
+	chain, err := os.ReadFile(s.PendingChainPath(root))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	key, err := os.ReadFile(s.PendingKeyPath(root))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return NewBundle(root, chain, key)
 }
 
 // ChallengeRecord is a DNS-01 challenge record polyctl wrote.

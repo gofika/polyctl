@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -488,6 +489,10 @@ func findAccount(st *Store, email string) (*Account, string, error) {
 // obtain issues the certificate and installs it in the store.
 func obtain(ctx context.Context, env *Env, o EnsureOptions, route *Route, acct *Account, root string, cur *Bundle) (*Bundle, error) {
 	st := env.Store
+	if b := pendingBundle(st, o, root, cur, env); b != nil {
+		env.infof("installing the certificate (serial %s) an earlier run obtained and could not install, kept in %s; no new order", b.Serial, st.PendingChainPath(root))
+		return install(ctx, env, root, cur, b)
+	}
 	key, err := issuanceKey(st, o, root, cur, env)
 	if err != nil {
 		return nil, err
@@ -531,8 +536,20 @@ func obtain(ctx context.Context, env *Env, o EnsureOptions, route *Route, acct *
 	if !b.NotAfter.After(env.now()) {
 		return nil, fmt.Errorf("the CA's certificate expired at %s (the store was not changed)", b.NotAfter.Format(time.RFC3339))
 	}
+	// Kept with the pending key until it is installed: when Save fails, the
+	// next run installs this certificate instead of ordering another one.
+	if err := st.SavePendingChain(root, chain); err != nil {
+		env.infof("warning: cannot keep the issued certificate at %s: %v", st.PendingChainPath(root), err)
+	}
+	return install(ctx, env, root, cur, b)
+}
+
+// install makes b the live bundle of root, then records it in history.log
+// and the inventory.
+func install(ctx context.Context, env *Env, root string, cur, b *Bundle) (*Bundle, error) {
+	st := env.Store
 	if err := st.Save(b); err != nil {
-		return nil, fmt.Errorf("install the certificate (the private key is kept at %s): %w", st.PendingKeyPath(root), err)
+		return nil, fmt.Errorf("install the certificate (it is kept with its private key in %s; the next run installs it without a new order): %w", filepath.Dir(st.PendingKeyPath(root)), err)
 	}
 	action := "updated"
 	if cur == nil {
@@ -547,10 +564,30 @@ func obtain(ctx context.Context, env *Env, o EnsureOptions, route *Route, acct *
 	return b, nil
 }
 
+// pendingBundle returns the certificate an earlier run obtained and could
+// not install, when it is still good enough: it holds both names, has the
+// requested key type and more than o.Days days left, and is not the live
+// certificate. --force orders a new one instead.
+func pendingBundle(st *Store, o EnsureOptions, root string, cur *Bundle, env *Env) *Bundle {
+	if o.Force {
+		return nil
+	}
+	b, err := st.LoadPendingBundle(root)
+	if err != nil {
+		env.infof("warning: the certificate kept at %s cannot be used (%v); ordering a new one", st.PendingChainPath(root), err)
+		return nil
+	}
+	if b == nil || !b.CoversRoot() || b.KeyType != o.KeyType || b.DaysLeft(env.now()) <= o.Days ||
+		(cur != nil && cur.Serial == b.Serial) {
+		return nil
+	}
+	return b
+}
+
 // issuanceKey picks the private key of the new certificate: the pending
-// key an interrupted run left (so that a certificate the CA did issue
-// still matches a key we have), else with reuse_key the current one, else
-// a new key.
+// key an interrupted run left (an order may have reached the CA; reusing
+// the key keeps a certificate it issued usable), else with reuse_key the
+// current one, else a new key.
 func issuanceKey(st *Store, o EnsureOptions, root string, cur *Bundle, env *Env) (crypto.Signer, error) {
 	pending, err := st.LoadPendingKey(root)
 	if err != nil {
