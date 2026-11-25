@@ -441,3 +441,51 @@ func TestPurgeTreeChildRows(t *testing.T) {
 		t.Errorf("records after the second PurgeTree = %v, want none", got)
 	}
 }
+
+// A partial sync keeps the state of the scopes of the rows it keeps: the
+// records of a zone of the account that failed are still served to a read
+// of that zone that cannot go online. The scopes of what was replaced or is
+// gone lose theirs or get a new one.
+func TestReplaceKeepingTreesKeepsScopeStates(t *testing.T) {
+	db, _ := openDB(t)
+	zones := inventory.Set{Platform: platform.Cloudflare, Profile: "a", Type: platform.ResZone}
+	recs := inventory.Set{Platform: platform.Cloudflare, Profile: "a", Type: platform.ResDNSRecord}
+	scope := func(id string) inventory.Set {
+		s := recs
+		s.Scope = id
+		return s
+	}
+	if err := db.Replace(ctx, zones, []platform.Resource{
+		cfZone("z1", "acc1", "one.example"),
+		cfZone("z2", "acc2", "two.example"),
+		cfZone("z3", "acc2", "three.example"),
+	}, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Replace(ctx, recs, []platform.Resource{
+		ipRes(platform.ResDNSRecord, "r1", "z1", ref(platform.IPInternal, "10.0.0.1")),
+		ipRes(platform.ResDNSRecord, "r2", "z2", ref(platform.IPInternal, "10.0.0.2")),
+		ipRes(platform.ResDNSRecord, "r4", "z-gone", ref(platform.IPInternal, "10.0.0.4")),
+	}, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	// z3 has no record: its scope was synced on its own.
+	if err := db.Replace(ctx, scope("z3"), nil, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	// acc2 failed as a whole; acc1 answered.
+	if err := db.ReplaceKeepingTrees(ctx, recs, []platform.Resource{
+		ipRes(platform.ResDNSRecord, "r1", "z1", ref(platform.IPInternal, "10.0.0.9")),
+	}, time.Hour, nil, []string{"acc2"}); err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string]bool{"z1": true, "z2": true, "z3": true, "z-gone": false} {
+		st, err := db.GetState(ctx, scope(id))
+		if err != nil || (st != nil) != want {
+			t.Errorf("state of the records of %s = %+v, %v; want one: %v", id, st, err, want)
+		}
+	}
+	if st, err := db.GetState(ctx, recs); err != nil || st == nil || st.Fresh(time.Now()) {
+		t.Errorf("state of the whole set = %+v, %v; want stale", st, err)
+	}
+}

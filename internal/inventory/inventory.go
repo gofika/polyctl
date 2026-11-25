@@ -352,13 +352,16 @@ func (d *DB) replace(ctx context.Context, s Set, resources []platform.Resource, 
 		if _, err := tx.ExecContext(ctx, `DELETE FROM resources WHERE platform=? AND profile=? AND resource_type=? AND NOT `+cond, args...); err != nil {
 			return err
 		}
+		// The state of the scopes of the kept parents stays with their
+		// rows: a read of one of them that cannot go online is still
+		// answered from what is stored.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM sync_state WHERE platform=? AND profile=? AND resource_type=? AND NOT `+strings.ReplaceAll(cond, "parent_id", "scope"), args...); err != nil {
+			return err
+		}
 		if len(trees) > 0 {
 			if err := dropTreeRows(ctx, tx); err != nil {
 				return err
 			}
-		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM sync_state WHERE platform=? AND profile=? AND resource_type=?`, string(s.Platform), s.Profile, string(s.Type)); err != nil {
-			return err
 		}
 	} else if s.Scope == "" {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM resources WHERE platform=? AND profile=? AND resource_type=?`, string(s.Platform), s.Profile, string(s.Type)); err != nil {
