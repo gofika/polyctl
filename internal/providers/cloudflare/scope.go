@@ -457,10 +457,12 @@ func (c zoneCand) String() string {
 }
 
 // cells is the candidate as an option of the pick that settles the lookup:
-// "<zone id>  active  account acc1  Acme  cloudflare/work". A fact the
-// candidate does not have shows "-" in its cell.
+// "cloudflare/work  <zone id>  active  account acc1  Acme". A fact the
+// candidate does not have shows "-" in its cell. The profile comes first:
+// one zone seen through two logins differs in nothing else, and a label is
+// cut at its end when the terminal is narrower than its cells.
 func (c zoneCand) cells() string {
-	return prompt.Cells(append(c.factCells(), "cloudflare/"+c.profile)...)
+	return prompt.Cells(append([]string{"cloudflare/" + c.profile}, c.factCells()...)...)
 }
 
 // factCells are the cells of the candidate other than its profile: the
