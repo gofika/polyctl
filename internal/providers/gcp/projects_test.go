@@ -764,3 +764,31 @@ func TestHelpOfNameLookupsNamesProjectAmbiguity(t *testing.T) {
 		}
 	}
 }
+
+// Removing the default project when one other project stays: the
+// non-interactive flow still needs --default (nothing is assumed), the
+// interactive flow makes the one that stays the default without a
+// question. Without a project id, use and add list the visible projects,
+// which --offline cannot.
+func TestProjectRemoveDefaultWithOneLeft(t *testing.T) {
+	h, _ := multiDNS(t)
+	h.nonInteractive()
+	meta := func() string { m := h.labMeta(); return m["project"] + " [" + m["projects"] + "]" }
+	err := h.run("project", "remove", "p1")
+	if exitClass(err) != "usage" || !has(err, "--default <id>", "one of: p2") || meta() != "p1 [p1,p2]" {
+		t.Fatalf("non-interactive remove of the default = %v, %s", err, meta())
+	}
+	p := h.interactive()
+	if err := h.run("project", "remove", "p1"); err != nil || meta() != "p2 []" || !strings.Contains(h.stderr.String(), "project p2 is now the default project") {
+		t.Fatalf("interactive remove of the default = %v, %s / %s", err, meta(), h.stderr.String())
+	}
+	if len(p.Asked) != 0 {
+		t.Errorf("asked %v", p.Titles())
+	}
+	h.rt.Flags.Offline = true
+	for _, sub := range []string{"use", "add"} {
+		if err := h.run("project", sub); exitClass(err) != "offline" {
+			t.Errorf("project %s --offline without an id = %v", sub, err)
+		}
+	}
+}
