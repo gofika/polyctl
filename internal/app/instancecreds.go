@@ -286,9 +286,6 @@ func InstancePasswordCommand(rt *Runtime, pc PasswordCommand) *cobra.Command {
 	if pc.LocationFlag != "" {
 		long += " or --" + pc.LocationFlag
 	}
-	if pc.Pinned != nil {
-		long += ";\n--project chooses among instances of one name in several projects"
-	}
 	long += "). An instance with no\nstored credentials is exit code 4; credentials that cannot be decrypted (the\n" +
 		"data key was removed from the credential store) are exit code 1."
 	if pc.Detail != "" {
