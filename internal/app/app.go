@@ -35,7 +35,10 @@ type Flags struct {
 	Platform string
 	// Project pins the Google Cloud project of one call (--project on the
 	// gcp dns and gcp compute commands). No other platform reads it.
-	Project   string
+	Project string
+	// Account is --account of the cloudflare resource commands (zones,
+	// dns, cache, rules, r2). No other platform reads it.
+	Account   string
 	Refresh   bool
 	Offline   bool
 	Output    string
