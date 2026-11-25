@@ -437,6 +437,7 @@ func sweepProjects[T any](ctx context.Context, c *client, fn func(ctx context.Co
 			out = append(out, r.res...)
 		case !c.pinned && isAPIDisabled(r.err):
 			c.noteOff(r.project, r.err)
+			c.markSkipped(r.project)
 		case len(projects) == 1:
 			return nil, r.err
 		default:
@@ -460,9 +461,11 @@ func projectNames(projects []string) string {
 }
 
 // projectsLabel names the projects the lists of the client cover:
-// "project p1", "projects p1, p2", or "7 projects" beyond three.
+// "project p1", "projects p1, p2", or "7 projects" beyond three. The
+// projects a list skipped for an API that is not enabled are left out.
 func (c *client) projectsLabel(ctx context.Context) string {
 	projects, err := c.sweep(ctx)
+	projects = c.answered(projects)
 	switch {
 	case err != nil:
 		return "project " + c.project

@@ -44,6 +44,10 @@ type coverage struct {
 	// API is not enabled (or billing is off), so that the later types of
 	// one sync do not ask them again.
 	off map[string]bool
+	// skipped are the projects a live list left out because the API is
+	// not enabled in them, so that its status line counts the projects
+	// that answered (projectsLabel).
+	skipped map[string]bool
 	// zones holds the managed zones the zone sync listed, per project,
 	// for the record sync that follows it.
 	zones map[string][]platform.Zone
@@ -86,6 +90,39 @@ func (c *client) markOff(project, api string) {
 		c.cov.off = map[string]bool{}
 	}
 	c.cov.off[project+"/"+api] = true
+}
+
+// markSkipped remembers that a live list left the project out.
+func (c *client) markSkipped(project string) {
+	if c.cov == nil {
+		return
+	}
+	c.cov.mu.Lock()
+	defer c.cov.mu.Unlock()
+	if c.cov.skipped == nil {
+		c.cov.skipped = map[string]bool{}
+	}
+	c.cov.skipped[project] = true
+}
+
+// answered are the projects of the list that no live list left out; all
+// of them when none answered, since the label has to name a place.
+func (c *client) answered(projects []string) []string {
+	if c.cov == nil {
+		return projects
+	}
+	c.cov.mu.Lock()
+	defer c.cov.mu.Unlock()
+	var out []string
+	for _, p := range projects {
+		if !c.cov.skipped[p] {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return projects
+	}
+	return out
 }
 
 // keepZones stores the managed zones just listed of the client's project

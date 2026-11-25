@@ -427,6 +427,10 @@ func TestListsSkipProjectWithoutTheAPI(t *testing.T) {
 	if got := h.stderr.String(); !strings.Contains(got, want) {
 		t.Errorf("stderr = %q\nwant it to hold %q", got, want)
 	}
+	// The status line counts the project that answered alone.
+	if got := h.stderr.String(); !strings.Contains(got, "1 firewall rule(s) in project proj via gcp/lab") {
+		t.Errorf("stderr = %q\nwant the status line to name the project that answered", got)
+	}
 	// The second sweep of the run skips it again and does not repeat the
 	// note.
 	if err := h.run("compute", "network", "list"); err != nil || strings.Contains(h.stderr.String(), "skipped") {
