@@ -457,7 +457,7 @@ func (c zoneCand) String() string {
 }
 
 // cells is the candidate as an option of the pick that settles the lookup:
-// "cloudflare/work  <zone id>  active  account acc1  Acme". A fact the
+// "cloudflare/work  Acme  active  account acc1  <zone id>". A fact the
 // candidate does not have shows "-" in its cell. The profile comes first:
 // one zone seen through two logins differs in nothing else, and a label is
 // cut at its end when the terminal is narrower than its cells.
@@ -466,13 +466,16 @@ func (c zoneCand) cells() string {
 }
 
 // factCells are the cells of the candidate other than its profile: the
-// zone id, the status, the account and the name of the account.
+// name of the account, the status, the account and the zone id. The two ids
+// take 32 columns each and a label is cut at its end, so what a person can
+// read comes before them, and the account, which tells zones of one name
+// apart, before the zone id.
 func (c zoneCand) factCells() []string {
 	account := ""
 	if c.account != "" {
 		account = "account " + c.account
 	}
-	return []string{c.id, c.status, account, c.accountName}
+	return []string{c.accountName, c.status, account, c.id}
 }
 
 func candOfZone(profile string, z platform.Zone) zoneCand {

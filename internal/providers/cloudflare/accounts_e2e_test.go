@@ -234,7 +234,7 @@ func TestDomainRoutingAmbiguousAccounts(t *testing.T) {
 		t.Fatalf("pick: exit %d, %s%s", code, stdout, stderr)
 	}
 	p.Done()
-	if got, want := prompttest.Labels(p.Asked[0].Options), "cloudflare/both  zone-dup  pending  account acc2  Beta\ncloudflare/both  zone-ex  active  account acc1  Acme"; got != want {
+	if got, want := prompttest.Labels(p.Asked[0].Options), "cloudflare/both  Beta  pending  account acc2  zone-dup\ncloudflare/both  Acme  active  account acc1  zone-ex"; got != want {
 		t.Errorf("options:\n%s", got)
 	}
 }
@@ -394,7 +394,7 @@ func TestZoneNameInTwoAccounts(t *testing.T) {
 	if code != cli.ExitOK || !strings.Contains(stdout, `"id": "zone-dup"`) {
 		t.Errorf("pick: exit %d, %s%s", code, stdout, stderr)
 	}
-	if a := p.Find(`Ambiguous zone "example.com"; use which one?`); a == nil || len(a.Options) != 2 || !strings.Contains(prompttest.Labels(a.Options), "cloudflare/both  zone-dup  pending  account acc2  Beta") {
+	if a := p.Find(`Ambiguous zone "example.com"; use which one?`); a == nil || len(a.Options) != 2 || !strings.Contains(prompttest.Labels(a.Options), "cloudflare/both  Beta  pending  account acc2  zone-dup") {
 		t.Errorf("questions asked: %v", p.Titles())
 	}
 	p.Done()
@@ -510,7 +510,7 @@ func TestRoutedZoneSeveralAccounts(t *testing.T) {
 	if code != cli.ExitOK || !strings.Contains(stdout, `"value": "strict"`) {
 		t.Errorf("pick: exit %d, %s%s", code, stdout, stderr)
 	}
-	if a := p.Find(`Ambiguous cloudflare zone "example.com"; use which one?`); a == nil || len(a.Options) != 2 || !strings.Contains(prompttest.Labels(a.Options), "  "+dup.id+"  pending  account acc2  Account acc2") {
+	if a := p.Find(`Ambiguous cloudflare zone "example.com"; use which one?`); a == nil || len(a.Options) != 2 || !strings.Contains(prompttest.Labels(a.Options), "  Account acc2  pending  account acc2  "+dup.id) {
 		t.Errorf("questions asked: %v", p.Titles())
 	}
 	p.Done()

@@ -211,8 +211,8 @@ func (*provider) DescribeOwner(kind platform.ResourceType, id, parentID string, 
 var _ platform.OwnerCellDescriber = (*provider)(nil)
 
 // OwnerCells gives the same facts as the cells of an option, in the order
-// of the zone pick of the cloudflare commands: "<zone id>  active  account
-// acc1  Acme".
+// of the zone pick of the cloudflare commands: "Acme  active  account acc1
+// <zone id>".
 func (*provider) OwnerCells(kind platform.ResourceType, id, parentID string, data []byte) []string {
 	if kind != platform.ResZone {
 		return nil
