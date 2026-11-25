@@ -127,6 +127,14 @@ func TestResolveResourceWith(t *testing.T) {
 		len(amb.Options) != 2 || amb.Options[0].Label != "zone z-shared-a of a" {
 		t.Errorf("hint and candidate = %v (%+v)", err, amb)
 	}
+	// Option replaces the label of the question, not the text of the error.
+	look.Option = func(r inventory.Resource) string { return r.ID + "  " + r.Profile }
+	_, err = h.rt.ResolveResourceWith(ctx, look)
+	amb = nil
+	if !errors.As(err, &amb) || amb.Candidates[0] != "zone z-shared-a of a" || len(amb.Options) != 2 || amb.Options[0].Label != "z-shared-a  a" {
+		t.Errorf("option = %v (%+v)", err, amb)
+	}
+	look.Option = nil
 	look.Hint = func([]inventory.Resource) string { return "" }
 	_, err = h.rt.ResolveResourceWith(ctx, look)
 	amb = nil

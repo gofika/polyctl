@@ -46,6 +46,10 @@ type ResourceLookup struct {
 	// Candidate describes one of several rows found, in the error and in
 	// the question (nil: "platform/profile (id)").
 	Candidate func(inventory.Resource) string
+	// Option is the label of one of several rows found in the question,
+	// as cells (see prompt.Cells), when the text of Candidate does not
+	// line up as a list (nil: that of Candidate).
+	Option func(inventory.Resource) string
 	// SyncDue syncs the candidate accounts whose set of Kind is missing or
 	// expired before the lookup answers, also when it found the resource:
 	// for a lookup by a name that an account whose set is due may hold as
@@ -186,7 +190,10 @@ func (rt *Runtime) ResolveResourceWith(ctx context.Context, l ResourceLookup) (i
 			parent = "in " + r.ParentID
 		}
 		label := resourceLabel(r, parent)
-		if l.Candidate != nil {
+		switch {
+		case l.Option != nil:
+			label = l.Option(r)
+		case l.Candidate != nil:
 			label = l.Candidate(r)
 		}
 		amb.Options = append(amb.Options, prompt.Option{Label: label, Value: strconv.Itoa(i)})
