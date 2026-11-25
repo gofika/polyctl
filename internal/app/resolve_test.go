@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/gofika/polyctl/internal/app"
+	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/platform"
 )
 
@@ -96,5 +97,67 @@ func TestResolveResourceReportsAFailedSync(t *testing.T) {
 	_, err := h.rt.ResolveResource(ctx, "", platform.ResZone, "new.example")
 	if !errors.Is(err, platform.ErrForbidden) || errors.Is(err, platform.ErrNotFound) {
 		t.Errorf("failed sync = %v", err)
+	}
+}
+
+// The options of a lookup: Keep hides rows from it, Hint and Candidate say
+// what the platform knows about the rows found.
+func TestResolveResourceWith(t *testing.T) {
+	h := newHarness(t, app.Flags{}, nil)
+	h.seedStandard()
+	look := app.ResourceLookup{Platform: platform.NameCom, Kind: platform.ResZone, Ref: "shared.com"}
+	// The zero options are ResolveResource.
+	_, err := h.rt.ResolveResourceWith(ctx, look)
+	var amb *app.AmbiguousError
+	if !errors.As(err, &amb) || len(amb.Candidates) != 2 || !strings.Contains(amb.Hint, "--profile") ||
+		amb.Candidates[0] != "namecom/a (z-shared-a)" {
+		t.Fatalf("zero options = %v (%+v)", err, amb)
+	}
+	// Hint and Candidate replace the texts; an empty hint keeps the default.
+	var hinted int
+	look.Candidate = func(r inventory.Resource) string { return "zone " + r.ID + " of " + r.Profile }
+	look.Hint = func(found []inventory.Resource) string {
+		hinted = len(found)
+		return "pass --account to choose"
+	}
+	_, err = h.rt.ResolveResourceWith(ctx, look)
+	amb = nil
+	if !errors.As(err, &amb) || hinted != 2 || amb.Hint != "pass --account to choose" ||
+		strings.Join(amb.Candidates, ";") != "zone z-shared-a of a;zone z-shared-b of b" ||
+		len(amb.Options) != 2 || amb.Options[0].Label != "zone z-shared-a of a" {
+		t.Errorf("hint and candidate = %v (%+v)", err, amb)
+	}
+	look.Hint = func([]inventory.Resource) string { return "" }
+	_, err = h.rt.ResolveResourceWith(ctx, look)
+	amb = nil
+	if !errors.As(err, &amb) || !strings.Contains(amb.Hint, "--profile") {
+		t.Errorf("empty hint = %v", err)
+	}
+	// Keep leaves one row to match, by name and by id.
+	look.Keep = func(r inventory.Resource) bool { return r.Profile != "a" }
+	if r, err := h.rt.ResolveResourceWith(ctx, look); err != nil || r.ID != "z-shared-b" {
+		t.Errorf("keep = %+v, %v", r, err)
+	}
+	look.Ref = "z-shared-a"
+	if _, err := h.rt.ResolveResourceWith(ctx, look); !errors.Is(err, platform.ErrNotFound) {
+		t.Errorf("a row that is not kept, by id = %v", err)
+	}
+}
+
+// A row the lookup does not keep is not found after the sync of a miss
+// either.
+func TestResolveResourceWithKeepAfterSync(t *testing.T) {
+	h := newHarness(t, app.Flags{}, nil)
+	h.client("c").zones = []platform.Zone{zone("z-new", "new.example")}
+	look := app.ResourceLookup{Kind: platform.ResZone, Ref: "new.example", Keep: func(inventory.Resource) bool { return false }}
+	if _, err := h.rt.ResolveResourceWith(ctx, look); !errors.Is(err, platform.ErrNotFound) {
+		t.Errorf("kept nothing = %v", err)
+	}
+	if h.client("c").count("Sync") == 0 {
+		t.Error("the miss did not sync")
+	}
+	look.Keep = nil
+	if r, err := h.rt.ResolveResourceWith(ctx, look); err != nil || r.ID != "z-new" {
+		t.Errorf("without Keep = %+v, %v", r, err)
 	}
 }

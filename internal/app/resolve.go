@@ -25,6 +25,32 @@ import (
 // before it reports "not found" or, when an account could not be synced,
 // the error of that sync (the resource may be in that account).
 func (rt *Runtime) ResolveResource(ctx context.Context, id platform.ID, kind platform.ResourceType, ref string) (inventory.Resource, error) {
+	return rt.ResolveResourceWith(ctx, ResourceLookup{Platform: id, Kind: kind, Ref: ref})
+}
+
+// ResourceLookup is a lookup of ResolveResource with what a platform knows
+// about its rows. The zero value of each option keeps what ResolveResource
+// does.
+type ResourceLookup struct {
+	// Platform restricts the lookup to one platform ("" = --platform, or
+	// any), Kind is the type of the rows and Ref the id or name to find.
+	Platform platform.ID
+	Kind     platform.ResourceType
+	Ref      string
+	// Keep tells the rows the lookup may match; the others are not there
+	// for it, before and after a sync (nil: every row).
+	Keep func(inventory.Resource) bool
+	// Hint returns the hint of the ambiguity of the rows found, "" to
+	// keep the one of ResolveResource (nil: always that one).
+	Hint func(found []inventory.Resource) string
+	// Candidate describes one of several rows found, in the error and in
+	// the question (nil: "platform/profile (id)").
+	Candidate func(inventory.Resource) string
+}
+
+// ResolveResourceWith is ResolveResource with the options of l.
+func (rt *Runtime) ResolveResourceWith(ctx context.Context, l ResourceLookup) (inventory.Resource, error) {
+	id, kind, ref := l.Platform, l.Kind, l.Ref
 	accounts, err := rt.resourceAccounts(id, kind)
 	if err != nil {
 		return inventory.Resource{}, err
@@ -48,6 +74,9 @@ func (rt *Runtime) ResolveResource(ctx context.Context, id platform.ID, kind pla
 				return nil, err
 			}
 			for _, r := range rows {
+				if l.Keep != nil && !l.Keep(r) {
+					continue
+				}
 				switch ref {
 				case r.ID:
 					byID = append(byID, r)
@@ -122,7 +151,11 @@ func (rt *Runtime) ResolveResource(ctx context.Context, id platform.ID, kind pla
 	accountsHit := map[string]bool{}
 	platformsHit := map[platform.ID]bool{}
 	for _, r := range found {
-		names = append(names, fmt.Sprintf("%s/%s (%s)", r.Platform, r.Profile, r.ID))
+		if l.Candidate != nil {
+			names = append(names, l.Candidate(r))
+		} else {
+			names = append(names, fmt.Sprintf("%s/%s (%s)", r.Platform, r.Profile, r.ID))
+		}
 		accountsHit[string(r.Platform)+"/"+r.Profile] = true
 		platformsHit[r.Platform] = true
 	}
@@ -133,11 +166,19 @@ func (rt *Runtime) ResolveResource(ctx context.Context, id platform.ID, kind pla
 	case len(platformsHit) > 1:
 		hint = "pass --profile <name> and/or --platform <name> to choose"
 	}
+	if l.Hint != nil {
+		if h := l.Hint(found); h != "" {
+			hint = h
+		}
+	}
 	amb := &AmbiguousError{What: fmt.Sprintf("%s %q", what, ref), Candidates: names, Hint: hint}
 	for i, r := range found {
 		label := fmt.Sprintf("%s/%s  %s  %s", r.Platform, r.Profile, r.Name, r.ID)
 		if r.ParentID != "" {
 			label += "  in " + r.ParentID
+		}
+		if l.Candidate != nil {
+			label = l.Candidate(r)
 		}
 		amb.Options = append(amb.Options, prompt.Option{Label: label, Value: strconv.Itoa(i)})
 	}
