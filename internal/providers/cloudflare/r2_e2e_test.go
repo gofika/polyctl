@@ -227,7 +227,7 @@ func (f *r2Fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var out []any
 		for _, id := range strings.Split(acc, ",") {
 			a := f.accounts[id]
-			out = append(out, map[string]any{"id": a.id, "name": a.name})
+			out = append(out, map[string]any{"id": a.id, "name": a.name, "type": "standard"})
 		}
 		f.ok(w, out, map[string]any{"page": 1, "per_page": 50, "count": len(out), "total_count": len(out)})
 	case p == "/zones":

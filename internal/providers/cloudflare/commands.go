@@ -26,7 +26,7 @@ func Command(rt *app.Runtime) *cobra.Command {
 		Short:   "Cloudflare native commands (alias: cf)",
 		Long: `Cloudflare-specific operations: zones (create, ensure, delete, settings),
 DNS records, cache purge, cache rules, redirect rules, development mode,
-SSL mode, R2 custom domains, accounts and the identity check.
+SSL mode, R2 custom domains, the accounts of the login and the identity check.
 
 <zone> arguments accept a zone name (example.com) or a zone id. Names are
 resolved through the local inventory first, then remotely.
@@ -34,7 +34,7 @@ resolved through the local inventory first, then remotely.
 The tree is also available under its short name: polyctl cf ...`,
 	}
 	cmd.AddCommand(
-		app.WhoamiCommand(rt, platform.Cloudflare, "On Cloudflare this verifies the API token and reports its id, status and\nexpiry, with the account the profile is pinned to. For an account authorized\nin the browser it checks the authorization with a request to the API and\nreports the granted scopes."),
+		app.WhoamiCommand(rt, platform.Cloudflare, "On Cloudflare this verifies the API token and reports its id, status and\nexpiry, with the default account of the login and, when it works on several,\nthe accounts selected for it. For a login authorized in the browser it checks\nthe authorization with a request to the API and reports the granted scopes."),
 		newR2Cmd(rt), newAccountCmd(rt))
 	// The commands that work on zones take --account.
 	for _, c := range []*cobra.Command{newZoneCmd(rt), newDNSCmd(rt), newCacheCmd(rt), newRedirectCmd(rt), newDevModeCmd(rt), newSSLModeCmd(rt)} {
@@ -859,46 +859,4 @@ func newDevModeCmd(rt *app.Runtime) *cobra.Command {
 
 func newSSLModeCmd(rt *app.Runtime) *cobra.Command {
 	return settingCmd(rt, "ssl-mode <zone> [off|flexible|full|strict]", "Show or set the SSL/TLS encryption mode", "ssl", []string{"off", "flexible", "full", "strict"})
-}
-
-// --- account / token -------------------------------------------------------
-
-type accountListResult struct {
-	Profile  string    `json:"profile" yaml:"profile"`
-	Accounts []account `json:"accounts" yaml:"accounts"`
-}
-
-func newAccountCmd(rt *app.Runtime) *cobra.Command {
-	cmd := &cobra.Command{Use: "account", Short: "Accounts"}
-	cmd.AddCommand(&cobra.Command{
-		Use:   "list",
-		Short: "List accounts visible to the credentials (API token: Account:Read; browser login: the account-settings.read scope)",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if rt.Flags.Offline {
-				return app.ErrOffline
-			}
-			s, err := open(cmd.Context(), rt)
-			if err != nil {
-				return err
-			}
-			accounts, err := s.client.api.listAccounts(cmd.Context())
-			if err != nil {
-				return err
-			}
-			pinned := s.client.profile.Meta(metaAccountID)
-			return rt.Render(accountListResult{Profile: s.profile, Accounts: accounts}, func() output.Grid {
-				g := output.Grid{Headers: []string{"NAME", "TYPE", "ID", "PINNED"}, Empty: "no accounts"}
-				for _, a := range accounts {
-					mark := ""
-					if a.ID == pinned {
-						mark = "*"
-					}
-					g.Rows = append(g.Rows, []string{a.Name, a.Type, a.ID, mark})
-				}
-				return g
-			})
-		},
-	})
-	return cmd
 }

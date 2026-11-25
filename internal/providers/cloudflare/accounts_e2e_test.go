@@ -2,6 +2,7 @@ package cloudflare_test
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1072,5 +1073,100 @@ func TestReloginDropsADeselectedAccount(t *testing.T) {
 	}
 	if n := e.f.count(""); n == 0 {
 		t.Errorf("the zone set of a changed selection was served from the cache")
+	}
+}
+
+// setAccounts rewrites the selection of the profile "both" in the config,
+// as an edit by hand would.
+func (e *r2Env) setAccounts(def string, accounts ...string) {
+	e.t.Helper()
+	cfg, err := config.Load(filepath.Join(e.dir, "config.yaml"))
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	meta := cfg.Profiles["both"].Platforms[platform.Cloudflare].Metadata
+	meta["account_id"] = def
+	if len(accounts) > 0 {
+		meta["accounts"] = strings.Join(accounts, ",")
+	} else {
+		delete(meta, "accounts")
+	}
+	if err := cfg.Save(); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
+// account list marks the selected accounts and the default one, and keeps
+// the envelope and the fields it always had.
+func TestAccountListMarksSelection(t *testing.T) {
+	e := newR2Env(t)
+	e.loginBoth("acc2", "acc2", "acc1")
+	type row struct {
+		ID, Name, Type    string
+		Selected, Default bool
+	}
+	list := func(profile string) (rows []row, stderr string) {
+		t.Helper()
+		code, stdout, stderr := e.run("cloudflare", "account", "list", "--profile", profile, "-o", "json")
+		if code != cli.ExitOK {
+			t.Fatalf("account list: exit %d, %s", code, stderr)
+		}
+		var res struct {
+			Profile  string
+			Accounts []row
+		}
+		if err := json.Unmarshal([]byte(stdout), &res); err != nil || res.Profile != profile {
+			t.Fatalf("account list: %v: %s", err, stdout)
+		}
+		return res.Accounts, stderr
+	}
+	rows, stderr := list("both")
+	want := []row{{"acc1", "Acme", "standard", true, false}, {"acc2", "Beta", "standard", true, true}}
+	if !reflect.DeepEqual(rows, want) {
+		t.Errorf("rows = %+v", rows)
+	}
+	if !strings.Contains(stderr, "2 account(s) via cloudflare/both, 2 selected") {
+		t.Errorf("stderr = %q", stderr)
+	}
+	code, stdout, _ := e.run("cloudflare", "account", "list", "--profile", "both")
+	if code != cli.ExitOK || !strings.Contains(stdout, "SELECTED") || strings.Contains(stdout, "PINNED") {
+		t.Fatalf("table: exit %d, %s", code, stdout)
+	}
+	for _, line := range strings.Split(stdout, "\n") {
+		switch {
+		case strings.Contains(line, "acc2"):
+			if !strings.Contains(line, "Beta *") || !strings.Contains(line, "yes") {
+				t.Errorf("the default account: %q", line)
+			}
+		case strings.Contains(line, "acc1"):
+			if strings.Contains(line, "*") || !strings.Contains(line, "yes") {
+				t.Errorf("a selected account: %q", line)
+			}
+		}
+	}
+
+	// A login of one account, as every login before the selection stored
+	// it: that account is the selection and the default.
+	e.loginBoth("acc1")
+	if rows, _ = list("both"); !reflect.DeepEqual(rows, []row{{"acc1", "Acme", "standard", true, true}, {"acc2", "Beta", "standard", false, false}}) {
+		t.Errorf("one account: %+v", rows)
+	}
+	// A token that sees one account lists that one.
+	if rows, _ = list("beta"); !reflect.DeepEqual(rows, []row{{"acc2", "Beta", "standard", true, true}}) {
+		t.Errorf("beta: %+v", rows)
+	}
+
+	// A selected account the credentials do not list is shown, and said.
+	e.setAccounts("acc1", "acc1", "acc9")
+	rows, stderr = list("both")
+	if len(rows) != 3 || !reflect.DeepEqual(rows[2], row{ID: "acc9", Selected: true}) {
+		t.Errorf("unseen account: %+v", rows)
+	}
+	if !strings.Contains(stderr, "selected account acc9 is not visible to the credentials (to take it out: polyctl cloudflare account remove acc9)") ||
+		!strings.Contains(stderr, "3 account(s) via cloudflare/both, 2 selected") {
+		t.Errorf("unseen account: stderr %q", stderr)
+	}
+	if code, _, _ := e.run("cloudflare", "account", "list", "--profile", "both", "--offline"); code != cli.ExitOffline {
+		t.Errorf("offline: exit %d", code)
 	}
 }
