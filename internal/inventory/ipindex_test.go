@@ -2,6 +2,8 @@ package inventory_test
 
 import (
 	"net/netip"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -198,5 +200,107 @@ func TestReplaceKeepingFailedRegions(t *testing.T) {
 		if len(hits) != want {
 			t.Errorf("LookupIP(%s) = %v, want %d hit(s)", ip, hitIDs(hits), want)
 		}
+	}
+}
+
+// A failed tree keeps the rows of the parent itself and of every parent
+// below it; rows of the trees that worked are replaced.
+func TestReplaceKeepingTrees(t *testing.T) {
+	db, _ := openDB(t)
+	set := inventory.Set{Platform: platform.GCP, Profile: "a", Type: platform.ResInstance}
+	if err := db.Replace(ctx, set, []platform.Resource{
+		ipRes(platform.ResInstance, "1", "p1/us-a", ref(platform.IPInternal, "10.0.0.1")),
+		ipRes(platform.ResInstance, "2", "p1/us-b", ref(platform.IPInternal, "10.0.0.2")),
+		ipRes(platform.ResInstance, "3", "p2", ref(platform.IPInternal, "10.0.0.3")),
+		ipRes(platform.ResInstance, "4", "p2/eu-a", ref(platform.IPInternal, "10.0.0.4")),
+		ipRes(platform.ResInstance, "5", "p22/eu-a", ref(platform.IPInternal, "10.0.0.5")),
+	}, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	// p2 failed as a whole; p1 answered with one instance, p22 with none.
+	if err := db.ReplaceKeepingTrees(ctx, set, []platform.Resource{
+		ipRes(platform.ResInstance, "1", "p1/us-a", ref(platform.IPInternal, "10.0.0.9")),
+	}, time.Hour, nil, []string{"p2"}); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := db.GetState(ctx, set); err != nil || st == nil || st.Fresh(time.Now()) {
+		t.Errorf("state after a partial sync = %+v, %v; want stale", st, err)
+	}
+	if got := rowIDs(t, db, set); strings.Join(got, ",") != "1,3,4" {
+		t.Fatalf("rows = %v, want 1 (replaced), 3 and 4 (kept); 2 and 5 are gone", got)
+	}
+	for ip, want := range map[string]int{"10.0.0.1": 0, "10.0.0.9": 1, "10.0.0.2": 0, "10.0.0.3": 1, "10.0.0.4": 1, "10.0.0.5": 0} {
+		hits, err := db.LookupIP(ctx, netip.MustParseAddr(ip))
+		if err != nil || len(hits) != want {
+			t.Errorf("LookupIP(%s) = %d hit(s), %v; want %d", ip, len(hits), err, want)
+		}
+	}
+}
+
+func rowIDs(t *testing.T, db *inventory.DB, set inventory.Set) []string {
+	t.Helper()
+	rows, err := db.List(ctx, inventory.Query{Platform: set.Platform, Profile: set.Profile, Type: set.Type})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, r := range rows {
+		ids = append(ids, r.ID)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// PurgeTree drops the rows, index entries and scopes of one tree only;
+// Expire makes every set of the profile due without dropping a row.
+func TestPurgeTreeAndExpire(t *testing.T) {
+	db, _ := openDB(t)
+	set := inventory.Set{Platform: platform.GCP, Profile: "a", Type: platform.ResInstance}
+	zones := inventory.Set{Platform: platform.GCP, Profile: "a", Type: platform.ResZone}
+	if err := db.Replace(ctx, set, []platform.Resource{
+		ipRes(platform.ResInstance, "1", "p1/us-a", ref(platform.IPInternal, "10.0.0.1")),
+		ipRes(platform.ResInstance, "2", "p2/us-a", ref(platform.IPInternal, "10.0.0.2")),
+	}, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Replace(ctx, zones, []platform.Resource{
+		{Type: platform.ResZone, ID: "p1/z", Name: "a.example", ParentID: "p1", Domain: "a.example", Data: map[string]string{}},
+		{Type: platform.ResZone, ID: "p2/z", Name: "b.example", ParentID: "p2", Domain: "b.example", Data: map[string]string{}},
+	}, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.PurgeTree(ctx, platform.GCP, "a", "p2"); err != nil {
+		t.Fatal(err)
+	}
+	if got := rowIDs(t, db, set); strings.Join(got, ",") != "1" {
+		t.Errorf("instances after PurgeTree = %v, want 1", got)
+	}
+	if got := rowIDs(t, db, zones); strings.Join(got, ",") != "p1/z" {
+		t.Errorf("zones after PurgeTree = %v, want p1/z", got)
+	}
+	if hits, err := db.LookupIP(ctx, netip.MustParseAddr("10.0.0.2")); err != nil || len(hits) != 0 {
+		t.Errorf("ip of the purged tree: %d hit(s), %v", len(hits), err)
+	}
+	for dom, want := range map[string]int{"a.example": 1, "b.example": 0} {
+		if es, err := db.LookupDomain(ctx, []string{dom}, platform.ResZone); err != nil || len(es) != want {
+			t.Errorf("LookupDomain(%s) = %d, %v; want %d", dom, len(es), err, want)
+		}
+	}
+	scope := set
+	scope.Scope = "p2/us-a"
+	if st, err := db.GetState(ctx, scope); err != nil || st != nil {
+		t.Errorf("scope of the purged tree = %+v, %v; want none", st, err)
+	}
+	if st, err := db.GetState(ctx, set); err != nil || !st.Fresh(time.Now()) {
+		t.Fatalf("set before Expire = %+v, %v; want fresh", st, err)
+	}
+	if err := db.Expire(ctx, platform.GCP, "a"); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := db.GetState(ctx, set); err != nil || st == nil || st.Fresh(time.Now()) {
+		t.Errorf("set after Expire = %+v, %v; want stale", st, err)
+	}
+	if got := rowIDs(t, db, set); strings.Join(got, ",") != "1" {
+		t.Errorf("Expire dropped rows: %v", got)
 	}
 }

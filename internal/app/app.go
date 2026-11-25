@@ -1071,7 +1071,8 @@ func (rt *Runtime) SyncClient(ctx context.Context, p platform.Profile, client pl
 				continue
 			}
 		}
-		if err := db.ReplaceKeeping(ctx, inventory.Set{Platform: p.Platform, Profile: name, Type: t}, res, cfg.TTLFor(t), failedRegions(err)); err != nil {
+		keep, trees := failedRegions(err)
+		if err := db.ReplaceKeepingTrees(ctx, inventory.Set{Platform: p.Platform, Profile: name, Type: t}, res, cfg.TTLFor(t), keep, trees); err != nil {
 			return reports, err
 		}
 		rep.Count = len(res)
@@ -1082,21 +1083,25 @@ func (rt *Runtime) SyncClient(ctx context.Context, p platform.Profile, client pl
 }
 
 // failedRegions returns the regions of a sync that failed in some regions
-// only, whose stored rows are kept (nil for any other error or none). A
+// only, whose stored rows are kept (nil for any other error or none): the
+// parents to keep, and the trees of parents (platform.RegionError.Tree). A
 // partial failure (the region's resources were read, some of their
 // details were not) keeps nothing: the new rows replace the old ones.
-func failedRegions(err error) []string {
+func failedRegions(err error) (keep, trees []string) {
 	rse := platform.AsRegionSyncError(err)
 	if rse == nil {
-		return nil
+		return nil, nil
 	}
-	var out []string
 	for _, f := range rse.Failures {
-		if !f.Partial {
-			out = append(out, f.Region)
+		switch {
+		case f.Partial:
+		case f.Tree:
+			trees = append(trees, f.Region)
+		default:
+			keep = append(keep, f.Region)
 		}
 	}
-	return out
+	return keep, trees
 }
 
 // NeedsRefresh decides whether a set must be re-fetched given the flags and TTL.
@@ -1143,7 +1148,8 @@ func (rt *Runtime) EnsureSet(ctx context.Context, s inventory.Set, fetch func(ct
 			// ones keep what the inventory held for them.
 			rt.Infof("warning: %s/%s %s: %v", s.Platform, s.Profile, s.Type, err)
 		}
-		if err := db.ReplaceKeeping(ctx, s, res, cfg.TTLFor(s.Type), failedRegions(err)); err != nil {
+		keep, trees := failedRegions(err)
+		if err := db.ReplaceKeepingTrees(ctx, s, res, cfg.TTLFor(s.Type), keep, trees); err != nil {
 			return nil, false, err
 		}
 	} else if rt.Flags.Offline {

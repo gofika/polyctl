@@ -228,13 +228,43 @@ func (d *DB) Replace(ctx context.Context, s Set, resources []platform.Resource, 
 // unless resources holds a row of the same id, and the set expires at once
 // so the next read retries the failed parents. A scoped set ignores keep.
 func (d *DB) ReplaceKeeping(ctx context.Context, s Set, resources []platform.Resource, ttl time.Duration, keep []string) error {
-	if s.Scope != "" || len(keep) == 0 {
-		return d.replace(ctx, s, resources, ttl, nil)
-	}
-	return d.replace(ctx, s, resources, ttl, keep)
+	return d.ReplaceKeepingTrees(ctx, s, resources, ttl, keep, nil)
 }
 
-func (d *DB) replace(ctx context.Context, s Set, resources []platform.Resource, ttl time.Duration, keep []string) error {
+// ReplaceKeepingTrees is ReplaceKeeping with whole trees of parents kept
+// as well: a tree t keeps the rows whose ParentID is t or starts with
+// t + "/" (a Google Cloud project that failed, whose rows have the parent
+// "<project>" or "<project>/<zone or region>").
+func (d *DB) ReplaceKeepingTrees(ctx context.Context, s Set, resources []platform.Resource, ttl time.Duration, keep, trees []string) error {
+	if s.Scope != "" {
+		keep, trees = nil, nil
+	}
+	return d.replace(ctx, s, resources, ttl, keep, trees)
+}
+
+// keptCond is the SQL condition of the rows a partial sync keeps, with its
+// arguments: parent_id in keep, or in one of trees.
+func keptCond(keep, trees []string) (string, []any) {
+	var parts []string
+	var args []any
+	if len(keep) > 0 {
+		parts = append(parts, `parent_id IN (`+strings.TrimSuffix(strings.Repeat("?,", len(keep)), ",")+`)`)
+		for _, k := range keep {
+			args = append(args, k)
+		}
+	}
+	for _, t := range trees {
+		parts = append(parts, treeCond)
+		args = append(args, t, t, t)
+	}
+	return `(` + strings.Join(parts, " OR ") + `)`, args
+}
+
+// treeCond matches the rows of one tree of parents (three arguments, the
+// tree each time).
+const treeCond = `(parent_id = ? OR substr(parent_id, 1, length(?) + 1) = ? || '/')`
+
+func (d *DB) replace(ctx context.Context, s Set, resources []platform.Resource, ttl time.Duration, keep, trees []string) error {
 	now := d.now()
 	exp := now.Add(ttl)
 	tx, err := d.sql.BeginTx(ctx, nil)
@@ -243,22 +273,20 @@ func (d *DB) replace(ctx context.Context, s Set, resources []platform.Resource, 
 	}
 	defer tx.Rollback()
 
-	if s.Scope == "" && len(keep) > 0 {
+	kept := len(keep)+len(trees) > 0
+	if s.Scope == "" && kept {
 		// Only the rows outside the kept parents go, and their index
 		// entries before them.
-		ph := strings.TrimSuffix(strings.Repeat("?,", len(keep)), ",")
-		args := []any{string(s.Platform), s.Profile, string(s.Type)}
-		for _, k := range keep {
-			args = append(args, k)
-		}
-		dropped := `SELECT resource_id FROM resources WHERE platform=? AND profile=? AND resource_type=? AND parent_id NOT IN (` + ph + `)`
+		cond, condArgs := keptCond(keep, trees)
+		args := append([]any{string(s.Platform), s.Profile, string(s.Type)}, condArgs...)
+		dropped := `SELECT resource_id FROM resources WHERE platform=? AND profile=? AND resource_type=? AND NOT ` + cond
 		for _, t := range []string{"domain_index", "ip_index"} {
 			if _, err := tx.ExecContext(ctx, `DELETE FROM `+t+` WHERE platform=? AND profile=? AND resource_type=? AND resource_id IN (`+dropped+`)`,
 				append([]any{string(s.Platform), s.Profile, string(s.Type)}, args...)...); err != nil {
 				return err
 			}
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM resources WHERE platform=? AND profile=? AND resource_type=? AND parent_id NOT IN (`+ph+`)`, args...); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM resources WHERE platform=? AND profile=? AND resource_type=? AND NOT `+cond, args...); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM sync_state WHERE platform=? AND profile=? AND resource_type=?`, string(s.Platform), s.Profile, string(s.Type)); err != nil {
@@ -310,7 +338,7 @@ func (d *DB) replace(ctx context.Context, s Set, resources []platform.Resource, 
 			return fmt.Errorf("encode %s %s: %w", r.Type, r.ID, err)
 		}
 		dom := platform.NormalizeDomain(r.Domain)
-		if len(keep) > 0 {
+		if kept {
 			// The row may replace a kept one: its old domain goes.
 			if _, err := tx.ExecContext(ctx, `DELETE FROM domain_index WHERE platform=? AND profile=? AND resource_type=? AND resource_id=?`, string(s.Platform), s.Profile, string(r.Type), r.ID); err != nil {
 				return err
@@ -332,7 +360,7 @@ func (d *DB) replace(ctx context.Context, s Set, resources []platform.Resource, 
 	// it expires now, so the next read syncs again (and find reports it
 	// stale) instead of serving them as fresh for a whole TTL.
 	setExp := exp
-	if s.Scope == "" && len(keep) > 0 {
+	if s.Scope == "" && kept {
 		setExp = now
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO sync_state (platform, profile, resource_type, scope, synced_at, expires_at) VALUES (?,?,?,?,?,?)`,
@@ -552,6 +580,39 @@ func (d *DB) Purge(ctx context.Context, p platform.ID, profile string) error {
 		}
 	}
 	return nil
+}
+
+// PurgeTree removes what is cached for one tree of parents of a profile
+// (see ReplaceKeepingTrees): the rows of a Google Cloud project that left
+// the selection of its account. Instance secrets stay.
+func (d *DB) PurgeTree(ctx context.Context, p platform.ID, profile, tree string) error {
+	tx, err := d.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	rows := `SELECT resource_type || char(0) || resource_id FROM resources WHERE platform=? AND profile=? AND ` + treeCond
+	args := []any{string(p), profile, string(p), profile, tree, tree, tree}
+	for _, t := range []string{"domain_index", "ip_index"} {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM `+t+` WHERE platform=? AND profile=? AND resource_type || char(0) || resource_id IN (`+rows+`)`, args...); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM resources WHERE platform=? AND profile=? AND `+treeCond, string(p), profile, tree, tree, tree); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sync_state WHERE platform=? AND profile=? AND `+strings.ReplaceAll(treeCond, "parent_id", "scope"), string(p), profile, tree, tree, tree); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// Expire marks every synced set of a profile as due: the rows stay, and the
+// next read that may go online syncs again (the selection of the account
+// changed).
+func (d *DB) Expire(ctx context.Context, p platform.ID, profile string) error {
+	_, err := d.sql.ExecContext(ctx, `UPDATE sync_state SET expires_at = 0 WHERE platform=? AND profile=?`, string(p), profile)
+	return err
 }
 
 // renameSchema records the renames of profiles under way: RenameProfile

@@ -324,6 +324,11 @@ type RegionError struct {
 	// addresses), so the stored rows of the region are replaced by them
 	// instead of kept.
 	Partial bool
+	// Tree marks a failure of a whole tree of parents: the stored rows
+	// whose parent is Region or starts with Region + "/" are kept (a
+	// Google Cloud project, whose rows have the parent "<project>" or
+	// "<project>/<zone or region>").
+	Tree bool
 }
 
 // RegionSyncError is returned by Client.Sync, together with the resources
@@ -332,6 +337,8 @@ type RegionError struct {
 // reported.
 type RegionSyncError struct {
 	Failures []RegionError
+	// Noun names what failed in the message: "region" when empty.
+	Noun string
 }
 
 func (e *RegionSyncError) Error() string {
@@ -339,7 +346,11 @@ func (e *RegionSyncError) Error() string {
 	for _, f := range e.Failures {
 		parts = append(parts, f.Region+": "+f.Err.Error())
 	}
-	return fmt.Sprintf("%d region(s) failed: %s", len(e.Failures), strings.Join(parts, "; "))
+	noun := e.Noun
+	if noun == "" {
+		noun = "region"
+	}
+	return fmt.Sprintf("%d %s(s) failed: %s", len(e.Failures), noun, strings.Join(parts, "; "))
 }
 
 // SyncRegions runs fn for every region, at most concurrency at a time, and
