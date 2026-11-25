@@ -1001,8 +1001,9 @@ func contains(list []string, s string) bool {
 	return false
 }
 
-// pickRemovals asks which of the listed keys to remove; the key the
-// command logged in with and read-only keys are not offered.
+// pickRemovals asks which of the listed keys to remove, each labelled
+// "user  type  fingerprint  comment  [source]"; the key the command logged
+// in with and read-only keys are not offered.
 func (s *sshKeySession) pickRemovals(entries []SSHKeyEntry) ([]sshKeyMatch, error) {
 	var opts []prompt.Option
 	byValue := map[string]sshKeyMatch{}
@@ -1016,8 +1017,12 @@ func (s *sshKeySession) pickRemovals(entries []SSHKeyEntry) ([]sshKeyMatch, erro
 			continue
 		}
 		byValue[v] = sshKeyMatch{label: fp, key: e.Key, user: e.User}
-		label := e.User + "  " + keyEntrySummary(e) + "  [" + e.Source + "]"
-		opts = append(opts, prompt.Option{Label: label, Value: v})
+		algo, short, comment := (&platform.PublicKey{Key: e.Key, Comment: e.Comment}).SummaryCells()
+		source := ""
+		if e.Source != "" {
+			source = "[" + e.Source + "]"
+		}
+		opts = append(opts, prompt.Option{Label: prompt.Cells(e.User, algo, short, comment, source), Value: v})
 	}
 	vs, err := s.rt.ChooseMany(Choice{Title: "Keys to remove from " + s.inst.label(), Options: opts, Arg: "--fingerprint",
 		Empty: NothingToDof("no key of instance %s can be removed here", s.inst.label())})

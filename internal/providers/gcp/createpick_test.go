@@ -59,7 +59,7 @@ func TestInstanceCreateInteractive(t *testing.T) {
 	if p.Asked[1].Default != defaultPickMachineType {
 		t.Errorf("machine type default %q", p.Asked[1].Default)
 	}
-	if l := prompttest.Labels(p.Asked[5].Options); !strings.Contains(l, "~/.ssh/id_ed25519.pub  ed25519 SHA256:") || !strings.Contains(l, "Another file...") {
+	if l := prompttest.Labels(p.Asked[5].Options); !strings.Contains(l, "~/.ssh/id_ed25519.pub  ed25519  SHA256:") || !strings.Contains(l, "Another file...") {
 		t.Errorf("keys offered:\n%s", l)
 	}
 	out := strings.Join(rows(h.report()), "\n")

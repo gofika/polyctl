@@ -477,6 +477,10 @@ func TestSSHKeyInteractive(t *testing.T) {
 	if len(opts) != 1 || strings.Contains(prompttest.Values(opts), ssh.FingerprintSHA256(r.login.pub)) {
 		t.Errorf("remove options %v", opts)
 	}
+	// "user  type  fingerprint  comment  [source]", one fact a cell.
+	if l := opts[0].Label; !strings.HasPrefix(l, "ec2-user  ed25519  SHA256:") || !strings.Contains(l, "…  work  [") || strings.Count(l, "  ") != 4 {
+		t.Errorf("remove label %q", l)
+	}
 	if !strings.Contains(r.file("ec2-user"), nk.line("work")) {
 		t.Error("removed although declined")
 	}

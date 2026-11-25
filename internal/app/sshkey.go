@@ -90,25 +90,24 @@ const (
 	labelTypedKey       = "Enter a public key..."
 )
 
-// ChooseKeyPairOrCreate lists the existing key pairs, those holding a local
-// ~/.ssh/*.pub key marked (and the first of them preselected), with
+// ChooseKeyPairOrCreate lists the existing key pairs as "name  fingerprint
+// [matches ~/.ssh/id.pub]" ("-" for a fingerprint that is not known), those
+// holding a local ~/.ssh/*.pub key marked (and the first of them
+// preselected), with
 // "Import a new key pair from a public key file..." and "... by entering
 // its public key..." last.
 func (p keyPrompter) ChooseKeyPairOrCreate(pairs []platform.KeyPair, local map[string]string) (string, platform.KeySource, error) {
 	opts := make([]prompt.Option, 0, len(pairs)+2)
 	def := ""
 	for _, kp := range pairs {
-		label := kp.Name
-		if fp := kp.DisplayFingerprint(); fp != "" {
-			label += "  " + fp
-		}
+		match := ""
 		if f, ok := local[kp.Name]; ok {
-			label += "  [matches " + HomeRelative(f) + "]"
+			match = "[matches " + HomeRelative(f) + "]"
 			if def == "" {
 				def = kp.Name
 			}
 		}
-		opts = append(opts, prompt.Option{Label: label, Value: kp.Name})
+		opts = append(opts, prompt.Option{Label: prompt.Cells(kp.Name, kp.DisplayFingerprint(), match), Value: kp.Name})
 	}
 	opts = append(opts, prompt.Option{Label: labelImportFromFile, Value: newKeyPair},
 		prompt.Option{Label: labelImportTyped, Value: typedKeyPair})
@@ -150,23 +149,25 @@ func (p keyPrompter) NewKey(src platform.KeySource, candidates []platform.KeyFil
 }
 
 // PickKeyFile is the shared choice of a public key: the usable
-// ~/.ssh/*.pub candidates (type, fingerprint, comment, key pairs holding
-// it), "Another file..." and "Enter a public key...". It returns the path
+// ~/.ssh/*.pub candidates as "path  type  fingerprint  comment  [note]"
+// (the note names the key pairs holding it; "-" for a key without a
+// comment that has a note), "Another file..." and "Enter a public key...". It returns the path
 // of a candidate, or IsOtherKeyFile / IsTypedKey of the answer tells which
 // of the last two entries was chosen.
 func PickKeyFile(pick prompt.Picker, title string, candidates []platform.KeyFileCandidate) (string, error) {
 	opts := make([]prompt.Option, 0, len(candidates)+2)
 	def := ""
 	for _, c := range candidates {
-		label := HomeRelative(c.Path) + "  " + c.Key.Summary()
+		algo, fp, comment := c.Key.SummaryCells()
+		note := ""
 		if c.Note != "" {
-			label += "  [" + c.Note + "]"
+			note = "[" + c.Note + "]"
 		} else if len(c.Registered) > 0 {
-			label += "  [already key pair " + strings.Join(c.Registered, ", ") + "]"
+			note = "[already key pair " + strings.Join(c.Registered, ", ") + "]"
 		} else if def == "" || filepath.Base(c.Path) == "id_ed25519.pub" {
 			def = c.Path
 		}
-		opts = append(opts, prompt.Option{Label: label, Value: c.Path})
+		opts = append(opts, prompt.Option{Label: prompt.Cells(HomeRelative(c.Path), algo, fp, comment, note), Value: c.Path})
 	}
 	other := "Another file..."
 	if len(candidates) == 0 {

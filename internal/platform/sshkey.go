@@ -237,18 +237,27 @@ func (k *PublicKey) FingerprintAWSRSA() string {
 // Summary describes the key without printing it: algorithm, a shortened
 // SHA256 fingerprint and the first 20 characters of the comment.
 func (k *PublicKey) Summary() string {
+	algo, fp, comment := k.SummaryCells()
+	s := algo + " " + fp
+	if comment != "" {
+		s += " " + comment
+	}
+	return s
+}
+
+// SummaryCells returns the parts of Summary one by one, for the cells of
+// an option label: the algorithm, the shortened fingerprint and the
+// shortened comment ("" without one).
+func (k *PublicKey) SummaryCells() (algo, fingerprint, comment string) {
 	fp := k.FingerprintSHA256()
 	if len(fp) > len("SHA256:")+8 {
 		fp = fp[:len("SHA256:")+8] + "…"
 	}
-	s := k.Algorithm() + " " + fp
-	if c := strings.TrimSpace(k.Comment); c != "" {
-		if r := []rune(c); len(r) > 20 {
-			c = string(r[:20]) + "…"
-		}
-		s += " " + c
+	c := strings.TrimSpace(k.Comment)
+	if r := []rune(c); len(r) > 20 {
+		c = string(r[:20]) + "…"
 	}
-	return s
+	return k.Algorithm(), fp, c
 }
 
 // Equal reports whether other is the same public key (byte for byte).

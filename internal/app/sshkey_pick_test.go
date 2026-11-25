@@ -70,7 +70,7 @@ func TestKeyPairPicker(t *testing.T) {
 	}
 	a := p.Find("Key pair")
 	labels := prompttest.Labels(a.Options)
-	if a.Default != "laptop" || !strings.Contains(labels, "laptop  SHA256:") || !strings.Contains(labels, "[matches ~/.ssh/id_ed25519.pub]") ||
+	if a.Default != "laptop" || !strings.Contains(labels, "laptop  SHA256:") || !strings.Contains(labels, "  [matches ~/.ssh/id_ed25519.pub]\n") ||
 		!strings.Contains(labels, "other  ab:cd") || a.Options[len(a.Options)-2].Label != "Import a new key pair from a public key file..." ||
 		a.Options[len(a.Options)-1].Label != "Import a new key pair by entering its public key..." {
 		t.Errorf("key pair options (default %q):\n%s", a.Default, labels)
@@ -82,7 +82,7 @@ func TestKeyPairPicker(t *testing.T) {
 	}
 	f := p.Find("Public key to import")
 	fl := prompttest.Labels(f.Options)
-	if f.Default != filepath.Join(sshDir, "work.pub") || !strings.Contains(fl, "~/.ssh/id_ed25519.pub  ed25519 SHA256:") || !strings.Contains(fl, "[already key pair laptop]") ||
+	if f.Default != filepath.Join(sshDir, "work.pub") || !strings.Contains(fl, "~/.ssh/id_ed25519.pub  ed25519  SHA256:") || !strings.Contains(fl, "…  -  [already key pair laptop]\n") ||
 		!strings.HasSuffix(fl, "Another file...\nEnter a public key...") {
 		t.Errorf("file options (default %q):\n%s", f.Default, fl)
 	}
