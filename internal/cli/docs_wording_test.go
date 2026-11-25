@@ -32,6 +32,14 @@ func TestDocsDescribeEnabledProjectsAndAccounts(t *testing.T) {
 			gone: []string{"the selection of the login", "an account that was added"},
 			has:  []string{"or the disabled accounts of the login changed", "an account that was enabled again is seen"},
 		},
+		{
+			doc:  "docs/platforms/gcp.md",
+			gone: []string{"A disabled API or a missing permission ("},
+			has: []string{
+				"A command that works on one project (a change, or a list or lookup of the project named with `--project`) and meets a disabled API is exit code 3",
+				"A list, lookup or sync over the enabled projects does not fail for it",
+			},
+		},
 	} {
 		text := readDoc(t, tc.doc)
 		for _, phrase := range tc.gone {
