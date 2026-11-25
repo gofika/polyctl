@@ -27,6 +27,7 @@ How polyctl decides whether it may ask questions, what it asks on a terminal, an
 ## Missing input on a terminal
 
 - **Pick from a list.** A required argument with no default is offered as a list of candidates (from the platform, the local inventory or local files): type to filter, Enter to choose. Entries show what tells them apart (region or zone, status, fingerprint, expiry, account), and the sensible one is preselected (the current profile, the key pair holding your `~/.ssh` key, the opposite of a switch's current state).
+- **Aligned columns.** The facts of an entry are columns that start at the same position in every row; `-` stands for a fact an entry does not have (a record without a TTL), and a column no entry has a value for is not shown. A terminal too narrow for the padding shows the entries unpadded.
 - **Only usable candidates.** Only available or active items that fit the choices already made (region, zone, VPC, bucket). Deprecated or retired items and arm64 types or images are never listed.
 - **Create a new one.** Where polyctl can create the resource, the list ends with "Create a new ..." or "Import a new ...". New names are checked as you type; key pairs get no default name.
 - **Defaults are not asked.** Configured defaults (`defaults` in `config.yaml`, the profile's region or project, naming templates) and built-in defaults (disk size, instance type, image, TTL) are used silently.
