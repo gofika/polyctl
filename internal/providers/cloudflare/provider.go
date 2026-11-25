@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -71,8 +72,10 @@ const storedToken = "api_token"
 // Metadata keys (stored in plaintext config.yaml, never sensitive):
 //
 //	method        "api_token" or "oauth"
-//	account_id    the pinned account id (may be empty when the accounts cannot be listed)
-//	account_name  the account's display name
+//	account_id    the id of the default account (absent when the accounts cannot be listed)
+//	account_name  the display name of the default account
+//	accounts      the ids of the selected accounts, separated by commas, when
+//	              there are several (see accounts.go)
 //	email         the user's email when it can be read (optional)
 //	token_id      API token: its public id, as reported by the token verify endpoint
 //	scopes        oauth: the granted scopes, separated by spaces
@@ -116,13 +119,14 @@ func (*provider) LoginHelp() string {
 	return "API token created in the dashboard (--set method=token). Non-interactive: export\n" +
 		tokenEnv + " or pass --set token=- with the token on stdin.\n" +
 		browser + "\n" +
-		"--set account_id=<id> pins an account; the non-interactive flow requires it when\n" +
-		"the token sees several."
+		"--set account_id=<id> names the default account and --set accounts=<id>,<id>,...\n" +
+		"the accounts the login works on, when the credentials see several; the\n" +
+		"non-interactive flow requires one of them then."
 }
 
 // LoginOptions lists the --set keys of the login (see LoginHelp).
 func (*provider) LoginOptions() []string {
-	return []string{metaMethod, "token", metaAccountID}
+	return []string{metaMethod, "token", metaAccountID, metaAccounts}
 }
 
 // RecordTypes are the record types Cloudflare creates through the API
@@ -281,13 +285,12 @@ func (p *provider) loginToken(ctx context.Context, in platform.LoginInput, io *p
 	if accErr != nil {
 		fmt.Fprintf(io.Err, "note: the token cannot list accounts (%v); zones will be listed across all accounts it can see\n", accErr)
 	}
-	chosen, err := chooseAccount(in, io, accounts, accErr == nil, "token", true)
+	chosen, err := chooseAccounts(in, io, accounts, accErr == nil, accErr == nil, "token", true)
 	if err != nil {
 		return nil, err
 	}
 	if chosen != nil {
-		meta[metaAccountID] = chosen.ID
-		meta[metaAccountName] = chosen.Name
+		chosen.store(meta)
 	}
 
 	// User details are optional (needs User:Read).
@@ -330,7 +333,8 @@ func (p *provider) loginOAuth(ctx context.Context, in platform.LoginInput, io *p
 	if sess.mayHave(scopeAccountRead) {
 		accounts, accErr = a.listAccounts(ctx)
 	}
-	if accErr != nil || len(accounts) == 0 {
+	complete := accErr == nil && len(accounts) > 0
+	if !complete {
 		if derived, err := a.accountsOfZones(ctx); err == nil {
 			accounts, accErr = derived, nil
 		}
@@ -338,9 +342,9 @@ func (p *provider) loginOAuth(ctx context.Context, in platform.LoginInput, io *p
 	if accErr != nil {
 		fmt.Fprintf(io.Err, "note: the accounts of this authorization cannot be listed (%v); zones will be listed across all accounts it covers\n", accErr)
 	}
-	// The account of the previous login is a preference here: the person
-	// may have approved another one in the browser.
-	chosen, err := chooseAccount(in, io, accounts, accErr == nil, "authorization", false)
+	// The default account of the previous login is a preference here: the
+	// person may have approved another one in the browser.
+	chosen, err := chooseAccounts(in, io, accounts, accErr == nil, complete, "authorization", false)
 	if err != nil {
 		return nil, err
 	}
@@ -360,8 +364,7 @@ func (p *provider) loginOAuth(ctx context.Context, in platform.LoginInput, io *p
 		}
 	}
 	if chosen != nil {
-		meta[metaAccountID] = chosen.ID
-		meta[metaAccountName] = chosen.Name
+		chosen.store(meta)
 	}
 	// The e-mail is optional: the user details scope, else the userinfo
 	// endpoint, else none.
@@ -376,80 +379,239 @@ func (p *provider) loginOAuth(ctx context.Context, in platform.LoginInput, io *p
 	}, nil
 }
 
-// loginLabel is the short description shown after a login.
-func loginLabel(meta map[string]string, chosen *account, fallback string) string {
-	if e := meta[metaEmail]; e != "" {
-		return e
-	}
-	if chosen != nil {
-		if chosen.Name != "" {
-			return chosen.Name
+// loginLabel is the short description shown after a login: the e-mail,
+// else the default account, with the number of other selected accounts.
+func loginLabel(meta map[string]string, sel *selection, fallback string) string {
+	acct, more := "", 0
+	if sel != nil {
+		if acct = sel.def.Name; acct == "" {
+			acct = sel.def.ID
 		}
-		return chosen.ID
+		more = len(sel.accounts) - 1
+	}
+	switch e := meta[metaEmail]; {
+	case e != "" && more > 0:
+		return fmt.Sprintf("%s (account %s, +%d more)", e, acct, more)
+	case e != "":
+		return e
+	case acct != "" && more > 0:
+		return fmt.Sprintf("%s (+%d more)", acct, more)
+	case acct != "":
+		return acct
 	}
 	return fallback
 }
 
-// chooseAccount pins the account of a login: --set account_id > the account
-// of the previous login > the only account > an interactive choice. listed
-// says whether accounts is the full list (a token without Account:Read
-// cannot list them; that is tolerated). what names the credential in
-// messages. With strictExisting the account of the previous login must
-// still be visible; otherwise it is only preferred.
-func chooseAccount(in platform.LoginInput, pio *prompt.IO, accounts []account, listed bool, what string, strictExisting bool) (*account, error) {
-	find := func(id string) *account {
-		for i := range accounts {
-			if accounts[i].ID == id {
-				return &accounts[i]
-			}
+// selection is the accounts of a login: the default one and the selected
+// set, the default first.
+type selection struct {
+	def      account
+	accounts []string
+}
+
+func newSelection(def account, accounts []string) *selection {
+	return &selection{def: def, accounts: selectedAccounts(map[string]string{metaAccountID: def.ID, metaAccounts: strings.Join(accounts, ",")})}
+}
+
+// store writes the selection into the metadata of the login.
+func (s *selection) store(meta map[string]string) { setSelection(meta, s.def, s.accounts) }
+
+// accountChooser resolves the accounts of a login among those its
+// credentials see.
+type accountChooser struct {
+	in  platform.LoginInput
+	pio *prompt.IO
+	// accounts are the accounts the credentials see. listed says the list
+	// could be read at all (a token without Account:Read cannot; that is
+	// tolerated), complete that it is the list of the accounts and was not
+	// read off the zones, which shows the accounts with a zone only.
+	accounts         []account
+	listed, complete bool
+	// what names the credential in messages.
+	what string
+	// prev is the selection stored by the previous login.
+	prev []string
+}
+
+func (c *accountChooser) find(id string) *account {
+	for i := range c.accounts {
+		if c.accounts[i].ID == id {
+			return &c.accounts[i]
 		}
-		return nil
 	}
-	wantID := in.Opt(metaAccountID, "")
-	fromExisting := false
-	if wantID == "" && in.Existing != nil && in.Existing[metaAccountID] != "" {
-		wantID, fromExisting = in.Existing[metaAccountID], true
+	return nil
+}
+
+// visible reports whether there is a list to check an account against.
+func (c *accountChooser) visible() bool { return c.listed && len(c.accounts) > 0 }
+
+// named is the account of an id: as the credentials list it, else with
+// the name the previous login stored for it.
+func (c *accountChooser) named(id string) account {
+	if a := c.find(id); a != nil {
+		return *a
 	}
-	if wantID != "" {
-		if a := find(wantID); a != nil {
-			return a, nil
+	name := ""
+	if c.in.Existing != nil && c.in.Existing[metaAccountID] == id {
+		name = c.in.Existing[metaAccountName]
+	}
+	return account{ID: id, Name: name}
+}
+
+// kept is the selection of the previous login without the accounts the
+// credentials no longer see, which is said. An account missing from a list
+// read off the zones stays: it may only have no zone.
+func (c *accountChooser) kept() []string {
+	var out []string
+	for _, id := range c.prev {
+		if c.find(id) == nil && c.visible() && c.complete {
+			fmt.Fprintf(c.pio.Err, "note: account %s of the previous selection is not visible to this %s and was left out\n", id, c.what)
+			continue
 		}
-		visible := listed && len(accounts) > 0
-		switch {
-		case visible && (!fromExisting || strictExisting):
-			return nil, fmt.Errorf("account %q is not visible to this %s (visible: %s)", wantID, what, accountNames(accounts))
-		case visible:
-			fmt.Fprintf(pio.Err, "note: the account of the previous login (%s) is not covered by this %s\n", wantID, what)
-		default:
-			name := ""
-			if in.Existing != nil && in.Existing[metaAccountID] == wantID {
-				name = in.Existing[metaAccountName]
-			}
-			return &account{ID: wantID, Name: name}, nil
+		out = append(out, id)
+	}
+	c.prev = out
+	return out
+}
+
+// keptSelection is the selection of a login that names def as the default
+// account and says nothing else: the selection stored before, with def.
+func (c *accountChooser) keptSelection(def account) *selection {
+	return newSelection(def, c.kept())
+}
+
+// optSelection is the selection --set gives, if it gives one:
+//
+//   - account_id=X makes X the default account; the selection is the one
+//     stored before, with X;
+//   - accounts=a,b,c is the selection, with the default account. Without
+//     account_id, the default is the one stored before when it is still
+//     selected, else the first account listed, which is said on stderr.
+//
+// Every account named must be one the credentials see, when they can list
+// their accounts.
+func (c *accountChooser) optSelection() (sel *selection, given bool, err error) {
+	def := strings.TrimSpace(c.in.Opt(metaAccountID, ""))
+	list := splitAccounts(c.in.Opt(metaAccounts, ""))
+	for _, id := range append([]string{def}, list...) {
+		if id == "" {
+			continue
+		}
+		if err := checkAccountID(id); err != nil {
+			return nil, false, app.UsageErrf("%v (--set account_id=<id>, --set accounts=<id>,<id>,...)", err)
+		}
+		if c.visible() && c.find(id) == nil {
+			return nil, false, fmt.Errorf("account %q is not visible to this %s (visible: %s)", id, c.what, accountNames(c.accounts))
 		}
 	}
 	switch {
-	case len(accounts) == 1:
-		return &accounts[0], nil
-	case len(accounts) > 1:
-		if !in.Interactive {
-			return nil, app.UsageErrf("the %s sees %d accounts; pass --set account_id=<id> to choose one of: %s", what, len(accounts), accountNames(accounts))
-		}
-		opts := make([]prompt.Option, len(accounts))
-		for i, acc := range accounts {
-			opts[i] = prompt.Option{Label: fmt.Sprintf("%s (%s)", acc.Name, acc.ID), Value: acc.ID}
-		}
-		pick, err := in.Select(pio, "Account", opts, accounts[0].ID)
-		if err != nil {
-			return nil, err
-		}
-		for i := range accounts {
-			if accounts[i].ID == pick {
-				return &accounts[i], nil
+	case len(list) > 0:
+		if def == "" {
+			if len(c.prev) > 0 && slices.Contains(list, c.prev[0]) {
+				def = c.prev[0]
+			} else {
+				def = list[0]
+				fmt.Fprintf(c.pio.Err, "using %s as the default account (pass --set account_id=<id> to choose another)\n", def)
 			}
 		}
+		return newSelection(c.named(def), list), true, nil
+	case def != "":
+		// The default of before is checked like the rest of the selection.
+		return c.keptSelection(c.named(def)), true, nil
 	}
-	return nil, nil
+	return nil, false, nil
+}
+
+// chooseAccounts resolves the accounts of a login: --set (see
+// optSelection), then, in the interactive flow of credentials that see
+// several accounts, a multi-select of them with the selection stored
+// before ticked (a first login ticks none) and, when several are selected,
+// the question which one is the default. Credentials that see one account
+// work on it without a question.
+//
+// The non-interactive flow asks nothing: the selection stored before is
+// kept, else the only visible account is used, and several are a usage
+// error.
+//
+// listed and complete describe the list (see accountChooser), what names
+// the credential in messages. With strictExisting the default account of
+// the previous login must still be visible; otherwise it is only
+// preferred. A nil selection is that of credentials whose accounts cannot
+// be listed and are not named: the login is not bound to an account.
+func chooseAccounts(in platform.LoginInput, pio *prompt.IO, accounts []account, listed, complete bool, what string, strictExisting bool) (*selection, error) {
+	c := &accountChooser{in: in, pio: pio, accounts: accounts, listed: listed, complete: complete, what: what}
+	if in.Existing != nil {
+		c.prev = selectedAccounts(in.Existing)
+	}
+	if sel, given, err := c.optSelection(); given || err != nil {
+		return sel, err
+	}
+	def := ""
+	if len(c.prev) > 0 {
+		def = c.prev[0]
+		switch {
+		case c.find(def) != nil:
+		case !c.visible():
+			// Nothing to check against: the selection stays as it is.
+			return newSelection(c.named(def), c.prev), nil
+		case strictExisting:
+			return nil, fmt.Errorf("account %q is not visible to this %s (visible: %s)", def, what, accountNames(accounts))
+		default:
+			fmt.Fprintf(pio.Err, "note: the account of the previous login (%s) is not covered by this %s\n", def, what)
+			def, c.prev = "", c.prev[1:]
+		}
+	}
+	if !in.Interactive {
+		switch {
+		case def != "":
+			return c.keptSelection(c.named(def)), nil
+		case len(accounts) == 1:
+			return newSelection(accounts[0], nil), nil
+		case len(accounts) > 1:
+			return nil, app.UsageErrf("the %s sees %d accounts; pass --set account_id=<id> to choose one (and --set accounts=<id>,<id>,... to select more) of: %s", what, len(accounts), accountNames(accounts))
+		}
+		return nil, nil
+	}
+	opts := make([]prompt.Option, 0, len(accounts))
+	for _, acc := range accounts {
+		opts = append(opts, prompt.Option{Label: fmt.Sprintf("%s (%s)", acc.Name, acc.ID), Value: acc.ID})
+	}
+	preset := c.kept()
+	for _, id := range preset {
+		// A selected account the list does not show stays offered.
+		if c.find(id) == nil {
+			opts = append(opts, prompt.Option{Label: id, Value: id})
+		}
+	}
+	switch len(opts) {
+	case 0:
+		return nil, nil
+	case 1:
+		return newSelection(c.named(opts[0].Value), nil), nil
+	}
+	chosen, err := in.MultiSelect(pio, "Cloudflare accounts to work on (the inventory covers them all)", opts, preset)
+	if err != nil {
+		return nil, err
+	}
+	switch len(chosen) {
+	case 0:
+		return nil, fmt.Errorf("%w: no account was selected", platform.ErrInvalidInput)
+	case 1:
+		return newSelection(c.named(chosen[0]), nil), nil
+	}
+	if !slices.Contains(chosen, def) {
+		def = chosen[0]
+	}
+	var defOpts []prompt.Option
+	for _, o := range opts {
+		if slices.Contains(chosen, o.Value) {
+			defOpts = append(defOpts, o)
+		}
+	}
+	if def, err = in.Select(pio, "Default account (where new zones are created)", defOpts, def); err != nil {
+		return nil, err
+	}
+	return newSelection(c.named(def), chosen), nil
 }
 
 func accountNames(accounts []account) string {

@@ -108,7 +108,7 @@ Each platform lists its `--set` keys. Required values for the non-interactive fl
 
 ### Cloudflare
 
-Keys: `method`, `token`, `account_id`.
+Keys: `method`, `token`, `account_id`, `accounts`.
 
 | `method` | Flow |
 | --- | --- |
@@ -126,7 +126,16 @@ Keys: `method`, `token`, `account_id`.
 
 Without `--set method`, a token given with `--set token` or `CLOUDFLARE_API_TOKEN` selects `token`, and a re-login keeps the stored method. `method=oauth` with `--set token` is a usage error; `CLOUDFLARE_API_TOKEN` is ignored (with a note) for `method=oauth`.
 
-`account_id` is optional: polyctl lists the accounts the credentials can see and asks if there are several. In the non-interactive flow several accounts are a usage error listing them.
+A login works on the accounts selected for it, one of which is the default account, where new zones are created. Credentials that see one account work on it and nothing is asked.
+
+- When the credentials see several accounts, the interactive flow offers them as a list to tick (a first login ticks none; a new login ticks the previous selection) and, when several are ticked, asks which one is the default.
+- `account_id=<id>` names the default account. Alone, it keeps the selection stored before, with that account.
+- `accounts=<id>,<id>,...` sets the selected accounts; the default account is always one of them. Without `account_id`, the default stays the previous one when it is still selected, else it is the first account listed (said on stderr).
+- In the non-interactive flow a login that names neither keeps the stored selection; a first login of credentials that see several accounts is a usage error listing them.
+- Every account named must be visible to the credentials, when they can list their accounts. A token that cannot list them (no `Account:Read`) takes the ids as given, and without them is not bound to an account: it works on every zone it sees. An account-owned token sees its own account only.
+- A selected account the credentials no longer see is left out of the new login, with a note; a token whose default account is gone fails until `--set account_id` names another.
+- The selection is stored as the metadata `account_id`, `account_name` (the default account) and `accounts` (the ids, when there are several). A login stored with `account_id` alone has that one account selected.
+- An account that a new login no longer selects loses its cached zones, records and R2 buckets at once.
 
 **Non-interactive:** export `CLOUDFLARE_API_TOKEN`, or `--set token=-` with the token on stdin (`--set token` wins). A token piped without `--set token=-` is ignored.
 
@@ -134,6 +143,7 @@ Without `--set method`, a token given with `--set token` or `CLOUDFLARE_API_TOKE
 polyctl auth login cloudflare
 polyctl auth login cloudflare --set method=oauth
 CLOUDFLARE_API_TOKEN=... polyctl auth login cloudflare --profile acme --set account_id=...
+CLOUDFLARE_API_TOKEN=... polyctl auth login cloudflare --profile acme --set accounts=<id>,<id>
 echo "$TOKEN" | polyctl auth login cloudflare --profile acme --set token=-
 ```
 

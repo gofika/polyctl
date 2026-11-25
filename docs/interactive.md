@@ -77,8 +77,8 @@ The usage error always names what is missing. The table covers accounts, the pla
 | `auth logout [platform]` | the accounts to remove, "Remove N entries?" and "Keep cached inventory?" (`--yes` skips both questions) | `--profile <name>`; `--keep-inventory` keeps the cache |
 | `auth manage` | everything, in a menu | not available: use `auth list`, `use`, `login`, `status`, `rename`, `logout --profile` |
 | any platform command, several profiles hold the platform and none is current | the profile (once per run) | `--profile <name>` |
-| `auth login cloudflare` | the API token; the account when the token sees several | `CLOUDFLARE_API_TOKEN` or `--set token=-`; `--set account_id=<id>` when several accounts are visible |
-| `auth login cloudflare --set method=oauth` | browser approval (`--no-browser` prints the URL), up to 5 minutes | not available: use `CLOUDFLARE_API_TOKEN` / `--set token=-` |
+| `auth login cloudflare` | the API token; when the token sees several accounts, the accounts to work on (a list to tick; the previous selection is ticked) and, when several are ticked, the default account | `CLOUDFLARE_API_TOKEN` or `--set token=-`; `--set account_id=<id>` (the default account) or `--set accounts=<id>,<id>,...` (the selection) when several accounts are visible and no login stored a selection |
+| `auth login cloudflare --set method=oauth` | browser approval (`--no-browser` prints the URL), up to 5 minutes, then the accounts and the default account as above (`--set account_id` / `--set accounts` answer them) | not available: use `CLOUDFLARE_API_TOKEN` / `--set token=-` |
 | `auth login namecom` | username and API token | `--set username=<user> --set token=-` |
 | `auth login godaddy` | the Personal Access Token (or key and secret with `--set method=api_key`) | `--set token=-`, or `--set api_key=<key> --set api_secret=-` |
 | `auth login aws` | the method | `--set method=sso\|keys\|profile` |

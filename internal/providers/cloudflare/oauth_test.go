@@ -685,7 +685,7 @@ func TestOAuthClientIsNotPublicYet(t *testing.T) {
 	if !strings.Contains(p.LoginHelp(), "not published yet") {
 		t.Errorf("the login help does not say that method=oauth is limited: %q", p.LoginHelp())
 	}
-	if !reflect.DeepEqual(p.LoginOptions(), []string{"method", "token", "account_id"}) {
+	if !reflect.DeepEqual(p.LoginOptions(), []string{"method", "token", "account_id", "accounts"}) {
 		t.Errorf("login options = %v", p.LoginOptions())
 	}
 }
@@ -747,25 +747,74 @@ func TestOAuthLoginSeveralAccounts(t *testing.T) {
 	if _, _, err := e.login(t, context.Background(), map[string]string{"method": "oauth", "account_id": "nope"}, nil, e.browser(t, nil)); err == nil || !strings.Contains(err.Error(), "not visible to this authorization") {
 		t.Fatalf("unknown account: %v", err)
 	}
-	// Otherwise the interactive flow asks.
-	var stderr bytes.Buffer
-	res, err = e.p.Login(context.Background(), platform.LoginInput{
-		ProfileName: "work", Interactive: true, Options: map[string]string{"method": "oauth"},
-		Stdin: strings.NewReader("2\n"), Stdout: &bytes.Buffer{}, Stderr: &stderr, OpenBrowser: e.browser(t, nil),
-	})
-	if err != nil || res.Metadata[metaAccountID] != "acc2" || !strings.Contains(stderr.String(), "Account") {
-		t.Fatalf("choice: %v %+v", err, res)
+	// --set accounts selects several, the first being the default unless
+	// --set account_id names it.
+	res, stderrText, err := e.login(t, context.Background(), map[string]string{"method": "oauth", "accounts": "acc1,acc2"}, nil, e.browser(t, nil))
+	if err != nil || res.Metadata[metaAccountID] != "acc1" || res.Metadata[metaAccounts] != "acc1,acc2" || !strings.Contains(stderrText, "using acc1 as the default account") {
+		t.Fatalf("--set accounts: %v %+v %q", err, res, stderrText)
 	}
-	// The account of the previous login is preferred, and is not a reason
-	// to fail when the person approved another one this time.
-	res, _, err = e.login(t, context.Background(), nil, map[string]string{metaMethod: "oauth", metaAccountID: "acc2"}, e.browser(t, nil))
-	if err != nil || res.Metadata[metaAccountID] != "acc2" {
-		t.Fatalf("previous account: %v %+v", err, res)
+	// Otherwise the interactive flow asks which accounts and, with several,
+	// which one is the default.
+	ask := func(stdin string, existing map[string]string) (*platform.LoginResult, string, error) {
+		var stderr bytes.Buffer
+		res, err := e.p.Login(context.Background(), platform.LoginInput{
+			ProfileName: "work", Interactive: true, Options: map[string]string{"method": "oauth"}, Existing: existing,
+			Stdin: strings.NewReader(stdin), Stdout: &bytes.Buffer{}, Stderr: &stderr, OpenBrowser: e.browser(t, nil),
+		})
+		return res, stderr.String(), err
 	}
+	res, stderrText, err = ask("acc2\n", nil)
+	if err != nil || res.Metadata[metaAccountID] != "acc2" || res.Metadata[metaAccounts] != "" || !strings.Contains(stderrText, "Cloudflare accounts to work on") {
+		t.Fatalf("one chosen: %v %+v %q", err, res, stderrText)
+	}
+	if strings.Contains(stderrText, "Default account") {
+		t.Errorf("one account chosen and the default is asked: %q", stderrText)
+	}
+	res, stderrText, err = ask("acc1,acc2\n2\n", nil)
+	if err != nil || res.Metadata[metaAccountID] != "acc2" || res.Metadata[metaAccountName] != "Beta" || res.Metadata[metaAccounts] != "acc2,acc1" || !strings.Contains(stderrText, "Default account") {
+		t.Fatalf("two chosen: %v %+v %q", err, res, stderrText)
+	}
+	if res.Label != "ops@example.com (account Beta, +1 more)" {
+		t.Errorf("label = %q", res.Label)
+	}
+	// The selection of the previous login is ticked: accepting it keeps it,
+	// default included.
+	prev := map[string]string{metaMethod: "oauth", metaAccountID: "acc2", metaAccounts: "acc2,acc1"}
+	res, _, err = ask("\n\n", prev)
+	if err != nil || res.Metadata[metaAccountID] != "acc2" || res.Metadata[metaAccounts] != "acc2,acc1" {
+		t.Fatalf("previous selection: %v %+v", err, res)
+	}
+	// The default account of the previous login is not a reason to fail
+	// when the person approved another one this time; a selected account
+	// that is gone is left out, which is said.
 	e.cf.accounts = e.cf.accounts[:1]
-	res, stderrText, err := e.login(t, context.Background(), nil, map[string]string{metaMethod: "oauth", metaAccountID: "acc2"}, e.browser(t, nil))
+	res, stderrText, err = ask("", map[string]string{metaMethod: "oauth", metaAccountID: "acc2"})
 	if err != nil || res.Metadata[metaAccountID] != "acc1" || !strings.Contains(stderrText, "not covered by this authorization") {
 		t.Fatalf("previous account gone: %v %+v %q", err, res, stderrText)
+	}
+	res, stderrText, err = ask("", map[string]string{metaMethod: "oauth", metaAccountID: "acc1", metaAccounts: "acc1,acc2"})
+	if err != nil || res.Metadata[metaAccountID] != "acc1" || res.Metadata[metaAccounts] != "" || !strings.Contains(stderrText, "account acc2 of the previous selection is not visible to this authorization and was left out") {
+		t.Fatalf("selected account gone: %v %+v %q", err, res, stderrText)
+	}
+}
+
+// Without the scope that lists accounts they are read off the zones, which
+// shows the accounts with a zone only: a selected account that list lacks
+// stays offered, and ticked.
+func TestOAuthLoginKeepsAccountsTheZonesDoNotShow(t *testing.T) {
+	e := newOAuthEnv(t)
+	e.as.granted = OAuthRequiredScopes
+	var stderr bytes.Buffer
+	res, err := e.p.Login(context.Background(), platform.LoginInput{
+		ProfileName: "work", Interactive: true, Options: map[string]string{"method": "oauth"},
+		Existing: map[string]string{metaMethod: "oauth", metaAccountID: "acc1", metaAccounts: "acc1,acc9"},
+		Stdin:    strings.NewReader("\n\n"), Stdout: &bytes.Buffer{}, Stderr: &stderr, OpenBrowser: e.browser(t, nil),
+	})
+	if err != nil || res.Metadata[metaAccountID] != "acc1" || res.Metadata[metaAccounts] != "acc1,acc9" {
+		t.Fatalf("login: %v %+v %q", err, res, stderr.String())
+	}
+	if strings.Contains(stderr.String(), "left out") {
+		t.Errorf("an account the zones do not show was left out: %q", stderr.String())
 	}
 }
 

@@ -914,8 +914,8 @@ func TestLoginAmbiguousAccountsNonInteractive(t *testing.T) {
 		NoBrowser: true,
 	}
 	_, err := p.Login(context.Background(), in)
-	if !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "--set account_id=<id>") {
-		t.Fatalf("want a usage error naming --set account_id, got %v", err)
+	if !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "--set account_id=<id>") || !strings.Contains(err.Error(), "--set accounts=<id>,<id>,...") {
+		t.Fatalf("want a usage error naming --set account_id and --set accounts, got %v", err)
 	}
 	for _, cand := range []string{"acc1=Acme", "acc2=Beta"} {
 		if !strings.Contains(err.Error(), cand) {
@@ -1193,17 +1193,143 @@ func TestLoginNonInteractive(t *testing.T) {
 func TestLoginInteractiveChoosesAccount(t *testing.T) {
 	_, srv := newFake(t)
 	p := &provider{baseURL: srv.URL}
-	var stderr bytes.Buffer
-	res, err := p.Login(context.Background(), platform.LoginInput{
-		Interactive: true, NoBrowser: true,
-		Options: map[string]string{"token": "good-token"},
-		Stdin:   strings.NewReader("2\n"), Stdout: &bytes.Buffer{}, Stderr: &stderr,
-	})
+	login := func(stdin string, existing map[string]string) (*platform.LoginResult, string, error) {
+		var stderr bytes.Buffer
+		res, err := p.Login(context.Background(), platform.LoginInput{
+			Interactive: true, NoBrowser: true, Existing: existing,
+			Options: map[string]string{"token": "good-token"},
+			Stdin:   strings.NewReader(stdin), Stdout: &bytes.Buffer{}, Stderr: &stderr,
+		})
+		return res, stderr.String(), err
+	}
+	// One account chosen: it is the default, and nothing else is asked.
+	res, stderr, err := login("acc2\n", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Metadata[metaAccountID] != "acc2" || !strings.Contains(stderr.String(), "Account") {
-		t.Errorf("chosen account: %+v (stderr %q)", res.Metadata, stderr.String())
+	if res.Metadata[metaAccountID] != "acc2" || res.Metadata[metaAccountName] != "Beta" || res.Metadata[metaAccounts] != "" {
+		t.Errorf("one account: %+v", res.Metadata)
+	}
+	if !strings.Contains(stderr, "Cloudflare accounts to work on") || strings.Contains(stderr, "Default account") {
+		t.Errorf("one account: stderr %q", stderr)
+	}
+	// A first login ticks nothing: accepting the empty selection is not a
+	// login on every account.
+	if _, _, err := login("\n", nil); !errors.Is(err, platform.ErrInvalidInput) || !strings.Contains(err.Error(), "no account was selected") {
+		t.Errorf("nothing chosen = %v", err)
+	}
+	// Several: the default is asked among them.
+	res, stderr, err = login("acc1,acc2\n2\n", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Metadata[metaAccountID] != "acc2" || res.Metadata[metaAccountName] != "Beta" || res.Metadata[metaAccounts] != "acc2,acc1" {
+		t.Errorf("two accounts: %+v", res.Metadata)
+	}
+	if !strings.Contains(stderr, "Default account (where new zones are created)") {
+		t.Errorf("two accounts: stderr %q", stderr)
+	}
+	if res.Label != "ops@example.com (account Beta, +1 more)" {
+		t.Errorf("label = %q", res.Label)
+	}
+	// A new login has the selection of the previous one ticked and its
+	// default preselected.
+	prev := map[string]string{metaAccountID: "acc2", metaAccounts: "acc2,acc1"}
+	if res, _, err = login("\n\n", prev); err != nil || res.Metadata[metaAccountID] != "acc2" || res.Metadata[metaAccounts] != "acc2,acc1" {
+		t.Errorf("previous selection kept: %v %+v", err, res)
+	}
+	// It can drop an account.
+	if res, _, err = login("acc2\n", prev); err != nil || res.Metadata[metaAccountID] != "acc2" || res.Metadata[metaAccounts] != "" {
+		t.Errorf("an account dropped: %v %+v", err, res)
+	}
+	// And drop the default, which the first one left replaces.
+	if res, _, err = login("acc1\n", prev); err != nil || res.Metadata[metaAccountID] != "acc1" || res.Metadata[metaAccountName] != "Acme" {
+		t.Errorf("the default dropped: %v %+v", err, res)
+	}
+}
+
+// --set accounts is the selection and --set account_id its default; the
+// stored selection is kept by a login that names neither.
+func TestLoginSetAccounts(t *testing.T) {
+	f, srv := newFake(t)
+	p := &provider{baseURL: srv.URL}
+	login := func(opts, existing map[string]string) (*platform.LoginResult, string, error) {
+		var stderr bytes.Buffer
+		o := map[string]string{"token": "good-token"}
+		for k, v := range opts {
+			o[k] = v
+		}
+		res, err := p.Login(context.Background(), platform.LoginInput{
+			Options: o, Existing: existing, NoBrowser: true,
+			Stdin: refusingReader{t}, Stdout: &bytes.Buffer{}, Stderr: &stderr,
+		})
+		return res, stderr.String(), err
+	}
+	meta := func(res *platform.LoginResult) string {
+		return res.Metadata[metaAccountID] + "|" + res.Metadata[metaAccountName] + "|" + res.Metadata[metaAccounts]
+	}
+	// accounts alone: the first is the default, which is said.
+	res, stderr, err := login(map[string]string{"accounts": "acc2, acc1"}, nil)
+	if err != nil || meta(res) != "acc2|Beta|acc2,acc1" {
+		t.Fatalf("accounts: %v %+v", err, res)
+	}
+	if !strings.Contains(stderr, "using acc2 as the default account (pass --set account_id=<id> to choose another)") {
+		t.Errorf("accounts: stderr %q", stderr)
+	}
+	// accounts with account_id: that is the default, selected or not.
+	res, stderr, err = login(map[string]string{"accounts": "acc2,acc1", "account_id": "acc1"}, nil)
+	if err != nil || meta(res) != "acc1|Acme|acc1,acc2" || strings.Contains(stderr, "using") {
+		t.Fatalf("accounts and account_id: %v %+v %q", err, res, stderr)
+	}
+	if res, _, err = login(map[string]string{"accounts": "acc2", "account_id": "acc1"}, nil); err != nil || meta(res) != "acc1|Acme|acc1,acc2" {
+		t.Fatalf("account_id outside accounts: %v %+v", err, res)
+	}
+	// accounts keeps the stored default when it is still listed.
+	prev := map[string]string{metaAccountID: "acc2", metaAccountName: "Beta", metaAccounts: "acc2,acc1"}
+	res, stderr, err = login(map[string]string{"accounts": "acc1,acc2"}, prev)
+	if err != nil || meta(res) != "acc2|Beta|acc2,acc1" || strings.Contains(stderr, "using") {
+		t.Fatalf("stored default kept: %v %+v %q", err, res, stderr)
+	}
+	// A selection of one account is stored as a login always stored it.
+	if res, _, err = login(map[string]string{"accounts": "acc1"}, prev); err != nil || meta(res) != "acc1|Acme|" {
+		t.Fatalf("one account: %v %+v", err, res)
+	}
+	// account_id alone: the default, with the stored selection.
+	if res, _, err = login(map[string]string{"account_id": "acc1"}, prev); err != nil || meta(res) != "acc1|Acme|acc1,acc2" {
+		t.Fatalf("account_id with a stored selection: %v %+v", err, res)
+	}
+	// Neither: the stored selection as it is.
+	if res, _, err = login(nil, prev); err != nil || meta(res) != "acc2|Beta|acc2,acc1" {
+		t.Fatalf("stored selection: %v %+v", err, res)
+	}
+	if res.Label != "ops@example.com (account Beta, +1 more)" {
+		t.Errorf("label = %q", res.Label)
+	}
+	// What is not an id, or not an account of the token, is refused.
+	if _, _, err = login(map[string]string{"accounts": "acc1,a/b"}, nil); !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "--set accounts=<id>,<id>,...") {
+		t.Errorf("bad id = %v", err)
+	}
+	if _, _, err = login(map[string]string{"accounts": "acc1,acc9"}, nil); err == nil || !strings.Contains(err.Error(), `account "acc9" is not visible to this token`) {
+		t.Errorf("unknown account = %v", err)
+	}
+	// A selected account the token no longer sees is left out, which is
+	// said; the default account must still be there.
+	f.accounts = f.accounts[:1]
+	res, stderr, err = login(nil, map[string]string{metaAccountID: "acc1", metaAccounts: "acc1,acc2"})
+	if err != nil || meta(res) != "acc1|Acme|" || !strings.Contains(stderr, "account acc2 of the previous selection is not visible to this token and was left out") {
+		t.Fatalf("selected account gone: %v %+v %q", err, res, stderr)
+	}
+	if _, _, err = login(nil, prev); err == nil || !strings.Contains(err.Error(), `account "acc2" is not visible to this token`) {
+		t.Errorf("default account gone = %v", err)
+	}
+	// An account-owned token sees its account alone.
+	f.accounts = append(f.accounts, map[string]any{"id": "acc2", "name": "Beta", "type": "standard"})
+	f.accountOwned = "acc2"
+	if res, _, err = login(nil, nil); err != nil || meta(res) != "acc2|Beta|" {
+		t.Fatalf("account-owned token: %v %+v", err, res)
+	}
+	if _, _, err = login(map[string]string{"accounts": "acc2,acc1"}, nil); err == nil || !strings.Contains(err.Error(), `account "acc1" is not visible to this token`) {
+		t.Errorf("account-owned token with another account = %v", err)
 	}
 }
 
