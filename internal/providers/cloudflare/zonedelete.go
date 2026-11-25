@@ -16,7 +16,7 @@ func newZoneDeleteCmd(rt *app.Runtime) *cobra.Command {
 		Use:   "delete <zone>",
 		Short: "Delete a zone and all of its DNS records",
 		Long: `Delete the zone <zone> (a name or a zone id) with all of its DNS records.
-The zone is found among the selected accounts of the Cloudflare logins
+The zone is found among the enabled accounts of the Cloudflare logins
 (narrowed by --profile and --account) and read live first. The interactive
 flow shows it with its plan, status and number of DNS records and asks for a
 confirmation (default no); the non-interactive flow needs --yes (exit code 2

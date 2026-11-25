@@ -396,10 +396,10 @@ step is reported as skipped.
 
 A zone of that name that exists already is an error (exit code 1): use
 ` + "`zone ensure`" + `, which reuses it. Without --account it is looked for in
-every selected account of the login, and the error names the account that
+every enabled account of the login, and the error names the account that
 holds it; with --account in that account alone. Cloudflare holds an active
 domain in one account only, so a zone it refuses because another account,
-one the login does not select, holds the domain is an error as well.`,
+one the login does not work on, holds the domain is an error as well.`,
 		Example: "  polyctl cloudflare zone create example.com --profile acme\n  polyctl cloudflare zone create example.com --account acme-eu",
 		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -435,7 +435,7 @@ when it exists) and, with --preset or --ssl, converge its settings: each
 setting is read first and written only when it differs. Running it again
 changes nothing.
 
-Without --account the zone is looked for in every selected account of the
+Without --account the zone is looked for in every enabled account of the
 login: it is reused in the account that holds it (the report names that
 account), two accounts holding one are a pick on a terminal and ambiguous
 (exit code 5) otherwise, and a missing zone is created in the default

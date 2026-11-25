@@ -31,17 +31,17 @@ SSL mode, R2 custom domains, the accounts of the login and the identity check.
 <zone> arguments accept a zone name (example.com) or a zone id. Names are
 resolved through the local inventory first, then remotely.
 
-One login works on several Cloudflare accounts, the ones selected for it;
-one of them is the default account (see polyctl cloudflare account). Lists
-and lookups cover every selected account, and a new zone goes to the default
-account. --account <id or name> on the zone, dns, cache, redirect, dev-mode,
-ssl-mode and r2 commands names one account for the call; an account outside
-the selection is read live then and nothing of it is cached.
+One login works on every Cloudflare account its credentials see, unless an
+account was disabled; one of them is the default account (see polyctl
+cloudflare account). Lists and lookups cover every enabled account, and a new
+zone goes to the default account. --account <id or name> on the zone, dns,
+cache, redirect, dev-mode, ssl-mode and r2 commands names one account for the
+call; a disabled account is read live then and nothing of it is cached.
 
 The tree is also available under its short name: polyctl cf ...`,
 	}
 	cmd.AddCommand(
-		app.WhoamiCommand(rt, platform.Cloudflare, "On Cloudflare this verifies the API token and reports its id, status and\nexpiry, with the default account of the login and, when it works on several,\nthe accounts selected for it. For a login authorized in the browser it checks\nthe authorization with a request to the API and reports the granted scopes."),
+		app.WhoamiCommand(rt, platform.Cloudflare, "On Cloudflare this verifies the API token and reports its id, status and\nexpiry, with the default account of the login and the accounts that are\ndisabled for it, when there are any. For a login authorized in the browser it checks\nthe authorization with a request to the API and reports the granted scopes."),
 		newR2Cmd(rt), newAccountCmd(rt))
 	// The commands that work on zones take --account.
 	for _, c := range []*cobra.Command{newZoneCmd(rt), newDNSCmd(rt), newCacheCmd(rt), newRedirectCmd(rt), newDevModeCmd(rt), newSSLModeCmd(rt)} {
@@ -58,7 +58,7 @@ The tree is also available under its short name: polyctl cf ...`,
 const sameZoneHelp = `
 
 One Cloudflare login works on several accounts. A zone name that several of
-the selected accounts hold a zone of (an active zone in one, a pending one in
+the enabled accounts hold a zone of (an active zone in one, a pending one in
 another) is asked on a terminal. In the non-interactive flow it is exit code
 5: the error lists the zones with their accounts and names what chooses one:
 --account <id or name>, the zone id, or --profile when the zones are of
@@ -349,7 +349,7 @@ func newZoneCmd(rt *app.Runtime) *cobra.Command {
 	cmd.AddCommand(
 		&cobra.Command{
 			Use:   "list",
-			Short: "List the zones of the profile, in every selected account (or the one of --account)",
+			Short: "List the zones of the profile, in every enabled account (or the one of --account)",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				zones, sc, cached, err := cachedZones(cmd.Context(), rt)

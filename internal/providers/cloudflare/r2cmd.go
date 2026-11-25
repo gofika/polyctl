@@ -29,10 +29,10 @@ func newR2Cmd(rt *app.Runtime) *cobra.Command {
 		Long: `R2 buckets and the custom domains bound to them.
 
 R2 is addressed per account. ` + "`r2 bucket list`" + ` lists the buckets of every
-selected account of every Cloudflare profile, and the ` + "`r2 domain`" + ` commands
+enabled account of every Cloudflare profile, and the ` + "`r2 domain`" + ` commands
 find the account that holds <bucket> among them. --profile narrows both to
 the accounts of one profile and --account to one account, by id or name; an
-account the login does not select is read live and not cached. The name of
+account that is disabled for the login is read live and not cached. The name of
 a bucket is unique in its account only: a name held by several accounts is a
 list to pick from in the interactive flow and ambiguous (exit code 5)
 otherwise: pass --account, or --profile when the accounts are of different
@@ -498,13 +498,13 @@ func newR2BucketListCmd(rt *app.Runtime, jur *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List the R2 buckets of every Cloudflare profile (or of --profile)",
-		Long: `List the R2 buckets of every selected account of every Cloudflare profile, of
+		Long: `List the R2 buckets of every enabled account of every Cloudflare profile, of
 the profile of --profile, or of the account of --account.
 
 The buckets of the default jurisdiction come from the local inventory
 (resource type r2_bucket, kept fresh for an hour; --refresh reads them
 again, --offline only reads the inventory); with --jurisdiction, and for an
-account of --account that the login does not select, they are read live.
+account of --account that is disabled for the login, they are read live.
 The listing names each bucket and its creation date, and its account when a
 profile lists the buckets of several; --wide also reads each bucket for its
 location, storage class and jurisdiction (one more request per bucket, so
