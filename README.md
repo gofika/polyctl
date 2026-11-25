@@ -7,9 +7,9 @@ Platform-neutral commands (`dns`, `domain`, `cert`, `find`) find the account tha
 ## Features
 
 - Six platforms: Cloudflare, name.com, GoDaddy, AWS, GCP, Alibaba Cloud.
-- Profiles: one profile holds one account per platform a project uses; keep as many profiles as you have projects or customers. One GCP account covers several Google Cloud projects (`polyctl gcp project add`, `--project`).
+- Profiles: one profile holds one account per platform a project uses; keep as many profiles as you have projects or customers. One GCP account covers several Google Cloud projects (`polyctl gcp project add`, `--project`), and one Cloudflare login several Cloudflare accounts (`polyctl cloudflare account add`, `--account`).
 - Secrets in the OS keyring (macOS Keychain, Windows Credential Manager, Secret Service), falling back to a `0600` file; `config.yaml` never holds a secret.
-- Domain routing: `polyctl dns list example.com` picks the right zone and account. A domain found in two accounts is reported, not guessed; `--profile` and `--platform` pick one.
+- Domain routing: `polyctl dns list example.com` picks the right zone and account. A domain found in two accounts is reported, not guessed; `--profile` and `--platform` pick one (two Cloudflare accounts of one login: `--account` of the `cloudflare` commands).
 - Reverse lookup: `polyctl find 203.0.113.10` lists the instances, load balancers, elastic / static IPs and database endpoints holding an address or DNS name, in every account.
 - Certificates: `polyctl cert ensure` issues and renews Let's Encrypt certificates through DNS-01; `polyctl cert deploy` puts them on Alibaba Cloud ALB and CAS, GCP HTTPS proxies and AWS ACM.
 - Cloud resources: instances (EC2, Compute Engine, ECS), security groups and firewalls, load balancers, EBS volumes and snapshots, RDS, key pairs, elastic IPs, VPCs and platform certificates.
