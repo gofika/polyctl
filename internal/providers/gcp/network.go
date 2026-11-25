@@ -190,8 +190,12 @@ func (c *client) listSubnets(ctx context.Context, region, network string) ([]*co
 		return out, nil
 	}
 	var out []*compute.Subnetwork
-	err := c.compute.Subnetworks.AggregatedList(c.project).Pages(ctx, func(l *compute.SubnetworkAggregatedList) error {
+	unreachable, err := aggregatedPages(ctx, c.compute.Subnetworks.AggregatedList(c.project), func(l *compute.SubnetworkAggregatedList) (string, []string) {
+		u := l.Unreachables
 		for scope, sl := range l.Items {
+			if sl.Warning != nil {
+				u = append(u, warnedUnreachable(scope, sl.Warning.Code)...)
+			}
 			for _, s := range sl.Subnetworks {
 				if network != "" && lastSegment(s.Network) != network {
 					continue
@@ -202,10 +206,13 @@ func (c *client) listSubnets(ctx context.Context, region, network string) ([]*co
 				out = append(out, s)
 			}
 		}
-		return nil
+		return l.NextPageToken, u
 	})
 	if err != nil {
 		return nil, computeErr(err)
+	}
+	if err := unreachableListErr("subnetworks", unreachable); err != nil {
+		return nil, err
 	}
 	return out, nil
 }

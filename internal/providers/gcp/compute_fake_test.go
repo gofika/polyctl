@@ -90,6 +90,12 @@ type fakeCompute struct {
 	lbParts *lbParts
 	// agent emulates the Windows guest agent (winlogin_test.go).
 	agent *fakeAgent
+	// unreachable is a scope ("zones/x", "regions/x") every aggregated list
+	// cannot reach. With returnPartialSuccess=true the list names it in
+	// unreachables; without, or with unreachableWarning, the scope's entry
+	// carries warning UNREACHABLE instead. Its resources are left out.
+	unreachable        string
+	unreachableWarning bool
 }
 
 func newFakeCompute(t *testing.T) *fakeCompute {
@@ -297,6 +303,48 @@ func (f *fakeCompute) internalInUse(project, ip, except string) bool {
 func (f *fakeCompute) handle(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if !strings.Contains(r.URL.Path, "/aggregated/") {
+		f.serve(w, r)
+		return
+	}
+	partial := r.URL.Query().Get("returnPartialSuccess") == "true"
+	if !partial {
+		f.t.Errorf("%s %s: aggregated list without returnPartialSuccess=true", r.Method, r.URL.Path)
+	}
+	rec := httptest.NewRecorder()
+	f.serve(rec, r)
+	if f.unreachable == "" || rec.Code != http.StatusOK {
+		copyRecorded(w, rec)
+		return
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		f.t.Fatalf("aggregated list body: %v", err)
+	}
+	items, _ := body["items"].(map[string]any)
+	if items == nil {
+		items = map[string]any{}
+	}
+	if partial && !f.unreachableWarning {
+		delete(items, f.unreachable)
+		body["unreachables"] = []string{f.unreachable}
+	} else {
+		items[f.unreachable] = map[string]any{"warning": map[string]any{"code": "UNREACHABLE", "message": "The resource '" + f.unreachable + "' is not reachable."}}
+	}
+	body["items"] = items
+	writeJSONStatus(w, http.StatusOK, body)
+}
+
+func copyRecorded(w http.ResponseWriter, rec *httptest.ResponseRecorder) {
+	for k, v := range rec.Header() {
+		w.Header()[k] = v
+	}
+	w.WriteHeader(rec.Code)
+	_, _ = w.Write(rec.Body.Bytes())
+}
+
+// serve answers a request; handle holds the lock.
+func (f *fakeCompute) serve(w http.ResponseWriter, r *http.Request) {
 	call := r.Method + " " + r.URL.RequestURI()
 	f.calls = append(f.calls, call)
 	path := r.URL.Path

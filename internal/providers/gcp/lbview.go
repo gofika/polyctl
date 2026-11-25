@@ -45,8 +45,12 @@ func (c *client) loadLBIndex(ctx context.Context) (*lbIndex, error) {
 	cs := c.compute
 	steps := []func() error{
 		func() error {
-			return cs.ForwardingRules.AggregatedList(p).Pages(ctx, func(l *compute.ForwardingRuleAggregatedList) error {
-				for _, s := range l.Items {
+			scopes, err := aggregatedPages(ctx, cs.ForwardingRules.AggregatedList(p), func(l *compute.ForwardingRuleAggregatedList) (string, []string) {
+				u := l.Unreachables
+				for scope, s := range l.Items {
+					if s.Warning != nil {
+						u = append(u, warnedUnreachable(scope, s.Warning.Code)...)
+					}
 					for _, fr := range s.ForwardingRules {
 						if k := resourceKey(fr.SelfLink); fr.SelfLink == "" || !seen[k] {
 							seen[k] = true
@@ -54,69 +58,106 @@ func (c *client) loadLBIndex(ctx context.Context) (*lbIndex, error) {
 						}
 					}
 				}
-				x.unreachable = append(x.unreachable, l.Unreachables...)
-				return nil
+				return l.NextPageToken, u
 			})
+			x.unreachable = append(x.unreachable, scopes...)
+			return err
 		},
 		func() error {
-			return cs.TargetHttpProxies.AggregatedList(p).Pages(ctx, func(l *compute.TargetHttpProxyAggregatedList) error {
-				for _, s := range l.Items {
+			scopes, err := aggregatedPages(ctx, cs.TargetHttpProxies.AggregatedList(p), func(l *compute.TargetHttpProxyAggregatedList) (string, []string) {
+				u := l.Unreachables
+				for scope, s := range l.Items {
+					if s.Warning != nil {
+						u = append(u, warnedUnreachable(scope, s.Warning.Code)...)
+					}
 					for _, v := range s.TargetHttpProxies {
 						x.httpProxies[resourceKey(v.SelfLink)] = v
 					}
 				}
-				return nil
+				return l.NextPageToken, u
 			})
+			x.unreachable = append(x.unreachable, scopes...)
+			return err
 		},
 		func() error {
-			return cs.TargetHttpsProxies.AggregatedList(p).Pages(ctx, func(l *compute.TargetHttpsProxyAggregatedList) error {
-				for _, s := range l.Items {
+			scopes, err := aggregatedPages(ctx, cs.TargetHttpsProxies.AggregatedList(p), func(l *compute.TargetHttpsProxyAggregatedList) (string, []string) {
+				u := l.Unreachables
+				for scope, s := range l.Items {
+					if s.Warning != nil {
+						u = append(u, warnedUnreachable(scope, s.Warning.Code)...)
+					}
 					for _, v := range s.TargetHttpsProxies {
 						x.httpsProxy[resourceKey(v.SelfLink)] = v
 					}
 				}
-				return nil
+				return l.NextPageToken, u
 			})
+			x.unreachable = append(x.unreachable, scopes...)
+			return err
 		},
 		func() error {
-			return cs.TargetTcpProxies.AggregatedList(p).Pages(ctx, func(l *compute.TargetTcpProxyAggregatedList) error {
-				for _, s := range l.Items {
+			scopes, err := aggregatedPages(ctx, cs.TargetTcpProxies.AggregatedList(p), func(l *compute.TargetTcpProxyAggregatedList) (string, []string) {
+				u := l.Unreachables
+				for scope, s := range l.Items {
+					if s.Warning != nil {
+						u = append(u, warnedUnreachable(scope, s.Warning.Code)...)
+					}
 					for _, v := range s.TargetTcpProxies {
 						x.tcpProxies[resourceKey(v.SelfLink)] = v
 					}
 				}
-				return nil
+				return l.NextPageToken, u
 			})
+			x.unreachable = append(x.unreachable, scopes...)
+			return err
 		},
 		func() error {
-			return cs.UrlMaps.AggregatedList(p).Pages(ctx, func(l *compute.UrlMapsAggregatedList) error {
-				for _, s := range l.Items {
+			scopes, err := aggregatedPages(ctx, cs.UrlMaps.AggregatedList(p), func(l *compute.UrlMapsAggregatedList) (string, []string) {
+				u := l.Unreachables
+				for scope, s := range l.Items {
+					if s.Warning != nil {
+						u = append(u, warnedUnreachable(scope, s.Warning.Code)...)
+					}
 					for _, v := range s.UrlMaps {
 						x.urlMaps[resourceKey(v.SelfLink)] = v
 					}
 				}
-				return nil
+				return l.NextPageToken, u
 			})
+			x.unreachable = append(x.unreachable, scopes...)
+			return err
 		},
 		func() error {
-			return cs.BackendServices.AggregatedList(p).Pages(ctx, func(l *compute.BackendServiceAggregatedList) error {
-				for _, s := range l.Items {
+			scopes, err := aggregatedPages(ctx, cs.BackendServices.AggregatedList(p), func(l *compute.BackendServiceAggregatedList) (string, []string) {
+				u := l.Unreachables
+				for scope, s := range l.Items {
+					if s.Warning != nil {
+						u = append(u, warnedUnreachable(scope, s.Warning.Code)...)
+					}
 					for _, v := range s.BackendServices {
 						x.backends[resourceKey(v.SelfLink)] = v
 					}
 				}
-				return nil
+				return l.NextPageToken, u
 			})
+			x.unreachable = append(x.unreachable, scopes...)
+			return err
 		},
 		func() error {
-			return cs.HealthChecks.AggregatedList(p).Pages(ctx, func(l *compute.HealthChecksAggregatedList) error {
-				for _, s := range l.Items {
+			scopes, err := aggregatedPages(ctx, cs.HealthChecks.AggregatedList(p), func(l *compute.HealthChecksAggregatedList) (string, []string) {
+				u := l.Unreachables
+				for scope, s := range l.Items {
+					if s.Warning != nil {
+						u = append(u, warnedUnreachable(scope, s.Warning.Code)...)
+					}
 					for _, v := range s.HealthChecks {
 						x.checks[resourceKey(v.SelfLink)] = v
 					}
 				}
-				return nil
+				return l.NextPageToken, u
 			})
+			x.unreachable = append(x.unreachable, scopes...)
+			return err
 		},
 	}
 	for _, f := range steps {
@@ -124,7 +165,7 @@ func (c *client) loadLBIndex(ctx context.Context) (*lbIndex, error) {
 			return nil, computeErr(err)
 		}
 	}
-	sort.Strings(x.unreachable)
+	x.unreachable = uniqueScopes(x.unreachable)
 	sort.Slice(x.rules, func(i, j int) bool {
 		a, b := x.rules[i], x.rules[j]
 		if lastSegment(a.Region) != lastSegment(b.Region) {

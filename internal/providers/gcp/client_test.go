@@ -175,6 +175,9 @@ func (f *fakeGoogle) handle(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 		}
 	case path == "/projects/proj/aggregated/instances":
+		if r.URL.Query().Get("returnPartialSuccess") != "true" {
+			f.t.Errorf("aggregated list without returnPartialSuccess=true: %s", r.URL)
+		}
 		inst := func(id int, name, zone, ip string) map[string]any {
 			return map[string]any{"id": fmt.Sprint(id), "name": name, "status": "RUNNING",
 				"zone":              "https://www.googleapis.com/compute/v1/projects/proj/zones/" + zone,

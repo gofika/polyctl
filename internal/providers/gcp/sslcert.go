@@ -755,13 +755,15 @@ func (v SSLCertificate) resource() platform.Resource {
 // listAllCerts lists the certificates of every scope.
 func (c *client) listAllCerts(ctx context.Context) ([]*compute.SslCertificate, []string, error) {
 	var out []*compute.SslCertificate
-	var unreachable []string
-	err := c.compute.SslCertificates.AggregatedList(c.project).Pages(ctx, func(l *compute.SslCertificateAggregatedList) error {
-		for _, scoped := range l.Items {
+	unreachable, err := aggregatedPages(ctx, c.compute.SslCertificates.AggregatedList(c.project), func(l *compute.SslCertificateAggregatedList) (string, []string) {
+		u := l.Unreachables
+		for scope, scoped := range l.Items {
 			out = append(out, scoped.SslCertificates...)
+			if scoped.Warning != nil {
+				u = append(u, warnedUnreachable(scope, scoped.Warning.Code)...)
+			}
 		}
-		unreachable = append(unreachable, l.Unreachables...)
-		return nil
+		return l.NextPageToken, u
 	})
 	if err != nil {
 		return nil, nil, computeErr(err)
@@ -793,18 +795,25 @@ func (c *client) syncCertificates(ctx context.Context) ([]platform.Resource, err
 // HTTPS proxies (of every scope) that use it.
 func (c *client) proxyUsers(ctx context.Context) (map[string][]string, error) {
 	out := map[string][]string{}
-	err := c.compute.TargetHttpsProxies.AggregatedList(c.project).Pages(ctx, func(l *compute.TargetHttpsProxyAggregatedList) error {
-		for _, scoped := range l.Items {
+	unreachable, err := aggregatedPages(ctx, c.compute.TargetHttpsProxies.AggregatedList(c.project), func(l *compute.TargetHttpsProxyAggregatedList) (string, []string) {
+		u := l.Unreachables
+		for scope, scoped := range l.Items {
+			if scoped.Warning != nil {
+				u = append(u, warnedUnreachable(scope, scoped.Warning.Code)...)
+			}
 			for _, p := range scoped.TargetHttpsProxies {
-				for _, u := range p.SslCertificates {
-					out[resourceKey(u)] = append(out[resourceKey(u)], p.Name)
+				for _, cert := range p.SslCertificates {
+					out[resourceKey(cert)] = append(out[resourceKey(cert)], p.Name)
 				}
 			}
 		}
-		return nil
+		return l.NextPageToken, u
 	})
 	if err != nil {
 		return nil, computeErr(err)
+	}
+	if err := unreachableListErr("target HTTPS proxies", unreachable); err != nil {
+		return nil, err
 	}
 	return out, nil
 }

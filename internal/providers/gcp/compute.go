@@ -76,35 +76,26 @@ func instanceResource(i Instance) platform.Resource {
 }
 
 // ListInstances lists every instance of the project across all zones.
+// Unreachable zones are region failures, as for the inventory sync.
 func (c *client) ListInstances(ctx context.Context) ([]platform.Resource, error) {
-	var out []platform.Resource
-	err := c.compute.Instances.AggregatedList(c.project).Pages(ctx, func(resp *compute.InstanceAggregatedList) error {
-		for _, scoped := range resp.Items {
-			for _, in := range scoped.Instances {
-				out = append(out, instanceResource(instanceFromAPI(in)))
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, mapErr(err)
-	}
-	return out, nil
+	return c.syncInstances(ctx)
 }
 
 // syncInstances lists every instance of the project, for the inventory.
 // Zones the API reports unreachable are region failures.
 func (c *client) syncInstances(ctx context.Context) ([]platform.Resource, error) {
 	var out []platform.Resource
-	var unreachable []string
-	err := c.compute.Instances.AggregatedList(c.project).Pages(ctx, func(resp *compute.InstanceAggregatedList) error {
-		for _, scoped := range resp.Items {
+	unreachable, err := aggregatedPages(ctx, c.compute.Instances.AggregatedList(c.project), func(resp *compute.InstanceAggregatedList) (string, []string) {
+		u := resp.Unreachables
+		for scope, scoped := range resp.Items {
 			for _, in := range scoped.Instances {
 				out = append(out, instanceResource(instanceFromAPI(in)))
 			}
+			if scoped.Warning != nil {
+				u = append(u, warnedUnreachable(scope, scoped.Warning.Code)...)
+			}
 		}
-		unreachable = append(unreachable, resp.Unreachables...)
-		return nil
+		return resp.NextPageToken, u
 	})
 	if err != nil {
 		return nil, mapErr(err)

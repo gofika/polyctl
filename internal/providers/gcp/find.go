@@ -201,21 +201,21 @@ func (f ForwardingRule) resource() platform.Resource {
 // best effort: a list that fails leaves its proxies out.
 func (c *client) proxyURLMaps(ctx context.Context) map[string]string {
 	out := map[string]string{}
-	_ = c.compute.TargetHttpProxies.AggregatedList(c.project).Pages(ctx, func(l *compute.TargetHttpProxyAggregatedList) error {
+	_, _ = aggregatedPages(ctx, c.compute.TargetHttpProxies.AggregatedList(c.project), func(l *compute.TargetHttpProxyAggregatedList) (string, []string) {
 		for _, scoped := range l.Items {
 			for _, p := range scoped.TargetHttpProxies {
 				out[resourceKey(p.SelfLink)] = lastSegment(p.UrlMap)
 			}
 		}
-		return nil
+		return l.NextPageToken, nil
 	})
-	_ = c.compute.TargetHttpsProxies.AggregatedList(c.project).Pages(ctx, func(l *compute.TargetHttpsProxyAggregatedList) error {
+	_, _ = aggregatedPages(ctx, c.compute.TargetHttpsProxies.AggregatedList(c.project), func(l *compute.TargetHttpsProxyAggregatedList) (string, []string) {
 		for _, scoped := range l.Items {
 			for _, p := range scoped.TargetHttpsProxies {
 				out[resourceKey(p.SelfLink)] = lastSegment(p.UrlMap)
 			}
 		}
-		return nil
+		return l.NextPageToken, nil
 	})
 	return out
 }
@@ -239,11 +239,14 @@ func lbNameOf(fr *compute.ForwardingRule, urlMaps map[string]string) string {
 // carries the name of its load balancer (lbNameOf).
 func (c *client) syncForwardingRules(ctx context.Context) ([]platform.Resource, error) {
 	var out []platform.Resource
-	var unreachable []string
 	seen := map[string]bool{}
 	var urlMaps map[string]string
-	err := c.compute.ForwardingRules.AggregatedList(c.project).Pages(ctx, func(resp *compute.ForwardingRuleAggregatedList) error {
-		for _, scoped := range resp.Items {
+	unreachable, err := aggregatedPages(ctx, c.compute.ForwardingRules.AggregatedList(c.project), func(resp *compute.ForwardingRuleAggregatedList) (string, []string) {
+		u := resp.Unreachables
+		for scope, scoped := range resp.Items {
+			if scoped.Warning != nil {
+				u = append(u, warnedUnreachable(scope, scoped.Warning.Code)...)
+			}
 			for _, fr := range scoped.ForwardingRules {
 				key := fr.SelfLink
 				if key == "" {
@@ -263,8 +266,7 @@ func (c *client) syncForwardingRules(ctx context.Context) ([]platform.Resource, 
 				out = append(out, v.resource())
 			}
 		}
-		unreachable = append(unreachable, resp.Unreachables...)
-		return nil
+		return resp.NextPageToken, u
 	})
 	if err != nil {
 		return nil, mapErr(err)
@@ -329,10 +331,13 @@ func (a StaticAddress) resource() platform.Resource {
 // aggregated list holds the global ones too.
 func (c *client) syncAddresses(ctx context.Context) ([]platform.Resource, error) {
 	var out []platform.Resource
-	var unreachable []string
 	seen := map[string]bool{}
-	err := c.compute.Addresses.AggregatedList(c.project).Pages(ctx, func(resp *compute.AddressAggregatedList) error {
-		for _, scoped := range resp.Items {
+	unreachable, err := aggregatedPages(ctx, c.compute.Addresses.AggregatedList(c.project), func(resp *compute.AddressAggregatedList) (string, []string) {
+		u := resp.Unreachables
+		for scope, scoped := range resp.Items {
+			if scoped.Warning != nil {
+				u = append(u, warnedUnreachable(scope, scoped.Warning.Code)...)
+			}
 			for _, a := range scoped.Addresses {
 				key := a.SelfLink
 				if key == "" {
@@ -345,8 +350,7 @@ func (c *client) syncAddresses(ctx context.Context) ([]platform.Resource, error)
 				out = append(out, staticAddressFrom(a).resource())
 			}
 		}
-		unreachable = append(unreachable, resp.Unreachables...)
-		return nil
+		return resp.NextPageToken, u
 	})
 	if err != nil {
 		return nil, mapErr(err)

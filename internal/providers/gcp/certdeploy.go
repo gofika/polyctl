@@ -80,8 +80,12 @@ func (c *client) discoverHTTPSTargets(ctx context.Context, timeout time.Duration
 	for _, fr := range global {
 		add("", fr)
 	}
-	err = c.compute.ForwardingRules.AggregatedList(c.project).Pages(ctx, func(l *compute.ForwardingRuleAggregatedList) error {
+	unreachable, err := aggregatedPages(ctx, c.compute.ForwardingRules.AggregatedList(c.project), func(l *compute.ForwardingRuleAggregatedList) (string, []string) {
+		u := l.Unreachables
 		for key, scoped := range l.Items {
+			if scoped.Warning != nil {
+				u = append(u, warnedUnreachable(key, scoped.Warning.Code)...)
+			}
 			if key == "global" {
 				continue
 			}
@@ -89,10 +93,13 @@ func (c *client) discoverHTTPSTargets(ctx context.Context, timeout time.Duration
 				add(lastSegment(fr.Region), fr)
 			}
 		}
-		return nil
+		return l.NextPageToken, u
 	})
 	if err != nil {
 		return nil, computeErr(err)
+	}
+	if err := unreachableListErr("forwarding rules", unreachable); err != nil {
+		return nil, err
 	}
 	return out, nil
 }

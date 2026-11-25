@@ -123,18 +123,25 @@ func (s certScope) listRules(ctx context.Context) ([]*compute.ForwardingRule, er
 // urlMapScopes lists the scopes ("" for global) holding a URL map of name.
 func (c *client) urlMapScopes(ctx context.Context, name string) ([]string, error) {
 	var out []string
-	err := c.compute.UrlMaps.AggregatedList(c.project).Pages(ctx, func(l *compute.UrlMapsAggregatedList) error {
-		for _, scoped := range l.Items {
+	unreachable, err := aggregatedPages(ctx, c.compute.UrlMaps.AggregatedList(c.project), func(l *compute.UrlMapsAggregatedList) (string, []string) {
+		u := l.Unreachables
+		for scope, scoped := range l.Items {
+			if scoped.Warning != nil {
+				u = append(u, warnedUnreachable(scope, scoped.Warning.Code)...)
+			}
 			for _, m := range scoped.UrlMaps {
 				if m.Name == name {
 					out = append(out, lastSegment(m.Region))
 				}
 			}
 		}
-		return nil
+		return l.NextPageToken, u
 	})
 	if err != nil {
 		return nil, computeErr(err)
+	}
+	if err := unreachableListErr("URL maps", unreachable); err != nil {
+		return nil, err
 	}
 	sort.Strings(out)
 	return out, nil

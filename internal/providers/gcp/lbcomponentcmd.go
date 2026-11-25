@@ -51,29 +51,39 @@ func (c *client) listComponents(ctx context.Context, kind lbKind) ([]component, 
 	var err error
 	switch kind {
 	case kindBackendService:
-		err = cs.BackendServices.AggregatedList(p).Pages(ctx, func(l *compute.BackendServiceAggregatedList) error {
-			for _, s := range l.Items {
+		unreachable, err = aggregatedPages(ctx, cs.BackendServices.AggregatedList(p), func(l *compute.BackendServiceAggregatedList) (string, []string) {
+			u := l.Unreachables
+			for scope, s := range l.Items {
+				if s.Warning != nil {
+					u = append(u, warnedUnreachable(scope, s.Warning.Code)...)
+				}
 				for _, v := range s.BackendServices {
 					out = append(out, component{kind: kind, name: v.Name, region: lastSegment(v.Region), obj: v})
 				}
 			}
-			unreachable = append(unreachable, l.Unreachables...)
-			return nil
+			return l.NextPageToken, u
 		})
 	case kindHealthCheck:
-		err = cs.HealthChecks.AggregatedList(p).Pages(ctx, func(l *compute.HealthChecksAggregatedList) error {
-			for _, s := range l.Items {
+		unreachable, err = aggregatedPages(ctx, cs.HealthChecks.AggregatedList(p), func(l *compute.HealthChecksAggregatedList) (string, []string) {
+			u := l.Unreachables
+			for scope, s := range l.Items {
+				if s.Warning != nil {
+					u = append(u, warnedUnreachable(scope, s.Warning.Code)...)
+				}
 				for _, v := range s.HealthChecks {
 					out = append(out, component{kind: kind, name: v.Name, region: lastSegment(v.Region), obj: v})
 				}
 			}
-			unreachable = append(unreachable, l.Unreachables...)
-			return nil
+			return l.NextPageToken, u
 		})
 	case kindRule:
 		seen := map[string]bool{}
-		err = cs.ForwardingRules.AggregatedList(p).Pages(ctx, func(l *compute.ForwardingRuleAggregatedList) error {
-			for _, s := range l.Items {
+		unreachable, err = aggregatedPages(ctx, cs.ForwardingRules.AggregatedList(p), func(l *compute.ForwardingRuleAggregatedList) (string, []string) {
+			u := l.Unreachables
+			for scope, s := range l.Items {
+				if s.Warning != nil {
+					u = append(u, warnedUnreachable(scope, s.Warning.Code)...)
+				}
 				for _, v := range s.ForwardingRules {
 					k := v.SelfLink
 					if k == "" {
@@ -85,18 +95,20 @@ func (c *client) listComponents(ctx context.Context, kind lbKind) ([]component, 
 					}
 				}
 			}
-			unreachable = append(unreachable, l.Unreachables...)
-			return nil
+			return l.NextPageToken, u
 		})
 	case kindInstanceGroup:
-		err = cs.InstanceGroups.AggregatedList(p).Pages(ctx, func(l *compute.InstanceGroupAggregatedList) error {
-			for _, s := range l.Items {
+		unreachable, err = aggregatedPages(ctx, cs.InstanceGroups.AggregatedList(p), func(l *compute.InstanceGroupAggregatedList) (string, []string) {
+			u := l.Unreachables
+			for scope, s := range l.Items {
+				if s.Warning != nil {
+					u = append(u, warnedUnreachable(scope, s.Warning.Code)...)
+				}
 				for _, v := range s.InstanceGroups {
 					out = append(out, component{kind: kind, name: v.Name, zone: lastSegment(v.Zone), obj: v})
 				}
 			}
-			unreachable = append(unreachable, l.Unreachables...)
-			return nil
+			return l.NextPageToken, u
 		})
 	default:
 		return nil, nil, fmt.Errorf("cannot list %s", kind)
