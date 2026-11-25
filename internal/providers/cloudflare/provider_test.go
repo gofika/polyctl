@@ -17,6 +17,7 @@ import (
 
 	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/spf13/cobra"
 )
 
 // fakeCF is a minimal Cloudflare v4 API with two zones and paginated listings.
@@ -1052,6 +1053,50 @@ func TestMatchZones(t *testing.T) {
 	}
 	if matchZones(zones, "nope.com") != nil {
 		t.Fatal("unexpected match")
+	}
+}
+
+// Every command that finds a zone or an R2 bucket by its name says in its
+// help what a name held by several accounts does and that --account
+// chooses; no other command says so.
+func TestHelpOfNameLookupsNamesAccountAmbiguity(t *testing.T) {
+	says := map[string]bool{}
+	var walk func(c *cobra.Command)
+	walk = func(c *cobra.Command) {
+		if !c.HasSubCommands() {
+			long := strings.Join(strings.Fields(c.Long), " ")
+			says[strings.TrimPrefix(c.CommandPath(), "cloudflare ")] = strings.Contains(long, "is asked on a terminal. In the non-interactive flow it is exit code 5") &&
+				strings.Contains(long, "--account <id or name>") && strings.Contains(long, "One Cloudflare login works on several accounts")
+		}
+		for _, sub := range c.Commands() {
+			walk(sub)
+		}
+	}
+	walk(Command(nil))
+	for _, path := range []string{
+		"zone get", "zone delete", "zone setting list", "zone setting get", "zone setting set",
+		"dns list", "dns create", "dns update", "dns delete",
+		"cache purge", "cache rule list", "cache rule set", "redirect rule list", "redirect rule set",
+		"dev-mode", "ssl-mode",
+		"r2 domain list", "r2 domain get", "r2 domain attach", "r2 domain update", "r2 domain detach", "r2 domain ensure",
+	} {
+		if v, ok := says[path]; !ok || !v {
+			t.Errorf("cloudflare %s: the help does not say what a name of several accounts does (command exists: %v)", path, ok)
+		}
+		delete(says, path)
+	}
+	for path, v := range says {
+		if v {
+			t.Errorf("cloudflare %s looks nothing up by name, but its help says what a name of several accounts does", path)
+		}
+	}
+	// The zone commands speak of zones, the R2 commands of buckets.
+	root := Command(nil)
+	if c, _, _ := root.Find([]string{"dns", "list"}); !strings.Contains(c.Long, "the zone id") || strings.Contains(c.Long, "bucket") {
+		t.Errorf("dns list: %s", c.Long)
+	}
+	if c, _, _ := root.Find([]string{"r2", "domain", "get"}); !strings.Contains(c.Long, "A bucket name that several accounts hold") {
+		t.Errorf("r2 domain get: %s", c.Long)
 	}
 }
 

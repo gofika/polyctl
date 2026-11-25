@@ -31,6 +31,13 @@ SSL mode, R2 custom domains, the accounts of the login and the identity check.
 <zone> arguments accept a zone name (example.com) or a zone id. Names are
 resolved through the local inventory first, then remotely.
 
+One login works on several Cloudflare accounts, the ones selected for it;
+one of them is the default account (see polyctl cloudflare account). Lists
+and lookups cover every selected account, and a new zone goes to the default
+account. --account <id or name> on the zone, dns, cache, redirect, dev-mode,
+ssl-mode and r2 commands names one account for the call; an account outside
+the selection is read live then and nothing of it is cached.
+
 The tree is also available under its short name: polyctl cf ...`,
 	}
 	cmd.AddCommand(
@@ -41,7 +48,55 @@ The tree is also available under its short name: polyctl cf ...`,
 		addAccountFlag(rt, c)
 		cmd.AddCommand(c)
 	}
+	noteSameName(cmd)
 	return cmd
+}
+
+// sameZoneHelp is the paragraph every command that looks a zone up by its
+// name carries in its help: what happens when several accounts hold a zone
+// of the name.
+const sameZoneHelp = `
+
+One Cloudflare login works on several accounts. A zone name that several of
+the selected accounts hold a zone of (an active zone in one, a pending one in
+another) is asked on a terminal. In the non-interactive flow it is exit code
+5: the error lists the zones with their accounts and names what chooses one:
+--account <id or name>, the zone id, or --profile when the zones are of
+different logins.`
+
+// sameBucketHelp is the same paragraph for the commands that look an R2
+// bucket up by its name.
+const sameBucketHelp = `
+
+One Cloudflare login works on several accounts, and the name of a bucket is
+unique in its account only. A bucket name that several accounts hold is asked
+on a terminal. In the non-interactive flow it is exit code 5: the error lists
+the accounts and names what chooses one: --account <id or name>, or --profile
+when the accounts are of different logins.`
+
+// noteSameName appends sameZoneHelp or sameBucketHelp to the help of every
+// command below c that finds an existing zone or bucket by the name it is
+// given: the ones with a <zone> or <bucket> argument. zone create and zone
+// ensure take a <domain> and say in their own help what they do with it.
+func noteSameName(c *cobra.Command) {
+	if !c.HasSubCommands() {
+		note := ""
+		switch {
+		case strings.Contains(c.Use, "<zone>"):
+			note = sameZoneHelp
+		case strings.Contains(c.Use, "<bucket>"):
+			note = sameBucketHelp
+		}
+		if note != "" {
+			if c.Long == "" {
+				c.Long = c.Short
+			}
+			c.Long += note
+		}
+	}
+	for _, sub := range c.Commands() {
+		noteSameName(sub)
+	}
 }
 
 // --- shared helpers --------------------------------------------------------

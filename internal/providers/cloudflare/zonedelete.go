@@ -17,11 +17,10 @@ func newZoneDeleteCmd(rt *app.Runtime) *cobra.Command {
 		Short: "Delete a zone and all of its DNS records",
 		Long: `Delete the zone <zone> (a name or a zone id) with all of its DNS records.
 The zone is found among the selected accounts of the Cloudflare logins
-(narrowed by --profile and --account; a name several accounts hold a zone of
-is ambiguous, exit code 5: --account, --profile or the zone id choose) and
-read live first. The interactive flow shows it with its plan, status and number of
-DNS records and asks for a confirmation (default no); the non-interactive
-flow needs --yes (exit code 2 without it, before anything is read).
+(narrowed by --profile and --account) and read live first. The interactive
+flow shows it with its plan, status and number of DNS records and asks for a
+confirmation (default no); the non-interactive flow needs --yes (exit code 2
+without it, before anything is read).
 
 An Enterprise zone has to be moved to the Free plan before it can be
 deleted. polyctl does that only with --downgrade-enterprise, which changes
