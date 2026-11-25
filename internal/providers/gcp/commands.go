@@ -24,8 +24,11 @@ func Command(rt *app.Runtime) *cobra.Command {
 		Short: "Google Cloud native commands",
 		Long: `Google Cloud commands that follow the platform's own model: Cloud DNS managed
 zones hold multi-value record sets, Compute Engine instances live in zones.
-Every command runs against the project stored in the selected profile's gcp account
-(pass --profile to pick another one).`,
+A gcp account works on several projects: the ones selected at login or with
+"polyctl gcp project add". Lists and lookups cover every selected project, a
+create goes to the default project, and --project on the dns and compute
+commands names the project of one call (pass --profile to pick another
+account).`,
 	}
 	cmd.AddCommand(
 		app.WhoamiCommand(rt, platform.GCP, "On Google Cloud this reads the profile's project (or, without that permission,\nits Cloud DNS zones) and reports the project, the signed-in account and the\nlogin method."),
@@ -50,92 +53,6 @@ func openClient(ctx context.Context, rt *app.Runtime) (*client, platform.Profile
 		gc = gc.pin(pin)
 	}
 	return gc, prof, nil
-}
-
-// ---------------------------------------------------------------- project
-
-func newProjectCmd(rt *app.Runtime) *cobra.Command {
-	cmd := &cobra.Command{Use: "project", Short: "Google Cloud projects"}
-	cmd.AddCommand(newProjectListCmd(rt), newProjectCurrentCmd(rt))
-	return cmd
-}
-
-type projectRow struct {
-	ProjectID string `json:"project_id" yaml:"project_id"`
-	Name      string `json:"name" yaml:"name"`
-	Number    int64  `json:"project_number" yaml:"project_number"`
-	State     string `json:"state" yaml:"state"`
-}
-
-func newProjectListCmd(rt *app.Runtime) *cobra.Command {
-	return &cobra.Command{
-		Use:   "list",
-		Short: "List the active projects visible to the profile's credentials",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			c, prof, err := openClient(cmd.Context(), rt)
-			if err != nil {
-				return err
-			}
-			projects, err := c.ListProjects(cmd.Context())
-			if err != nil {
-				return err
-			}
-			rows := make([]projectRow, 0, len(projects))
-			for _, p := range projects {
-				rows = append(rows, projectRow{ProjectID: p.ProjectId, Name: p.Name, Number: p.ProjectNumber, State: p.LifecycleState})
-			}
-			rt.Infof("%d project(s) via gcp/%s", len(rows), prof.Name)
-			return rt.Render(rows, func() output.Grid {
-				g := output.Grid{Headers: []string{"PROJECT_ID", "NAME", "NUMBER", "STATE"}, Empty: "no projects"}
-				for _, r := range rows {
-					marker := ""
-					if r.ProjectID == c.project {
-						marker = " *"
-					}
-					g.Rows = append(g.Rows, []string{r.ProjectID + marker, r.Name, fmt.Sprint(r.Number), r.State})
-				}
-				return g
-			})
-		},
-	}
-}
-
-type currentProject struct {
-	Profile string `json:"profile" yaml:"profile"`
-	Project string `json:"project" yaml:"project"`
-	Method  string `json:"method" yaml:"method"`
-	Account string `json:"account,omitempty" yaml:"account,omitempty"`
-}
-
-func newProjectCurrentCmd(rt *app.Runtime) *cobra.Command {
-	return &cobra.Command{
-		Use:   "current",
-		Short: "Show the project the selected gcp account operates on",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			name, err := rt.ProfileFor(platform.GCP)
-			if err != nil {
-				return err
-			}
-			cfg, err := rt.Config()
-			if err != nil {
-				return err
-			}
-			p, err := cfg.Account(name, platform.GCP)
-			if err != nil {
-				return err
-			}
-			account := p.Metadata["email"]
-			if account == "" {
-				account = p.Metadata["client_email"]
-			}
-			cur := currentProject{Profile: name, Project: p.Metadata["project"], Method: p.Metadata["method"], Account: account}
-			return rt.Render(cur, func() output.Grid {
-				return output.KV("profile", cur.Profile, "project", cur.Project, "method", cur.Method, "account", cur.Account)
-			})
-		},
-	}
 }
 
 // ---------------------------------------------------------------- dns

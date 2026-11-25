@@ -192,6 +192,19 @@ func RangeArgsOrInteractive(rt *Runtime, min, max int, missing func(cmd *cobra.C
 	}
 }
 
+// NoDryRunAnnotation marks commands that refuse --dry-run: they change
+// local state only (the config, the credential store), which a dry run
+// has no report for.
+const NoDryRunAnnotation = "polyctl.nodryrun"
+
+// MarkNoDryRun makes a command refuse --dry-run (see NoDryRunAnnotation).
+func MarkNoDryRun(c *cobra.Command) {
+	if c.Annotations == nil {
+		c.Annotations = map[string]string{}
+	}
+	c.Annotations[NoDryRunAnnotation] = "1"
+}
+
 // QuietAbort wraps a command so that leaving one of its prompts with Esc or
 // Ctrl-C ends it with the note "cancelled" and exit code 0, having changed
 // nothing. The non-interactive flow has no prompt to leave: there the error

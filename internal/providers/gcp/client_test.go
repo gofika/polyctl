@@ -26,6 +26,7 @@ import (
 
 	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt/prompttest"
 )
 
 // fakeGoogle emulates the slices of Cloud DNS, Compute Engine, Resource
@@ -932,8 +933,9 @@ func TestLoginADC(t *testing.T) {
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", keyPath)
 	p := &provider{}
 
-	// Project chosen from the Resource Manager list by number.
-	in, errBuf := loginInput("2\n", nil)
+	// Without a picker the projects are typed, comma-separated; the ADC
+	// project is the proposal. One project: no question about the default.
+	in, errBuf := loginInput("proj\n", nil)
 	res, err := p.Login(context.Background(), in)
 	if err != nil {
 		t.Fatal(err)
@@ -941,11 +943,14 @@ func TestLoginADC(t *testing.T) {
 	if res.Metadata["method"] != methodADC || res.Metadata["project"] != "proj" || res.Metadata["email"] != "me@example.com" {
 		t.Errorf("metadata: %+v / %s", res.Metadata, errBuf.String())
 	}
+	if _, ok := res.Metadata["projects"]; ok {
+		t.Errorf("one project must not store a selection: %+v", res.Metadata)
+	}
 	if len(res.Secret) != 0 {
 		t.Errorf("adc must not store secrets: %v", res.Secret)
 	}
-	if !strings.Contains(errBuf.String(), "1) other") || !strings.Contains(errBuf.String(), "2) proj") {
-		t.Errorf("project list prompt: %s", errBuf.String())
+	if !strings.Contains(errBuf.String(), "Google Cloud projects to work on") || !strings.Contains(errBuf.String(), "[adc-proj]") {
+		t.Errorf("project prompt: %s", errBuf.String())
 	}
 
 	// --set project skips the prompt entirely.
@@ -954,12 +959,106 @@ func TestLoginADC(t *testing.T) {
 		t.Errorf("explicit project: %v %+v", err, res)
 	}
 
+	// --set projects is the selection; without project the first listed is
+	// the default, which is said.
+	in, errBuf = loginInput("", map[string]string{"projects": "proj,other"})
+	if res, err := p.Login(context.Background(), in); err != nil || res.Metadata["project"] != "proj" || res.Metadata["projects"] != "proj,other" ||
+		res.Label != "me@example.com (project proj, +1 more)" || !strings.Contains(errBuf.String(), "using proj as the default project") ||
+		// A selected project that cannot be reached stays selected, with a
+		// warning that says how to take it out.
+		!strings.Contains(errBuf.String(), "warning: project other:") || !strings.Contains(errBuf.String(), "polyctl gcp project remove other") {
+		t.Errorf("--set projects: %v %+v / %s", err, res, errBuf.String())
+	}
+	// project and projects: the default joins the selection, first.
+	in, _ = loginInput("", map[string]string{"project": "proj", "projects": "other"})
+	if res, err := p.Login(context.Background(), in); err != nil || res.Metadata["project"] != "proj" || res.Metadata["projects"] != "proj,other" {
+		t.Errorf("--set project and projects: %v %+v", err, res)
+	}
+	// A re-login with --set project keeps the stored selection, with it.
+	in, _ = loginInput("", map[string]string{"project": "proj"})
+	in.Existing = map[string]string{"method": "adc", "project": "other", "projects": "other,third"}
+	if res, err := p.Login(context.Background(), in); err != nil || res.Metadata["project"] != "proj" || res.Metadata["projects"] != "proj,other,third" {
+		t.Errorf("re-login --set project: %v %+v", err, res)
+	}
+	// --set projects without project keeps the stored default when it is
+	// still selected.
+	in, errBuf = loginInput("", map[string]string{"projects": "other,proj"})
+	in.Existing = map[string]string{"method": "adc", "project": "proj"}
+	if res, err := p.Login(context.Background(), in); err != nil || res.Metadata["project"] != "proj" || res.Metadata["projects"] != "proj,other" || strings.Contains(errBuf.String(), "as the default project") {
+		t.Errorf("--set projects, stored default: %v %+v / %s", err, res, errBuf.String())
+	}
+	// The non-interactive re-login asks nothing and keeps the selection.
+	in, _ = loginInput("", nil)
+	in.Existing = map[string]string{"method": "adc", "project": "proj", "projects": "proj,other"}
+	if res, err := p.Login(context.Background(), in); err != nil || res.Metadata["project"] != "proj" || res.Metadata["projects"] != "proj,other" {
+		t.Errorf("non-interactive re-login: %v %+v", err, res)
+	}
+	in, _ = loginInput("", map[string]string{"projects": "a/b"})
+	if _, err := p.Login(context.Background(), in); !errors.Is(err, app.ErrUsage) {
+		t.Errorf("bad project id = %v, want a usage error", err)
+	}
+
 	// Missing ADC prints the gcloud command and fails with unauthorized.
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(t.TempDir(), "missing.json"))
 	in, errBuf = loginInput("", nil)
 	_, err = p.Login(context.Background(), in)
 	if !errors.Is(err, platform.ErrUnauthorized) || !strings.Contains(errBuf.String(), "gcloud auth application-default login") {
 		t.Errorf("missing adc: %v / %s", err, errBuf.String())
+	}
+}
+
+// The interactive login ticks projects in a multi-select: a first login
+// ticks one project at most (the ADC one), a re-login what was selected
+// before; several selected projects are followed by the question for the
+// default, one is not.
+func TestLoginProjectMultiSelect(t *testing.T) {
+	f := newFake(t)
+	withFakeEndpoints(t, f)
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", writeServiceAccountKey(t, f, "proj"))
+	p := &provider{}
+	login := func(existing map[string]string, answers ...any) (*platform.LoginResult, *prompttest.Picker) {
+		t.Helper()
+		in, _ := loginInput("x", map[string]string{"method": "adc"})
+		pk := prompttest.New(t, answers...)
+		in.Picker, in.Existing = pk, existing
+		res, err := p.Login(context.Background(), in)
+		if err != nil {
+			t.Fatalf("login: %v", err)
+		}
+		pk.Done()
+		return res, pk
+	}
+
+	// First login: the ADC project is ticked, never every visible one.
+	res, pk := login(nil, []string{"other", "proj"}, "proj")
+	multi := pk.Asked[0]
+	if multi.Kind != "multi" || prompttest.Values(multi.Options) != "other proj" || strings.Join(multi.Preset, ",") != "proj" {
+		t.Errorf("first login asked %+v", multi)
+	}
+	if def := pk.Asked[1]; def.Kind != "select" || def.Default != "proj" || prompttest.Values(def.Options) != "other proj" {
+		t.Errorf("default question %+v", def)
+	}
+	if res.Metadata["project"] != "proj" || res.Metadata["projects"] != "proj,other" || res.Label != "me@example.com (project proj, +1 more)" {
+		t.Errorf("result %+v %q", res.Metadata, res.Label)
+	}
+
+	// Re-login: the stored selection is ticked, the stored default proposed;
+	// a selected project the list does not show stays offered.
+	res, pk = login(map[string]string{"method": "adc", "project": "proj", "projects": "proj,hidden"}, []string{"other", "proj", "hidden"}, "proj")
+	if multi := pk.Asked[0]; strings.Join(multi.Preset, ",") != "proj,hidden" || prompttest.Values(multi.Options) != "other proj hidden" {
+		t.Errorf("re-login asked %+v", multi)
+	}
+	if def := pk.Asked[1]; def.Default != "proj" || prompttest.Values(def.Options) != "other proj hidden" {
+		t.Errorf("default question %+v", def)
+	}
+	if res.Metadata["projects"] != "proj,other,hidden" {
+		t.Errorf("result %+v", res.Metadata)
+	}
+
+	// One project ticked: nothing more is asked, and no selection stored.
+	res, pk = login(map[string]string{"method": "adc", "project": "other", "projects": "other,proj"}, []string{"proj"})
+	if _, ok := res.Metadata["projects"]; ok || res.Metadata["project"] != "proj" || len(pk.Asked) != 1 {
+		t.Errorf("one project: %+v, asked %v", res.Metadata, pk.Titles())
 	}
 }
 

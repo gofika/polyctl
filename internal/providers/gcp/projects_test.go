@@ -36,7 +36,9 @@ type fakeDNS struct {
 	// answers 403 accessNotConfigured.
 	fail     map[string]int
 	disabled map[string]bool
-	calls    []string
+	// visible are the projects Resource Manager lists.
+	visible []string
+	calls   []string
 }
 
 func newFakeDNS(t *testing.T) *fakeDNS {
@@ -92,6 +94,14 @@ func (f *fakeDNS) handle(w http.ResponseWriter, r *http.Request) {
 	defer f.mu.Unlock()
 	path := r.URL.Path
 	f.calls = append(f.calls, r.Method+" "+path)
+	if path == "/v1/projects" {
+		var out []map[string]any
+		for i, p := range f.visible {
+			out = append(out, map[string]any{"projectId": p, "name": "Project " + p, "projectNumber": fmt.Sprint(100 + i), "lifecycleState": "ACTIVE"})
+		}
+		writeJSON(w, map[string]any{"projects": out})
+		return
+	}
 	rest, ok := strings.CutPrefix(path, "/dns/v1/projects/")
 	if !ok {
 		http.NotFound(w, r)
@@ -500,5 +510,180 @@ func TestUnselectedProjectIsReadLiveAndNotCached(t *testing.T) {
 	}
 	if got := strings.Join(h.rowsOf(platform.ResZone), "; "); got != "p1/one p1" {
 		t.Errorf("cache after a selected pin = %s", got)
+	}
+}
+
+// project list marks the selection and the default; current names both.
+func TestProjectListMarksSelection(t *testing.T) {
+	h, g := multiDNS(t)
+	h.nonInteractive()
+	g.visible = []string{"p0", "p1", "p3"}
+	if err := h.run("project", "list"); err != nil {
+		t.Fatal(err)
+	}
+	var rows []projectRow
+	h.jsonOut(&rows)
+	got := ""
+	for _, r := range rows {
+		got += fmt.Sprintf("%s:%v:%v ", r.ProjectID, r.Selected, r.Default)
+	}
+	// p2 is selected but not listed: it is appended.
+	if got != "p0:false:false p1:true:true p3:false:false p2:true:false " {
+		t.Errorf("rows = %s", got)
+	}
+	grid := projectGrid(rows)
+	if strings.Join(grid.Headers, " ") != "PROJECT_ID NAME NUMBER STATE SELECTED" || strings.Join(grid.Rows[1], "|") != "p1 *|Project p1|101|ACTIVE|yes" ||
+		strings.Join(grid.Rows[3], "|") != "p2||||yes" || strings.Join(grid.Rows[0], "|") != "p0|Project p0|100|ACTIVE|" {
+		t.Errorf("grid = %+v", grid)
+	}
+	if err := h.run("project", "current"); err != nil {
+		t.Fatal(err)
+	}
+	var cur currentProject
+	h.jsonOut(&cur)
+	if cur.Project != "p1" || strings.Join(cur.Projects, ",") != "p1,p2" {
+		t.Errorf("current = %+v", cur)
+	}
+	if err := h.run("project", "list", "--project", "p1"); err == nil {
+		t.Error("gcp project takes no --project")
+	}
+}
+
+// use, add and remove change the selection without a login; the cache of
+// the account is made due, and the rows of a removed project are dropped.
+func TestProjectUseAddRemove(t *testing.T) {
+	h, g := multiDNS(t)
+	h.nonInteractive()
+	g.addZone("p1", "one", "one.example", "public")
+	g.addZone("p2", "two", "two.example", "public")
+	g.addZone("p3", "three", "three.example", "public")
+	if _, err := h.sync(platform.ResZone); err != nil {
+		t.Fatal(err)
+	}
+	fresh := func() bool {
+		db, _ := h.rt.DB()
+		st, err := db.GetState(context.Background(), inventory.Set{Platform: platform.GCP, Profile: "lab", Type: platform.ResZone})
+		if err != nil || st == nil {
+			t.Fatalf("state = %+v, %v", st, err)
+		}
+		return st.ExpiresAt.After(st.SyncedAt)
+	}
+	meta := func() string { m := h.labMeta(); return m["project"] + " [" + m["projects"] + "]" }
+	if !fresh() {
+		t.Fatal("the set must be fresh after the sync")
+	}
+
+	// use: a selected project becomes the default.
+	if err := h.run("project", "use", "p2"); err != nil || meta() != "p2 [p2,p1]" {
+		t.Fatalf("use p2 = %v, %s", err, meta())
+	}
+	if fresh() {
+		t.Error("use must make the cached sets due")
+	}
+	// use: an unselected one is added, after its access was checked.
+	g.fail["p9"] = http.StatusForbidden
+	if err := h.run("project", "use", "p9"); exitClass(err) != "auth" || meta() != "p2 [p2,p1]" {
+		t.Errorf("use of an unreachable project = %v, %s", err, meta())
+	}
+	h.rt.Flags.Offline = true
+	if err := h.run("project", "use", "p9"); err != nil || meta() != "p9 [p9,p2,p1]" || !strings.Contains(h.stderr.String(), "was not checked") {
+		t.Errorf("use --offline = %v, %s / %s", err, meta(), h.stderr.String())
+	}
+	h.rt.Flags.Offline = false
+	if err := h.run("project", "use", "p9"); err != nil || !strings.Contains(h.stderr.String(), "already the default") {
+		t.Errorf("use of the default = %v / %s", err, h.stderr.String())
+	}
+
+	// add: several at once; one that is selected already is nothing to do.
+	if err := h.run("project", "add", "p3", "p1"); err != nil || meta() != "p9 [p9,p2,p1,p3]" {
+		t.Errorf("add = %v, %s", err, meta())
+	}
+	if err := h.run("project", "add", "p3"); exitClass(err) != "nothing" {
+		t.Errorf("add again = %v", err)
+	}
+	if err := h.run("project", "add", "p8"); err != nil {
+		t.Errorf("add p8 = %v", err)
+	}
+	if err := h.run("project", "add", "a/b"); exitClass(err) != "usage" {
+		t.Errorf("add of a bad id = %v", err)
+	}
+	if err := h.run("project", "add"); err == nil {
+		t.Error("add without an id must fail in the non-interactive flow")
+	}
+
+	// remove: not selected is not found; the default needs --default; all
+	// of them is a usage error.
+	if err := h.run("project", "remove", "nosuch"); exitClass(err) != "notfound" {
+		t.Errorf("remove of an unselected project = %v", err)
+	}
+	if err := h.run("project", "remove", "p9"); exitClass(err) != "usage" || !strings.Contains(err.Error(), "--default <id>") {
+		t.Errorf("remove of the default = %v", err)
+	}
+	if err := h.run("project", "remove", "p9", "--default", "p9"); exitClass(err) != "usage" {
+		t.Errorf("--default of a removed project = %v", err)
+	}
+	if err := h.run("project", "remove", "p9", "p8", "--default", "p1"); err != nil || meta() != "p1 [p1,p2,p3]" {
+		t.Errorf("remove with --default = %v, %s", err, meta())
+	}
+	if err := h.run("project", "remove", "p1", "p2", "p3"); exitClass(err) != "usage" || !strings.Contains(err.Error(), "auth logout") {
+		t.Errorf("remove of every project = %v", err)
+	}
+	// The rows of a removed project go, the others stay; --offline works.
+	if _, err := h.sync(platform.ResZone); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(h.rowsOf(platform.ResZone), "; "); got != "p1/one p1; p2/two p2; p3/three p3" {
+		t.Fatalf("zones = %s", got)
+	}
+	h.rt.Flags.Offline = true
+	if err := h.run("project", "remove", "p2", "p3"); err != nil || meta() != "p1 []" {
+		t.Errorf("remove = %v, %s", err, meta())
+	}
+	h.rt.Flags.Offline = false
+	if got := strings.Join(h.rowsOf(platform.ResZone), "; "); got != "p1/one p1" {
+		t.Errorf("zones after remove = %s", got)
+	}
+	for _, sub := range []string{"use", "add", "remove"} {
+		if c, _, err := Command(h.rt).Find([]string{"project", sub}); err != nil || c.Annotations[app.NoDryRunAnnotation] == "" {
+			t.Errorf("project %s must refuse --dry-run", sub)
+		}
+	}
+}
+
+// Without arguments the interactive flow picks from a list: the visible
+// projects for use and add, the selected ones for remove, and the new
+// default when the default goes.
+func TestProjectCommandsPick(t *testing.T) {
+	h, g := multiDNS(t)
+	g.visible = []string{"p1", "p2", "p3", "p4"}
+	meta := func() string { m := h.labMeta(); return m["project"] + " [" + m["projects"] + "]" }
+
+	p := h.answer("p3")
+	if err := h.run("project", "use"); err != nil || meta() != "p3 [p3,p1,p2]" {
+		t.Fatalf("use = %v, %s", err, meta())
+	}
+	p.Done()
+	if a := p.Asked[0]; a.Default != "p1" || !strings.Contains(prompttest.Labels(a.Options), "p1  Project p1  default") || !strings.Contains(prompttest.Labels(a.Options), "p2  Project p2  selected") {
+		t.Errorf("use asked %+v", a)
+	}
+
+	p = h.answer([]string{"p4"})
+	if err := h.run("project", "add"); err != nil || meta() != "p3 [p3,p1,p2,p4]" {
+		t.Fatalf("add = %v, %s", err, meta())
+	}
+	if a := p.Asked[0]; a.Kind != "multi" || prompttest.Values(a.Options) != "p4" {
+		t.Errorf("add offered %+v", a)
+	}
+
+	p = h.answer([]string{"p3", "p4"}, "p2")
+	if err := h.run("project", "remove"); err != nil || meta() != "p2 [p2,p1]" {
+		t.Fatalf("remove = %v, %s", err, meta())
+	}
+	p.Done()
+	if a := p.Asked[0]; prompttest.Values(a.Options) != "p3 p1 p2 p4" || !strings.Contains(prompttest.Labels(a.Options), "p3  default") {
+		t.Errorf("remove offered %+v", a)
+	}
+	if a := p.Asked[1]; a.Title != "New default project" || prompttest.Values(a.Options) != "p1 p2" {
+		t.Errorf("new default asked %+v", a)
 	}
 }

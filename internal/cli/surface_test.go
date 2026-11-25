@@ -357,6 +357,8 @@ func TestPlatformTreeShapes(t *testing.T) {
 	root := NewRoot(rt)
 
 	exists := []string{
+		// The projects of a Google Cloud account.
+		"gcp project list", "gcp project current", "gcp project use", "gcp project add", "gcp project remove",
 		// One identity check, at the top of every tree.
 		"aws whoami", "gcp whoami", "aliyun whoami", "cloudflare whoami", "namecom whoami", "godaddy whoami",
 		// The Cloudflare tree under its platform id and its alias.
@@ -723,5 +725,62 @@ func TestDomainNSSetReindexesTheRegistrarZones(t *testing.T) {
 	_, stderr, err = run(t, cfgPath, "domain", "ns", "set", "example.com", "ns1.registrar.example", "ns2.registrar.example")
 	if err != nil || strings.Contains(stderr, "no longer serves") {
 		t.Errorf("ns set back: %v, %q", err, stderr)
+	}
+}
+
+// --project names the Google Cloud project of one call: on the gcp dns and
+// gcp compute commands, which act on resources of a project, and not on
+// gcp project, which manages the selection, nor outside the gcp tree.
+func TestGCPProjectFlag(t *testing.T) {
+	rt := app.New(app.Flags{}, strings.NewReader(""), &strings.Builder{}, &strings.Builder{})
+	root := NewRoot(rt)
+	for path, want := range map[string]bool{
+		"gcp dns zone list": true, "gcp dns record upsert": true, "gcp compute instance get": true, "gcp compute firewall list": true,
+		"gcp compute load-balancer get": true, "gcp compute ssl-certificate create": true,
+		"gcp project list": false, "gcp project use": false, "aws ec2 instance list": false, "dns list": false,
+	} {
+		c, _, err := root.Find(strings.Fields(path))
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		if got := c.Flags().Lookup("project") != nil || c.InheritedFlags().Lookup("project") != nil; got != want {
+			t.Errorf("%s: --project present = %v, want %v", path, got, want)
+		}
+	}
+	// A value that cannot be a project id is refused as the flag is read.
+	if code, _, stderr := mainExit(t.TempDir(), "gcp", "dns", "zone", "list", "--project", "a/b"); code != ExitUsage || !strings.Contains(stderr, "not a project id") {
+		t.Errorf("--project a/b: exit %d, %s", code, stderr)
+	}
+	for _, sub := range []string{"use", "add", "remove"} {
+		if code, _, stderr := mainExit(t.TempDir(), "gcp", "project", sub, "p1", "--dry-run"); code != ExitUsage || !strings.Contains(stderr, "does not support --dry-run") {
+			t.Errorf("gcp project %s --dry-run: exit %d, %s", sub, code, stderr)
+		}
+	}
+}
+
+// auth list names the default project of a Google Cloud account and how
+// many more are selected.
+func TestMetaSummaryCountsProjects(t *testing.T) {
+	for meta, want := range map[string]string{
+		"p1|":         "email=a@b project=p1 method=adc",
+		"p1|p1":       "email=a@b project=p1 method=adc",
+		"p1|p1,p2,p3": "email=a@b project=p1 (+2 more) method=adc",
+		"p1|p2":       "email=a@b project=p1 (+1 more) method=adc",
+	} {
+		def, list, _ := strings.Cut(meta, "|")
+		m := map[string]string{"email": "a@b", "project": def, "method": "adc"}
+		if list != "" {
+			m["projects"] = list
+		}
+		if got := metaSummary(m); got != want {
+			t.Errorf("metaSummary(%v) = %q, want %q", m, got, want)
+		}
+	}
+	id := &platform.Identity{Account: "p1", User: "a@b", Extra: map[string]string{"projects": "p1,p2"}}
+	if got := identitySummary(id); got != "p1 (+1 more) a@b" {
+		t.Errorf("identitySummary = %q", got)
+	}
+	if got := identitySummary(&platform.Identity{Account: "p1", User: "a@b"}); got != "p1 a@b" {
+		t.Errorf("identitySummary of one project = %q", got)
 	}
 }

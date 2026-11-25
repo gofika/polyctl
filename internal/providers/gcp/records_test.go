@@ -235,7 +235,8 @@ func TestParseServiceAccountKey(t *testing.T) {
 }
 
 func TestLabelAndHelpers(t *testing.T) {
-	if label("", "p") != "project p" || label("a@b", "p") != "a@b (project p)" {
+	one, three := newSelection("p", nil), newSelection("p", []string{"q", "p", "r"})
+	if label("", one) != "project p" || label("a@b", one) != "a@b (project p)" || label("a@b", three) != "a@b (project p, +2 more)" {
 		t.Error("label")
 	}
 	if lastSegment("a/b/c") != "c" || lastSegment("plain") != "plain" {

@@ -37,14 +37,9 @@ func newAuthCmd(rt *app.Runtime) *cobra.Command {
 }
 
 // noDryRunAnnotation marks commands that refuse --dry-run.
-const noDryRunAnnotation = "polyctl.nodryrun"
+const noDryRunAnnotation = app.NoDryRunAnnotation
 
-func markNoDryRun(c *cobra.Command) {
-	if c.Annotations == nil {
-		c.Annotations = map[string]string{}
-	}
-	c.Annotations[noDryRunAnnotation] = "1"
-}
+func markNoDryRun(c *cobra.Command) { app.MarkNoDryRun(c) }
 
 func loginHelp() string {
 	var b strings.Builder
@@ -377,10 +372,32 @@ func metaSummary(m map[string]string) string {
 	var parts []string
 	for _, k := range keys {
 		if v, ok := m[k]; ok && v != "" {
+			if k == "project" {
+				// A Google Cloud account names its default project and
+				// how many more are selected.
+				v += moreProjects(m["projects"], v)
+			}
 			parts = append(parts, k+"="+v)
 		}
 	}
 	return strings.Join(parts, " ")
+}
+
+// moreProjects is " (+N more)" for the N projects of a comma-separated
+// list other than def, "" for none.
+func moreProjects(list, def string) string {
+	n := 0
+	seen := map[string]bool{def: true}
+	for _, p := range strings.Split(list, ",") {
+		if p = strings.TrimSpace(p); p != "" && !seen[p] {
+			seen[p] = true
+			n++
+		}
+	}
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (+%d more)", n)
 }
 
 func newAuthListCmd(rt *app.Runtime) *cobra.Command {
@@ -571,7 +588,9 @@ func statusGrid(rows []statusRow) output.Grid {
 func identitySummary(id *platform.Identity) string {
 	var parts []string
 	if id.Account != "" {
-		parts = append(parts, id.Account)
+		// Extra["projects"] is the selection of a Google Cloud account,
+		// whose Account is the default project.
+		parts = append(parts, id.Account+moreProjects(id.Extra["projects"], id.Account))
 	}
 	if id.User != "" {
 		parts = append(parts, id.User)

@@ -173,19 +173,20 @@ func loginADC(ctx context.Context, in platform.LoginInput, pio *prompt.IO) (*pla
 		return nil, fmt.Errorf("%w: application default credentials not found (alternatives: --set method=service_account, --set method=oauth): %v", platform.ErrUnauthorized, err)
 	}
 	email := lookupEmail(ctx, creds.TokenSource)
-	project, err := chooseProject(ctx, in, pio, creds.TokenSource, creds.ProjectID)
+	sel, err := chooseProjects(ctx, in, pio, creds.TokenSource, creds.ProjectID)
 	if err != nil {
 		return nil, err
 	}
-	c, err := verifyAccess(ctx, creds.TokenSource, project, email, methodADC)
+	c, err := verifySelection(ctx, pio, creds.TokenSource, &sel, email, methodADC)
 	if err != nil {
 		return nil, err
 	}
-	meta := map[string]string{"method": methodADC, "project": project}
+	meta := map[string]string{"method": methodADC}
+	sel.store(meta)
 	if email != "" {
 		meta["email"] = email
 	}
-	return &platform.LoginResult{Secret: map[string]string{}, Metadata: meta, Label: label(c.email, project)}, nil
+	return &platform.LoginResult{Secret: map[string]string{}, Metadata: meta, Label: label(c.email, sel)}, nil
 }
 
 // serviceAccountKey is the subset of a JSON key file polyctl inspects.
@@ -222,29 +223,38 @@ func loginServiceAccount(ctx context.Context, in platform.LoginInput, pio *promp
 	if err != nil {
 		return nil, fmt.Errorf("invalid service account key: %w", err)
 	}
-	project := in.Opt("project", "")
-	if project == "" && in.Existing != nil {
-		project = in.Existing["project"]
-	}
-	if project == "" {
-		project = key.ProjectID
-	}
-	if project == "" && !in.Interactive {
-		return nil, app.UsageErrf("the service account key names no project: pass --set project=<id>")
-	}
-	if project == "" {
-		if project, err = pio.Required("Google Cloud project id"); err != nil {
-			return nil, err
-		}
-	}
-	c, err := verifyAccess(ctx, creds.TokenSource, project, key.ClientEmail, methodServiceAccount)
+	// A service account is of one project and is not asked which ones it
+	// works on: its selection is what --set gives, else the one stored,
+	// else the project of the key.
+	sel, given, err := optSelection(in, pio)
 	if err != nil {
 		return nil, err
 	}
+	if !given {
+		project := key.ProjectID
+		if in.Existing != nil && in.Existing[metaProject] != "" {
+			project = in.Existing[metaProject]
+		}
+		if project == "" && !in.Interactive {
+			return nil, app.UsageErrf("the service account key names no project: pass --set project=<id>")
+		}
+		if project == "" {
+			if project, err = pio.Required("Google Cloud project id"); err != nil {
+				return nil, err
+			}
+		}
+		sel = keptSelection(in, project)
+	}
+	c, err := verifySelection(ctx, pio, creds.TokenSource, &sel, key.ClientEmail, methodServiceAccount)
+	if err != nil {
+		return nil, err
+	}
+	meta := map[string]string{"method": methodServiceAccount, "client_email": key.ClientEmail}
+	sel.store(meta)
 	return &platform.LoginResult{
 		Secret:   map[string]string{"service_account_json": string(data)},
-		Metadata: map[string]string{"method": methodServiceAccount, "project": project, "client_email": key.ClientEmail},
-		Label:    label(c.email, project),
+		Metadata: meta,
+		Label:    label(c.email, sel),
 	}, nil
 }
 
@@ -289,7 +299,7 @@ func loginOAuth(ctx context.Context, in platform.LoginInput, pio *prompt.IO) (*p
 		if client.Secret == "" {
 			missing = append(missing, "--set client_secret=- (the secret on stdin)")
 		}
-		if in.Opt("project", "") == "" && in.Existing["project"] == "" {
+		if in.Opt("project", "") == "" && in.Opt("projects", "") == "" && in.Existing["project"] == "" {
 			missing = append(missing, "--set project=<id>")
 		}
 		if len(missing) > 0 {
@@ -327,15 +337,16 @@ func loginOAuth(ctx context.Context, in platform.LoginInput, pio *prompt.IO) (*p
 	}
 	ts := cfg.TokenSource(ctx, tok)
 	email := lookupEmail(ctx, ts)
-	project, err := chooseProject(ctx, in, pio, ts, "")
+	sel, err := chooseProjects(ctx, in, pio, ts, "")
 	if err != nil {
 		return nil, err
 	}
-	c, err := verifyAccess(ctx, ts, project, email, methodOAuth)
+	c, err := verifySelection(ctx, pio, ts, &sel, email, methodOAuth)
 	if err != nil {
 		return nil, err
 	}
-	meta := map[string]string{"method": methodOAuth, "project": project}
+	meta := map[string]string{"method": methodOAuth}
+	sel.store(meta)
 	if email != "" {
 		meta["email"] = email
 	}
@@ -347,7 +358,7 @@ func loginOAuth(ctx context.Context, in platform.LoginInput, pio *prompt.IO) (*p
 	} else {
 		secret["client_id"], secret["client_secret"] = client.ID, client.Secret
 	}
-	return &platform.LoginResult{Secret: secret, Metadata: meta, Label: label(c.email, project)}, nil
+	return &platform.LoginResult{Secret: secret, Metadata: meta, Label: label(c.email, sel)}, nil
 }
 
 // ownClientNote says why a re-login of an account that holds an OAuth
@@ -434,23 +445,88 @@ func lookupEmail(ctx context.Context, ts oauth2.TokenSource) string {
 	return ui.Email
 }
 
-// chooseProject resolves the project id: --set project, then, in the
-// interactive flow, a pick list from Resource Manager or a prompt, with the
-// previous profile's project or the ADC project as the default. The
-// non-interactive flow takes that default without asking, then the only
-// listed project; several candidates are a usage error.
-func chooseProject(ctx context.Context, in platform.LoginInput, pio *prompt.IO, ts oauth2.TokenSource, adcProject string) (string, error) {
-	if p := in.Opt("project", ""); p != "" {
-		return p, nil
+// selection is the projects of a login: the default one and the selected
+// set, the default first.
+type selection struct {
+	def      string
+	projects []string
+}
+
+func newSelection(def string, projects []string) selection {
+	return selection{def: def, projects: selectedProjects(map[string]string{metaProject: def, metaProjects: strings.Join(projects, ",")})}
+}
+
+// store writes the selection into the metadata of the account.
+func (s selection) store(meta map[string]string) { setSelection(meta, s.def, s.projects) }
+
+// keptSelection is the selection of a login that names def as the default
+// project and says nothing else: the selection stored before, with def.
+func keptSelection(in platform.LoginInput, def string) selection {
+	var prev []string
+	if in.Existing != nil {
+		prev = selectedProjects(in.Existing)
+	}
+	return newSelection(def, prev)
+}
+
+// optSelection is the selection --set gives, if it gives one:
+//
+//   - project=X makes X the default project; the selection is the one
+//     stored before, with X;
+//   - projects=a,b,c is the selection, with the default project. Without
+//     project, the default is the one stored before when it is still
+//     selected, else the first project listed, which is said on stderr.
+func optSelection(in platform.LoginInput, pio *prompt.IO) (sel selection, given bool, err error) {
+	def := strings.TrimSpace(in.Opt("project", ""))
+	list := splitProjects(in.Opt("projects", ""))
+	for _, p := range append([]string{def}, list...) {
+		if p == "" {
+			continue
+		}
+		if err := checkProjectID(p); err != nil {
+			return sel, false, app.UsageErrf("%v (--set project=<id>, --set projects=<id>,<id>,...)", err)
+		}
+	}
+	switch {
+	case len(list) > 0:
+		if def == "" {
+			if prev := in.Existing[metaProject]; prev != "" && slices.Contains(list, prev) {
+				def = prev
+			} else {
+				def = list[0]
+				fmt.Fprintf(pio.Err, "using %s as the default project (pass --set project=<id> to choose another)\n", def)
+			}
+		}
+		return newSelection(def, list), true, nil
+	case def != "":
+		return keptSelection(in, def), true, nil
+	}
+	return sel, false, nil
+}
+
+// chooseProjects resolves the projects of the account: --set (see
+// optSelection), then, in the interactive flow, a multi-select of the
+// projects visible to the credentials, with the selection stored before
+// ticked (a first login ticks the ADC project, or the only visible one,
+// never all of them: an auto-generated project without the Compute or DNS
+// API would fail every sync), and, when several are selected, the question
+// which one is the default. Without a project list the id is asked for.
+//
+// The non-interactive flow asks nothing: the default project is the one
+// stored before or the ADC project, then the only listed project (several
+// candidates are a usage error), and the selection stored before is kept.
+func chooseProjects(ctx context.Context, in platform.LoginInput, pio *prompt.IO, ts oauth2.TokenSource, adcProject string) (selection, error) {
+	if sel, given, err := optSelection(in, pio); given || err != nil {
+		return sel, err
 	}
 	def := adcProject
-	if in.Existing != nil && in.Existing["project"] != "" {
-		def = in.Existing["project"]
+	if in.Existing != nil && in.Existing[metaProject] != "" {
+		def = in.Existing[metaProject]
 	}
 	if !in.Interactive {
 		if def != "" {
 			fmt.Fprintf(pio.Err, "using project %s (pass --set project=<id> to choose another)\n", def)
-			return def, nil
+			return keptSelection(in, def), nil
 		}
 		var ids []string
 		if crm, err := cloudresourcemanager.NewService(ctx, clientOptions(ts)...); err == nil {
@@ -462,78 +538,166 @@ func chooseProject(ctx context.Context, in platform.LoginInput, pio *prompt.IO, 
 		}
 		switch len(ids) {
 		case 0:
-			return "", app.UsageErrf("gcp login needs a project: pass --set project=<id>")
+			return selection{}, app.UsageErrf("gcp login needs a project: pass --set project=<id>")
 		case 1:
 			fmt.Fprintf(pio.Err, "using the only visible project: %s\n", ids[0])
-			return ids[0], nil
+			return newSelection(ids[0], nil), nil
 		}
-		return "", app.UsageErrf("several projects are visible: pass --set project=<id> to choose one of: %s", strings.Join(ids, ", "))
+		return selection{}, app.UsageErrf("several projects are visible: pass --set project=<id> to choose one (and --set projects=<id>,<id>,... to select more) of: %s", strings.Join(ids, ", "))
 	}
-	var ids []string
+	var opts []prompt.Option
 	if crm, err := cloudresourcemanager.NewService(ctx, clientOptions(ts)...); err == nil {
 		if projects, err := listProjects(ctx, crm); err == nil {
 			for _, p := range projects {
-				ids = append(ids, p.ProjectId)
+				opts = append(opts, prompt.Option{Label: projectLabel(p.ProjectId, p.Name), Value: p.ProjectId})
 			}
 		} else {
 			fmt.Fprintf(pio.Err, "note: could not list projects (%v); enter the project id manually\n", err)
 		}
 	}
-	if len(ids) == 1 && def == "" {
-		def = ids[0]
-	}
-	if len(ids) > 0 {
-		if def == "" || !containsValue(ids, def) {
-			if def == "" {
-				def = ids[0]
-			} else {
-				ids = append(ids, def)
-			}
+	if len(opts) == 0 {
+		var err error
+		if def != "" {
+			def, err = pio.Line("Google Cloud project id", def)
+		} else {
+			def, err = pio.Required("Google Cloud project id")
 		}
-		opts := make([]prompt.Option, len(ids))
-		for i, id := range ids {
-			opts[i] = prompt.Option{Label: id, Value: id}
+		if err != nil {
+			return selection{}, err
 		}
-		return in.Select(pio, "Google Cloud project", opts, def)
+		if err := checkProjectID(def); err != nil {
+			return selection{}, fmt.Errorf("%w: %v", platform.ErrInvalidInput, err)
+		}
+		return keptSelection(in, def), nil
 	}
-	if def != "" {
-		return pio.Line("Google Cloud project id", def)
+	// What was selected before is ticked; a first login ticks one project
+	// at most.
+	var preset []string
+	switch {
+	case in.Existing != nil && in.Existing[metaProject] != "":
+		preset = selectedProjects(in.Existing)
+	case def != "":
+		preset = []string{def}
+	case len(opts) == 1:
+		preset = []string{opts[0].Value}
 	}
-	return pio.Required("Google Cloud project id")
+	for _, p := range preset {
+		// A selected project the list does not show (no permission to
+		// list it) stays offered.
+		if !hasOption(opts, p) {
+			opts = append(opts, prompt.Option{Label: p, Value: p})
+		}
+	}
+	chosen, err := in.MultiSelect(pio, "Google Cloud projects to work on (the inventory covers them all)", opts, preset)
+	if err != nil {
+		return selection{}, err
+	}
+	switch len(chosen) {
+	case 0:
+		return selection{}, fmt.Errorf("%w: no project was selected", platform.ErrInvalidInput)
+	case 1:
+		return newSelection(chosen[0], nil), nil
+	}
+	if !slices.Contains(chosen, def) {
+		def = chosen[0]
+	}
+	var defOpts []prompt.Option
+	for _, o := range opts {
+		if slices.Contains(chosen, o.Value) {
+			defOpts = append(defOpts, o)
+		}
+	}
+	if def, err = in.Select(pio, "Default project (where new resources are created)", defOpts, def); err != nil {
+		return selection{}, err
+	}
+	return newSelection(def, chosen), nil
 }
 
-// verifyAccess checks the credentials against the project: Cloud DNS first,
-// then Compute Engine, then Resource Manager, so a principal with any one of
-// those roles passes.
+// projectLabel: "my-project  My Project".
+func projectLabel(id, name string) string {
+	if name == "" || name == id {
+		return id
+	}
+	return id + "  " + name
+}
+
+func hasOption(opts []prompt.Option, v string) bool {
+	for _, o := range opts {
+		if o.Value == v {
+			return true
+		}
+	}
+	return false
+}
+
+// verifySelection checks the credentials against the default project,
+// which must be reachable, and against the other selected projects, where
+// a failure is a warning: the project stays selected (its API may be
+// enabled later) and the warning says how to take it out.
+func verifySelection(ctx context.Context, pio *prompt.IO, ts oauth2.TokenSource, sel *selection, email, method string) (*client, error) {
+	c, err := verifyAccess(ctx, ts, sel.def, email, method)
+	if err != nil {
+		return nil, err
+	}
+	c.projects = sel.projects
+	for _, p := range sel.projects {
+		if p == sel.def {
+			continue
+		}
+		if err := c.inProject(p).checkAccess(ctx); err != nil {
+			fmt.Fprintf(pio.Err, "warning: project %s: %v (it stays selected; remove it with `polyctl gcp project remove %s`)\n", p, err, p)
+		}
+	}
+	return c, nil
+}
+
+// verifyAccess checks the credentials against the project (checkAccess).
 func verifyAccess(ctx context.Context, ts oauth2.TokenSource, project, email, method string) (*client, error) {
 	c, err := newClient(ctx, project, email, method, clientOptions(ts)...)
 	if err != nil {
 		return nil, err
 	}
+	if err := c.checkAccess(ctx); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+// checkAccess checks the credentials against the client's project: Cloud
+// DNS first, then Compute Engine, then Resource Manager, so a principal
+// with any one of those roles passes.
+func (c *client) checkAccess(ctx context.Context) error {
+	project := c.project
 	var errs []error
 	if _, err := c.dns.ManagedZones.List(project).Context(ctx).Do(); err == nil {
-		return c, nil
+		return nil
 	} else if !isPermissionErr(err) {
-		return nil, fmt.Errorf("verify Cloud DNS access to project %s: %w", project, mapErr(err))
+		return fmt.Errorf("verify Cloud DNS access to project %s: %w", project, mapErr(err))
 	} else {
 		errs = append(errs, err)
 	}
 	if _, err := c.compute.Zones.List(project).Context(ctx).Do(); err == nil {
-		return c, nil
+		return nil
 	} else {
 		errs = append(errs, err)
 	}
 	if _, err := c.crm.Projects.Get(project).Context(ctx).Do(); err == nil {
-		return c, nil
+		return nil
 	} else {
 		errs = append(errs, err)
 	}
-	return nil, fmt.Errorf("%w: credentials cannot access project %s (Cloud DNS, Compute Engine and Resource Manager all denied): %v", platform.ErrUnauthorized, project, errors.Join(errs...))
+	return fmt.Errorf("%w: credentials cannot access project %s (Cloud DNS, Compute Engine and Resource Manager all denied): %v", platform.ErrUnauthorized, project, errors.Join(errs...))
 }
 
-func label(email, project string) string {
-	if email == "" {
-		return "project " + project
+// label names the account after a login: "me@example.com (project p1, +2
+// more)".
+func label(email string, sel selection) string {
+	project := "project " + sel.def
+	if n := len(sel.projects) - 1; n > 0 {
+		project += fmt.Sprintf(", +%d more", n)
 	}
-	return email + " (project " + project + ")"
+	if email == "" {
+		return project
+	}
+	return email + " (" + project + ")"
 }

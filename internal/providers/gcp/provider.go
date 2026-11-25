@@ -65,16 +65,21 @@ client_secret=- (the secret read from stdin), an OAuth client of your own
 (type "Desktop app"); method=service_account stores a JSON key file (--set
 key_file=PATH); method=adc uses Application Default Credentials from "gcloud
 auth application-default login". A re-login keeps the method of the account.
-Use --set project=ID to pick the project without prompting. Non-interactive:
-nothing is asked and the default method is adc; key_file, the project (for
-oauth, or when several are visible) and, without a built-in client, client_id
-and client_secret must be given, and the oauth flow prints the URL and waits
-up to 5 minutes for the browser to return.`
+One account works on several projects: a terminal login ticks them in a list
+(what was selected before is ticked) and asks which one is the default, the
+one new resources are created in. --set project=ID sets the default project
+without prompting and --set projects=ID,ID,... the selected projects (the
+default is one of them); change them later with "polyctl gcp project use, add,
+remove". Non-interactive: nothing is asked and the default method is adc;
+key_file, the project (for oauth, or when several are visible) and, without a
+built-in client, client_id and client_secret must be given, the projects
+selected before stay selected, and the oauth flow prints the URL and waits up
+to 5 minutes for the browser to return.`
 }
 
 // LoginOptions lists the --set keys of the login (see LoginHelp).
 func (*provider) LoginOptions() []string {
-	return []string{"method", "project", "key_file", "client_id", "client_secret"}
+	return []string{"method", "project", "projects", "key_file", "client_id", "client_secret"}
 }
 
 // RecordTypes are the record types Cloud DNS can write.

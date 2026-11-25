@@ -107,6 +107,9 @@ func isPermissionErr(err error) bool {
 // Verify checks that the credentials can see the project.
 func (c *client) Verify(ctx context.Context) (*platform.Identity, error) {
 	id := &platform.Identity{Account: c.project, User: c.email, Extra: map[string]string{"method": c.method}}
+	if len(c.projects) > 1 && !c.pinned {
+		id.Extra["projects"] = strings.Join(c.projects, ",")
+	}
 	p, err := c.crm.Projects.Get(c.project).Context(ctx).Do()
 	if err == nil {
 		if p.Name != "" {
