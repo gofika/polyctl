@@ -107,6 +107,14 @@ func (f *fakeRoute53) ChangeResourceRecordSets(ctx context.Context, in *route53.
 		if ch.Action != r53types.ChangeActionDelete && !validRoutingPolicy(rs) {
 			return nil, &r53types.InvalidChangeBatch{Messages: []string{"set identifier without a routing policy"}}
 		}
+		if ch.Action != r53types.ChangeActionDelete && rs.Type == r53types.RRTypeCaa {
+			for _, rr := range rs.ResourceRecords {
+				// Route 53 wants the value of a CAA record in quotes.
+				if f := strings.Fields(awssdk.ToString(rr.Value)); len(f) < 3 || !strings.HasPrefix(f[2], `"`) {
+					return nil, &r53types.InvalidChangeBatch{Messages: []string{"CAA value not in quotes: " + awssdk.ToString(rr.Value)}}
+				}
+			}
+		}
 		f.changes = append(f.changes, ch)
 		idx := -1
 		for i, s := range f.sets[zone] {
@@ -294,6 +302,42 @@ func TestTXTQuoting(t *testing.T) {
 	}
 	if len(replaced) != 2 || replaced[0].Value != "v=DMARC1; p=none" || replaced[1].Value != "pre-quoted" {
 		t.Fatalf("unexpected replaced records %+v", replaced)
+	}
+}
+
+func TestCAAQuoting(t *testing.T) {
+	for in, want := range map[string]string{
+		"0 issue letsencrypt.org":               `0 issue "letsencrypt.org"`,
+		`0 issue "letsencrypt.org"`:             `0 issue "letsencrypt.org"`,
+		"0  issue   ca.example.net; account=12": `0 issue "ca.example.net; account=12"`,
+		"0 iodef mailto:a@example.com":          `0 iodef "mailto:a@example.com"`,
+		`128 tag a"b\c`:                         `128 tag "a\"b\\c"`,
+		"0 issue":                               "0 issue",
+	} {
+		if got := quoteValue("caa", in); got != want {
+			t.Errorf("quoteValue(CAA, %q) = %q, want %q", in, got, want)
+		}
+	}
+	if got := quoteValue("A", "1.2.3.4"); got != "1.2.3.4" {
+		t.Errorf("A = %q", got)
+	}
+	// Written through the client: Route 53 accepts it, the read value
+	// compares equal to the unquoted spec, and ReplaceSet quotes too.
+	f := newFakeRoute53()
+	c := testClient(f)
+	ctx := context.Background()
+	rec, err := c.CreateRecord(ctx, "Z1", platform.Record{Name: "example.com", Type: "CAA", TTL: 300, Value: "0 issue letsencrypt.org"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Value != `0 issue "letsencrypt.org"` {
+		t.Errorf("created = %q", rec.Value)
+	}
+	if _, err := c.ReplaceSet(ctx, "Z1", "example.com", "CAA", "", []string{"0 issue letsencrypt.org", "0 issuewild ;"}, 300); err != nil {
+		t.Fatal(err)
+	}
+	if v := f.values("Z1", "example.com.", "CAA"); strings.Join(v, ",") != `0 issue "letsencrypt.org",0 issuewild ";"` {
+		t.Errorf("replaced = %q", v)
 	}
 }
 

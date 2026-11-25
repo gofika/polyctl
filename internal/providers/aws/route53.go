@@ -138,6 +138,36 @@ func quoteTXT(typ, v string) string {
 	return strings.Join(chunks, " ")
 }
 
+// quoteValue is the Route 53 form of a plain value: TXT/SPF quoted
+// (quoteTXT), and the value part of a CAA record, which Route 53 wants
+// in double quotes ("0 issue \"ca.example.net\""), quoted when it is not
+// already. Other types are never touched.
+func quoteValue(typ, v string) string {
+	if strings.EqualFold(typ, "CAA") {
+		return quoteCAA(v)
+	}
+	return quoteTXT(typ, v)
+}
+
+// quoteCAA quotes the value of "<flags> <tag> <value>", inner quotes and
+// backslashes escaped; a value that starts with a quote, or a record that
+// is not in that form, is passed through.
+func quoteCAA(v string) string {
+	f := strings.Fields(v)
+	if len(f) < 3 {
+		return v
+	}
+	rest := strings.TrimSpace(v)
+	for _, field := range f[:2] {
+		rest = strings.TrimSpace(strings.TrimPrefix(rest, field))
+	}
+	if strings.HasPrefix(rest, `"`) {
+		return v
+	}
+	rest = strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(rest)
+	return f[0] + " " + f[1] + ` "` + rest + `"`
+}
+
 // unquoteTXT is the inverse of quoteTXT for values read from Route 53: the
 // quoted strings are unescaped and concatenated so Record.Value carries
 // the plain text like every other platform. Unquoted values are returned
@@ -200,12 +230,12 @@ func splitPriority(typ, value string) (*int, string) {
 }
 
 // recordValue is the Route 53 value of a Record (priority re-attached,
-// TXT quoted).
+// TXT and the value of CAA quoted).
 func recordValue(r platform.Record) string {
 	if hasPriority(r.Type) && r.Priority != nil {
 		return fmt.Sprintf("%d %s", *r.Priority, strings.TrimSpace(r.Value))
 	}
-	return quoteTXT(r.Type, r.Value)
+	return quoteValue(r.Type, r.Value)
 }
 
 func extraString(extra map[string]any, key string) string {
@@ -827,7 +857,7 @@ func (c *client) ReplaceSet(ctx context.Context, zone, fqdn, typ, setID string, 
 	}
 	quoted := make([]string, 0, len(values))
 	for _, v := range values {
-		quoted = append(quoted, quoteTXT(typ, v))
+		quoted = append(quoted, quoteValue(typ, v))
 	}
 	rs := buildSet(existing, fqdn, typ, setID, ttlFor(ttl, existing), quoted)
 	if err := c.change(ctx, zone, upsert(rs)); err != nil {
