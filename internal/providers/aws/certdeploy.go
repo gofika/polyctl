@@ -176,7 +176,7 @@ func (d acmDeployer) Plan(ctx context.Context, acct *platform.DeployAccount, t p
 	}
 	if have := t.Attrs["key_algorithm"]; have != "" && have != alg {
 		why := fmt.Sprintf("ACM cannot change the key algorithm of %s (%s, the new certificate has %s)", t.ID, have, alg)
-		arn, pending, err := c.replacementOf(ctx, t.Region, cert, alg, t.ID)
+		arn, pending, err := c.replacementOf(ctx, t.Region, cert, alg, t.ID, t.CurrentDomains)
 		if err != nil {
 			return nil, err
 		}
@@ -217,7 +217,7 @@ func (d acmDeployer) Plan(ctx context.Context, acct *platform.DeployAccount, t p
 // it as a new certificate), or "". Only certificates whose domain cert
 // covers are read.
 func (c *client) importedWithSerial(ctx context.Context, region string, cert *platform.DeployCert, except string) (string, error) {
-	arn, _, err := c.replacementOf(ctx, region, cert, "", except)
+	arn, _, err := c.replacementOf(ctx, region, cert, "", except, nil)
 	return arn, err
 }
 
@@ -225,10 +225,11 @@ func (c *client) importedWithSerial(ctx context.Context, region string, cert *pl
 // whose key type ACM cannot change: another imported certificate of the
 // region that holds the serial number of cert, or else, when alg is not
 // "", (pending) an unexpired one of key algorithm alg whose names cert
-// covers. Such a certificate is a target of the same deploy run and is re-imported in
+// covers and that serves every name of serves (the names except holds):
+// a certificate of fewer names cannot take its place. Such a certificate is a target of the same deploy run and is re-imported in
 // place, whether it is handled before or after except: the new key type
 // is imported as a new certificate once, not again after every renewal.
-func (c *client) replacementOf(ctx context.Context, region string, cert *platform.DeployCert, alg, except string) (string, bool, error) {
+func (c *client) replacementOf(ctx context.Context, region string, cert *platform.DeployCert, alg, except string, serves []string) (string, bool, error) {
 	certs, err := c.ListCertificates(ctx, platform.CertificateFilter{Region: region, KeyTypes: acmSyncKeyTypes})
 	if err != nil {
 		return "", false, err
@@ -252,11 +253,23 @@ func (c *client) replacementOf(ctx context.Context, region string, cert *platfor
 		if platform.SerialKey(full.Serial) == want {
 			return s.ID, false, nil
 		}
-		if pending == "" && alg != "" && full.Status != acmExpired && normalizeKeyAlgorithm(full.KeyAlgorithm) == alg && coversAll(cert.Names, full) {
+		if pending == "" && alg != "" && full.Status != acmExpired && normalizeKeyAlgorithm(full.KeyAlgorithm) == alg && coversAll(cert.Names, full) &&
+			servesAll(full, serves) {
 			pending = s.ID
 		}
 	}
 	return pending, pending != "", nil
+}
+
+// servesAll reports whether certificate e covers every name of names.
+func servesAll(e *platform.Certificate, names []string) bool {
+	have := append([]string{e.Domain}, e.Names...)
+	for _, n := range names {
+		if n != "" && !platform.CertCovers(have, n) {
+			return false
+		}
+	}
+	return true
 }
 
 // coversAll reports whether names cover every name of certificate e.

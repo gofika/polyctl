@@ -215,6 +215,34 @@ func TestACMDeployerReplacementIndependentOfOrder(t *testing.T) {
 	}
 }
 
+// An imported certificate of the new key type that serves fewer names
+// than the old certificate (another certificate of a subdomain) does not
+// replace it: the old certificate is imported as a new certificate.
+func TestACMDeployerReplacementServesTheOldNames(t *testing.T) {
+	d := newACMDeploy(t)
+	old := d.h.addCert(&fakeCert{region: "us-east-1", domain: "example.com", names: []string{"example.com", "*.example.com"}, typ: acmImported,
+		status: acmIssued, keyAlg: "RSA_2048", notAfter: at(3), serial: "0b:02"})
+	www := d.h.addCert(&fakeCert{region: "us-east-1", domain: "www.example.com", typ: acmImported, status: acmIssued, notAfter: at(4), serial: "0c:01"})
+	rep, err := d.run(cert.DeployOptions{}, "us-east-1")
+	if err != nil {
+		t.Fatalf("deploy: %v %v", err, acmRows(rep))
+	}
+	if slices.ContainsFunc(acmRows(rep), func(r string) bool {
+		return strings.HasPrefix(r, "aws-acm/lab/us-east-1/"+old.arn+" skipped") && strings.Contains(r, www.arn)
+	}) {
+		t.Errorf("the certificate of www.example.com replaces %s: %v", old.arn, acmRows(rep))
+	}
+	news := 0
+	for _, in := range d.h.acm().imports {
+		if in.CertificateArn == nil {
+			news++
+		}
+	}
+	if news != 1 {
+		t.Errorf("new imports = %d, rows %v", news, acmRows(rep))
+	}
+}
+
 func TestACMDeployerRefusedReimportImportsOnce(t *testing.T) {
 	d := newACMDeploy(t)
 	old := d.h.addCert(&fakeCert{region: "us-east-1", domain: "example.com", typ: acmImported, status: acmIssued, notAfter: at(3), serial: "0b:02"})
