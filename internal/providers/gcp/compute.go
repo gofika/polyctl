@@ -85,7 +85,7 @@ func instanceResource(i Instance) platform.Resource {
 	return platform.Resource{Type: platform.ResInstance, ID: i.ID, Name: i.Name, ParentID: parentOf(i.Project, i.Zone), Data: i, IPs: i.ipSet().Refs()}
 }
 
-// ListInstances lists every instance of the selected projects across all
+// ListInstances lists every instance of the enabled projects across all
 // zones. Unreachable zones are region failures, as for the inventory sync.
 func (c *client) ListInstances(ctx context.Context) ([]platform.Resource, error) {
 	return c.Sync(ctx, platform.ResInstance)

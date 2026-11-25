@@ -150,7 +150,7 @@ type located struct {
 	c       *client
 }
 
-// componentsOf lists the components of kind in every selected project of
+// componentsOf lists the components of kind in every enabled project of
 // every selected GCP account (in the project of --project) that fit q
 // (those named name, when it is given), and the scopes searched.
 func componentsOf(ctx context.Context, rt *app.Runtime, kind lbKind, name string, q componentQuery) ([]located, []string, error) {
@@ -195,7 +195,7 @@ func componentsOf(ctx context.Context, rt *app.Runtime, kind lbKind, name string
 	return hits, searched, nil
 }
 
-// locateComponent finds a component by name in every selected project of
+// locateComponent finds a component by name in every enabled project of
 // every selected GCP account.
 // Without --region or --global a regional match wins over a global one.
 // Several matches are a pick in the interactive flow and ambiguous (exit
@@ -312,8 +312,8 @@ func componentListCmd(rt *app.Runtime, spec componentSpec) *cobra.Command {
 	var query func() (componentQuery, error)
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List the " + spec.plural + " of the selected projects",
-		Long: "List the " + spec.plural + " of the selected projects, read live in every scope (" + scopeHelp(spec) + `
+		Short: "List the " + spec.plural + " of the enabled projects",
+		Long: "List the " + spec.plural + " of the enabled projects, read live in every scope (" + scopeHelp(spec) + `
 narrows it). No match is exit code 0 with an empty list and a note.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -326,7 +326,7 @@ narrows it). No match is exit code 0 with an empty list and a note.`,
 			if err != nil {
 				return err
 			}
-			// Every selected project (--project: that one alone); the
+			// Every enabled project (--project: that one alone); the
 			// project is the second column and a field of each row.
 			type projectRows struct {
 				project     string

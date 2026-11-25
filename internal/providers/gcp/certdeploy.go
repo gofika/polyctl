@@ -144,7 +144,7 @@ func scopeOf(c *client, region string, timeout time.Duration) certScope {
 // failed) and one whose domain or expiry cannot be told.
 //
 // A target is named "<project>/<scope>/<proxy>" and carries its project
-// in Attrs["project"], which PlanBatch reads. A selected project without
+// in Attrs["project"], which PlanBatch reads. A enabled project without
 // the Compute Engine API has no targets; any other failure of a project
 // fails the discovery, so that no certificate is left out unnoticed.
 func (d lbDeployer) Discover(ctx context.Context, acct *platform.DeployAccount, o platform.DeployOptions) ([]platform.DeployTarget, []platform.Change, error) {

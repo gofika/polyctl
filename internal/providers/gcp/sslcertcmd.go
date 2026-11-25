@@ -151,8 +151,8 @@ func sslCertListCmd(rt *app.Runtime) *cobra.Command {
 	var expiring int
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List the SSL certificates of the selected projects with their expiry and the proxies that use them",
-		Long: `List the SSL certificates of the selected projects, read live: every region and the
+		Short: "List the SSL certificates of the enabled projects with their expiry and the proxies that use them",
+		Long: `List the SSL certificates of the enabled projects, read live: every region and the
 global scope by default, one region with --region, the global scope with
 --global. Each certificate shows its type (SELF_MANAGED or MANAGED), its
 domains, its expiry in UTC, the whole days left and the target HTTPS proxies
@@ -179,7 +179,7 @@ left. No certificate is exit code 0 with an empty list and a note.`,
 				return err
 			}
 			now := instanceClock.Now()
-			// Every selected project (--project: that one alone).
+			// Every enabled project (--project: that one alone).
 			type projectRows struct {
 				project     string
 				unreachable []string
@@ -615,7 +615,7 @@ without --region / --global is looked up in every scope.`,
 }
 
 // certProject settles the project of the certificate that update and
-// delete act on, when several projects are selected: a certificate named
+// delete act on, when several projects are enabled: a certificate named
 // with its scope is looked for in each (locateProject), one named without
 // a scope in every scope of each, and without a name the interactive flow
 // asks for the project first, then offers its certificates.

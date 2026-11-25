@@ -73,7 +73,7 @@ func firewallOptions(ctx context.Context, c *client, withProject bool, keep func
 }
 
 // firewallArg settles the rule of firewall get, update and delete and the
-// client of its project. A <name> is looked for in every selected project
+// client of its project. A <name> is looked for in every enabled project
 // (locateProject: a pick in the interactive flow and exit code 5 otherwise
 // when several hold it). Without it the interactive flow offers the rules
 // of those projects; none is nothing to do.

@@ -53,8 +53,8 @@ func firewallListCmd(rt *app.Runtime) *cobra.Command {
 	var network string
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List the firewall rules of the selected projects, or of one --network",
-		Long: `List the VPC firewall rules of the selected projects, each project's sorted by priority (lower numbers
+		Short: "List the firewall rules of the enabled projects, or of one --network",
+		Long: `List the VPC firewall rules of the enabled projects, each project's sorted by priority (lower numbers
 win; at the same priority a deny rule wins over an allow rule). Without
 --network the rules of every network are listed; --network keeps the rules
 of that network, matched by its exact name.`,
@@ -66,7 +66,7 @@ of that network, matched by its exact name.`,
 				return err
 			}
 			network := lastSegment(network)
-			// The rules of every selected project (of --project alone),
+			// The rules of every enabled project (of --project alone),
 			// each project's own by priority.
 			type projectRule struct {
 				project string
@@ -170,7 +170,7 @@ func firewallGetCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "get <name>",
 		Short: "Show one firewall rule",
-		Long:  "Show one VPC firewall rule. On a terminal, without <name> the rules of the\nselected projects are offered.",
+		Long:  "Show one VPC firewall rule. On a terminal, without <name> the rules of the\nenabled projects are offered.",
 		Args:  app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, profile, err := openGCP(cmd.Context(), rt)
@@ -419,7 +419,7 @@ The network and the direction of a rule are never changed (exit code 2):
 delete the rule and create it again. --target-tag "" makes the rule apply to
 every instance of the network; as only a full replacement of the rule can
 clear a list, the rule is then read and sent back whole. On a terminal,
-without <name> the rules of the selected projects are offered.
+without <name> the rules of the enabled projects are offered.
 
 The command waits for the operation (--timeout, 10m); --no-wait returns once
 the change was accepted.`,
@@ -654,7 +654,7 @@ target tags) is shown first, then a confirmation is asked (default no; --yes
 skips it, and the non-interactive flow needs --yes). A missing rule is exit
 code 4. The command waits for the operation (--timeout, 10m); --no-wait
 returns once the deletion was accepted. On a terminal, without <name> the
-rules of the selected projects are offered.`,
+rules of the enabled projects are offered.`,
 		Example: "  polyctl gcp compute firewall delete allow-ssh-internal --yes",
 		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
