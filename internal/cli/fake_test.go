@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -179,6 +180,10 @@ type fakeClient struct {
 	zoneErr, domainErr error
 	// verifyErr fails Verify.
 	verifyErr error
+	// ownNSSuffix, when set, makes the client a registrar that hosts the
+	// DNS of a domain only while its nameservers are its own (GoDaddy,
+	// name.com): SetNameservers to others drops the domain's zone.
+	ownNSSuffix string
 }
 
 var (
@@ -345,6 +350,9 @@ func (c *fakeClient) SetNameservers(ctx context.Context, name string, ns []strin
 	for i := range c.domains {
 		if c.domains[i].Name == platform.NormalizeDomain(name) {
 			c.domains[i].Nameservers = append([]string(nil), ns...)
+			if c.ownNSSuffix != "" && !slices.ContainsFunc(ns, func(n string) bool { return strings.HasSuffix(n, c.ownNSSuffix) }) {
+				c.zones = slices.DeleteFunc(c.zones, func(z platform.Zone) bool { return z.Name == c.domains[i].Name })
+			}
 			return nil
 		}
 	}

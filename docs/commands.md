@@ -136,6 +136,8 @@ All take `--profile` and `--platform`.
   polyctl domain ns set example.com ns1.example.net ns2.example.net
   ```
 
+  After a change, `ns set` re-indexes the zones of the registrar account (when the registrar also hosts DNS), so a GoDaddy or name.com zone that stops serving the domain no longer takes its routing. When that zone is gone, a note on stderr says so; the zones of other accounts are not re-indexed, so run `polyctl domain index` if the account now serving the domain was never indexed. A failed re-index is a warning; the nameserver change stands.
+
 - **`domain which`** lists every index entry for the domain and its parents: kind (`zone` or `domain`), platform, profile, resource id, index time. Use it when routing surprises you. With `--profile` / `--platform` the list is narrowed; no owner under the selection is exit code 4. When the index holds no entry, it indexes the accounts as routing does (rule 5 below, or `--refresh`), and never asks which owner: every owner is listed.
 - **`domain index`** rebuilds the domain index from every domain-capable account (narrowed by `--profile` / `--platform`). **`domain list`** prints the index; `--refresh` re-indexes first. An account that fails to sync during `--refresh` is a warning, the index is still printed as it stands, and the exit code is then 1, or 3 when every failure is a credential or permission one (as for `domain index`). An unknown `--profile` is exit code 4. A selection with no domain-capable account is not an error: empty output, a `nothing to do: ...` note, exit code 0.
 

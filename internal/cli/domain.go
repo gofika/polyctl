@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/gofika/polyctl/internal/app"
+	"github.com/gofika/polyctl/internal/config"
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/output"
 	"github.com/gofika/polyctl/internal/platform"
@@ -251,6 +253,7 @@ func newDomainNSSetCmd(rt *app.Runtime) *cobra.Command {
 				d = &platform.Domain{Name: t.Domain, Nameservers: ns}
 			}
 			rt.Infof("nameservers of %s updated via %s/%s", t.Domain, t.Platform, t.Profile)
+			reindexZonesAfterNSChange(cmd.Context(), rt, t)
 			return rt.Render(map[string]any{"domain": d.Name, "nameservers": d.Nameservers, "target": t}, func() output.Grid {
 				g := output.Grid{Headers: []string{"NAMESERVER"}}
 				for _, n := range d.Nameservers {
@@ -261,6 +264,45 @@ func newDomainNSSetCmd(rt *app.Runtime) *cobra.Command {
 		},
 	}
 	return cmd
+}
+
+// reindexZonesAfterNSChange re-indexes the zones of the registrar account
+// whose nameservers ns set just changed. A registrar that also hosts DNS
+// (GoDaddy, name.com) lists a domain as a zone only while the domain uses
+// its nameservers, so its zone row may now be stale: left alone, it would
+// make the new DNS host's zone ambiguous or win the routing. When the
+// account no longer serves the domain's DNS, a note says how to index the
+// account that does.
+func reindexZonesAfterNSChange(ctx context.Context, rt *app.Runtime, t *app.Target) {
+	prov, err := platform.Get(t.Platform)
+	if err != nil || !platform.Supports(prov, platform.ResZone) {
+		return
+	}
+	ref := config.AccountRef{Profile: t.Profile, Platform: t.Platform}
+	db, err := rt.DB()
+	if err != nil {
+		return
+	}
+	hasZone := func() bool {
+		entries, err := db.LookupDomain(ctx, []string{t.Domain}, platform.ResZone)
+		if err != nil {
+			return false
+		}
+		for _, e := range entries {
+			if e.Domain == t.Domain && e.Platform == t.Platform && e.Profile == t.Profile {
+				return true
+			}
+		}
+		return false
+	}
+	before := hasZone()
+	if err := app.SyncError(rt.SyncAccount(ctx, ref, []platform.ResourceType{platform.ResZone})); err != nil {
+		rt.Infof("warning: could not re-index the zones of %s: %v; run `polyctl domain index`", ref.Label(), err)
+		return
+	}
+	if before && !hasZone() {
+		rt.Infof("note: %s no longer serves the DNS of %s; run `polyctl domain index` if the account that does is not indexed yet", ref.Label(), t.Domain)
+	}
 }
 
 func newDomainWhichCmd(rt *app.Runtime) *cobra.Command {

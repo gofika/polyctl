@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -683,4 +684,44 @@ func jsonPathIs(out, want string) bool {
 		Path string `json:"path"`
 	}
 	return json.Unmarshal([]byte(out), &v) == nil && v.Path == want
+}
+
+// ns set re-indexes the zones of the registrar account it changed: a
+// registrar that hosts a domain's DNS only while the domain uses its own
+// nameservers must not keep routing the domain's records to itself.
+func TestDomainNSSetReindexesTheRegistrarZones(t *testing.T) {
+	dir, cfgPath := setup(t, true)
+	fc := client("a")
+	fc.ownNSSuffix = ".registrar.example"
+	fc.domains = []platform.Domain{{Name: "example.com", Nameservers: []string{"ns1.registrar.example", "ns2.registrar.example"}}}
+	fc.zones = []platform.Zone{{ID: "z1", Name: "example.com"}}
+	db := openInventory(t, dir)
+	if err := db.Replace(t.Context(), inventory.Set{Platform: fakePlatform, Profile: "a", Type: platform.ResDomain},
+		app.DomainResources(fc.domains), 3600e9); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	seed(t, dir, fc.zones, nil)
+
+	_, stderr, err := run(t, cfgPath, "domain", "ns", "set", "example.com", "ns1.dns-host.example", "ns2.dns-host.example")
+	if err != nil {
+		t.Fatalf("ns set: %v (%s)", err, stderr)
+	}
+	if fc.count("Sync:zone") != 1 || !strings.Contains(stderr, "no longer serves the DNS of example.com") {
+		t.Errorf("zone sync count %d, stderr %q", fc.count("Sync:zone"), stderr)
+	}
+	stdout, _, err := run(t, cfgPath, "domain", "which", "example.com", "--offline", "-o", "json")
+	if err != nil || strings.Contains(stdout, `"zone"`) || !strings.Contains(stdout, `"domain"`) {
+		t.Errorf("which after ns set = %q, %v", stdout, err)
+	}
+	if _, _, err := run(t, cfgPath, "dns", "set", "example.com", "--name", "www", "--type", "A", "--value", "203.0.113.10", "--offline"); !errors.Is(err, app.ErrDomainUnknown) {
+		t.Errorf("dns set after ns set = %v, want the zone no longer routed to the registrar", err)
+	}
+
+	// Back to the registrar's own nameservers: no note.
+	fc.zones = []platform.Zone{{ID: "z1", Name: "example.com"}}
+	_, stderr, err = run(t, cfgPath, "domain", "ns", "set", "example.com", "ns1.registrar.example", "ns2.registrar.example")
+	if err != nil || strings.Contains(stderr, "no longer serves") {
+		t.Errorf("ns set back: %v, %q", err, stderr)
+	}
 }
