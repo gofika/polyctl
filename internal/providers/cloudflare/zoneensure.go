@@ -117,7 +117,7 @@ func (e *zoneEnsure) run(ctx context.Context, event string) error {
 		}
 		return fmt.Errorf("zone %s already exists in %d accounts of profile %s (%s); use 'polyctl cloudflare zone ensure' with --account", e.domain, len(zs), e.profile, strings.Join(held, ", "))
 	case len(zs) > 1:
-		z, err := pickAmbiguousZone(e.rt, e.profile, e.domain, zs)
+		z, err := pickAmbiguousZone(e.rt, e.profile, e.domain, zs, false)
 		if err != nil {
 			return err
 		}

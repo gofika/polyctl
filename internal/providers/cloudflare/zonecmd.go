@@ -140,7 +140,7 @@ func resolveLiveZone(ctx context.Context, rt *app.Runtime, arg string) (*zoneSco
 		default:
 			// The accounts the login works on hold several zones of the
 			// name.
-			if z, err = pickAmbiguousZone(rt, res.Profile, name, zs); err != nil {
+			if z, err = pickAmbiguousZone(rt, res.Profile, name, zs, true); err != nil {
 				return nil, err
 			}
 		}
@@ -204,7 +204,7 @@ func routeZone(ctx context.Context, rt *app.Runtime, ref string) (*Client, inven
 			for _, r := range found {
 				cands = append(cands, cand(r))
 			}
-			return zoneHint(cands)
+			return zoneHint(cands, true)
 		}}
 	res, err := rt.ResolveResourceWith(ctx, lookup)
 	if errors.Is(err, platform.ErrNotFound) && !rt.Flags.Refresh {

@@ -465,10 +465,10 @@ func candOfAPIZone(profile string, z apiZone) zoneCand {
 }
 
 // zoneHint is the hint of an ambiguous zone: the flags whose value differs
-// among the candidates, and the zone id when the ids differ. They do not
-// when the candidates are one zone seen through two logins: only --profile
-// chooses then.
-func zoneHint(cands []zoneCand) string {
+// among the candidates, and, for a command that takes a zone id (byID), the
+// zone id when the ids differ. They do not when the candidates are one
+// zone seen through two logins: only --profile chooses then.
+func zoneHint(cands []zoneCand, byID bool) string {
 	distinct := func(get func(zoneCand) string) bool {
 		for _, c := range cands[1:] {
 			if get(c) != get(cands[0]) {
@@ -484,7 +484,7 @@ func zoneHint(cands []zoneCand) string {
 	if distinct(func(c zoneCand) string { return c.account }) {
 		flags = append(flags, "--account <id or name>")
 	}
-	byID := distinct(func(c zoneCand) string { return c.id })
+	byID = byID && distinct(func(c zoneCand) string { return c.id })
 	switch {
 	case len(flags) == 0 && byID:
 		return "pass the zone id to choose"
@@ -497,25 +497,25 @@ func zoneHint(cands []zoneCand) string {
 }
 
 // ambiguousZone is the error of a zone name several accounts hold a zone
-// of: every candidate with its account, and what chooses one. The
-// interactive flow turns it into a pick (disambiguate); the non-interactive
-// flow returns it (exit code 5).
-func ambiguousZone(ref string, cands []zoneCand) *app.AmbiguousError {
+// of: every candidate with its account, and what chooses one (byID: the
+// command takes a zone id as well). The interactive flow turns it into a
+// pick (disambiguate); the non-interactive flow returns it (exit code 5).
+func ambiguousZone(ref string, cands []zoneCand, byID bool) *app.AmbiguousError {
 	names := make([]string, 0, len(cands))
 	for _, c := range cands {
 		names = append(names, c.String())
 	}
-	return &app.AmbiguousError{What: fmt.Sprintf("zone %q", ref), Candidates: names, Hint: zoneHint(cands)}
+	return &app.AmbiguousError{What: fmt.Sprintf("zone %q", ref), Candidates: names, Hint: zoneHint(cands, byID)}
 }
 
 // pickAmbiguousZone settles a zone name that several zones of the API
-// carry.
-func pickAmbiguousZone(rt *app.Runtime, profile, ref string, zs []apiZone) (*apiZone, error) {
+// carry. byID says the command takes a zone id in place of the name.
+func pickAmbiguousZone(rt *app.Runtime, profile, ref string, zs []apiZone, byID bool) (*apiZone, error) {
 	cands := make([]zoneCand, 0, len(zs))
 	for _, z := range zs {
 		cands = append(cands, candOfAPIZone(profile, z))
 	}
-	z, err := disambiguate(rt, ambiguousZone(ref, cands), zs, func(z apiZone) string { return candOfAPIZone(profile, z).String() })
+	z, err := disambiguate(rt, ambiguousZone(ref, cands, byID), zs, func(z apiZone) string { return candOfAPIZone(profile, z).String() })
 	if err != nil {
 		return nil, err
 	}
@@ -583,5 +583,5 @@ func findLiveZone(ctx context.Context, rt *app.Runtime, a *api, sc acctScope, re
 		}
 		return nil, fmt.Errorf("%w: zone %q", platform.ErrNotFound, name)
 	}
-	return pickAmbiguousZone(rt, sc.profile, name, zs)
+	return pickAmbiguousZone(rt, sc.profile, name, zs, true)
 }

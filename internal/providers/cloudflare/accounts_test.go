@@ -464,7 +464,8 @@ func TestCoverageChange(t *testing.T) {
 
 // The hint of an ambiguous zone names what tells the candidates apart: the
 // flags whose value differs among them, and the zone id only when the ids
-// differ (the same zone seen through two logins has one id).
+// differ (the same zone seen through two logins has one id) and the
+// command takes one.
 func TestZoneHint(t *testing.T) {
 	a := zoneCand{profile: "both", account: "acc1", id: "z1"}
 	b := zoneCand{profile: "both", account: "acc2", id: "z2"}
@@ -473,14 +474,16 @@ func TestZoneHint(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		cands []zoneCand
+		byID  bool
 		want  string
 	}{
-		{"two accounts of one login", []zoneCand{a, b}, "pass --account <id or name>, or the zone id, to choose"},
-		{"one zone through two logins", []zoneCand{b, c}, "pass --profile <name> to choose"},
-		{"two logins and two accounts", []zoneCand{a, d}, "pass --profile <name> or --account <id or name>, or the zone id, to choose"},
-		{"nothing but the id differs", []zoneCand{a, {profile: "both", account: "acc1", id: "z9"}}, "pass the zone id to choose"},
+		{"two accounts of one login", []zoneCand{a, b}, true, "pass --account <id or name>, or the zone id, to choose"},
+		{"two accounts, a command without zone ids", []zoneCand{a, b}, false, "pass --account <id or name> to choose"},
+		{"one zone through two logins", []zoneCand{b, c}, true, "pass --profile <name> to choose"},
+		{"two logins and two accounts", []zoneCand{a, d}, true, "pass --profile <name> or --account <id or name>, or the zone id, to choose"},
+		{"nothing but the id differs", []zoneCand{a, {profile: "both", account: "acc1", id: "z9"}}, true, "pass the zone id to choose"},
 	} {
-		if got := zoneHint(tc.cands); got != tc.want {
+		if got := zoneHint(tc.cands, tc.byID); got != tc.want {
 			t.Errorf("%s: %q, want %q", tc.name, got, tc.want)
 		}
 	}

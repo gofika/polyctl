@@ -642,7 +642,7 @@ func TestZoneEnsureSeveralAccounts(t *testing.T) {
 	two := e.f.addZone("example.com", "acc2", "free", "pending")
 	e.f.reset()
 	code, _, stderr = e.run("cloudflare", "zone", "ensure", "example.com", "--profile", "both")
-	if code != cli.ExitAmbiguous || !strings.Contains(stderr, one.id) || !strings.Contains(stderr, two.id) || !strings.Contains(stderr, "pass --account <id or name>, or the zone id, to choose") {
+	if code != cli.ExitAmbiguous || !strings.Contains(stderr, one.id) || !strings.Contains(stderr, two.id) || !strings.Contains(stderr, "pass --account <id or name> to choose") {
 		t.Errorf("ensure of a name in two accounts: exit %d, %s", code, stderr)
 	}
 	code, _, stderr = e.run("cloudflare", "zone", "create", "example.com", "--profile", "both")
