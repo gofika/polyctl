@@ -185,7 +185,7 @@ type User struct {
 }
 
 // System is a fake Unix system: users with home directories under a
-// temporary directory, and fake id, getent, sudo, runuser and chown commands ahead
+// temporary directory, and fake id, getent, sudo, runuser, chown and sshd commands ahead
 // of the real ones in PATH. chown only records its arguments in ChownLog
 // (tests cannot change owners).
 type System struct {
@@ -276,7 +276,27 @@ exec "$@"
 `)
 	write("chown", `echo "$*" >> "$FAKE_CHOWN_LOG"
 `)
+	// sshd -T prints SSHDT when set; otherwise it fails as it does for a
+	// user who cannot read the host keys, and the real sshd of the
+	// machine running the tests is never run.
+	write("sshd", `[ "$1" = -T ] || { echo "fake sshd: -T expected" >&2; exit 2; }
+[ -f "$FAKE_SSHD_T" ] || { echo "sshd: no hostkeys available -- exiting." >&2; exit 1; }
+cat "$FAKE_SSHD_T"
+`)
 	return sys
+}
+
+// SetSSHDT makes `sshd -T` on the system print out ("" makes it fail).
+func (s *System) SetSSHDT(t testing.TB, out string) {
+	t.Helper()
+	p := filepath.Join(s.Dir, "sshd-T")
+	if out == "" {
+		_ = os.Remove(p)
+		return
+	}
+	if err := os.WriteFile(p, []byte(out), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // Home is the home directory of user.
@@ -306,7 +326,7 @@ func (s *System) Run(user, cmd, stdin string) (stdout, stderr string, code int) 
 	env := []string{
 		"PATH=" + s.bin + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"HOME=" + u.Home, "FAKE_USER=" + user, "FAKE_PASSWD=" + s.passwd, "FAKE_CHOWN_LOG=" + s.ChownLog,
-		"LC_ALL=C",
+		"LC_ALL=C", "FAKE_SSHD_T=" + filepath.Join(s.Dir, "sshd-T"),
 	}
 	if s.SudoPassword {
 		env = append(env, "FAKE_SUDO_PASSWORD=1")

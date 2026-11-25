@@ -347,12 +347,22 @@ func TestScriptUnderEveryShell(t *testing.T) {
 			a := newKey(t)
 			orig := `command="echo 'x'" ` + line(a.pub, "a") + "\r\n# note\n" + line(k.pub, "k")
 			_ = os.WriteFile(f, []byte(orig), 0o644)
+			// The key to remove is in authorized_keys2 too, which sshd
+			// reads (the setting, in an included file, names it).
+			f2 := filepath.Join(dir, "authorized_keys2")
+			_ = os.WriteFile(f2, []byte(line(a.pub, "old")+"\n"), 0o600)
+			_ = os.MkdirAll(filepath.Join(sys.Dir, "sshd_config.d"), 0o755)
+			_ = os.WriteFile(SSHDConfig, []byte("Include sshd_config.d/*.conf\n"), 0o644)
+			_ = os.WriteFile(filepath.Join(sys.Dir, "sshd_config.d", "50-keys.conf"), []byte("AuthorizedKeysFile .ssh/authorized_keys .ssh/authorized_keys2\n"), 0o644)
 			nk := newKey(t)
 			if added, err := c.AddKey(t.Context(), "alice", nk.pub, "it's new"); err != nil || !added {
 				t.Fatalf("add: %v %v", added, err)
 			}
-			if n, err := c.RemoveKeys(t.Context(), "alice", []ssh.PublicKey{a.pub}, nil); err != nil || n != 1 {
+			if n, err := c.RemoveKeys(t.Context(), "alice", []ssh.PublicKey{a.pub}, nil); err != nil || n != 2 {
 				t.Fatalf("remove: %d %v", n, err)
+			}
+			if data, _ := os.ReadFile(f2); string(data) != "" {
+				t.Errorf("authorized_keys2 %q", data)
 			}
 			data, _ := os.ReadFile(f)
 			if want := "# note\n" + line(k.pub, "k") + "\n" + line(nk.pub, "it's new") + "\n"; string(data) != want {
@@ -415,3 +425,115 @@ func TestParseListRefusesTruncatedOutput(t *testing.T) {
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
+
+// sshd reads ~/.ssh/authorized_keys2 by default (Debian and Ubuntu leave
+// AuthorizedKeysFile commented out): its keys are listed, a key there
+// counts as present for add, and remove deletes it from both files.
+func TestAuthorizedKeys2(t *testing.T) {
+	k := newKey(t)
+	srv, sys := scriptServer(t, k, "alice")
+	c := login(t, srv, k, "alice")
+	_ = os.WriteFile(SSHDConfig, []byte("#AuthorizedKeysFile .ssh/authorized_keys .ssh/authorized_keys2\n"), 0o644)
+	dir := filepath.Join(sys.Home("alice"), ".ssh")
+	_ = os.MkdirAll(dir, 0o700)
+	f := filepath.Join(dir, "authorized_keys")
+	f2 := filepath.Join(dir, "authorized_keys2")
+	leaked, both := newKey(t), newKey(t)
+	_ = os.WriteFile(f, []byte(line(k.pub, "k")+"\n"+line(both.pub, "both")+"\n"), 0o600)
+	// No final newline: the separator still splits the two files.
+	_ = os.WriteFile(f2, []byte(line(leaked.pub, "leaked")+"\n"+line(both.pub, "both2")), 0o600)
+	ak, err := c.ListKeys(t.Context(), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ak.AuthorizedKeysFileFrom != "default" || !ak.Reads(KeysFile2) || ak.CustomFile() || ak.Path2 != f2 {
+		t.Errorf("listing %+v", ak)
+	}
+	if len(ak.Entries) != 4 {
+		t.Fatalf("entries %+v", ak.Entries)
+	}
+	if e := ak.Has(leaked.pub); len(e) != 1 || e[0].File != KeysFile2 || e[0].Line != 1 || e[0].Comment != "leaked" {
+		t.Errorf("leaked key %+v", e)
+	}
+	if added, err := c.AddKey(t.Context(), "alice", leaked.pub, ""); err != nil || added {
+		t.Errorf("add of a key in authorized_keys2: %v %v", added, err)
+	}
+	n, err := c.RemoveKeys(t.Context(), "alice", []ssh.PublicKey{leaked.pub, both.pub}, nil)
+	if err != nil || n != 3 {
+		t.Fatalf("remove: %d %v", n, err)
+	}
+	if data, _ := os.ReadFile(f); string(data) != line(k.pub, "k")+"\n" {
+		t.Errorf("authorized_keys %q", data)
+	}
+	if data, _ := os.ReadFile(f2); string(data) != "" {
+		t.Errorf("authorized_keys2 %q", data)
+	}
+	if m := mode(t, f2); m != 0o600 {
+		t.Errorf("authorized_keys2 mode %o", m)
+	}
+}
+
+// The AuthorizedKeysFile sshd uses: from sshd -T when it runs, else from
+// the first setting of sshd_config and the files it includes (a Match block
+// is reported), else OpenSSH's default.
+func TestAuthorizedKeysFileSetting(t *testing.T) {
+	k := newKey(t)
+	srv, sys := scriptServer(t, k, "alice")
+	c := login(t, srv, k, "alice")
+	dir := filepath.Join(sys.Home("alice"), ".ssh")
+	_ = os.MkdirAll(dir, 0o700)
+	k2 := newKey(t)
+	_ = os.WriteFile(filepath.Join(dir, "authorized_keys2"), []byte(line(k2.pub, "two")+"\n"), 0o600)
+	inc := filepath.Join(sys.Dir, "sshd_config.d")
+	_ = os.MkdirAll(inc, 0o755)
+	_ = os.WriteFile(SSHDConfig, []byte("Include "+inc+"/*.conf\nAuthorizedKeysFile .ssh/authorized_keys\nMatch User deploy\n\tAuthorizedKeysFile /etc/ssh/deploy_keys\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(inc, "10-a.conf"), []byte("# nothing\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(inc, "20-keys.conf"), []byte("AuthorizedKeysFile=/etc/ssh/keys/%u\n"), 0o644)
+	ak, err := c.ListKeys(t.Context(), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ak.AuthorizedKeysFile != "/etc/ssh/keys/%u" || ak.AuthorizedKeysFileFrom != "config" || !ak.AuthorizedKeysFileMatch || !ak.CustomFile() || ak.Reads(KeysFile2) {
+		t.Errorf("included setting: %+v", ak)
+	}
+	if got := ak.OtherFiles(); len(got) != 1 || got[0] != "/etc/ssh/keys/%u" {
+		t.Errorf("other files %v", got)
+	}
+
+	sys.SetSSHDT(t, "port 22\nauthorizedkeysfile .ssh/authorized_keys\nx11forwarding no\n")
+	ak, err = c.ListKeys(t.Context(), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ak.AuthorizedKeysFile != ".ssh/authorized_keys" || ak.AuthorizedKeysFileFrom != "sshd" || ak.AuthorizedKeysFileMatch || ak.CustomFile() || ak.Reads(KeysFile2) {
+		t.Errorf("sshd -T: %+v", ak)
+	}
+	// sshd does not read authorized_keys2: its key is not a reason to
+	// skip the add.
+	if added, err := c.AddKey(t.Context(), "alice", k2.pub, "two"); err != nil || !added {
+		t.Errorf("add of a key only in an unread authorized_keys2: %v %v", added, err)
+	}
+
+	sys.SetSSHDT(t, "")
+	_ = os.Remove(SSHDConfig)
+	if ak, err = c.ListKeys(t.Context(), "alice"); err != nil || ak.AuthorizedKeysFileFrom != "unknown" || ak.AuthorizedKeysFile != "" || !ak.Reads(KeysFile2) {
+		t.Errorf("unreadable config: %v %+v", err, ak)
+	}
+}
+
+// authorized_keys2 cut short on the way is refused like authorized_keys.
+func TestParseListRefusesTruncatedKeys2(t *testing.T) {
+	k := newKey(t)
+	two := line(k.pub, "two") + "\n"
+	head := header + "\nuser u\npath /h/.ssh/authorized_keys\nsum none\npath2 /h/.ssh/authorized_keys2\nsum2 1-2\nsize2 " + itoa(len(two)) + "\n---\n"
+	ak, err := parseList("u", []byte(head+two+"\n---\n"))
+	if err != nil || len(ak.Entries) != 1 || ak.Entries[0].File != KeysFile2 {
+		t.Fatalf("whole: %v %+v", err, ak)
+	}
+	if _, err := parseList("u", []byte(head+two[:10])); !errors.Is(err, platform.ErrNotSupported) {
+		t.Errorf("truncated: %v", err)
+	}
+	if _, err := parseList("u", []byte(head+two+"extra\n---\n")); err == nil {
+		t.Error("a file that grew was accepted")
+	}
+}

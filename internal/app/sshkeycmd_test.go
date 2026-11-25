@@ -323,6 +323,53 @@ func TestSSHKeyRemoveGuards(t *testing.T) {
 	}
 }
 
+// A leaked key only in ~/.ssh/authorized_keys2, which sshd reads by
+// default: list shows it, remove deletes it there (not "not present"), and
+// a key in an authorized_keys2 sshd ignores is marked so and does not count
+// against the last-key guard.
+func TestSSHKeyRemoveFromAuthorizedKeys2(t *testing.T) {
+	r := newKeyRig(t, "ec2-user")
+	leaked := newSSHTestKey(t)
+	r.authorized("ec2-user", r.login.line("me")+"\n")
+	f2 := filepath.Join(r.sys.Home("ec2-user"), ".ssh", "authorized_keys2")
+	_ = os.WriteFile(f2, []byte(leaked.line("leaked")+"\n"), 0o600)
+	r.h.rt.Flags.Output = "json"
+	_ = r.h.rt.Init()
+	if err := r.run("list", "web-1", "--accept-new-host-key"); err != nil {
+		t.Fatal(err)
+	}
+	var rows []app.SSHKeyRow
+	if err := json.Unmarshal(r.h.stdout.Bytes(), &rows); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[1].Source != "authorized_keys2" || rows[1].Comment != "leaked" || rows[1].Ignored {
+		t.Fatalf("rows %+v", rows)
+	}
+	r.h.rt.Flags.Output = ""
+	_ = r.h.rt.Init()
+	r.h.rt.Flags.Yes = true
+	if err := r.run("remove", "web-1", "--fingerprint", ssh.FingerprintSHA256(leaked.pub)); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(f2); string(data) != "" {
+		t.Errorf("authorized_keys2 after remove %q", data)
+	}
+	if strings.Contains(r.h.stdout.String(), "not present") {
+		t.Errorf("report %q", r.h.stdout.String())
+	}
+
+	// sshd reads authorized_keys only: a key in authorized_keys2 is
+	// ignored and is no way back in.
+	_ = os.WriteFile(sshremote.SSHDConfig, []byte("AuthorizedKeysFile .ssh/authorized_keys\n"), 0o644)
+	other := newSSHTestKey(t)
+	_ = os.WriteFile(f2, []byte(r.login.line("me2")+"\n"), 0o600)
+	r.authorized("ec2-user", other.line("other")+"\n")
+	err := r.run("remove", "web-1", "--fingerprint", ssh.FingerprintSHA256(other.pub))
+	if err == nil || !strings.Contains(err.Error(), "last key of ec2-user") {
+		t.Fatalf("last key with an ignored authorized_keys2: %v", err)
+	}
+}
+
 // Another user's keys go through sudo -n, and the report says so.
 func TestSSHKeyAddForAnotherUser(t *testing.T) {
 	r := newKeyRig(t, "ec2-user", "deploy")

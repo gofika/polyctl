@@ -233,7 +233,8 @@ func sshKeyMechanism(sc SSHKeyCommand) string {
 	}
 	s := "An instance binds one key pair when it is created; these commands manage\n" +
 		"further keys by editing ~/.ssh/authorized_keys of the user, so the instance\n" +
-		"must be running.\n\n" +
+		"must be running. ~/.ssh/authorized_keys2, which sshd reads by default, is\n" +
+		"listed too, and remove deletes the key from both files.\n\n" +
 		"Login: --identity-file, when given, is the only key (an encrypted one asks\n" +
 		"for its passphrase on a terminal, and is exit code 2 in the non-interactive\n" +
 		"flow, where an SSH agent (SSH_AUTH_SOCK) is the way). Otherwise only the\n" +
@@ -515,7 +516,8 @@ func sshKeyRemoveCommand(rt *Runtime, sc SSHKeyCommand) *cobra.Command {
 		Short: "Remove SSH public keys from a Linux instance (asks for confirmation)",
 		Long: "Remove SSH public keys from a Linux instance: every entry of the user that\n" +
 			"holds the key (--ssh-key, --ssh-key-file, or --fingerprint SHA256:...,\n" +
-			"repeatable) is removed, the others are kept as they are. A key that is not\n" +
+			"repeatable) is removed, from authorized_keys and authorized_keys2 alike;\n" +
+			"the others are kept as they are. A key that is not\n" +
 			"there is reported unchanged. On a terminal, without a key flag, the keys\n" +
 			"are listed to pick from (several may be ticked).\n\n" +
 			"It asks for confirmation (default no; --yes answers yes, and the\n" +
@@ -841,14 +843,40 @@ func (s *sshKeySession) list(ctx context.Context, user string) ([]SSHKeyEntry, e
 	if err != nil {
 		return nil, err
 	}
-	if ak.CustomFile() {
-		s.note(fmt.Sprintf("warning: sshd on the instance sets AuthorizedKeysFile %s: polyctl edits ~/.ssh/authorized_keys only, which sshd may not read", ak.AuthorizedKeysFile))
-	}
+	s.noteKeysFile(ak)
+	return keyEntries(user, ak), nil
+}
+
+// keyEntries are the entries of both files of ak; those of a file sshd
+// does not read are marked ignored.
+func keyEntries(user string, ak *sshremote.AuthorizedKeys) []SSHKeyEntry {
 	out := make([]SSHKeyEntry, 0, len(ak.Entries))
 	for _, e := range ak.Entries {
-		out = append(out, SSHKeyEntry{User: user, Key: e.Key, Comment: e.Comment, Source: "authorized_keys", Options: e.Options})
+		src := e.File
+		if src == "" {
+			src = sshremote.KeysFile
+		}
+		out = append(out, SSHKeyEntry{User: user, Key: e.Key, Comment: e.Comment, Source: src, Options: e.Options,
+			Ignored: !ak.Reads(src)})
 	}
-	return out, nil
+	return out
+}
+
+// noteKeysFile warns when sshd may read keys from files polyctl does not
+// edit, or not read the file it adds keys to.
+func (s *sshKeySession) noteKeysFile(ak *sshremote.AuthorizedKeys) {
+	if ak.CustomFile() {
+		s.note(fmt.Sprintf("warning: sshd on the instance sets AuthorizedKeysFile %s: polyctl adds keys to ~/.ssh/authorized_keys, which sshd does not read", ak.AuthorizedKeysFile))
+	}
+	if other := ak.OtherFiles(); len(other) > 0 {
+		s.note(fmt.Sprintf("warning: sshd on the instance also reads keys from %s (AuthorizedKeysFile), which polyctl neither lists nor edits", strings.Join(other, ", ")))
+	}
+	if ak.AuthorizedKeysFileMatch {
+		s.note("warning: a Match block of sshd_config on the instance sets AuthorizedKeysFile, which may apply to this user instead of " + ak.AuthorizedKeysFile)
+	}
+	if ak.AuthorizedKeysFileFrom == "unknown" {
+		s.note("note: the sshd configuration on the instance could not be read; polyctl assumes sshd reads ~/.ssh/authorized_keys and authorized_keys2")
+	}
 }
 
 // readOnly is why the keys cannot be written (OS Login), if they cannot.
@@ -876,11 +904,7 @@ func (s *sshKeySession) remove(ctx context.Context, user string, keys []ssh.Publ
 		return s.inst.Metadata.Remove(ctx, user, keys)
 	}
 	return s.editor.RemoveKeys(ctx, user, keys, func(ak *sshremote.AuthorizedKeys, _ []sshremote.Entry) error {
-		entries := make([]SSHKeyEntry, 0, len(ak.Entries))
-		for _, e := range ak.Entries {
-			entries = append(entries, SSHKeyEntry{User: user, Key: e.Key})
-		}
-		return s.guard(user, entries, keys)
+		return s.guard(user, keyEntries(user, ak), keys)
 	})
 }
 
@@ -906,7 +930,8 @@ func (s *sshKeySession) guard(user string, entries []SSHKeyEntry, remove []ssh.P
 	}
 	left := 0
 	for _, e := range entries {
-		if e.User == user && !gone(e.Key) {
+		// A key in a file sshd does not read does not log in.
+		if e.User == user && !e.Ignored && !gone(e.Key) {
 			left++
 		}
 	}
