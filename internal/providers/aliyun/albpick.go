@@ -41,7 +41,7 @@ func lbArg(ctx context.Context, rt *app.Runtime, args []string, region string) (
 			if reg == "" {
 				reg = r.ParentID
 			}
-			return joinLabel(nameOr(r.Name, r.ID), r.ID, reg, lb.Status, lb.DNSName, "aliyun/"+r.Profile)
+			return prompt.Cells(nameOr(r.Name, r.ID), r.ID, reg, lb.Status, lb.DNSName, "aliyun/"+r.Profile)
 		}})
 	if err != nil {
 		return nil, err
@@ -90,7 +90,7 @@ func listenerArg(ctx context.Context, rt *app.Runtime, sc *albScope, args []stri
 		if len(protocols) > 0 && !slices.Contains(protocols, strings.ToUpper(l.Protocol)) {
 			continue
 		}
-		opts = append(opts, prompt.Option{Label: joinLabel(fmt.Sprintf("%s:%d", l.Protocol, l.Port), l.ID, l.Status, strings.Join(l.ServerGroups, ",")), Value: l.ID})
+		opts = append(opts, prompt.Option{Label: listenerLabel(l), Value: l.ID})
 	}
 	what := "listener of " + lbID
 	if len(protocols) > 0 {
@@ -172,9 +172,14 @@ func aclArg(ctx context.Context, rt *app.Runtime, sc *albScope, args []string, a
 	return []string{id}, nil
 }
 
-// casCertLabel: "site  example.com,www.example.com  expires 2027-01-01
-// 1234567".
-func casCertLabel(ct casCertificate, now time.Time) string {
+// listenerLabel: "HTTPS:443  lsn-1  Running  sgp-1,sgp-2".
+func listenerLabel(l albListener) string {
+	return prompt.Cells(fmt.Sprintf("%s:%d", l.Protocol, l.Port), l.ID, l.Status, strings.Join(l.ServerGroups, ","))
+}
+
+// casCertLabel: "site  1234567  example.com,www.example.com  expires
+// 2027-01-01", then mark ("(current)") when given.
+func casCertLabel(ct casCertificate, now time.Time, mark string) string {
 	names := ct.CommonName
 	if ct.Sans != "" {
 		names = ct.Sans
@@ -183,7 +188,7 @@ func casCertLabel(ct casCertificate, now time.Time) string {
 	if ct.expired(now) {
 		exp = "expired " + ct.EndDate
 	}
-	return joinLabel(ct.Name, names, exp, ct.ID)
+	return prompt.Cells(ct.Name, ct.ID, names, exp, mark)
 }
 
 // askCASCert asks for an unexpired uploaded certificate of the CAS store
@@ -214,13 +219,13 @@ func askCASCert(ctx context.Context, rt *app.Runtime, c *client, region, current
 	var opts []prompt.Option
 	def := ""
 	for _, ct := range valid {
-		label := casCertLabel(ct, now)
+		mark := ""
 		if ct.ID == current {
-			label += "  (current)"
+			mark = "(current)"
 		} else if def == "" {
 			def = ct.ID
 		}
-		opts = append(opts, prompt.Option{Label: label, Value: ct.ID})
+		opts = append(opts, prompt.Option{Label: casCertLabel(ct, now, mark), Value: ct.ID})
 	}
 	return rt.Choose(app.Choice{Title: "Certificate (CAS)", Options: opts, Default: def, Arg: arg, Required: true, What: "unexpired uploaded certificate"})
 }
@@ -244,7 +249,7 @@ func pickCASDelete(rt *app.Runtime, certs []casCertificate) (string, error) {
 		opts = append(opts, prompt.Option{Label: "All expired certificates (" + strconv.Itoa(n) + ")", Value: allExpiredValue})
 	}
 	for _, ct := range certs {
-		opts = append(opts, prompt.Option{Label: casCertLabel(ct, now), Value: ct.ID})
+		opts = append(opts, prompt.Option{Label: casCertLabel(ct, now, ""), Value: ct.ID})
 	}
 	return rt.Choose(app.Choice{Title: "Certificate to delete", Options: opts, Arg: "<cert-id> or --expired", What: "uploaded certificate"})
 }
@@ -440,11 +445,7 @@ func askZoneMappings(ctx context.Context, rt *app.Runtime, sc *albScope, vpc str
 			if usedEIP[e.AllocationID] || !e.idle(isp) {
 				continue
 			}
-			bw := ""
-			if e.Bandwidth != "" {
-				bw = e.Bandwidth + " Mbps"
-			}
-			eopts = append(eopts, prompt.Option{Label: joinLabel(e.IP, e.AllocationID, bw, e.ISP, e.Name), Value: e.AllocationID})
+			eopts = append(eopts, prompt.Option{Label: eipLabel(e), Value: e.AllocationID})
 		}
 		of := ""
 		if isp != "" {

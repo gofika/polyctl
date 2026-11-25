@@ -64,7 +64,7 @@ func TestVSwitchCreatePicks(t *testing.T) {
 	}
 	p.Done()
 	zone := p.Find("Zone (cn-shanghai)")
-	if zone.Default != "cn-shanghai-c" || !strings.Contains(prompttest.Labels(zone.Options), "cn-shanghai-b  (vSwitch cn-shanghai-switch-b)") {
+	if zone.Default != "cn-shanghai-c" || !strings.Contains(prompttest.Labels(zone.Options), "cn-shanghai-b  vSwitch cn-shanghai-switch-b\n") {
 		t.Errorf("zones (default %q):\n%s", zone.Default, prompttest.Labels(zone.Options))
 	}
 	if !strings.Contains(h.stdout.String(), "vswitch/cn-shanghai-switch-c") {

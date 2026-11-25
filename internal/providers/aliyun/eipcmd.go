@@ -635,11 +635,7 @@ func pickIdleEIPOf(ctx context.Context, rt *app.Runtime, s *ecsScope) (string, e
 		if !e.idle("") {
 			continue
 		}
-		bw := ""
-		if e.Bandwidth != "" {
-			bw = e.Bandwidth + " Mbps"
-		}
-		opts = append(opts, prompt.Option{Label: joinLabel(e.IP, e.AllocationID, bw, e.ISP, e.Name), Value: e.AllocationID})
+		opts = append(opts, prompt.Option{Label: eipLabel(e), Value: e.AllocationID})
 	}
 	if len(opts) == 0 && rt.Interactive() {
 		// A new EIP is billed: it is chosen, never implied by an empty

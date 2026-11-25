@@ -66,8 +66,8 @@ func loginSite(in platform.LoginInput, io *prompt.IO) (string, error) {
 	fmt.Fprintln(io.Err, "Alibaba Cloud has two sites with separate accounts; an account usually belongs to one of them.")
 	if in.Picker != nil {
 		return in.Picker.Select("Which site does this Alibaba Cloud account use?", []prompt.Option{
-			{Label: "cn    " + siteLabels[siteCN], Value: siteCN},
-			{Label: "intl  " + siteLabels[siteIntl], Value: siteIntl},
+			{Label: prompt.Cells("cn", siteLabels[siteCN]), Value: siteCN},
+			{Label: prompt.Cells("intl", siteLabels[siteIntl]), Value: siteIntl},
 		}, "")
 	}
 	for {

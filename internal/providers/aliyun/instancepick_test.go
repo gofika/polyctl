@@ -31,7 +31,7 @@ func TestInstanceStartStopPick(t *testing.T) {
 	if v := prompttest.Values(p.Find("Instance").Options); v != "i-2" {
 		t.Errorf("start offered %q, want the Stopped instance only", v)
 	}
-	if l := prompttest.Labels(p.Find("Instance").Options); !strings.Contains(l, "site-b  i-2  Stopped  ecs.u1-c1m1.large  cn-shanghai-b  172.16.0.10  aliyun/ali") {
+	if l := prompttest.Labels(p.Find("Instance").Options); !strings.Contains(l, "site-b  i-2  Stopped  ecs.u1-c1m1.large  cn-shanghai-b  172.16.0.10  -  aliyun/ali") {
 		t.Errorf("label: %s", l)
 	}
 	if len(h.api.callsFor("StartInstance")) != 1 {

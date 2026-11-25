@@ -365,11 +365,7 @@ func (c *client) regionOptions(ctx context.Context) ([]prompt.Option, error) {
 		if r.RegionId == "" || (r.Status != "" && r.Status != "available") {
 			continue
 		}
-		label := r.RegionId
-		if r.LocalName != "" {
-			label += "  " + r.LocalName
-		}
-		opts = append(opts, prompt.Option{Label: label, Value: r.RegionId})
+		opts = append(opts, prompt.Option{Label: prompt.Cells(r.RegionId, r.LocalName), Value: r.RegionId})
 	}
 	sort.Slice(opts, func(i, j int) bool { return opts[i].Value < opts[j].Value })
 	return opts, nil

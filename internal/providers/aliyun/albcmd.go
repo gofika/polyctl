@@ -453,7 +453,7 @@ func resolveInstanceIn(ctx context.Context, s *ecsScope, ref string) (*Instance,
 	}
 	amb := &app.AmbiguousError{What: fmt.Sprintf("instance %q in %s", ref, s.where()), Candidates: ids,
 		Hint: "several instances share the name; pass the instance id"}
-	return pickAmong(s, amb, found, func(in Instance) string { return in.ID }, instanceOptionLabel)
+	return pickAmong(s, amb, found, func(in Instance) string { return in.ID }, func(in Instance) string { return instanceOptionLabel(in) })
 }
 
 // ------------------------------------------------------------ inventory
@@ -836,7 +836,7 @@ bounded by --timeout; --no-wait returns at once.`,
 			if !setName && !setProtection {
 				// The interactive flow asks what to change.
 				what, err := rt.Choose(app.Choice{Title: "What to change on " + orID(lb.Name, lb.ID), Arg: "--name or --deletion-protection",
-					Options: []prompt.Option{{Label: "Name (now " + orDash(lb.Name) + ")", Value: "name"}, {Label: "Deletion protection (now " + strconv.FormatBool(lb.DeletionProtection) + ")", Value: "protection"}}})
+					Options: []prompt.Option{{Label: prompt.Cells("Name", "now "+orDash(lb.Name)), Value: "name"}, {Label: prompt.Cells("Deletion protection", "now "+strconv.FormatBool(lb.DeletionProtection)), Value: "protection"}}})
 				if err != nil {
 					return err
 				}
@@ -1301,9 +1301,9 @@ Running again.`,
 			if groupRef == "" && cert == "" {
 				// The interactive flow asks what to change, then offers the
 				// server groups or the certificates.
-				opts := []prompt.Option{{Label: "Server group (now " + orDash(strings.Join(l.ServerGroups, ",")) + ")", Value: "group"}}
+				opts := []prompt.Option{{Label: prompt.Cells("Server group", "now "+orDash(strings.Join(l.ServerGroups, ","))), Value: "group"}}
 				if carriesCertificates(l.Protocol) {
-					opts = append(opts, prompt.Option{Label: "Certificate (now " + orDash(firstOr(l.Certificates, "")) + ")", Value: "cert"})
+					opts = append(opts, prompt.Option{Label: prompt.Cells("Certificate", "now "+orDash(firstOr(l.Certificates, ""))), Value: "cert"})
 				}
 				what, err := rt.Choose(app.Choice{Title: "What to change on listener " + l.ID, Options: opts, Arg: "--server-group or --cert"})
 				if err != nil {
@@ -1917,10 +1917,10 @@ func askServerGroupChange(rt *app.Runtime, g *albServerGroup, changed map[string
 	}
 	what, err := rt.Choose(app.Choice{Title: "What to change on server group " + orID(g.Name, g.ID), Arg: "--name, --scheduler, --health-check, --health-check-path or --sticky-session",
 		Options: []prompt.Option{
-			{Label: "Name (now " + orDash(g.Name) + ")", Value: "name"},
-			{Label: "Scheduler (now " + orDash(g.Scheduler) + ")", Value: "scheduler"},
-			{Label: "Health check (now " + hc + ")", Value: "health-check"},
-			{Label: "Session persistence (now " + onOff(g.StickySession) + ")", Value: "sticky-session"},
+			{Label: prompt.Cells("Name", "now "+orDash(g.Name)), Value: "name"},
+			{Label: prompt.Cells("Scheduler", "now "+orDash(g.Scheduler)), Value: "scheduler"},
+			{Label: prompt.Cells("Health check", "now "+hc), Value: "health-check"},
+			{Label: prompt.Cells("Session persistence", "now "+onOff(g.StickySession)), Value: "sticky-session"},
 		}})
 	if err != nil {
 		return err
@@ -2537,7 +2537,7 @@ be Available after each.`,
 				// The interactive flow offers the entries of the ACL.
 				var opts []prompt.Option
 				for _, e := range have {
-					opts = append(opts, prompt.Option{Label: joinLabel(e.Entry, e.Description, e.Status), Value: e.Entry})
+					opts = append(opts, prompt.Option{Label: prompt.Cells(e.Entry, e.Description, e.Status), Value: e.Entry})
 				}
 				picked, err := rt.ChooseMany(app.Choice{Title: "Entries to remove from " + orID(x.Name, x.ID), Options: opts, Arg: "<cidr>...",
 					Empty: app.NothingToDof("ACL %s has no entries", x.ID)})

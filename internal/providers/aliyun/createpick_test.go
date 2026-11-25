@@ -57,6 +57,9 @@ func TestInstanceCreateInteractiveAsksWhatIsMissing(t *testing.T) {
 	if v := prompttest.Values(sizes.Options); strings.Contains(v, "ARM") || sizes.Default != "2H4G" || !strings.Contains(v, "2H2G") {
 		t.Errorf("sizes %q (default %q)", v, sizes.Default)
 	}
+	if l := prompttest.Labels(sizes.Options); !strings.Contains(l, "2H4G  2 vCPU  4 GiB  2 x86 types in stock  cn-shanghai-b, cn-shanghai-c") {
+		t.Errorf("sizes:\n%s", l)
+	}
 	kp := p.Find("Key pair")
 	if kp.Default != "laptop" || !strings.Contains(prompttest.Labels(kp.Options), "[matches ~/.ssh/id_ed25519.pub]") {
 		t.Errorf("key pairs (default %q):\n%s", kp.Default, prompttest.Labels(kp.Options))
@@ -142,7 +145,7 @@ func TestInstanceCreateInteractivePicksVSwitch(t *testing.T) {
 	if run := h.api.callsFor("RunInstances")[0]; run.Get("VSwitchId") != "vsw-x" {
 		t.Errorf("RunInstances = %v", run)
 	}
-	if l := prompttest.Labels(p.Find("vSwitch").Options); !strings.Contains(l, "app  vsw-x  cn-shanghai-d  172.16.8.0/22  cn-shanghai-vpc (vpc-1)") {
+	if l := prompttest.Labels(p.Find("vSwitch").Options); !strings.Contains(l, "app  vsw-x  cn-shanghai-d  172.16.8.0/22  cn-shanghai-vpc  vpc-1  1020 free IPs") {
 		t.Errorf("labels: %s", l)
 	}
 }

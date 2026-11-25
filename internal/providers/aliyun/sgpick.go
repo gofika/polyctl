@@ -167,16 +167,25 @@ func askRules(rt *app.Runtime, have []sgRule) ([]string, error) {
 	return out, nil
 }
 
+// ruleLabel: "tcp  22/22  0.0.0.0/0  -  prio 1  sgr-1  description"; the
+// fourth cell is the policy of a rule that does not accept ("drop").
+func ruleLabel(r sgRule) string {
+	policy := ""
+	if r.Policy != "accept" {
+		policy = r.Policy
+	}
+	return prompt.Cells(r.Protocol, r.Port, r.Source, policy, fmt.Sprintf("prio %d", r.Priority), r.ID, r.Description)
+}
+
 // pickRuleIDs asks for the rules rule remove removes (multiple choice),
-// labelled "tcp 22/22 0.0.0.0/0  prio 1  sgr-...  description". No rule is
-// nothing to do.
+// labelled by ruleLabel. No rule is nothing to do.
 func pickRuleIDs(rt *app.Runtime, sg *securityGroup, have []sgRule) ([]string, error) {
 	var opts []prompt.Option
 	for _, r := range have {
 		if r.ID == "" {
 			continue
 		}
-		opts = append(opts, prompt.Option{Label: joinLabel(r.String(), fmt.Sprintf("prio %d", r.Priority), r.ID, r.Description), Value: r.ID})
+		opts = append(opts, prompt.Option{Label: ruleLabel(r), Value: r.ID})
 	}
 	return rt.ChooseMany(app.Choice{Title: "Rules to remove from " + orID(sg.Name, sg.ID), Options: opts, Arg: "--rule or --rule-id",
 		Empty: app.NothingToDof("security group %s has no ingress rules", sg.ID)})
@@ -230,7 +239,7 @@ func vswArg(ctx context.Context, rt *app.Runtime, s *ecsScope, args []string, vp
 	}
 	var opts []prompt.Option
 	for _, v := range list {
-		opts = append(opts, prompt.Option{Label: joinLabel(vswLabel(v, names), v.Status), Value: v.ID})
+		opts = append(opts, prompt.Option{Label: vswLabel(v, names, v.Status), Value: v.ID})
 	}
 	id, err := rt.Choose(app.Choice{Title: "vSwitch (" + s.where() + ")", Options: opts, Arg: "<name|id>", What: "vSwitch in " + s.where()})
 	if err != nil {
@@ -279,11 +288,11 @@ func pickZone(ctx context.Context, rt *app.Runtime, s *ecsScope, existing []vSwi
 	}
 	var opts []prompt.Option
 	for _, z := range zones {
-		label := z
+		has := ""
 		if u := used[z]; len(u) > 0 {
-			label += "  (vSwitch " + strings.Join(u, ", ") + ")"
+			has = "vSwitch " + strings.Join(u, ", ")
 		}
-		opts = append(opts, prompt.Option{Label: label, Value: z})
+		opts = append(opts, prompt.Option{Label: prompt.Cells(z, has), Value: z})
 	}
 	def := ""
 	for _, suffix := range defaultZones {

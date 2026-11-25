@@ -33,7 +33,7 @@ func TestALBListenerCertSetPicks(t *testing.T) {
 		t.Errorf("listeners offered %q", v)
 	}
 	certs := p.Asked[2]
-	if l := prompttest.Labels(certs.Options); strings.Contains(l, "1111") || !strings.Contains(l, "1234567  (current)") || certs.Default != "2222" {
+	if l := prompttest.Labels(certs.Options); strings.Contains(l, "1111") || !strings.Contains(l, "upload_example.com_2027-02-01  1234567  example.com,www.example.com  expires 2027-02-01  (current)") || certs.Default != "2222" {
 		t.Errorf("certificates (default %q):\n%s", certs.Default, l)
 	}
 }
@@ -209,6 +209,9 @@ func TestALBServerGroupUpdatePicks(t *testing.T) {
 	p.Done()
 	if out := h.stdout.String(); !strings.Contains(out, `health check false -\u003e true`) || !strings.Contains(out, "health check path /healthz") {
 		t.Errorf("stdout = %s", out)
+	}
+	if l := prompttest.Labels(p.Asked[1].Options); !strings.Contains(l, "Name  now web\n") || !strings.Contains(l, "Health check  now off") {
+		t.Errorf("settings:\n%s", l)
 	}
 	p = prompttest.New(t, "sgp-1", "name", "sgp-x", "web", "api")
 	h.rt.Picker = p

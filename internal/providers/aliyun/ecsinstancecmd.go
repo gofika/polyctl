@@ -129,7 +129,7 @@ func pickInstanceAmong(ref string, s *ecsScope, found []Instance) (*Instance, er
 	}
 	amb := &app.AmbiguousError{What: fmt.Sprintf("instance %q in %s", ref, s.where()), Candidates: ids,
 		Hint: "Alibaba Cloud lets several instances share a name; pass the instance id"}
-	return pickAmong(s, amb, found, func(in Instance) string { return in.ID }, instanceOptionLabel)
+	return pickAmong(s, amb, found, func(in Instance) string { return in.ID }, func(in Instance) string { return instanceOptionLabel(in) })
 }
 
 // ---------------------------------------------------------------- get

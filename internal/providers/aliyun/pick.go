@@ -16,17 +16,8 @@ import (
 
 // The labels of the interactive picks of the aliyun commands: what a
 // resource is (name, id) and the facts that tell candidates apart (zone,
-// CIDR, status, VPC). Empty facts are left out.
-
-func joinLabel(parts ...string) string {
-	var out []string
-	for _, p := range parts {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
-		}
-	}
-	return strings.Join(out, "  ")
-}
+// CIDR, status, VPC), as the cells of prompt.Cells: every fact keeps its
+// position, and a fact a row does not have is "-".
 
 // nameOr returns name, else id.
 func nameOr(name, id string) string {
@@ -42,51 +33,62 @@ func vpcLabel(v vpcInfo) string {
 	if v.IsDefault {
 		def = "[default]"
 	}
-	return joinLabel(nameOr(v.Name, v.ID), v.ID, v.CIDR, v.Status, def)
+	return prompt.Cells(nameOr(v.Name, v.ID), v.ID, v.CIDR, v.Status, def)
 }
 
 // sgLabel: "sg-common  sg-1  vpc-1  description".
 func sgLabel(g securityGroup) string {
-	return joinLabel(nameOr(g.Name, g.ID), g.ID, g.VPC, g.Description)
+	return prompt.Cells(nameOr(g.Name, g.ID), g.ID, g.VPC, g.Description)
 }
 
 // vswLabel: "cn-shanghai-switch-b  vsw-1  cn-shanghai-b  172.16.0.0/22
-// vpc-name  N free IPs"; vpcNames, when given, names the VPC.
-func vswLabel(v vSwitch, vpcNames map[string]string) string {
-	vpc := v.VPC
-	if n := vpcNames[v.VPC]; n != "" && n != v.VPC {
-		vpc = n + " (" + v.VPC + ")"
+// vpc-name  vpc-1  N free IPs"; vpcNames, when given, names the VPC. more
+// are further cells (the status).
+func vswLabel(v vSwitch, vpcNames map[string]string, more ...string) string {
+	vpcName := vpcNames[v.VPC]
+	if vpcName == v.VPC {
+		vpcName = ""
 	}
 	free := ""
 	if v.AvailableIPs > 0 {
 		free = itoa64(v.AvailableIPs) + " free IPs"
 	}
-	return joinLabel(nameOr(v.Name, v.ID), v.ID, v.Zone, v.CIDR, vpc, free)
+	return prompt.Cells(append([]string{nameOr(v.Name, v.ID), v.ID, v.Zone, v.CIDR, vpcName, v.VPC, free}, more...)...)
 }
 
 // instanceOptionLabel: "site-a  i-1  Running  ecs.u1  cn-shanghai-b
-// 172.16.0.5  203.0.113.9", in the order of the aws and gcp labels.
-func instanceOptionLabel(in Instance) string {
+// 172.16.0.5  203.0.113.9", in the order of the aws and gcp labels. more
+// are further cells (the account).
+func instanceOptionLabel(in Instance, more ...string) string {
 	ip := in.PublicIP
 	if ip == "" {
 		ip = in.EIP
 	}
-	return joinLabel(nameOr(in.Name, in.ID), in.ID, in.Status, in.Type, in.Zone, in.PrivateIP, ip)
+	return prompt.Cells(append([]string{nameOr(in.Name, in.ID), in.ID, in.Status, in.Type, in.Zone, in.PrivateIP, ip}, more...)...)
 }
 
-// lbOptionLabel: "web  alb-1  Active  dns-name".
+// lbOptionLabel: "web  alb-1  Active  vpc-1  dns-name".
 func lbOptionLabel(l albRef) string {
-	return joinLabel(nameOr(l.Name, l.ID), l.ID, l.Status, l.VpcID, l.DNSName)
+	return prompt.Cells(nameOr(l.Name, l.ID), l.ID, l.Status, l.VpcID, l.DNSName)
+}
+
+// eipLabel: "203.0.113.9  eip-1  5 Mbps  BGP  name".
+func eipLabel(e eipAddress) string {
+	bw := ""
+	if e.Bandwidth != "" {
+		bw = e.Bandwidth + " Mbps"
+	}
+	return prompt.Cells(e.IP, e.AllocationID, bw, e.ISP, e.Name)
 }
 
 // serverGroupLabel: "web  sgp-1  HTTP  vpc-1  2 servers".
 func serverGroupLabel(g albServerGroup) string {
-	return joinLabel(nameOr(g.Name, g.ID), g.ID, g.Protocol, g.VpcID, itoa64(int64(g.ServerCount))+" servers")
+	return prompt.Cells(nameOr(g.Name, g.ID), g.ID, g.Protocol, g.VpcID, itoa64(int64(g.ServerCount))+" servers")
 }
 
 // aclLabel: "office  acl-1  Available".
 func aclLabel(x albACL) string {
-	return joinLabel(nameOr(x.Name, x.ID), x.ID, x.Status)
+	return prompt.Cells(nameOr(x.Name, x.ID), x.ID, x.Status)
 }
 
 func itoa64(n int64) string { return strconv.FormatInt(n, 10) }
@@ -130,8 +132,7 @@ func instanceArg(ctx context.Context, rt *app.Runtime, args []string, region, wh
 			return keep == nil || keep(in)
 		},
 		Label: func(r inventory.Resource) string {
-			in := instanceOf(r)
-			return joinLabel(instanceOptionLabel(in), "aliyun/"+r.Profile)
+			return instanceOptionLabel(instanceOf(r), "aliyun/"+r.Profile)
 		}})
 	if err != nil {
 		return nil, err
@@ -252,7 +253,8 @@ func pickSize(ctx context.Context, rt *app.Runtime, s *ecsScope, zones []string,
 		if len(o.types) == 1 {
 			n = "1 x86 type"
 		}
-		opts = append(opts, prompt.Option{Label: joinLabel(k, fmt.Sprintf("%d vCPU / %s GiB", o.cores, strconv.FormatFloat(o.mem, 'f', -1, 64)),
+		// "2H4G  2 vCPU  4 GiB  3 x86 types in stock  cn-shanghai-b, cn-shanghai-c"
+		opts = append(opts, prompt.Option{Label: prompt.Cells(k, fmt.Sprintf("%d vCPU", o.cores), strconv.FormatFloat(o.mem, 'f', -1, 64)+" GiB",
 			n+" in stock", strings.Join(o.zones, ", ")), Value: k})
 	}
 	if _, ok := bySize[def]; !ok {
