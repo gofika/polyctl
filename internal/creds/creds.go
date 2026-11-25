@@ -3,6 +3,7 @@
 package creds
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -10,7 +11,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/zalando/go-keyring"
 
@@ -85,8 +89,76 @@ func (k Keyring) service() string {
 	return k.Service
 }
 
+// The keyring functions, replaced by tests that need a size limit.
+var (
+	keyringGet    = keyring.Get
+	keyringSet    = keyring.Set
+	keyringDelete = keyring.Delete
+)
+
+// partsField is the only field of the entry of a secret too big for one
+// keyring entry (Windows Credential Manager takes at most 2560 bytes, the
+// macOS keychain tool a command line of 4096). Its value "<gen>:<n>" names
+// the n entries that hold the JSON of the secret, in order. No secret of an
+// account or the data key has a field of this name.
+const partsField = "polyctl:parts"
+
+// partSize is the length in bytes of the parts a secret too big for one
+// entry is split into: well below every keyring's limit.
+const partSize = 1024
+
+func partKey(key, gen string, i int) string { return fmt.Sprintf("%s/part/%s/%d", key, gen, i) }
+
+// parts returns the part keys named by the raw entry s, nil when s is a
+// whole secret.
+func parts(key, s string) []string {
+	var m map[string]string
+	if json.Unmarshal([]byte(s), &m) != nil || len(m) != 1 {
+		return nil
+	}
+	v, ok := m[partsField]
+	if !ok {
+		return nil
+	}
+	gen, n, ok := strings.Cut(v, ":")
+	count, err := strconv.Atoi(n)
+	if !ok || err != nil || count < 1 || count > 1000 {
+		return nil
+	}
+	out := make([]string, count)
+	for i := range out {
+		out[i] = partKey(key, gen, i)
+	}
+	return out
+}
+
+// raw returns the JSON of the secret under key, joined from its parts when
+// it was split.
+func (k Keyring) raw(key string) (string, error) {
+	s, err := keyringGet(k.service(), key)
+	if err != nil {
+		return "", err
+	}
+	ps := parts(key, s)
+	if ps == nil {
+		return s, nil
+	}
+	var b strings.Builder
+	for _, p := range ps {
+		v, err := keyringGet(k.service(), p)
+		if err != nil {
+			if errors.Is(err, keyring.ErrNotFound) {
+				return "", fmt.Errorf("part %q of the entry %q is missing", p, key)
+			}
+			return "", err
+		}
+		b.WriteString(v)
+	}
+	return b.String(), nil
+}
+
 func (k Keyring) Get(key string) (map[string]string, error) {
-	s, err := keyring.Get(k.service(), key)
+	s, err := k.raw(key)
 	if err != nil {
 		if errors.Is(err, keyring.ErrNotFound) {
 			return nil, ErrNotFound
@@ -96,21 +168,80 @@ func (k Keyring) Get(key string) (map[string]string, error) {
 	return decode(s)
 }
 
+// Set stores the secret as one entry, or, when the keyring refuses it as too
+// big, as parts written before the entry that names them: an interrupted
+// write leaves the previous secret readable. The parts of the previous
+// secret are removed afterwards.
 func (k Keyring) Set(key string, secret map[string]string) error {
 	b, err := json.Marshal(secret)
 	if err != nil {
 		return err
 	}
-	if err := keyring.Set(k.service(), key, string(b)); err != nil {
+	var old []string
+	if s, err := keyringGet(k.service(), key); err == nil {
+		old = parts(key, s)
+	}
+	err = keyringSet(k.service(), key, string(b))
+	if errors.Is(err, keyring.ErrSetDataTooBig) {
+		err = k.setParts(key, string(b))
+	}
+	if err != nil {
 		return fmt.Errorf("keyring: %w", err)
+	}
+	for _, p := range old {
+		_ = keyringDelete(k.service(), p)
+	}
+	return nil
+}
+
+func (k Keyring) setParts(key, s string) error {
+	g := make([]byte, 4)
+	if _, err := rand.Read(g); err != nil {
+		return err
+	}
+	gen := hex.EncodeToString(g)
+	var chunks []string
+	for len(s) > 0 {
+		n := min(partSize, len(s))
+		// Split on a character boundary: every part is valid UTF-8.
+		for n < len(s) && n > 0 && !utf8.RuneStart(s[n]) {
+			n--
+		}
+		chunks = append(chunks, s[:n])
+		s = s[n:]
+	}
+	written := 0
+	undo := func() {
+		for i := range written {
+			_ = keyringDelete(k.service(), partKey(key, gen, i))
+		}
+	}
+	for i, c := range chunks {
+		if err := keyringSet(k.service(), partKey(key, gen, i), c); err != nil {
+			undo()
+			return err
+		}
+		written++
+	}
+	head, _ := json.Marshal(map[string]string{partsField: fmt.Sprintf("%s:%d", gen, len(chunks))})
+	if err := keyringSet(k.service(), key, string(head)); err != nil {
+		undo()
+		return err
 	}
 	return nil
 }
 
 func (k Keyring) Delete(key string) error {
-	err := keyring.Delete(k.service(), key)
+	var ps []string
+	if s, err := keyringGet(k.service(), key); err == nil {
+		ps = parts(key, s)
+	}
+	err := keyringDelete(k.service(), key)
 	if err != nil && !errors.Is(err, keyring.ErrNotFound) {
 		return fmt.Errorf("keyring: %w", err)
+	}
+	for _, p := range ps {
+		_ = keyringDelete(k.service(), p)
 	}
 	return nil
 }
@@ -154,7 +285,7 @@ func (k Keyring) Adopt(keys []string) (copied []string, err error) {
 
 // Probe checks that the keyring is usable on this machine.
 func (k Keyring) Probe() error {
-	_, err := keyring.Get(k.service(), "__polyctl_probe__")
+	_, err := keyringGet(k.service(), "__polyctl_probe__")
 	if err == nil || errors.Is(err, keyring.ErrNotFound) {
 		return nil
 	}

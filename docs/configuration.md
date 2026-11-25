@@ -244,6 +244,8 @@ Releases before this layout stored the entries of every directory under `polyctl
 - Windows: Credential Manager
 - Linux / BSD: Secret Service (GNOME Keyring, KWallet)
 
+A secret too big for one keyring entry (Windows Credential Manager takes at most 2560 bytes, which an AWS SSO login can exceed; the macOS keychain tool about 4 KB) is stored as several entries: `<profile>/<platform>` names the parts, stored as `<profile>/<platform>/part/<id>/<n>`. They are read, replaced and removed together. Releases before this one failed to store such a secret, so no existing entry changes.
+
 Without a reachable keyring (headless servers, containers, no D-Bus session) polyctl falls back to `<config dir>/credentials.json` (mode `0600`) with a one-line warning. Reads check both backends, so accounts keep working when a keyring appears or disappears. `auth logout` removes the secret from every backend.
 
 Force a backend with `credential_store: file|keyring` or `POLYCTL_CREDENTIAL_STORE`.

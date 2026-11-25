@@ -571,3 +571,56 @@ func TestMultiLacks(t *testing.T) {
 		}
 	}
 }
+
+// A secret too big for one keyring entry (Windows Credential Manager takes
+// 2560 bytes, less than an AWS SSO login) is stored in parts, read back
+// whole, replaced and removed with them; small secrets keep one entry.
+func TestKeyringSplitsBigSecrets(t *testing.T) {
+	keyring.MockInit()
+	present, restore := creds.LimitKeyring(2560)
+	defer restore()
+	k := creds.Keyring{}
+	big := map[string]string{"clientSecret": strings.Repeat("s", 3000), "accessToken": strings.Repeat("ä", 1500), "refreshToken": "r"}
+	if err := k.Set("p/aws", big); err != nil {
+		t.Fatalf("Set of a big secret: %v", err)
+	}
+	if got, err := k.Get("p/aws"); err != nil || !reflect.DeepEqual(got, big) {
+		t.Fatalf("Get = %d fields, %v", len(got), err)
+	}
+	// An earlier release reads the head entry only: it is small.
+	raw, err := keyring.Get(creds.Service, "p/aws")
+	if err != nil || len(raw) > 2560 {
+		t.Fatalf("head entry = %d bytes, %v", len(raw), err)
+	}
+	bigger := map[string]string{"clientSecret": strings.Repeat("t", 5000)}
+	if err := k.Set("p/aws", bigger); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := k.Get("p/aws"); err != nil || !reflect.DeepEqual(got, bigger) {
+		t.Fatalf("Get after replace = %v", err)
+	}
+	// The parts of the replaced secret are removed: the head and the five
+	// parts of its 5019 bytes remain.
+	if left := present(creds.Service); len(left) != 1+5 {
+		t.Errorf("entries after replace = %v", left)
+	}
+	small := map[string]string{"token": "x"}
+	if err := k.Set("p/aws", small); err != nil {
+		t.Fatal(err)
+	}
+	if raw, _ := keyring.Get(creds.Service, "p/aws"); raw != `{"token":"x"}` {
+		t.Errorf("small secret stored as %q", raw)
+	}
+	if err := k.Set("p/aws", big); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.Delete("p/aws"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := k.Get("p/aws"); !errors.Is(err, creds.ErrNotFound) {
+		t.Errorf("Get after Delete = %v", err)
+	}
+	if left := present(creds.Service); len(left) != 0 {
+		t.Errorf("entries left after Delete: %v", left)
+	}
+}
