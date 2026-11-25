@@ -406,6 +406,34 @@ func TestAccountEnableAsksNothingForTheDefaultName(t *testing.T) {
 	}
 }
 
+// A token without Account:Read that sees zones is offered the accounts of
+// those zones by enable and disable on a terminal, and an id nobody can
+// check counts as enabled already; the help of both commands says so.
+func TestAccountListOfCredentialsThatCannotListThem(t *testing.T) {
+	e := newR2Env(t)
+	e.loginAll()
+	e.f.accountsStatus = http.StatusForbidden
+	p := prompttest.New(t, []string{"acc1", "acc3"})
+	code, _, stderr := e.runPick(p, "cloudflare", "account", "disable", "--profile", "all")
+	p.Done()
+	if code != cli.ExitOK || e.stored("all") != "acc1|Acme|acc2" {
+		t.Fatalf("pick: exit %d, %s, %s", code, e.stored("all"), stderr)
+	}
+	if a := p.Asked[0]; a.Kind != "multi" || prompttest.Values(a.Options) != "acc1 acc2 acc3" || !strings.Contains(prompttest.Labels(a.Options), "Beta  acc2") {
+		t.Errorf("offered %+v", a)
+	}
+	if code, _, stderr := e.run("cloudflare", "account", "enable", "acc9", "--profile", "all"); code != cli.ExitOK || !strings.Contains(stderr, "acc9: already enabled for cloudflare/all") {
+		t.Errorf("enable of an id that cannot be checked: exit %d, %s", code, stderr)
+	}
+	for _, sub := range []string{"enable", "disable"} {
+		_, stdout, stderr := e.run("cloudflare", "account", sub, "--help")
+		help := strings.Join(strings.Fields(stdout+stderr), " ")
+		if strings.Contains(help, "and credentials that can list their accounts") || !strings.Contains(help, "are offered the accounts of their zones") {
+			t.Errorf("help of account %s: %s", sub, help)
+		}
+	}
+}
+
 // Credentials that see no account at all (no Account:Read and no zone)
 // take an account id as it is, with a note; a name cannot be looked up
 // (exit code 2), and nothing can be offered on a terminal.

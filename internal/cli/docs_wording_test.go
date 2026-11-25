@@ -28,9 +28,17 @@ func TestDocsDescribeEnabledProjectsAndAccounts(t *testing.T) {
 		gone, has []string
 	}{
 		{
-			doc:  "docs/platforms/cloudflare.md",
-			gone: []string{"the selection of the login", "an account that was added"},
-			has:  []string{"or the disabled accounts of the login changed", "an account that was enabled again is seen"},
+			doc: "docs/platforms/cloudflare.md",
+			gone: []string{
+				"the selection of the login", "an account that was added",
+				"the list of `enable` / `disable` are not available to it",
+				"credentials that can list their accounts (exit code 2 otherwise",
+			},
+			has: []string{
+				"or the disabled accounts of the login changed", "an account that was enabled again is seen",
+				"Credentials that cannot list their accounts are offered the accounts read off their zones",
+				"it counts as enabled already (exit code 0)",
+			},
 		},
 		{
 			doc:  "docs/platforms/gcp.md",
