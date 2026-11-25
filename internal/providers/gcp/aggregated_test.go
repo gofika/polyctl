@@ -67,3 +67,19 @@ func TestUniqueScopes(t *testing.T) {
 		t.Errorf("uniqueScopes = %v, want %v", got, want)
 	}
 }
+
+// Global resources have no parent region in the inventory, so a region
+// failure could not keep their rows: an unreachable global scope fails the
+// sync of the type instead (nothing of it is replaced).
+func TestSyncAddressesUnreachableGlobalFailsWhole(t *testing.T) {
+	for _, warning := range []bool{false, true} {
+		c, f := computeClient(t)
+		f.addAddress("us-central1", &compute.Address{Name: "ip-1", Address: "34.1.1.1", AddressType: "EXTERNAL"})
+		f.unreachable = "global"
+		f.unreachableWarning = warning
+		_, err := c.syncAddresses(context.Background())
+		if err == nil || platform.AsRegionSyncError(err) != nil || !strings.Contains(err.Error(), "global") {
+			t.Errorf("warning=%v: err = %v, want a whole-sync failure naming global", warning, err)
+		}
+	}
+}

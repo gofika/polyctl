@@ -118,12 +118,20 @@ func (i Instance) ipSet() *platform.IPSet {
 }
 
 // unreachableErr turns the scopes an aggregated list could not reach into
-// region failures of a sync (nil when there are none).
+// region failures of a sync (nil when there are none). The inventory keeps
+// the rows of a failed region by their parent, which is empty for a global
+// resource, so an unreachable global scope fails the whole list instead:
+// no row of the type is replaced.
 func unreachableErr(scopes []string) error {
 	if len(scopes) == 0 {
 		return nil
 	}
 	sort.Strings(scopes)
+	for _, s := range scopes {
+		if scopeKey(s) == "global" {
+			return fmt.Errorf("the global scope could not be reached (unreachable scopes: %s)", strings.Join(scopes, ", "))
+		}
+	}
 	e := &platform.RegionSyncError{}
 	for _, s := range scopes {
 		e.Failures = append(e.Failures, platform.RegionError{Region: lastSegment(s), Err: fmt.Errorf("unreachable")})
