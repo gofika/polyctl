@@ -72,18 +72,18 @@ of that network, matched by its exact name.`,
 				project string
 				fw      *compute.Firewall
 			}
-			var list []projectRule
-			err = c.forProjects(cmd.Context(), func(pc *client) error {
-				all, err := pc.listFirewalls(cmd.Context())
+			list, err := sweepProjects(cmd.Context(), c, func(ctx context.Context, pc *client) ([]projectRule, error) {
+				all, err := pc.listFirewalls(ctx)
 				if err != nil {
-					return err
+					return nil, err
 				}
+				var own []projectRule
 				for _, fw := range all {
 					if network == "" || lastSegment(fw.Network) == network {
-						list = append(list, projectRule{pc.project, fw})
+						own = append(own, projectRule{pc.project, fw})
 					}
 				}
-				return nil
+				return own, nil
 			})
 			if err != nil {
 				return err

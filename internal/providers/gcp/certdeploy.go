@@ -12,7 +12,9 @@ import (
 	"maps"
 	"net/url"
 	"slices"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/api/compute/v1"
@@ -150,17 +152,77 @@ func (d lbDeployer) Discover(ctx context.Context, acct *platform.DeployAccount, 
 	if err != nil {
 		return nil, nil, err
 	}
-	var targets []platform.DeployTarget
-	var skipped []platform.Change
-	err = c.forProjects(ctx, func(pc *client) error {
-		t, s, err := d.discoverProject(ctx, pc, acct, o)
-		targets, skipped = append(targets, t...), append(skipped, s...)
-		return err
+	type found struct {
+		targets []platform.DeployTarget
+		skipped []platform.Change
+	}
+	warn := newProjectWarnings(o)
+	perProject, err := sweepProjects(ctx, c, func(ctx context.Context, pc *client) ([]found, error) {
+		t, s, err := d.discoverProject(ctx, pc, acct, warn.options(pc.project))
+		if err != nil {
+			return nil, err
+		}
+		return []found{{t, s}}, nil
 	})
+	warn.flush()
 	if err != nil {
 		return nil, nil, err
 	}
+	var targets []platform.DeployTarget
+	var skipped []platform.Change
+	for _, f := range perProject {
+		targets, skipped = append(targets, f.targets...), append(skipped, f.skipped...)
+	}
 	return targets, skipped, nil
+}
+
+// projectWarnings holds back what the projects of a sweep print, which
+// are read at the same time, until the sweep is over: flush prints it in
+// the order of the projects. What a project prints after that (a step
+// that runs later) is printed at once.
+type projectWarnings struct {
+	o       platform.DeployOptions
+	mu      sync.Mutex
+	flushed bool
+	held    map[string][]string
+}
+
+func newProjectWarnings(o platform.DeployOptions) *projectWarnings {
+	return &projectWarnings{o: o, held: map[string][]string{}}
+}
+
+// options are the options of the sweep for one project.
+func (w *projectWarnings) options(project string) platform.DeployOptions {
+	o := w.o
+	if w.o.Infof == nil {
+		return o
+	}
+	o.Infof = func(format string, args ...any) {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		if w.flushed {
+			w.o.Infof(format, args...)
+			return
+		}
+		w.held[project] = append(w.held[project], fmt.Sprintf(format, args...))
+	}
+	return o
+}
+
+func (w *projectWarnings) flush() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	projects := make([]string, 0, len(w.held))
+	for p := range w.held {
+		projects = append(projects, p)
+	}
+	sort.Strings(projects)
+	for _, p := range projects {
+		for _, line := range w.held[p] {
+			w.o.Infof("%s", line)
+		}
+	}
+	w.held, w.flushed = nil, true
 }
 
 // deployName is the name of a deploy target or resource of a project:
@@ -484,12 +546,11 @@ func (d lbDeployer) Prune(ctx context.Context, acct *platform.DeployAccount, o p
 	if err != nil {
 		return nil, err
 	}
-	var steps []platform.Step
-	err = c.forProjects(ctx, func(pc *client) error {
-		s, err := d.pruneProject(ctx, pc, acct, o)
-		steps = append(steps, s...)
-		return err
+	warn := newProjectWarnings(o)
+	steps, err := sweepProjects(ctx, c, func(ctx context.Context, pc *client) ([]platform.Step, error) {
+		return d.pruneProject(ctx, pc, acct, warn.options(pc.project))
 	})
+	warn.flush()
 	if err != nil {
 		return nil, err
 	}

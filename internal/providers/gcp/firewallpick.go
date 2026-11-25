@@ -89,16 +89,33 @@ func firewallArg(ctx context.Context, rt *app.Runtime, c *client, profile string
 	if !rt.Interactive() {
 		return nil, "", app.UsageErrf("<name> is required")
 	}
-	var opts []prompt.Option
-	var clients []*client
 	projects, err := c.sweep(ctx)
 	if err != nil {
 		return nil, "", err
 	}
 	several := len(projects) > 1
-	err = c.forProjects(ctx, func(pc *client) error {
+	type projectOptions struct {
+		pc   *client
+		opts []prompt.Option
+	}
+	perProject, err := sweepProjects(ctx, c, func(ctx context.Context, pc *client) ([]projectOptions, error) {
 		po, err := firewallOptions(ctx, pc, several, nil)
-		for _, o := range po {
+		if err != nil {
+			return nil, err
+		}
+		return []projectOptions{{pc, po}}, nil
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	if len(perProject) == 0 {
+		// Every project was skipped: there is nothing to offer.
+		perProject = []projectOptions{{pc: c.inProject(projects[0])}}
+	}
+	var opts []prompt.Option
+	var clients []*client
+	for _, p := range perProject {
+		for _, o := range p.opts {
 			// The value names the project too: two projects may hold a
 			// rule of one name.
 			if several {
@@ -106,11 +123,7 @@ func firewallArg(ctx context.Context, rt *app.Runtime, c *client, profile string
 			}
 			opts = append(opts, o)
 		}
-		clients = append(clients, pc)
-		return err
-	})
-	if err != nil {
-		return nil, "", err
+		clients = append(clients, p.pc)
 	}
 	v, err := rt.Choose(app.Choice{Title: "Firewall rule", Options: opts, Arg: "<name>", What: "firewall rule in gcp/" + profile})
 	if err != nil {

@@ -255,28 +255,7 @@ func (c *client) eachProject(ctx context.Context, api string, fn func(ctx contex
 	if len(projects) == 1 {
 		return one(ctx, c.inProject(projects[0]))
 	}
-	type result struct {
-		res []platform.Resource
-		err error
-	}
-	results := make([]result, len(projects))
-	sem := make(chan struct{}, projectConcurrency)
-	var wg sync.WaitGroup
-	for i, p := range projects {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			if err := ctx.Err(); err != nil {
-				results[i] = result{err: err}
-				return
-			}
-			res, err := one(ctx, c.inProject(p))
-			results[i] = result{res: res, err: err}
-		}()
-	}
-	wg.Wait()
+	results := runProjects(ctx, c, projects, one)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -284,7 +263,7 @@ func (c *client) eachProject(ctx context.Context, api string, fn func(ctx contex
 	var failures []platform.RegionError
 	failed := 0
 	var first error
-	for i, r := range results {
+	for _, r := range results {
 		switch rse := platform.AsRegionSyncError(r.err); {
 		case r.err == nil:
 			out = append(out, r.res...)
@@ -296,8 +275,8 @@ func (c *client) eachProject(ctx context.Context, api string, fn func(ctx contex
 			if first == nil {
 				first = r.err
 			}
-			failures = append(failures, platform.RegionError{Region: projects[i], Tree: true,
-				Err: fmt.Errorf("%w (if the project is not to be used any more: polyctl gcp project remove %s)", r.err, projects[i])})
+			failures = append(failures, platform.RegionError{Region: r.project, Tree: true,
+				Err: fmt.Errorf("%w (if the project is not to be used any more: polyctl gcp project remove %s)", r.err, r.project)})
 		}
 	}
 	if len(failures) == 0 {
@@ -311,32 +290,75 @@ func (c *client) eachProject(ctx context.Context, api string, fn func(ctx contex
 	return out, e
 }
 
-// forProjects runs fn with the client of every project the lists of the
-// client cover (sweep). A project whose API is not enabled is
-// skipped (noteOff), unless it is the project of --project; any other
-// failure ends the walk, named after its project when there are several.
-func (c *client) forProjects(ctx context.Context, fn func(pc *client) error) error {
+// projectResult is what one project answered in a walk over projects.
+type projectResult[T any] struct {
+	project string
+	res     []T
+	err     error
+}
+
+// runProjects runs fn with the client of each project, projectConcurrency
+// of them at a time, and returns their answers in the order of projects.
+// One project is asked on the caller's goroutine.
+func runProjects[T any](ctx context.Context, c *client, projects []string, fn func(ctx context.Context, pc *client) ([]T, error)) []projectResult[T] {
+	results := make([]projectResult[T], len(projects))
+	if len(projects) == 1 {
+		res, err := fn(ctx, c.inProject(projects[0]))
+		results[0] = projectResult[T]{project: projects[0], res: res, err: err}
+		return results
+	}
+	sem := make(chan struct{}, projectConcurrency)
+	var wg sync.WaitGroup
+	for i, p := range projects {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			if err := ctx.Err(); err != nil {
+				results[i] = projectResult[T]{project: p, err: err}
+				return
+			}
+			res, err := fn(ctx, c.inProject(p))
+			results[i] = projectResult[T]{project: p, res: res, err: err}
+		}()
+	}
+	wg.Wait()
+	return results
+}
+
+// sweepProjects is a list read live: it runs fn with the client of every
+// project the lists of c cover (sweep), several at a time, and returns
+// their rows in the order of the projects. fn runs on several goroutines:
+// it returns what it found and leaves printing to its caller.
+//
+// A project whose API is not enabled is skipped (noteOff), unless it is
+// the project of --project. Any other failure fails the sweep with the
+// error of the first such project, named after it when there are several.
+func sweepProjects[T any](ctx context.Context, c *client, fn func(ctx context.Context, pc *client) ([]T, error)) ([]T, error) {
 	projects, err := c.sweep(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer c.flushOff()
-	for _, p := range projects {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if err := fn(c.inProject(p)); err != nil {
-			if !c.pinned && isAPIDisabled(err) {
-				c.noteOff(p, err)
-				continue
-			}
-			if len(projects) == 1 {
-				return err
-			}
-			return fmt.Errorf("project %s: %w", p, err)
+	results := runProjects(ctx, c, projects, fn)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var out []T
+	for _, r := range results {
+		switch {
+		case r.err == nil:
+			out = append(out, r.res...)
+		case !c.pinned && isAPIDisabled(r.err):
+			c.noteOff(r.project, r.err)
+		case len(projects) == 1:
+			return nil, r.err
+		default:
+			return nil, fmt.Errorf("project %s: %w", r.project, r.err)
 		}
 	}
-	return nil
+	return out, nil
 }
 
 // maxProjectsNamed is how many projects a message names before it counts

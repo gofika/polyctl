@@ -326,30 +326,41 @@ narrows it). No match is exit code 0 with an empty list and a note.`,
 			if err != nil {
 				return err
 			}
-			values := []any{}
-			var cells [][]string
 			// Every selected project (--project: that one alone); the
 			// project is the second column and a field of each row.
-			err = c.forProjects(ctx, func(c *client) error {
+			type projectRows struct {
+				project     string
+				unreachable []string
+				values      []any
+				cells       [][]string
+			}
+			perProject, err := sweepProjects(ctx, c, func(ctx context.Context, c *client) ([]projectRows, error) {
 				list, unreachable, err := c.listComponents(ctx, spec.kind)
 				if err != nil {
-					return fmt.Errorf("%w (gcp/%s)", err, profile)
+					return nil, fmt.Errorf("%w (gcp/%s)", err, profile)
 				}
-				if len(unreachable) > 0 {
-					rt.Infof("warning: project %s: unreachable scopes: %s", c.project, strings.Join(unreachable, ", "))
-				}
+				own := projectRows{project: c.project, unreachable: unreachable}
 				for _, x := range list {
 					if !q.fits(x) {
 						continue
 					}
 					v, row := spec.row(x)
-					values = append(values, withProject(v, c.project))
-					cells = append(cells, append([]string{row[0], c.project}, row[1:]...))
+					own.values = append(own.values, withProject(v, c.project))
+					own.cells = append(own.cells, append([]string{row[0], c.project}, row[1:]...))
 				}
-				return nil
+				return []projectRows{own}, nil
 			})
 			if err != nil {
 				return err
+			}
+			values := []any{}
+			var cells [][]string
+			for _, p := range perProject {
+				if len(p.unreachable) > 0 {
+					rt.Infof("warning: project %s: unreachable scopes: %s", p.project, strings.Join(p.unreachable, ", "))
+				}
+				values = append(values, p.values...)
+				cells = append(cells, p.cells...)
 			}
 			if len(values) == 0 {
 				rt.Infof("note: no %s in %s (gcp/%s)", spec.plural, c.projectsLabel(ctx), profile)

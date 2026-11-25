@@ -321,26 +321,35 @@ No load balancer is exit code 0 with an empty list and a note.`,
 			if err != nil {
 				return err
 			}
-			rows := []lbRow{}
 			// Every selected project (--project: that one alone).
-			err = c.forProjects(ctx, func(c *client) error {
+			type projectRows struct {
+				project     string
+				unreachable []string
+				rows        []lbRow
+			}
+			perProject, err := sweepProjects(ctx, c, func(ctx context.Context, c *client) ([]projectRows, error) {
 				x, err := c.loadLBIndex(ctx)
 				if err != nil {
-					return fmt.Errorf("%w (gcp/%s)", err, profile)
+					return nil, fmt.Errorf("%w (gcp/%s)", err, profile)
 				}
-				if len(x.unreachable) > 0 {
-					rt.Infof("warning: project %s: unreachable scopes: %s", c.project, strings.Join(x.unreachable, ", "))
-				}
+				own := projectRows{project: c.project, unreachable: x.unreachable}
 				for _, e := range x.entries() {
 					if !all && e.region != region {
 						continue
 					}
-					rows = append(rows, x.row(e, profile, c.project, c.healthOf(ctx, x, e.backendKeys)))
+					own.rows = append(own.rows, x.row(e, profile, c.project, c.healthOf(ctx, x, e.backendKeys)))
 				}
-				return nil
+				return []projectRows{own}, nil
 			})
 			if err != nil {
 				return err
+			}
+			rows := []lbRow{}
+			for _, p := range perProject {
+				if len(p.unreachable) > 0 {
+					rt.Infof("warning: project %s: unreachable scopes: %s", p.project, strings.Join(p.unreachable, ", "))
+				}
+				rows = append(rows, p.rows...)
 			}
 			sort.SliceStable(rows, func(i, j int) bool {
 				if rows[i].Project != rows[j].Project {

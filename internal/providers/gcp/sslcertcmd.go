@@ -179,26 +179,26 @@ left. No certificate is exit code 0 with an empty list and a note.`,
 				return err
 			}
 			now := instanceClock.Now()
-			rows := []sslCertView{}
-			orphans := 0
 			// Every selected project (--project: that one alone).
-			err = c.forProjects(ctx, func(c *client) error {
+			type projectRows struct {
+				project     string
+				unreachable []string
+				rows        []sslCertView
+			}
+			perProject, err := sweepProjects(ctx, c, func(ctx context.Context, c *client) ([]projectRows, error) {
+				own := projectRows{project: c.project}
 				var certs []*compute.SslCertificate
 				var err error
 				if all {
-					var unreachable []string
-					if certs, unreachable, err = c.listAllCerts(ctx); err != nil {
-						return err
-					}
-					if len(unreachable) > 0 {
-						rt.Infof("warning: project %s: unreachable scopes: %s", c.project, strings.Join(unreachable, ", "))
+					if certs, own.unreachable, err = c.listAllCerts(ctx); err != nil {
+						return nil, err
 					}
 				} else if certs, err = (certScope{c: c, region: region}).listCerts(ctx); err != nil {
-					return fmt.Errorf("%w (gcp/%s)", err, profile)
+					return nil, fmt.Errorf("%w (gcp/%s)", err, profile)
 				}
 				users, err := c.proxyUsers(ctx)
 				if err != nil {
-					return err
+					return nil, err
 				}
 				for _, sc := range certs {
 					inv := sslCertificateFrom(sc)
@@ -218,15 +218,25 @@ left. No certificate is exit code 0 with an empty list and a note.`,
 					if filter && (v.DaysRemaining == nil || *v.DaysRemaining > expiring) {
 						continue
 					}
-					if v.Type == certSelfManaged && len(v.UsedBy) == 0 {
-						orphans++
-					}
-					rows = append(rows, v)
+					own.rows = append(own.rows, v)
 				}
-				return nil
+				return []projectRows{own}, nil
 			})
 			if err != nil {
 				return err
+			}
+			rows := []sslCertView{}
+			orphans := 0
+			for _, p := range perProject {
+				if len(p.unreachable) > 0 {
+					rt.Infof("warning: project %s: unreachable scopes: %s", p.project, strings.Join(p.unreachable, ", "))
+				}
+				for _, v := range p.rows {
+					if v.Type == certSelfManaged && len(v.UsedBy) == 0 {
+						orphans++
+					}
+				}
+				rows = append(rows, p.rows...)
 			}
 			where := c.projectsLabel(ctx)
 			if !all {

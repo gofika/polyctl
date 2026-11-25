@@ -281,25 +281,11 @@ func isPublicZone(z platform.Zone) bool {
 // fails the list, except one whose Cloud DNS API is not enabled, which
 // holds no zones (the project of --project keeps that error).
 func (c *client) ListZones(ctx context.Context) ([]platform.Zone, error) {
-	projects, err := c.sweep(ctx)
+	out, err := sweepProjects(ctx, c, func(ctx context.Context, pc *client) ([]platform.Zone, error) {
+		return pc.projectZones(ctx)
+	})
 	if err != nil {
 		return nil, err
-	}
-	defer c.flushOff()
-	var out []platform.Zone
-	for _, p := range projects {
-		zones, err := c.inProject(p).projectZones(ctx)
-		if err != nil {
-			if !c.pinned && isAPIDisabled(err) {
-				c.noteOff(p, err)
-				continue
-			}
-			if len(projects) > 1 {
-				return nil, fmt.Errorf("project %s: %w", p, err)
-			}
-			return nil, err
-		}
-		out = append(out, zones...)
 	}
 	sortZones(out)
 	return out, nil

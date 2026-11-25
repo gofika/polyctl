@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 
@@ -211,29 +212,32 @@ func resolveZone(ctx context.Context, rt *app.Runtime, profile, arg string) (*zo
 		}
 		return zoneRefOf(*z), nil
 	}
-	var found []platform.Zone
-	var first error
 	projects, err := c.sweep(ctx)
 	if err != nil {
 		return nil, err
 	}
-	for _, p := range projects {
-		z, err := c.GetZone(ctx, zoneID(p, arg))
+	// Every project is asked for a zone of that name; one without Cloud
+	// DNS holds none.
+	var first error
+	var mu sync.Mutex
+	found, err := sweepProjects(ctx, c, func(ctx context.Context, pc *client) ([]platform.Zone, error) {
+		z, err := pc.GetZone(ctx, zoneID(pc.project, arg))
 		switch {
 		case err == nil:
-			found = append(found, *z)
-		case !c.pinned && isAPIDisabled(err):
-			// A project without Cloud DNS holds no zone.
-			c.noteOff(p, err)
+			return []platform.Zone{*z}, nil
 		case errors.Is(err, platform.ErrNotFound):
+			mu.Lock()
 			if first == nil {
 				first = err
 			}
-		default:
-			return nil, err
+			mu.Unlock()
+			return nil, nil
 		}
+		return nil, err
+	})
+	if err != nil {
+		return nil, err
 	}
-	c.flushOff()
 	if len(found) == 0 {
 		if len(projects) == 1 && first != nil {
 			return nil, first

@@ -310,21 +310,24 @@ func networkListCmd(rt *app.Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			rows := []networkView{}
-			err = c.forProjects(cmd.Context(), func(pc *client) error {
-				nets, err := pc.listNetworks(cmd.Context())
+			rows, err := sweepProjects(cmd.Context(), c, func(ctx context.Context, pc *client) ([]networkView, error) {
+				nets, err := pc.listNetworks(ctx)
 				if err != nil {
-					return err
+					return nil, err
 				}
+				own := make([]networkView, 0, len(nets))
 				for _, n := range nets {
 					v := networkFromAPI(n)
 					v.Project = pc.project
-					rows = append(rows, v)
+					own = append(own, v)
 				}
-				return nil
+				return own, nil
 			})
 			if err != nil {
 				return err
+			}
+			if rows == nil {
+				rows = []networkView{}
 			}
 			sort.Slice(rows, func(i, j int) bool {
 				if rows[i].Project != rows[j].Project {
@@ -442,11 +445,10 @@ REGIONAL_MANAGED_PROXY, GLOBAL_MANAGED_PROXY or INTERNAL_HTTPS_LOAD_BALANCER).`,
 			if err != nil {
 				return err
 			}
-			rows := []subnetView{}
-			err = c.forProjects(ctx, func(pc *client) error {
+			rows, err := sweepProjects(ctx, c, func(ctx context.Context, pc *client) ([]subnetView, error) {
 				subnets, err := pc.listSubnets(ctx, region, lastSegment(network))
 				if err != nil {
-					return err
+					return nil, err
 				}
 				var own []subnetView
 				for _, s := range subnets {
@@ -458,11 +460,13 @@ REGIONAL_MANAGED_PROXY, GLOBAL_MANAGED_PROXY or INTERNAL_HTTPS_LOAD_BALANCER).`,
 					own = append(own, v)
 				}
 				sortSubnets(own)
-				rows = append(rows, own...)
-				return nil
+				return own, nil
 			})
 			if err != nil {
 				return err
+			}
+			if rows == nil {
+				rows = []subnetView{}
 			}
 			if len(rows) == 0 {
 				rt.Infof("note: no matching subnetworks in %s (gcp/%s)", c.projectsLabel(ctx), profile)

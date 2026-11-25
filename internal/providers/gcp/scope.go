@@ -257,7 +257,8 @@ func ambiguous(what, ref string, cands []cand, locFlag, alt string) *app.Ambiguo
 // reports a missing resource as it always did. With several, every one is
 // asked: one holder is used, several are ambiguous (a pick in the
 // interactive flow, exit code 5 otherwise, naming --project), none is not
-// found, naming the projects searched.
+// found, naming the projects searched. exists runs for several projects at
+// the same time.
 func locateProject(ctx context.Context, rt *app.Runtime, c *client, profile, what, name string, exists func(ctx context.Context, pc *client) (bool, error)) (*client, error) {
 	projects, err := c.sweep(ctx)
 	if err != nil {
@@ -266,22 +267,15 @@ func locateProject(ctx context.Context, rt *app.Runtime, c *client, profile, wha
 	if len(projects) == 1 {
 		return c.inProject(projects[0]), nil
 	}
-	var found []*client
-	for _, p := range projects {
-		pc := c.inProject(p)
-		ok, err := exists(ctx, pc)
-		if err != nil {
-			if isAPIDisabled(err) {
-				c.noteOff(p, err)
-				continue
-			}
-			return nil, fmt.Errorf("project %s: %w", p, err)
+	found, err := sweepProjects(ctx, c, func(ctx context.Context, pc *client) ([]*client, error) {
+		if ok, err := exists(ctx, pc); err != nil || !ok {
+			return nil, err
 		}
-		if ok {
-			found = append(found, pc)
-		}
+		return []*client{pc}, nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	c.flushOff()
 	switch len(found) {
 	case 0:
 		return nil, fmt.Errorf("%w: %s %q in the selected projects of gcp/%s (%s)", platform.ErrNotFound, what, name, profile, projectNames(projects))
