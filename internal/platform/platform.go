@@ -225,6 +225,43 @@ func (in LoginInput) Select(io *prompt.IO, title string, opts []prompt.Option, d
 	return "", fmt.Errorf("%w: %q is not one of the choices", ErrInvalidInput, chosen)
 }
 
+// MultiSelect asks for any number of opts in the interactive flow and
+// returns their values in option order: with the Picker when there is one
+// (the options of preset ticked at the start), else as one line of
+// comma-separated labels on io, where preset is the default.
+func (in LoginInput) MultiSelect(io *prompt.IO, title string, opts []prompt.Option, preset []string) ([]string, error) {
+	if in.Picker != nil {
+		return prompt.MultiSelectWith(in.Picker, title, opts, preset)
+	}
+	line, err := io.Line(title+" (comma-separated)", strings.Join(preset, ","))
+	if err != nil {
+		return nil, err
+	}
+	chosen := map[string]bool{}
+	for _, f := range strings.Split(line, ",") {
+		if f = strings.TrimSpace(f); f == "" {
+			continue
+		}
+		found := false
+		for _, o := range opts {
+			if o.Value == f || o.Label == f {
+				chosen[o.Value], found = true, true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("%w: %q is not one of the choices", ErrInvalidInput, f)
+		}
+	}
+	var out []string
+	for _, o := range opts {
+		if chosen[o.Value] {
+			out = append(out, o.Value)
+		}
+	}
+	return out, nil
+}
+
 // MayOpenBrowser reports whether the login may launch a browser: only in
 // the interactive flow, and not with --no-browser. Otherwise the URL is
 // printed and that is all.

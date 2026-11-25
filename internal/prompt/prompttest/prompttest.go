@@ -37,6 +37,8 @@ type Asked struct {
 	Title   string
 	Options []prompt.Option
 	Default string
+	// Preset are the values ticked at the start of a multi-select.
+	Preset []string
 }
 
 // Picker answers prompts from Answers, in order: a string (a value) or a
@@ -109,7 +111,13 @@ func (p *Picker) Select(title string, opts []prompt.Option, def string) (string,
 // MultiSelect answers with values of opts.
 func (p *Picker) MultiSelect(title string, opts []prompt.Option) ([]string, error) {
 	p.T.Helper()
-	v, err := p.next(Asked{Kind: "multi", Title: title, Options: opts})
+	return p.MultiSelectPreset(title, opts, nil)
+}
+
+// MultiSelectPreset is MultiSelect; the ticked values are recorded.
+func (p *Picker) MultiSelectPreset(title string, opts []prompt.Option, preset []string) ([]string, error) {
+	p.T.Helper()
+	v, err := p.next(Asked{Kind: "multi", Title: title, Options: opts, Preset: preset})
 	if err != nil {
 		return nil, err
 	}

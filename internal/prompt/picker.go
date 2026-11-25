@@ -43,6 +43,24 @@ type Picker interface {
 	Input(title, def string, validate func(string) error) (string, error)
 }
 
+// PresetPicker is a Picker whose multi-select can start with options
+// already ticked (a selection made before, to be changed).
+type PresetPicker interface {
+	// MultiSelectPreset is MultiSelect with the options whose values are
+	// in preset ticked at the start.
+	MultiSelectPreset(title string, opts []Option, preset []string) ([]string, error)
+}
+
+// MultiSelectWith asks a multi-select with the options of preset ticked at
+// the start, when p can do that (PresetPicker); a picker that cannot asks
+// the plain multi-select.
+func MultiSelectWith(p Picker, title string, opts []Option, preset []string) ([]string, error) {
+	if pp, ok := p.(PresetPicker); ok && len(preset) > 0 {
+		return pp.MultiSelectPreset(title, opts, preset)
+	}
+	return p.MultiSelect(title, opts)
+}
+
 // IsTerminal reports whether v is a file attached to a terminal.
 func IsTerminal(v any) bool {
 	f, ok := v.(*os.File)
@@ -732,11 +750,16 @@ func (p *terminalPicker) Select(title string, opts []Option, def string) (string
 }
 
 func (p *terminalPicker) MultiSelect(title string, opts []Option) ([]string, error) {
+	return p.MultiSelectPreset(title, opts, nil)
+}
+
+// MultiSelectPreset is MultiSelect with the options of preset ticked.
+func (p *terminalPicker) MultiSelectPreset(title string, opts []Option, preset []string) ([]string, error) {
 	title = output.Clean(title)
 	if len(opts) == 0 {
 		return nil, errors.New("nothing to choose from")
 	}
-	var values []string
+	values := orderValues(opts, preset)
 	cols, termRows := p.termSize()
 	field, ticks := multiSelectField(title, huhOptions(opts, p.labelWidth(multiSelectPrefix)), &values, cols, termRows)
 	if _, err := p.run(field, nil, ticks, true, nil); err != nil {

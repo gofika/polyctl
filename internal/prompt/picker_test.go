@@ -194,6 +194,41 @@ func TestPickerMultiSelect(t *testing.T) {
 	}
 }
 
+// A preset multi-select starts with the preset ticked: Enter alone returns
+// it, and a tick can be taken back.
+func TestPickerMultiSelectPreset(t *testing.T) {
+	preset := func(p Picker) ([]string, error) {
+		return MultiSelectWith(p, "Pick", abc, []string{"c", "a"})
+	}
+	got, err := drive(t, []string{keyEnter}, preset)
+	if want := []string{"a", "c"}; err != nil || !reflect.DeepEqual(got, want) {
+		t.Errorf("preset, enter = %v, %v; want %v", got, err, want)
+	}
+	got, err = drive(t, []string{" ", keyDown, " ", keyEnter}, preset)
+	if want := []string{"b", "c"}; err != nil || !reflect.DeepEqual(got, want) {
+		t.Errorf("preset, untick a and tick b = %v, %v; want %v", got, err, want)
+	}
+}
+
+// plainPicker is a Picker without MultiSelectPreset.
+type plainPicker struct {
+	Picker
+	asked int
+}
+
+func (p *plainPicker) MultiSelect(string, []Option) ([]string, error) {
+	p.asked++
+	return []string{"b"}, nil
+}
+
+func TestMultiSelectWithFallsBack(t *testing.T) {
+	p := &plainPicker{}
+	got, err := MultiSelectWith(p, "Pick", abc, []string{"a"})
+	if err != nil || !reflect.DeepEqual(got, []string{"b"}) || p.asked != 1 {
+		t.Errorf("fallback = %v, %v (asked %d); want [b] from the plain multi-select", got, err, p.asked)
+	}
+}
+
 func TestPickerConfirm(t *testing.T) {
 	for _, tc := range []struct {
 		keys []string

@@ -37,6 +37,8 @@ type Choice struct {
 	Options []prompt.Option
 	// Default is the value preselected ("" for none).
 	Default string
+	// Selected are the values ticked at the start of ChooseMany.
+	Selected []string
 	// Arg names the input for messages: a flag ("--key-pair") or an
 	// argument ("<domain>").
 	Arg string
@@ -124,7 +126,7 @@ func (rt *Runtime) ChooseMany(c Choice) ([]string, error) {
 	if len(c.Options) == 0 {
 		return nil, c.empty()
 	}
-	vs, err := rt.Pick().MultiSelect(c.Title, c.Options)
+	vs, err := prompt.MultiSelectWith(rt.Pick(), c.Title, c.Options, c.Selected)
 	if err != nil {
 		return nil, err
 	}
