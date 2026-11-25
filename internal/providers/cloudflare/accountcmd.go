@@ -783,8 +783,9 @@ nothing. Works with --offline for accounts named by id.`,
 // (ref) names another. rest are the accounts that stay enabled, as far as
 // the credentials tell, and complete says they tell all of them. A default
 // that is disabled is replaced by --default, by the only account left or
-// by the answer on a terminal, and is a usage error otherwise, as is
-// disabling every account.
+// by the answer on a terminal, and is a usage error otherwise. Disabling
+// every account is a usage error too, also on a login without a default
+// account.
 func (b *accountBook) newDefault(ctx context.Context, disabled, rest []string, complete bool, ref string) (string, error) {
 	def := b.cur.AccountID
 	ref = strings.TrimSpace(ref)
@@ -796,7 +797,7 @@ func (b *accountBook) newDefault(ctx context.Context, disabled, rest []string, c
 		return app.UsageErrf("%s is the default account of cloudflare/%s: pass --default <id> to name the one that replaces it (one of: %s)", def, b.profile, strings.Join(rest, ", "))
 	}
 	switch {
-	case gone && complete && len(rest) == 0:
+	case complete && len(rest) == 0:
 		return "", app.UsageErrf("this would disable every account of cloudflare/%s; a login needs one (to drop the login: polyctl auth logout cloudflare --profile %s)", b.profile, b.profile)
 	case ref != "":
 		picked, err := b.resolve(ctx, []string{ref})

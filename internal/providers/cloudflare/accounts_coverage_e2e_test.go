@@ -179,6 +179,30 @@ func TestDisableOnALoginWithoutAnAccount(t *testing.T) {
 	})
 }
 
+// A login without a default account cannot disable every account its
+// credentials list either: it would cover nothing. Nothing is stored and
+// nothing of the inventory is dropped.
+func TestDisableEveryAccountWithoutADefault(t *testing.T) {
+	e := syncedUnbound(t)
+	for _, args := range [][]string{{"acc1", "acc2"}, {"acc1", "acc2", "--default", "acc1"}} {
+		code, stdout, stderr := e.run(append([]string{"cloudflare", "account", "disable", "--profile", "both"}, args...)...)
+		if code != cli.ExitUsage || !strings.Contains(stderr, "this would disable every account of cloudflare/both") || e.stored("both") != "||" {
+			t.Errorf("disable %v: exit %d, %s, %s%s", args, code, e.stored("both"), stdout, stderr)
+		}
+	}
+	// One after the other: the last one is refused.
+	if code, _, stderr := e.run("cloudflare", "account", "disable", "acc2", "--profile", "both"); code != cli.ExitOK || e.stored("both") != "||acc2" {
+		t.Fatalf("disable acc2: exit %d, %s, %s", code, e.stored("both"), stderr)
+	}
+	if code, _, stderr := e.run("cloudflare", "account", "disable", "acc1", "--profile", "both"); code != cli.ExitUsage ||
+		!strings.Contains(stderr, "this would disable every account of cloudflare/both") || e.stored("both") != "||acc2" {
+		t.Errorf("disable of the last account: exit %d, %s, %s", code, e.stored("both"), stderr)
+	}
+	if got := e.rows("both", platform.ResZone); !slices.Contains(got, "zone-ex acc1") {
+		t.Errorf("zones: %v", got)
+	}
+}
+
 // A new login that disables the account an earlier release stored rows for
 // drops those rows too, although they have no parent: the neutral commands
 // would otherwise keep routing the names of its zones to it.
