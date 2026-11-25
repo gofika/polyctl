@@ -403,14 +403,11 @@ func (b *accountBook) rows(ctx context.Context) ([]accountRow, error) {
 	return accountRows(accounts, b.cur.AccountID, b.cur.AccountName, b.cur.Disabled), nil
 }
 
-// options are account rows as the options of a pick, labelled with what
-// the login says about them. keep filters them.
-func accountOptions(rows []accountRow, keep func(accountRow) bool) []prompt.Option {
+// accountOptions are account rows as the options of a pick, labelled with
+// what the login says about them.
+func accountOptions(rows []accountRow) []prompt.Option {
 	var opts []prompt.Option
 	for _, r := range rows {
-		if keep != nil && !keep(r) {
-			continue
-		}
 		mark := ""
 		switch {
 		case r.Default:
@@ -539,6 +536,84 @@ func accountDiff(cur currentAccount, def string, disabled []string) (off, on []s
 	return off, on
 }
 
+// finish is the common end of enable and disable: nothing to do when def
+// and disabled are what the login holds, the change report with --dry-run
+// (nothing is saved, purged or made due), and apply otherwise.
+func (b *accountBook) finish(ctx context.Context, def string, disabled []string) error {
+	off, on := accountDiff(b.cur, def, disabled)
+	if len(off)+len(on) == 0 && def == b.cur.AccountID {
+		return app.NothingToDof("the enabled accounts and the default account of cloudflare/%s are unchanged", b.profile)
+	}
+	var changes []platform.Change
+	for _, id := range off {
+		changes = append(changes, app.ResourceChange("account", id, platform.Updated, "disabled"))
+	}
+	for _, id := range on {
+		changes = append(changes, app.ResourceChange("account", id, platform.Updated, "enabled"))
+	}
+	if def != b.cur.AccountID {
+		changes = append(changes, app.ResourceChange("account", def, platform.Updated, "default"))
+	}
+	if done, err := b.rt.WouldWrite(platform.Target{Platform: platform.Cloudflare, Profile: b.profile}, changes...); done || err != nil {
+		return err
+	}
+	return b.apply(ctx, def, disabled)
+}
+
+// pick is enable and disable without arguments on a terminal: one list of
+// every account the credentials see, and of the default and the disabled
+// ones they do not, in which the enabled ones are ticked. What is ticked at
+// the end is enabled and the rest disabled; a default account that was
+// unticked is replaced as newDefault says. Credentials that cannot list
+// their accounts have nothing to offer: the accounts are named by id then.
+func (b *accountBook) pick(ctx context.Context, newDefault string) error {
+	rows, err := b.rows(ctx)
+	if err != nil {
+		return err
+	}
+	if len(b.visible) == 0 {
+		return app.UsageErrf("the credentials of cloudflare/%s cannot list accounts: pass the account id", b.profile)
+	}
+	var opts []prompt.Option
+	var ticked []string
+	for _, r := range rows {
+		mark := ""
+		switch {
+		case r.Default:
+			mark = "default"
+		case r.hidden:
+			mark = "not visible"
+		}
+		opts = append(opts, accountOption(r.ID, r.Name, mark))
+		if r.Enabled {
+			ticked = append(ticked, r.ID)
+		}
+	}
+	keep, err := b.rt.ChooseMany(app.Choice{Title: fmt.Sprintf("Enabled accounts of cloudflare/%s (ticked: synced and searched)", b.profile),
+		Options: opts, Selected: ticked, Arg: "<account>", What: "account visible to cloudflare/" + b.profile})
+	if err != nil {
+		return err
+	}
+	// An account the credentials do not list cannot become the default
+	// here: ticking it only forgets that it was disabled.
+	var disabled, rest []string
+	for _, r := range rows {
+		switch {
+		case !slices.Contains(keep, r.ID):
+			disabled = append(disabled, r.ID)
+		case !r.hidden || r.Default:
+			rest = append(rest, r.ID)
+		}
+	}
+	sort.Strings(disabled)
+	sort.Strings(rest)
+	def, err := b.newDefault(ctx, disabled, rest, b.complete, newDefault)
+	if err != nil {
+		return err
+	}
+	return b.finish(ctx, def, disabled)
+}
+
 // apply stores the default account and the disabled accounts a command
 // arrived at, says what changed against the login as it was and prints it
 // as account current does.
@@ -604,7 +679,7 @@ next use when the account was disabled.`,
 				if rt.Interactive() && len(b.visible) == 0 {
 					return app.UsageErrf("the credentials of cloudflare/%s cannot list accounts: pass the account id", b.profile)
 				}
-				if id, err = rt.Choose(app.Choice{Title: "Default account", Options: accountOptions(rows, nil), Default: b.cur.AccountID, Arg: "<account>", What: "account visible to cloudflare/" + b.profile}); err != nil {
+				if id, err = rt.Choose(app.Choice{Title: "Default account", Options: accountOptions(rows), Default: b.cur.AccountID, Arg: "<account>", What: "account visible to cloudflare/" + b.profile}); err != nil {
 					return err
 				}
 			}
@@ -659,11 +734,16 @@ An account that is enabled already is left as it is (exit code 0, nothing is
 written). One that is neither disabled nor visible to the credentials is not
 found (exit code 4): name it with --account, or make it the default account
 with "polyctl cloudflare account use". A disabled account that is no longer
-visible is forgotten. On a terminal, without <account> the disabled accounts
-are offered (tick several).
+visible is forgotten.
+
+On a terminal, without <account> every account the credentials see is listed
+with the enabled ones ticked, as "polyctl cloudflare account disable" does:
+what is ticked at the end is enabled, the rest is disabled. The list needs
+Cloudflare (not with --offline) and credentials that can list their accounts.
 
 Only the local configuration changes; the cached inventory of the login is
-synced again on its next use. Works with --offline for accounts named by id.`,
+synced again on its next use. --dry-run reports what would change and writes
+nothing. Works with --offline for accounts named by id.`,
 		Args: app.RangeArgsOrInteractive(rt, 1, 100, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -679,14 +759,7 @@ synced again on its next use. Works with --offline for accounts named by id.`,
 				return err
 			}
 			if len(ids) == 0 {
-				rows, err := b.rows(ctx)
-				if err != nil {
-					return err
-				}
-				opts := accountOptions(rows, func(r accountRow) bool { return !r.Enabled })
-				if ids, err = rt.ChooseMany(app.Choice{Title: "Accounts to enable", Options: opts, Arg: "<account>", What: "disabled account of cloudflare/" + b.profile}); err != nil {
-					return err
-				}
+				return b.pick(ctx, newDefault)
 			}
 			var disabled []string
 			for _, d := range b.cur.Disabled {
@@ -697,11 +770,10 @@ synced again on its next use. Works with --offline for accounts named by id.`,
 			if len(disabled) == len(b.cur.Disabled) {
 				return app.NothingToDof("%s: already enabled for cloudflare/%s", strings.Join(ids, ", "), b.profile)
 			}
-			return b.apply(ctx, b.cur.AccountID, disabled)
+			return b.finish(ctx, b.cur.AccountID, disabled)
 		},
 	}
-	cmd.Flags().StringVar(&newDefault, "default", "", "accepted as by disable; enabling the accounts named never needs a new default account")
-	app.MarkNoDryRun(cmd)
+	cmd.Flags().StringVar(&newDefault, "default", "", "the enabled account, by id or name, that becomes the default when the default account is unticked in the list (enabling the accounts named never needs it)")
 	formerName(cmd, "enable")
 	return cmd
 }
@@ -773,13 +845,20 @@ they cannot list their accounts an id is taken as it is, which is said.
 The default account can be disabled only together with --default <account>,
 which names the enabled account that becomes the default (on a terminal it is
 asked); without it this is a usage error (exit code 2), as is disabling every
-account (log the login out with "polyctl auth logout cloudflare" instead). On
-a terminal, without <account> the enabled accounts are offered (tick several).
+account (log the login out with "polyctl auth logout cloudflare" instead).
+
+On a terminal, without <account> every account the credentials see is listed
+with the enabled ones ticked, as "polyctl cloudflare account enable" does:
+what is ticked at the end is enabled, the rest is disabled, and a default
+account that was unticked is replaced as above. The list needs Cloudflare
+(not with --offline) and credentials that can list their accounts.
 
 No confirmation is asked: only the local configuration and a cache that the
-next sync rebuilds change. Works with --offline; a name is then one the
-profile knows (that of the default account, or of an account with a cached
-zone), and the accounts are not checked against what the credentials see.`,
+next sync rebuilds change. --dry-run reports what would change and writes
+nothing. Works with --offline for the accounts named; a name is then one
+the profile knows (that of the default account, or of an account with a
+cached zone), and the accounts are not checked against what the credentials
+see.`,
 		Args: app.RangeArgsOrInteractive(rt, 1, 100, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -792,14 +871,7 @@ zone), and the accounts are not checked against what the credentials see.`,
 				return err
 			}
 			if len(ids) == 0 {
-				rows, err := b.rows(ctx)
-				if err != nil {
-					return err
-				}
-				opts := accountOptions(rows, func(r accountRow) bool { return r.Enabled })
-				if ids, err = rt.ChooseMany(app.Choice{Title: "Accounts to disable", Options: opts, Arg: "<account>", What: "enabled account of cloudflare/" + b.profile}); err != nil {
-					return err
-				}
+				return b.pick(ctx, newDefault)
 			}
 			disabled := slices.Clone(b.cur.Disabled)
 			var off []string
@@ -844,11 +916,10 @@ zone), and the accounts are not checked against what the credentials see.`,
 			if err != nil {
 				return err
 			}
-			return b.apply(ctx, def, disabled)
+			return b.finish(ctx, def, disabled)
 		},
 	}
 	cmd.Flags().StringVar(&newDefault, "default", "", "the enabled account, by id or name, that becomes the default when the default account is disabled")
-	app.MarkNoDryRun(cmd)
 	formerName(cmd, "disable")
 	return cmd
 }

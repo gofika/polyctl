@@ -804,11 +804,24 @@ func TestCloudflareAccountFlag(t *testing.T) {
 	if code, _, stderr := mainExit(t.TempDir(), "cloudflare", "account", "list", "--account", "acc1"); code != ExitUsage || !strings.Contains(stderr, "unknown flag") {
 		t.Errorf("account list --account: exit %d, %s", code, stderr)
 	}
-	// The commands that change the accounts of the login write the local
-	// configuration only: there is nothing to preview.
+	// Of the commands that change the accounts of a login only use refuses
+	// --dry-run; enable and disable, and add and remove, their hidden
+	// former names, report what would change. Without an account they are
+	// a usage error away from a terminal.
 	for _, sub := range []string{"use", "enable", "disable", "add", "remove"} {
-		if code, _, stderr := mainExit(t.TempDir(), "cloudflare", "account", sub, "acc1", "--dry-run"); code != ExitUsage || !strings.Contains(stderr, "does not support --dry-run") {
+		code, _, stderr := mainExit(t.TempDir(), "cloudflare", "account", sub, "acc1", "--dry-run")
+		if refused := code == ExitUsage && strings.Contains(stderr, "does not support --dry-run"); refused != (sub == "use") {
 			t.Errorf("cloudflare account %s --dry-run: exit %d, %s", sub, code, stderr)
+		}
+		if sub == "use" {
+			continue
+		}
+		if code, _, stderr := mainExit(t.TempDir(), "cloudflare", "account", sub); code != ExitUsage {
+			t.Errorf("cloudflare account %s without an account: exit %d, %s", sub, code, stderr)
+		}
+		c, _, err := root.Find([]string{"cloudflare", "account", sub})
+		if err != nil || c.Hidden != (sub == "add" || sub == "remove") || c.Flags().Lookup("default") == nil {
+			t.Errorf("cloudflare account %s: %v, hidden %v", sub, err, c != nil && c.Hidden)
 		}
 	}
 }
