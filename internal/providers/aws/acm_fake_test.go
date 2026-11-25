@@ -267,7 +267,14 @@ func leafInfo(data []byte) (domain, serial, alg string, notAfter time.Time, err 
 	return leaf.Subject.CommonName, strings.Join(parts, ":"), alg, leaf.NotAfter, nil
 }
 
-func (f *fakeACM) ImportCertificate(_ context.Context, in *acm.ImportCertificateInput, _ ...func(*acm.Options)) (*acm.ImportCertificateOutput, error) {
+func (f *fakeACM) ImportCertificate(_ context.Context, in *acm.ImportCertificateInput, opts ...func(*acm.Options)) (*acm.ImportCertificateOutput, error) {
+	if awssdk.ToString(in.CertificateArn) == "" {
+		f.shared.noteUnsafeRetry("ImportCertificate", acmCallRetryer(opts))
+	} else if acmCallRetryer(opts).IsErrorRetryable(serverFailure{}) {
+		f.shared.retryMu.Lock()
+		f.shared.reimportRetried++
+		f.shared.retryMu.Unlock()
+	}
 	f.shared.mu.Lock()
 	defer f.shared.mu.Unlock()
 	if err := f.call("ImportCertificate"); err != nil {

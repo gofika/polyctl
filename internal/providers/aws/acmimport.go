@@ -1,6 +1,7 @@
 package aws
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -182,6 +183,25 @@ Amazon-issued certificates are renewed by ACM and never replaced.`,
 				for _, e := range certs {
 					if e.Type == acmImported && e.Status != acmExpired && certMatchesDomain(e, domain) {
 						cands = append(cands, e)
+					}
+				}
+				if len(cands) > 1 {
+					// A certificate that holds this serial already is
+					// the one: the import is a no-op (two of them are
+					// what a repeated import of a new certificate
+					// left behind).
+					for _, e := range cands {
+						full, err := c.DescribeCertificate(ctx, region, e.ID)
+						if errors.Is(err, platform.ErrNotFound) {
+							continue
+						}
+						if err != nil {
+							return err
+						}
+						if normalizeSerial(full.Serial) == normalizeSerial(serial) {
+							into, cands = full, nil
+							break
+						}
 					}
 				}
 				switch len(cands) {

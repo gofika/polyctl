@@ -345,13 +345,20 @@ func (c *client) ImportCertificate(ctx context.Context, imp platform.Certificate
 	if len(imp.Chain) > 0 {
 		in.CertificateChain = imp.Chain
 	}
+	var opts []func(*acm.Options)
 	if imp.ARN != "" {
 		in.CertificateArn = awssdk.String(imp.ARN)
 	} else {
 		in.Tags = acmTags(imp.Tags)
+		// A new import has no idempotency token: a repeated attempt
+		// would import a second certificate.
+		opts = append(opts, acmNoUnsafeRetry)
 	}
-	out, err := c.acmFor(region).ImportCertificate(ctx, in)
+	out, err := c.acmFor(region).ImportCertificate(ctx, in, opts...)
 	if err != nil {
+		if imp.ARN == "" && platform.OutcomeUnknown(err) && ctx.Err() == nil {
+			return "", fmt.Errorf("the certificate may have been imported in %s: list the imported certificates of the domain before importing it again: %w", region, acmErr("ImportCertificate", region, err))
+		}
 		return "", acmErr("ImportCertificate", region, err)
 	}
 	arn := awssdk.ToString(out.CertificateArn)

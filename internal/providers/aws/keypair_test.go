@@ -113,7 +113,8 @@ func (f *fakeEC2) ImportKeyPair(_ context.Context, in *ec2.ImportKeyPairInput, _
 
 // CreateKeyPair makes an RSA key pair and returns its private key (PEM,
 // PKCS #1), as AWS does with KeyType rsa and KeyFormat pem.
-func (f *fakeEC2) CreateKeyPair(_ context.Context, in *ec2.CreateKeyPairInput, _ ...func(*ec2.Options)) (*ec2.CreateKeyPairOutput, error) {
+func (f *fakeEC2) CreateKeyPair(_ context.Context, in *ec2.CreateKeyPairInput, opts ...func(*ec2.Options)) (*ec2.CreateKeyPairOutput, error) {
+	f.shared.noteUnsafeRetry("CreateKeyPair", ec2CallRetryer(opts))
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record("CreateKeyPair")
@@ -204,6 +205,13 @@ type fakeEC2s struct {
 	// DeleteKeyPair was asked to delete.
 	creates         []*ec2.CreateKeyPairInput
 	deletedKeyPairs []string
+	// unsafeRetries are the creates without an idempotency token made
+	// with a retryer that repeats a request of unknown outcome;
+	// reimportRetried counts the re-imports into an ARN made with the
+	// client's retryer.
+	retryMu         sync.Mutex
+	unsafeRetries   []string
+	reimportRetried int
 }
 
 func (s *fakeEC2s) calls() []string {
@@ -321,6 +329,13 @@ func newAWSHarness(t *testing.T, flags app.Flags, defaults map[string]any) *awsH
 		t.Fatalf("Init: %v", err)
 	}
 	t.Cleanup(func() { _ = h.rt.Close() })
+	t.Cleanup(func() {
+		fakes.retryMu.Lock()
+		defer fakes.retryMu.Unlock()
+		if len(fakes.unsafeRetries) > 0 {
+			t.Errorf("creates without an idempotency token made with the SDK's retry of an unknown outcome: %v", fakes.unsafeRetries)
+		}
+	})
 	return h
 }
 

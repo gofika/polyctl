@@ -239,10 +239,14 @@ func (c *client) createKeyPairRSA(ctx context.Context, region, name string, tags
 	if len(tags) > 0 {
 		in.TagSpecifications = []ec2types.TagSpecification{{ResourceType: ec2types.ResourceTypeKeyPair, Tags: sortedTags(tags)}}
 	}
-	out, err := c.ec2For(region).CreateKeyPair(ctx, in)
+	out, err := c.ec2For(region).CreateKeyPair(ctx, in, ec2NoUnsafeRetry)
 	if err != nil {
 		if platform.HasErrorCode(err, errKeyPairDuplicate) {
 			return keyPairInfo{}, "", fmt.Errorf("%w: key pair %q already exists in %s (an existing key pair is never replaced)", platform.ErrInvalidInput, name, region)
+		}
+		if platform.OutcomeUnknown(err) && ctx.Err() == nil {
+			return keyPairInfo{}, "", fmt.Errorf("key pair %q may have been created in %s without its private key reaching polyctl (AWS returns it only once): if it exists, delete it (aws ec2 delete-key-pair --region %s --key-name %s) before running the command again: %w",
+				name, region, region, name, ec2Err("CreateKeyPair", region, err))
 		}
 		return keyPairInfo{}, "", ec2Err("CreateKeyPair", region, err)
 	}
@@ -727,7 +731,7 @@ func windowsKeyPairStep(ctx context.Context, rt *app.Runtime, c *client, profile
 				return "", platform.Step{}, app.UsageErrf("key pair %q was kept by an earlier create of instance %s whose RunInstances result was unknown (its private key is stored): if that instance exists, `%s` fetches its password; if not, delete key pair %s in AWS (aws ec2 delete-key-pair --region %s --key-name %s) and run create again",
 					kpName, name, app.PasswordCommandLine(ec2InstanceTree, name), kpName, region, kpName)
 			}
-			return "", platform.Step{}, app.UsageErrf("key pair %q (naming.aws_windows_key_pair) already exists in %s: polyctl creates a new RSA key pair for a Windows instance and never reuses one; pass --key-pair %s --key-file <its RSA private key> to launch with it, or set naming.aws_windows_key_pair", kpName, region, kpName)
+			return "", platform.Step{}, app.UsageErrf("key pair %q (naming.aws_windows_key_pair) already exists in %s: polyctl creates a new RSA key pair for a Windows instance and never reuses one; pass --key-pair %s --key-file <its RSA private key> to launch with it; without its private key (an earlier create that lost the CreateKeyPair response leaves such a key pair) delete it (aws ec2 delete-key-pair --region %s --key-name %s) and run create again, or set naming.aws_windows_key_pair", kpName, region, kpName, region, kpName)
 		}
 	}
 	var kpTags map[string]string

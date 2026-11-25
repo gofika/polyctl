@@ -585,10 +585,13 @@ func (c *client) createSnapshot(ctx context.Context, region, volID, description 
 	if len(tags) > 0 {
 		in.TagSpecifications = []ec2types.TagSpecification{{ResourceType: ec2types.ResourceTypeSnapshot, Tags: sortedTags(tags)}}
 	}
-	out, err := c.ec2For(region).CreateSnapshot(ctx, in)
+	out, err := c.ec2For(region).CreateSnapshot(ctx, in, ec2NoUnsafeRetry)
 	if err != nil {
 		if platform.HasErrorCode(err, "SnapshotCreationPerVolumeRateExceeded") {
 			return ec2types.Snapshot{}, fmt.Errorf("volume %s has a snapshot in progress already: wait until it is completed, then retry: %w", volID, ec2Err("CreateSnapshot", region, err))
+		}
+		if platform.OutcomeUnknown(err) && ctx.Err() == nil {
+			return ec2types.Snapshot{}, fmt.Errorf("the snapshot of volume %s may have been created in %s: list the snapshots of the volume before creating another: %w", volID, region, ec2Err("CreateSnapshot", region, err))
 		}
 		return ec2types.Snapshot{}, ec2Err("CreateSnapshot", region, err)
 	}

@@ -494,7 +494,8 @@ func (f *fakeEC2) DescribeSnapshots(_ context.Context, in *ec2.DescribeSnapshots
 	return out, nil
 }
 
-func (f *fakeEC2) CreateSnapshot(_ context.Context, in *ec2.CreateSnapshotInput, _ ...func(*ec2.Options)) (*ec2.CreateSnapshotOutput, error) {
+func (f *fakeEC2) CreateSnapshot(_ context.Context, in *ec2.CreateSnapshotInput, opts ...func(*ec2.Options)) (*ec2.CreateSnapshotOutput, error) {
+	f.shared.noteUnsafeRetry("CreateSnapshot", ec2CallRetryer(opts))
 	if err := f.ebsCall("CreateSnapshot"); err != nil {
 		return nil, err
 	}

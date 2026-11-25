@@ -132,7 +132,17 @@ func TestACMImportFromStore(t *testing.T) {
 	if out := h.importOut(); out.ARN == arn || actions(out.Report)["certificate/example.com created"] != 1 {
 		t.Errorf("--new = %+v", out)
 	}
-	// Two imported certificates of the domain: ambiguous without --arn.
+	// Two imported certificates of the domain, one of them holding the
+	// certificate of the store: that one is the target, nothing changes.
+	if err := h.run("acm", "certificate", "import", "example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if out := h.importOut(); out.ARN == arn || actions(out.Report)["certificate/example.com unchanged"] != 1 {
+		t.Errorf("holding the serial = %+v", out)
+	}
+	// Neither holds it: ambiguous without --arn.
+	renewed, _, _ = issue(t, ca, "example.com", rsaKey, time.Now().Add(160*24*time.Hour))
+	storeBundle(t, h, renewed)
 	var amb *app.AmbiguousError
 	if err := h.run("acm", "certificate", "import", "example.com"); !errors.As(err, &amb) || len(amb.Candidates) != 2 {
 		t.Errorf("two imported = %v", err)

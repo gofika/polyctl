@@ -41,11 +41,16 @@ func TestACMImportPicks(t *testing.T) {
 	storeBundle(t, h, b)
 	old, _, _ := issue(t, ca, "old.org", nil, time.Now().Add(-time.Minute))
 	storeBundle(t, h, old)
-	// Two imported certificates of example.com.
-	for i := 0; i < 2; i++ {
-		if err := h.run("acm", "certificate", "import", "example.com", "--new"); err != nil {
-			t.Fatal(err)
+	// Two imported certificates of example.com, neither of them holding
+	// the certificate of the store.
+	for i := 0; i < 3; i++ {
+		if i < 2 {
+			if err := h.run("acm", "certificate", "import", "example.com", "--new"); err != nil {
+				t.Fatal(err)
+			}
 		}
+		b, _, _ = issue(t, ca, "example.com", nil, time.Now().Add(time.Duration(91+i)*24*time.Hour))
+		storeBundle(t, h, b)
 	}
 	h.rt.Flags.NonInteractive = false
 	p := prompttest.New(t, "example.com", prompttest.Label("Import as a new certificate"))
@@ -61,6 +66,8 @@ func TestACMImportPicks(t *testing.T) {
 		t.Errorf("report = %v", a)
 	}
 
+	b, _, _ = issue(t, ca, "example.com", nil, time.Now().Add(95*24*time.Hour))
+	storeBundle(t, h, b)
 	h.rt.Picker = prompttest.New(t, prompttest.Abort{})
 	if err := h.run("acm", "certificate", "import", "example.com"); !errors.Is(err, prompt.ErrAborted) {
 		t.Errorf("abort = %v", err)

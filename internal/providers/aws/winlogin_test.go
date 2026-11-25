@@ -645,7 +645,8 @@ func TestWindowsCreateRefusals(t *testing.T) {
 	}
 	// The key pair name polyctl would create is taken.
 	h.add("ap-east-1", newFakeKeyPair("win-a-win", genED25519(t)))
-	if err := h.run(winCreate...); !exit2(err) || !strings.Contains(err.Error(), "naming.aws_windows_key_pair") {
+	if err := h.run(winCreate...); !exit2(err) || !strings.Contains(err.Error(), "naming.aws_windows_key_pair") ||
+		!strings.Contains(err.Error(), "delete-key-pair --region ap-east-1 --key-name win-a-win") {
 		t.Errorf("taken name = %v", err)
 	}
 	if w := h.writes(); len(w) != 0 {
