@@ -370,6 +370,27 @@ func TestSSHKeyRemoveFromAuthorizedKeys2(t *testing.T) {
 	}
 }
 
+// sshd reads keys from a file polyctl does not edit (AuthorizedKeysFile
+// /etc/ssh/keys/%u): the keys of ~/.ssh/authorized_keys do not log in, so
+// removing the last of them is not a lockout and is allowed.
+func TestSSHKeyRemoveFromUnreadAuthorizedKeys(t *testing.T) {
+	r := newKeyRig(t, "ec2-user")
+	_ = os.WriteFile(sshremote.SSHDConfig, []byte("AuthorizedKeysFile /etc/ssh/keys/%u\n"), 0o644)
+	stale := newSSHTestKey(t)
+	r.authorized("ec2-user", stale.line("stale")+"\n")
+	r.h.rt.Flags.Yes = true
+	if err := r.run("remove", "web-1", "--accept-new-host-key", "--fingerprint", ssh.FingerprintSHA256(stale.pub)); err != nil {
+		t.Fatal(err)
+	}
+	f := filepath.Join(r.sys.Home("ec2-user"), ".ssh", "authorized_keys")
+	if data, _ := os.ReadFile(f); string(data) != "" {
+		t.Errorf("authorized_keys after remove %q", data)
+	}
+	if !strings.Contains(r.h.stderr.String(), "which sshd does not read") {
+		t.Errorf("stderr lacks the AuthorizedKeysFile warning: %q", r.h.stderr.String())
+	}
+}
+
 // A key comment holding terminal escapes (written by any user of the
 // instance) is printed escaped in the listing and in the lines shown before
 // the removal is confirmed.

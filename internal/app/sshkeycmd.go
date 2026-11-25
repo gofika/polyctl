@@ -929,14 +929,21 @@ func (s *sshKeySession) guard(user string, entries []SSHKeyEntry, remove []ssh.P
 		return fmt.Errorf("refusing to remove %s of %s: it is the key this command logged in with, and removing it could lock you out; log in with another key (--identity-file) to remove it",
 			(&platform.PublicKey{Key: s.client.Key}).Summary(), user)
 	}
-	left := 0
+	// A key in a file sshd does not read does not log in: removing it
+	// cannot lock anyone out, and it is not a way back in either. When
+	// sshd reads none of the user's keys polyctl sees (they are in a file
+	// such as /etc/ssh/keys/%u), the removal changes nothing for the login.
+	before, left := 0, 0
 	for _, e := range entries {
-		// A key in a file sshd does not read does not log in.
-		if e.User == user && !e.Ignored && !gone(e.Key) {
+		if e.User != user || e.Ignored {
+			continue
+		}
+		before++
+		if !gone(e.Key) {
 			left++
 		}
 	}
-	if left == 0 {
+	if before > 0 && left == 0 {
 		return fmt.Errorf("refusing to remove the last key of %s on instance %s: the user could no longer log in with a key; add another key first (ssh-key add)", user, s.inst.label())
 	}
 	return nil
