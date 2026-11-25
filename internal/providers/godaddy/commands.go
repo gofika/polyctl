@@ -766,6 +766,11 @@ no; --yes skips it). The non-interactive flow asks nothing: --yes is required
 				return err
 			}
 			zone := platform.NormalizeDomain(args[0])
+			if id != "" && (typ != "" || cmd.Flags().Changed("name")) {
+				// The id selects one record; --type / --name beside it
+				// would be ignored.
+				return app.UsageErrf("--id selects one record; it cannot be combined with --type or --name")
+			}
 			if id == "" && typ == "" && !rt.Interactive() {
 				return app.UsageErrf("--type (with --name) or --id is required")
 			}

@@ -160,3 +160,34 @@ func TestDNSRecordDeleteSetConfirms(t *testing.T) {
 		t.Errorf("--yes = %v", err)
 	}
 }
+
+// --id selects one value: --name, --type, --value or --priority beside it
+// would be ignored, so the combination is a usage error and nothing is
+// deleted.
+func TestDNSRecordDeleteIDWithFilters(t *testing.T) {
+	h, g := dnsHarness(t)
+	h.nonInteractive()
+	id := "example-zone|A|www.example.com|1.1.1.1"
+	for _, extra := range [][]string{
+		{"--name", "mail", "--type", "MX"},
+		{"--name", "www"},
+		{"--type", "A"},
+		{"--value", "2.2.2.2"},
+		{"--priority", "10"},
+	} {
+		args := append([]string{"dns", "record", "delete", "example-zone", "--id", id, "--yes"}, extra...)
+		if err := h.run(args...); exitClass(err) != "usage" || !strings.Contains(err.Error(), "--id") {
+			t.Errorf("%v = %v", extra, err)
+		}
+		if rs := g.rrset("example-zone", "www.example.com.", "A"); rs == nil || len(rs.Rrdatas) != 2 {
+			t.Fatalf("%v: rrset %+v", extra, rs)
+		}
+	}
+	// The id alone still deletes its value.
+	if err := h.run("dns", "record", "delete", "example-zone", "--id", id); err != nil {
+		t.Fatalf("--id alone = %v", err)
+	}
+	if rs := g.rrset("example-zone", "www.example.com.", "A"); rs == nil || len(rs.Rrdatas) != 1 {
+		t.Errorf("after --id: rrset %+v", rs)
+	}
+}

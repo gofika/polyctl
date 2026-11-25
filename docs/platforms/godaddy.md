@@ -30,7 +30,7 @@ Only domains GoDaddy serves DNS for are indexed as zones: a domain whose nameser
 
 - `add` appends one record to the name+type set; the others stay.
 - `upsert` creates the set or replaces all of it with the given `--value`s (repeat `--value` for several records), like `record upsert` on Route 53 and Cloud DNS.
-- `delete --type --name` deletes the whole set; `delete --id` deletes one record. It lists what it would delete and asks for confirmation (`--yes` in the non-interactive flow; see [Confirmations](../interactive.md#confirmations)). A set or record that does not exist is exit code 4 and asks nothing.
+- `delete --type --name` deletes the whole set; `delete --id` deletes one record and cannot be combined with `--type` or `--name` (exit code 2). It lists what it would delete and asks for confirmation (`--yes` in the non-interactive flow; see [Confirmations](../interactive.md#confirmations)). A set or record that does not exist is exit code 4 and asks nothing.
 - `--name` is relative to the domain (`www`, `@`); default `@`.
 - `--ttl` in seconds, minimum 600; `0` (default) uses GoDaddy's default.
 - `--priority` for MX/SRV records.

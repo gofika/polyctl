@@ -227,3 +227,19 @@ func TestNeutralDNSDeleteOldID(t *testing.T) {
 		t.Fatalf("current id: exit %d, records %v, %s", code, e.f.Records("example.com"), stderr)
 	}
 }
+
+// --id selects one record: --type or --name beside it would be ignored, so
+// the combination is a usage error and nothing is asked or deleted.
+func TestDNSDeleteIDWithFilters(t *testing.T) {
+	e := newDeleteEnv(t)
+	for _, extra := range [][]string{
+		{"--type", "TXT", "--name", "www"},
+		{"--type", "TXT"},
+		{"--name", "mail"},
+	} {
+		args := append([]string{"godaddy", "dns", "delete", "example.com", "--id", recordID, "--yes"}, extra...)
+		if code, _, stderr := e.run(nil, "", args...); code != cli.ExitUsage || !strings.Contains(stderr, "--id") || e.records() != allRecords {
+			t.Errorf("%v: exit %d, records %s, %s", extra, code, e.records(), stderr)
+		}
+	}
+}

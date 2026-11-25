@@ -561,6 +561,12 @@ question. Removing one value (--value, --id) asks nothing, like dns delete
 of one record. --dry-run asks nothing.`,
 		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if id != "" && (typ != "" || name != "" || value != "" || cmd.Flags().Changed("priority")) {
+				// The id selects one value; a filter beside it would be
+				// ignored, and a wrong id would delete an unrelated value
+				// without asking.
+				return app.UsageErrf("--id selects one record value; it cannot be combined with --name, --type, --value or --priority")
+			}
 			pick := id == "" && (typ == "" || name == "")
 			if pick && !rt.Interactive() {
 				return app.UsageErrf("--name and --type (or --id) are required")

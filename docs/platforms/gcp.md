@@ -87,7 +87,7 @@ gcp compute instance-group list | get <name> | delete <name> [--zone <z>]
 - Record sets are shown one record per value; `upsert` sets the whole record set, `delete` removes the set or, with `--value`, one value. Deleting a whole set lists its values and asks first ([Confirmations](../interactive.md#confirmations)); the non-interactive flow needs `--yes`, and a set that does not exist is exit code 4 and asks nothing. One value (`--value`, `--id`) is removed without a question. Writes are applied as one atomic change.
 - `--name` is relative to the zone (`www`, `@`) or an FQDN; default is the zone apex.
 - `--ttl 0` keeps the existing TTL; a new set gets 300.
-- `--id` (`zone|TYPE|name|value`, as shown by `list`) picks one record instead of `--name` / `--type`.
+- `--id` (`zone|TYPE|name|value`, as shown by `list`) picks one record instead of `--name` / `--type`, and cannot be combined with `--name`, `--type`, `--value` or `--priority` (exit code 2).
 
 ## Instances
 
