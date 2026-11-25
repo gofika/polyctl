@@ -856,16 +856,24 @@ func TestMetaSummaryCountsProjects(t *testing.T) {
 			t.Errorf("identitySummary of %v = %q", extra, got)
 		}
 	}
-	// A Cloudflare login counts its selected accounts the same way.
-	cf := map[string]string{"account_id": "acc1", "accounts": "acc1,acc2,acc3", "method": "api_token"}
-	if got := metaSummary(cf); got != "account_id=acc1 (+2 more) method=api_token" {
+	// A Cloudflare login counts its disabled accounts the same way, and the
+	// list of accounts a login stored before says nothing any more.
+	cf := map[string]string{"account_id": "acc1", "accounts": "acc1,acc4,acc5", "disabled_accounts": "acc2, acc3,acc1", "method": "api_token"}
+	if got := metaSummary(cf); got != "account_id=acc1 (2 disabled) method=api_token" {
 		t.Errorf("metaSummary(%v) = %q", cf, got)
 	}
-	if got := metaSummary(map[string]string{"account_id": "acc1", "method": "api_token"}); got != "account_id=acc1 method=api_token" {
-		t.Errorf("metaSummary of one account = %q", got)
+	if got := metaSummary(map[string]string{"account_id": "acc1", "accounts": "acc1,acc2", "method": "api_token"}); got != "account_id=acc1 method=api_token" {
+		t.Errorf("metaSummary without disabled accounts = %q", got)
 	}
-	id = &platform.Identity{Account: "acc1", User: "a@b", Extra: map[string]string{"accounts": "acc1,acc2"}}
-	if got := identitySummary(id); got != "acc1 (+1 more) a@b" {
-		t.Errorf("identitySummary of two accounts = %q", got)
+	// The account id of another platform carries no such note.
+	if got := metaSummary(map[string]string{"account_id": "123456789012", "method": "sso"}); got != "account_id=123456789012 method=sso" {
+		t.Errorf("metaSummary of an aws account = %q", got)
+	}
+	id = &platform.Identity{Account: "acc1", User: "a@b", Extra: map[string]string{"disabled_accounts": "acc2"}}
+	if got := identitySummary(id); got != "acc1 (1 disabled) a@b" {
+		t.Errorf("identitySummary with a disabled account = %q", got)
+	}
+	if got := identitySummary(&platform.Identity{Account: "acc1", User: "a@b", Extra: map[string]string{"accounts": "acc1,acc2"}}); got != "acc1 a@b" {
+		t.Errorf("identitySummary of a login with the former list = %q", got)
 	}
 }

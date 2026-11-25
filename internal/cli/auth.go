@@ -434,9 +434,10 @@ func metaFact(m map[string]string, k string) string {
 		// enabled, which only Google Cloud can count.
 		v += disabledNote(m["disabled_projects"], v)
 	case "account_id":
-		// A Cloudflare login names its default account and how many more
-		// are selected.
-		v += moreProjects(m["accounts"], v)
+		// A Cloudflare login names its default account and how many
+		// accounts are disabled, in the same way. The account of another
+		// platform has no such list.
+		v += disabledNote(m["disabled_accounts"], v)
 	}
 	return k + "=" + v
 }
@@ -465,21 +466,12 @@ func metaCells(m map[string]string) []string {
 	return cells
 }
 
-// disabledNote is " (N disabled)" for the N projects of the comma-separated
-// list of disabled projects other than def, the default, which is never
-// disabled; "" for none.
+// disabledNote is " (N disabled)" for the N projects or accounts of the
+// comma-separated list of disabled ones other than def, the default, which
+// is never disabled; "" for none.
 func disabledNote(list, def string) string {
 	if n := countOthers(list, def); n > 0 {
 		return fmt.Sprintf(" (%d disabled)", n)
-	}
-	return ""
-}
-
-// moreProjects is " (+N more)" for the N Cloudflare accounts of a
-// comma-separated list other than def, "" for none.
-func moreProjects(list, def string) string {
-	if n := countOthers(list, def); n > 0 {
-		return fmt.Sprintf(" (+%d more)", n)
 	}
 	return ""
 }
@@ -688,11 +680,11 @@ func identitySummary(id *platform.Identity) string {
 	if id.Account != "" {
 		// Extra["disabled_projects"] are the disabled projects of a Google
 		// Cloud account, whose Account is the default project;
-		// Extra["accounts"] is the selection of a Cloudflare login, whose
-		// Account is the default account.
+		// Extra["disabled_accounts"] the disabled accounts of a Cloudflare
+		// login, whose Account is the default account.
 		note := disabledNote(id.Extra["disabled_projects"], id.Account)
 		if note == "" {
-			note = moreProjects(id.Extra["accounts"], id.Account)
+			note = disabledNote(id.Extra["disabled_accounts"], id.Account)
 		}
 		parts = append(parts, id.Account+note)
 	}

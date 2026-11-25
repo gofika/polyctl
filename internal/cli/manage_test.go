@@ -1353,7 +1353,7 @@ func TestProfileAndAccountLabelsKeepTheirCells(t *testing.T) {
 		"hollow": {},
 	}}
 	cells := &config.Profile{Platforms: map[platform.ID]*config.Account{
-		"cloudflare": {Metadata: map[string]string{"account_id": "acc1", "accounts": "acc1,acc2,acc3", "email": "a@example.com", "method": "api_token"}},
+		"cloudflare": {Metadata: map[string]string{"account_id": "acc1", "disabled_accounts": "acc2,acc3", "email": "a@example.com", "method": "api_token"}},
 		"aws":        {Metadata: map[string]string{"account_id": "123456789012", "region": "us-east-1", "method": "sso"}},
 		"gcp":        {Metadata: map[string]string{"email": "a@b.c", "project": "p1", "disabled_projects": "p2,p3", "method": "oauth"}},
 		"namecom":    {Metadata: map[string]string{"username": "bob", "method": "token"}},
@@ -1376,7 +1376,7 @@ func TestProfileAndAccountLabelsKeepTheirCells(t *testing.T) {
 		{Profile: "a", Platform: "namecom"}: "a  namecom",
 		// Every kind of fact keeps its cell: a login without an e-mail or
 		// a region shows "-" there, and the method stays in its column.
-		{Profile: "cells", Platform: "cloudflare"}: "cells  cloudflare  account_id=acc1 (+2 more)  email=a@example.com  -  method=api_token",
+		{Profile: "cells", Platform: "cloudflare"}: "cells  cloudflare  account_id=acc1 (2 disabled)  email=a@example.com  -  method=api_token",
 		{Profile: "cells", Platform: "aws"}:        "cells  aws  account_id=123456789012  -  region=us-east-1  method=sso",
 		{Profile: "cells", Platform: "gcp"}:        "cells  gcp  -  email=a@b.c  project=p1 (2 disabled)  method=oauth",
 		{Profile: "cells", Platform: "namecom"}:    "cells  namecom  -  username=bob  -  method=token",
