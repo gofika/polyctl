@@ -15,12 +15,13 @@ Commands under `polyctl gcp`: Cloud DNS, Compute Engine instances, firewall rule
 ## Login and permissions
 
 ```sh
-polyctl auth login gcp --profile acme --set project=acme-prod                     # Application Default Credentials
+polyctl auth login gcp --profile acme                                             # browser login, gcloud not needed
 polyctl auth login gcp --profile ci --set method=service_account --set key_file=./sa.json
+polyctl auth login gcp --profile adc --set method=adc --set project=acme-prod     # Application Default Credentials
 polyctl auth login gcp --profile me --set method=oauth --set client_id=<id> --set client_secret=-
 ```
 
-- `method` is `adc` (default; run `gcloud auth application-default login` first if polyctl asks), `service_account` (JSON key file, stored in the credential store) or `oauth` (your own OAuth client; consent in the browser, refresh token stored).
+- `method` is `oauth` (default on a terminal: consent in the browser with polyctl's built-in OAuth client, or your own with `client_id` / `client_secret`; refresh token stored), `service_account` (JSON key file, stored in the credential store) or `adc` (default without a terminal: Application Default Credentials from `gcloud auth application-default login`). Details, including the "Google hasn't verified this app" screen and builds without a built-in client, in [Accounts](../accounts.md#gcp).
 - `--set project=` is the default project. Without it polyctl lists the visible projects and asks; non-interactively it uses the previous login's project, then the ADC project, then the only visible project.
 - `polyctl gcp whoami` checks the credentials and shows project, account and login method. `gcp project list` / `gcp project current` show the projects.
 - The Compute Engine API must be enabled in the project. A disabled API or a missing permission (`compute.instances.*`, `compute.addresses.*`, `compute.firewalls.*`, `compute.sslCertificates.*`, `compute.targetHttpsProxies.setSslCertificates`, ...) is exit code 3 and names what is missing.

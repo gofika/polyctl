@@ -85,9 +85,9 @@ The usage error always names what is missing. The table covers accounts, the pla
 | `auth login aws --set method=keys` | access key id, secret, optional session token | `--set access_key_id=<id> --set secret_access_key=-` (`--set session_token=-`), or `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` (+ `AWS_SESSION_TOKEN`) |
 | `auth login aws --set method=profile` | the profile from `~/.aws/config` / `~/.aws/credentials` | nothing: `--set aws_profile=<name>`, else the previous login's, else `default` |
 | `auth login aws --set method=sso` | start URL, Identity Center region; after approval, account and role when several | `--set start_url=<url>` (`--set sso_region=`, default `us-east-1`); `--set account_id` and `--set role_name` when several are accessible |
-| `auth login gcp` (`adc`) | the project | `--set project=<id>` unless unambiguous (previous login, ADC project, only visible project) |
+| `auth login gcp` | browser approval with the built-in OAuth client (`--no-browser` prints the URL), then the project; a build without that client uses `adc` and, without Application Default Credentials, asks for the method | `adc`: Application Default Credentials must exist (exit code 3 otherwise); `--set project=<id>` unless unambiguous (previous login, ADC project, only visible project) |
 | `auth login gcp --set method=service_account` | the key file; the project when the key names none | `--set key_file=<path>` (`--set project=<id>` when needed) |
-| `auth login gcp --set method=oauth` | client id and secret; the project | `--set client_id=<id> --set client_secret=- --set project=<id>` |
+| `auth login gcp --set method=oauth` | browser approval, then the project; client id and secret first for an OAuth client of your own | `--set project=<id>`; `--set client_id=<id> --set client_secret=-` for an OAuth client of your own (required in a build without a built-in one) |
 | `auth login aliyun` | the site (`cn` / `intl`, no default), AccessKey ID and Secret, then the default region | `--set site=cn\|intl` (kept from the first login) and `--set access_key_id=<id> --set access_key_secret=-`, or `ALIBABA_CLOUD_ACCESS_KEY_ID` + `ALIBABA_CLOUD_ACCESS_KEY_SECRET`, or `--set aliyun_profile=<profile>`; region defaults to the previous login's, then `cn-hangzhou` |
 
 ### Platform-neutral commands

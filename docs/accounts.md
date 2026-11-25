@@ -202,19 +202,38 @@ polyctl auth login aws --profile legacy --set method=profile --set aws_profile=d
 
 Keys: `method`, `project`, `key_file`, `client_id`, `client_secret`.
 
+`polyctl auth login gcp` on a terminal opens the browser and signs in with your Google account. gcloud is not needed.
+
 | `method` | Flow |
 | --- | --- |
-| `adc` (default) | Application Default Credentials. If none exist, polyctl prints the `gcloud auth application-default login` command and exits with code 3; run it, then log in again. |
+| `oauth` (default on a terminal) | Browser login. Opens Google's consent screen, receives the code on a loopback listener on `127.0.0.1` (authorization code with PKCE; waits up to 5 minutes without a terminal) and stores the refresh token. Uses the OAuth client built into polyctl, or your own Desktop-app client with `client_id` and `client_secret`. |
 | `service_account` | `key_file=<path>`: the JSON key's contents are stored. A leading `~`, `~/` or `~\` is the home directory, also in the interactive prompt. `project` defaults to the key's `project_id`. |
-| `oauth` | Your own Desktop-app OAuth client (`client_id`, `client_secret`). Opens the consent screen, receives the code on a loopback listener (waits up to 5 minutes) and stores the refresh token. |
+| `adc` (default without a terminal) | Application Default Credentials, as written by `gcloud auth application-default login`. Nothing is stored. If none exist, polyctl prints that command (and says so when gcloud is not installed), names the other methods and exits with code 3. |
+
+Which method a login uses:
+
+- `--set method=` when given.
+- Else the method of the account when it is logged in again. An account of your own OAuth client keeps to such a client and needs `client_id` and `client_secret` again.
+- Else, on a terminal, the browser login with the built-in client; no question is asked about the method.
+- Else (non-interactive) `adc`.
+
+The built-in client:
+
+- Until Google has verified it, the consent screen may show **"Google hasn't verified this app"**. Choose **Advanced**, then the **Go to ... (unsafe)** link, to continue. If you would rather not, `method=adc`, `method=service_account` and `method=oauth` with your own client remain available.
+- Its id and secret are part of the program (Google does not treat the secret of a desktop client as confidential) and are never stored: the account records `oauth_client: builtin` in `config.yaml` and its refresh token in the credential store, and takes the client from the polyctl binary in use.
+- A polyctl build without a built-in client (none is set while the client is being registered) behaves as follows instead: on a terminal, `adc` when Application Default Credentials exist, else polyctl asks which way to log in (a service account key file, your own OAuth client, or instructions for creating the credentials with gcloud; the last one adds no account and exits with code 0). `method=oauth` then needs `client_id` and `client_secret`, and an account of the built-in client cannot be used (exit code 3) until you log in again.
 
 `project` sets the default project; without it polyctl lists visible projects and asks.
 
-**Non-interactive:** nothing is asked. `service_account` needs `key_file` (and `project` if the key names none); `oauth` needs `client_id`, `client_secret=-` and `project`. The project otherwise falls back to the previous login's, the ADC project, or the only visible one; several and no default is a usage error.
+**Non-interactive:** nothing is asked, no browser is opened, and the default method is `adc`. `service_account` needs `key_file` (and `project` if the key names none). `oauth` needs `project` (and `client_id`, `client_secret=-` for your own client, or in a build without a built-in one); it prints the consent URL and waits up to 5 minutes for the browser to return. The project otherwise falls back to the previous login's, the ADC project, or the only visible one; several and no default is a usage error.
+
+`--no-browser` prints the consent URL instead of opening a browser; open it in a browser on the same machine, as the code returns to `127.0.0.1`.
 
 ```sh
-polyctl auth login gcp --profile acme --set project=acme-prod
+polyctl auth login gcp --profile acme                                          # browser login
+polyctl auth login gcp --profile acme --set method=adc --set project=acme-prod
 polyctl auth login gcp --profile acme-ci --set method=service_account --set key_file=./sa.json --set project=acme-ci
+printf '%s\n' "$CLIENT_SECRET" | polyctl auth login gcp --profile me --set method=oauth --set client_id=<id> --set client_secret=- --set project=acme-prod
 ```
 
 ### Alibaba Cloud
