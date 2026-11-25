@@ -1388,6 +1388,137 @@ func TestNonDefaultDirAdoptsTheDataKeyWithTheInventoryElsewhere(t *testing.T) {
 	}
 }
 
+// keyringDirRun opens the credential store of the configuration directory
+// dir (HOME elsewhere) and loads the namecom account of profile p.
+func keyringDirRun(t *testing.T, dir string) (platform.Profile, error) {
+	t.Helper()
+	t.Setenv(config.EnvConfigDir, dir)
+	rt := app.New(app.Flags{}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	if err := rt.Init(); err != nil {
+		t.Fatal(err)
+	}
+	return rt.LoadProfile("p", platform.NameCom)
+}
+
+func keyringDirSetup(t *testing.T) (parent string) {
+	t.Helper()
+	keyring.MockInit()
+	registerFakes()
+	resetFakes()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("POLYCTL_CREDENTIAL_STORE", "auto")
+	t.Setenv("POLYCTL_OUTPUT", "")
+	return t.TempDir()
+}
+
+func writeKeyringDirConfig(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := "profiles:\n  p:\n    platforms:\n      namecom:\n        credential_backend: keyring\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A moved directory keeps the keyring service its marker records (also a
+// marker of an earlier release, which records the service alone), so its
+// accounts and the data key of its instance passwords stay in reach.
+func TestMovedConfigDirKeepsItsKeyringService(t *testing.T) {
+	parent := keyringDirSetup(t)
+	old := filepath.Join(parent, "work", "polyctl")
+	writeKeyringDirConfig(t, old)
+	svc := creds.ServiceFor(old, "")
+	if err := (creds.Keyring{Service: svc}).Set("p/namecom", map[string]string{"token": "t"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(old, app.KeyringMarker), []byte(svc+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	moved := filepath.Join(parent, "clients", "polyctl")
+	if err := os.MkdirAll(filepath.Dir(moved), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(old, moved); err != nil {
+		t.Fatal(err)
+	}
+	if p, err := keyringDirRun(t, moved); err != nil || p.Secret["token"] != "t" {
+		t.Fatalf("LoadProfile after the move = %+v, %v", p, err)
+	}
+	b, _ := os.ReadFile(filepath.Join(moved, app.KeyringMarker))
+	if want := svc + "\n" + creds.CanonicalDir(moved) + "\n"; string(b) != want {
+		t.Errorf("marker = %q, want %q", b, want)
+	}
+}
+
+// A copy of a directory that still exists gets a service of its own,
+// starting with copies of the original's entries: a logout in the copy
+// leaves the original alone.
+func TestCopiedConfigDirGetsItsOwnKeyringService(t *testing.T) {
+	parent := keyringDirSetup(t)
+	orig := filepath.Join(parent, "a")
+	writeKeyringDirConfig(t, orig)
+	if err := (creds.Keyring{}).Set("p/namecom", map[string]string{"token": "t"}); err != nil {
+		t.Fatal(err)
+	}
+	if p, err := keyringDirRun(t, orig); err != nil || p.Secret["token"] != "t" {
+		t.Fatalf("LoadProfile in the original = %+v, %v", p, err)
+	}
+	if err := (creds.Keyring{}).Delete("p/namecom"); err != nil {
+		t.Fatal(err)
+	}
+	cp := filepath.Join(parent, "b")
+	writeKeyringDirConfig(t, cp)
+	b, err := os.ReadFile(filepath.Join(orig, app.KeyringMarker))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cp, app.KeyringMarker), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if p, err := keyringDirRun(t, cp); err != nil || p.Secret["token"] != "t" {
+		t.Fatalf("LoadProfile in the copy = %+v, %v", p, err)
+	}
+	own := creds.Keyring{Service: creds.ServiceFor(cp, "")}
+	if err := own.Delete("p/namecom"); err != nil {
+		t.Fatal(err)
+	}
+	if p, err := keyringDirRun(t, orig); err != nil || p.Secret["token"] != "t" {
+		t.Errorf("LoadProfile in the original after a logout in the copy = %+v, %v", p, err)
+	}
+}
+
+// On a case-insensitive file system (the macOS default) the same directory
+// spelled in another case uses the same keyring service, the default
+// directory included.
+func TestConfigDirSpelledInAnotherCase(t *testing.T) {
+	parent := keyringDirSetup(t)
+	dir := filepath.Join(parent, "Ops")
+	writeKeyringDirConfig(t, dir)
+	other := filepath.Join(parent, "ops")
+	if _, err := os.Stat(other); err != nil {
+		t.Skip("case-sensitive file system")
+	}
+	if err := (creds.Keyring{}).Set("p/namecom", map[string]string{"token": "t"}); err != nil {
+		t.Fatal(err)
+	}
+	if p, err := keyringDirRun(t, dir); err != nil || p.Secret["token"] != "t" {
+		t.Fatalf("LoadProfile = %+v, %v", p, err)
+	}
+	if err := (creds.Keyring{}).Delete("p/namecom"); err != nil {
+		t.Fatal(err)
+	}
+	if p, err := keyringDirRun(t, other); err != nil || p.Secret["token"] != "t" {
+		t.Errorf("LoadProfile spelled in another case = %+v, %v", p, err)
+	}
+	if got := creds.ServiceFor(other, dir); got != creds.Service {
+		t.Errorf("ServiceFor(the default directory in another case) = %q, want %q", got, creds.Service)
+	}
+}
+
 func TestReloadConfig(t *testing.T) {
 	rt := newHarness(t, app.Flags{}, nil).rt
 	cfg, err := rt.Config()

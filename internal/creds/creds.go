@@ -50,11 +50,36 @@ func canonical(path string) string {
 	return filepath.Clean(path)
 }
 
+// CanonicalDir is the form of a directory's path that ServiceFor hashes.
+func CanonicalDir(dir string) string { return canonical(dir) }
+
+// samePath reports whether a and b name the same directory: the same
+// canonical path, or, on a case-insensitive file system such as the macOS
+// default, the same directory spelled in another case.
 func samePath(a, b string) bool {
 	if a == "" || b == "" {
 		return false
 	}
-	return canonical(a) == canonical(b)
+	if canonical(a) == canonical(b) {
+		return true
+	}
+	ai, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	bi, err := os.Stat(b)
+	return err == nil && os.SameFile(ai, bi)
+}
+
+// IsDirService reports whether s is a service ServiceFor returns for a
+// directory other than the default one.
+func IsDirService(s string) bool {
+	h, ok := strings.CutPrefix(s, Service+":")
+	if !ok || len(h) != 16 {
+		return false
+	}
+	_, err := hex.DecodeString(h)
+	return err == nil
 }
 
 // ErrNotFound is returned when no secret exists under a key.
@@ -654,8 +679,13 @@ func (m *Multi) Delete(key string) error {
 // directory: its keyring entries use Service, those of any other directory
 // a service of their own (ServiceFor).
 func Open(mode, configDir, defaultDir string) (*Multi, error) {
+	return OpenKeyring(mode, configDir, Keyring{Service: ServiceFor(configDir, defaultDir)})
+}
+
+// OpenKeyring is Open with the keyring backend given: its service, and the
+// services its entries may be adopted from.
+func OpenKeyring(mode, configDir string, kr Keyring) (*Multi, error) {
 	file := NewFile(configDir)
-	kr := Keyring{Service: ServiceFor(configDir, defaultDir)}
 	switch mode {
 	case "file":
 		return &Multi{Primary: file}, nil
