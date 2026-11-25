@@ -73,3 +73,27 @@ func TestOptionLabelsKeepTheirCells(t *testing.T) {
 		}
 	}
 }
+
+// shown is what an 80-column terminal shows of a label of a select list: a
+// label is cut at its end, after 75 columns.
+func shown(label string) string {
+	if r := []rune(label); len(r) > 75 {
+		return string(r[:75])
+	}
+	return label
+}
+
+// The routed record sets of one name and type differ in their set identifier
+// only: it has to be in the part of the label a terminal shows, however long
+// the values are.
+func TestRecordSetLabelShowsTheSetIdentifier(t *testing.T) {
+	dkim := []string{`"v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1234567890abcdefghijklmnopqrstuvwxyz"`}
+	us := recordSetLabel("mail.example.com.", "TXT", "us", dkim, 300)
+	eu := recordSetLabel("mail.example.com.", "TXT", "eu", dkim, 300)
+	if shown(us) == shown(eu) {
+		t.Errorf("two sets are shown as the same row: %q", shown(us))
+	}
+	if got, want := recordSetLabel("www.example.com.", "A", "", []string{"198.51.100.2", "198.51.100.3"}, 60), "www.example.com.  A  -  198.51.100.2, 198.51.100.3  ttl 60"; got != want {
+		t.Errorf("set without an identifier:\n got %q\nwant %q", got, want)
+	}
+}

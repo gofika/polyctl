@@ -1109,16 +1109,7 @@ func pickRecordSet(ctx context.Context, rt *app.Runtime, c *client, z *platform.
 	}
 	var opts []prompt.Option
 	for _, s := range sets {
-		ttl, id := "", ""
-		if s.ttl > 0 {
-			ttl = fmt.Sprintf("ttl %d", s.ttl)
-		}
-		if s.setID != "" {
-			id = "set " + s.setID
-		}
-		// The cells of a record list (name, type, value, TTL), the values
-		// of the set as one cell, then the set identifier.
-		opts = append(opts, prompt.Option{Label: prompt.Cells(s.name, s.typ, strings.Join(s.values, ", "), ttl, id), Value: s.name + "\x00" + s.typ + "\x00" + s.setID})
+		opts = append(opts, prompt.Option{Label: recordSetLabel(s.name, s.typ, s.setID, s.values, s.ttl), Value: s.name + "\x00" + s.typ + "\x00" + s.setID})
 	}
 	v, err := rt.Choose(app.Choice{Title: "Record set to delete from " + z.Name, Options: opts, Arg: "--type",
 		Empty: app.NothingToDof("zone %s has no record set to delete", z.Name)})
@@ -1130,4 +1121,20 @@ func pickRecordSet(ctx context.Context, rt *app.Runtime, c *client, z *platform.
 		parts = append(parts, "")
 	}
 	return platform.FQDN(parts[0], z.Name), parts[1], parts[2], nil
+}
+
+// recordSetLabel: "www.example.com  A  set us  198.51.100.2, 198.51.100.3
+// ttl 60", the values of the set as one cell. The set identifier is all that
+// tells the routed sets of one name and type apart, so it comes before the
+// values: they can be longer than the terminal is wide, and a label is cut
+// at its end.
+func recordSetLabel(name, typ, setID string, values []string, ttl int) string {
+	id, t := "", ""
+	if setID != "" {
+		id = "set " + setID
+	}
+	if ttl > 0 {
+		t = fmt.Sprintf("ttl %d", ttl)
+	}
+	return prompt.Cells(name, typ, id, strings.Join(values, ", "), t)
 }

@@ -117,7 +117,7 @@ func TestRoute53RecordSetIdentifiers(t *testing.T) {
 	if !strings.Contains(l, "set eu") || !strings.Contains(l, "set us") {
 		t.Errorf("options: %s", l)
 	}
-	if !strings.Contains(l, "www.other.org  A  198.51.100.2  ttl 60  set us") {
+	if !strings.Contains(l, "www.other.org  A  set us  198.51.100.2  ttl 60") {
 		t.Errorf("cells of a record set: %s", l)
 	}
 	if len(r53.sets["Z3"]) != 1 || awssdk.ToString(r53.sets["Z3"][0].SetIdentifier) != "eu" {
