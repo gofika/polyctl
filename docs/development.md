@@ -111,13 +111,20 @@ CREATE TABLE sync_state (              -- freshness of each synced set
   expires_at    INTEGER NOT NULL,
   PRIMARY KEY (platform, profile, resource_type, scope)
 );
+
+CREATE TABLE profile_renames (         -- auth rename under way (moved, config not saved yet)
+  platform      TEXT    NOT NULL,
+  old           TEXT    NOT NULL,
+  new           TEXT    NOT NULL,
+  PRIMARY KEY (platform, old, new)
+);
 ```
 
 - `resources.data` keeps the platform-native object, so `-o json` on a cached read shows the same fields as a live read. The JSON version is SQLite's `user_version`; DNS records written by 0.1.x have their `content` field renamed to `value` when the database is opened.
 - `domain_index` is rebuilt from `zone` and `domain` resources on every sync. DNS records are not indexed; they are looked up through their zone.
 - `ip_index` is written with every resource that carries addresses (all interface, secondary and alias addresses of an instance, load balancer addresses and DNS names, elastic / static addresses, database endpoints). A prefix matches every address it contains. Older databases get the table on first use and fill it on the next sync.
 - Everything except `instance_secrets` is a cache: deleting the file is safe, polyctl re-fetches on demand.
-- `instance_secrets` is not a cache. Sync and `--refresh` leave it alone, `auth rename` moves its rows, `auth logout` detaches them (profile column set to `<profile>/detached`, readable by instance id only), and deleting the file loses stored Windows passwords, which no platform can show again.
+- `instance_secrets` is not a cache. Sync and `--refresh` leave it alone, `auth rename` moves its rows (recording the rename in `profile_renames` until the config is saved, so that the same rename run again after an interruption keeps the rows it moved instead of detaching them as a logged-out account's), `auth logout` detaches them (profile column set to `<profile>/detached`, readable by instance id only), and deleting the file loses stored Windows passwords, which no platform can show again.
 
 ## Local CI
 

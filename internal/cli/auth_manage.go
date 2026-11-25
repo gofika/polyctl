@@ -13,6 +13,7 @@ import (
 	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/config"
 	"github.com/gofika/polyctl/internal/creds"
+	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/output"
 	"github.com/gofika/polyctl/internal/platform"
 	"github.com/gofika/polyctl/internal/prompt"
@@ -449,10 +450,15 @@ func renameProfile(ctx context.Context, rt *app.Runtime, oldName, newName string
 	}
 	var moved []platform.ID
 	undoInventory := func() {
+		failed := false
 		for _, id := range moved {
 			if err := db.RenameProfile(undoCtx, id, newName, oldName); err != nil {
+				failed = true
 				rt.Infof("warning: the cached %s resources of profile %q could not be restored: %v (run `polyctl sync --profile %s`)", id, oldName, err, oldName)
 			}
+		}
+		if !failed {
+			endRename(undoCtx, rt, db, oldName, newName)
 		}
 	}
 	for _, id := range ids {
@@ -490,6 +496,7 @@ func renameProfile(ctx context.Context, rt *app.Runtime, oldName, newName string
 		return fmt.Errorf("save config: %w", err)
 	}
 
+	endRename(undoCtx, rt, db, oldName, newName)
 	for _, id := range copied {
 		key := creds.Key(oldName, string(id))
 		if err := store.Delete(key); err != nil && !errors.Is(err, creds.ErrNotFound) {
@@ -509,6 +516,15 @@ func renameProfile(ctx context.Context, rt *app.Runtime, oldName, newName string
 	}
 	rt.Infof("profile %q renamed to %q", oldName, newName)
 	return nil
+}
+
+// endRename drops the inventory's record of a rename that is complete (or
+// undone). A record left behind only means that a later rename from oldName
+// to newName keeps rows it finds under newName instead of detaching them.
+func endRename(ctx context.Context, rt *app.Runtime, db *inventory.DB, oldName, newName string) {
+	if err := db.EndRename(ctx, oldName, newName); err != nil {
+		rt.Verbosef("clear the rename record of profile %q: %v", oldName, err)
+	}
 }
 
 func newAuthManageCmd(rt *app.Runtime) *cobra.Command {

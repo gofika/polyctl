@@ -71,7 +71,7 @@ func Open(path string) (*DB, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(schema + ipIndexSchema + secretSchema); err != nil {
+	if _, err := db.Exec(schema + ipIndexSchema + secretSchema + renameSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate inventory db: %w", err)
 	}
@@ -554,9 +554,27 @@ func (d *DB) Purge(ctx context.Context, p platform.ID, profile string) error {
 	return nil
 }
 
+// renameSchema records the renames of profiles under way: RenameProfile
+// adds a row in the transaction that moves an account's rows, and EndRename
+// removes it once the config names the profile anew (or the rename was
+// undone). A row left by an interrupted rename tells the rerun that the rows
+// already under the new name are the ones it moved.
+const renameSchema = `
+CREATE TABLE IF NOT EXISTS profile_renames (
+  platform  TEXT NOT NULL,
+  old       TEXT NOT NULL,
+  new       TEXT NOT NULL,
+  PRIMARY KEY (platform, old, new)
+);
+`
+
 // RenameProfile moves everything stored for an account from one profile name
-// to another, instance secrets included, in one transaction. Rows already stored under the new name for
-// that platform are stale leftovers and are removed first.
+// to another, instance secrets included, in one transaction. Rows already
+// stored under the new name for that platform are stale leftovers: cached
+// rows are removed first, instance secrets are detached. When an earlier
+// run of the same rename was interrupted after moving the rows (its record
+// is still there, see EndRename), the rows under the new name are the ones
+// it moved and are kept as they are.
 func (d *DB) RenameProfile(ctx context.Context, p platform.ID, oldName, newName string) error {
 	if oldName == newName {
 		return nil
@@ -566,11 +584,17 @@ func (d *DB) RenameProfile(ctx context.Context, p platform.ID, oldName, newName 
 		return err
 	}
 	defer tx.Rollback()
+	var resumed int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM profile_renames WHERE platform=? AND old=? AND new=?`, string(p), oldName, newName).Scan(&resumed); err != nil {
+		return err
+	}
 	for _, t := range []string{"resources", "domain_index", "ip_index", "sync_state"} {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM `+t+` WHERE platform=? AND profile=?`, string(p), newName); err != nil {
-			return err
+		if resumed == 0 {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM `+t+` WHERE platform=? AND profile=?`, string(p), newName); err != nil {
+				return err
+			}
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE `+t+` SET profile=? WHERE platform=? AND profile=?`, newName, string(p), oldName); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE OR REPLACE `+t+` SET profile=? WHERE platform=? AND profile=?`, newName, string(p), oldName); err != nil {
 			return err
 		}
 	}
@@ -579,13 +603,26 @@ func (d *DB) RenameProfile(ctx context.Context, p platform.ID, oldName, newName 
 	// release that kept them in place): they are detached, not merged into
 	// the renamed account, and a rename undone by renaming back moves only
 	// the rows this one moved.
-	if err := detachSecrets(ctx, tx, p, newName); err != nil {
-		return err
+	if resumed == 0 {
+		if err := detachSecrets(ctx, tx, p, newName); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE OR REPLACE instance_secrets SET profile=? WHERE platform=? AND profile=?`, newName, string(p), oldName); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO profile_renames (platform, old, new) VALUES (?, ?, ?)`, string(p), oldName, newName); err != nil {
+		return err
+	}
 	return tx.Commit()
+}
+
+// EndRename removes the records of a rename of profile oldName to newName
+// (and of its undo), once the config was saved with the new name or the
+// rename was undone.
+func (d *DB) EndRename(ctx context.Context, oldName, newName string) error {
+	_, err := d.sql.ExecContext(ctx, `DELETE FROM profile_renames WHERE (old=? AND new=?) OR (old=? AND new=?)`, oldName, newName, newName, oldName)
+	return err
 }
 
 // DetachedSuffix is appended to the profile of the instance secrets of an

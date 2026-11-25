@@ -74,3 +74,33 @@ func TestRenameProfileDetachesLeftoversAtTheTarget(t *testing.T) {
 		t.Errorf("the leftover is not kept detached: %+v", rows)
 	}
 }
+
+// A rename interrupted after the inventory moved (before the config was
+// saved) is run again: the rows it moved stay with the account instead of
+// being detached as leftovers of a logged-out one, and its cached rows stay
+// too. Once the rename is recorded as done, leftovers are detached again.
+func TestRenameProfileResumedAfterAnInterruption(t *testing.T) {
+	ctx := context.Background()
+	db, _ := openDB(t)
+	putSecret(t, db, "old", "i-1", "mine")
+	if err := db.RenameProfile(ctx, platform.AWS, "old", "new"); err != nil {
+		t.Fatal(err)
+	}
+	// Interrupted here; the same rename runs again.
+	if err := db.RenameProfile(ctx, platform.AWS, "old", "new"); err != nil {
+		t.Fatal(err)
+	}
+	if rows, _ := db.ListSecrets(ctx, platform.AWS, "new", ""); len(rows) != 1 || rows[0].InstanceID != "i-1" {
+		t.Errorf("rows under new after the rerun = %+v, want i-1", rows)
+	}
+	if err := db.EndRename(ctx, "old", "new"); err != nil {
+		t.Fatal(err)
+	}
+	putSecret(t, db, "old", "i-2", "other")
+	if err := db.RenameProfile(ctx, platform.AWS, "old", "new"); err != nil {
+		t.Fatal(err)
+	}
+	if rows, _ := db.FindDetachedSecret(ctx, platform.AWS, "new", "", "i-1"); len(rows) != 1 {
+		t.Errorf("a leftover of a finished rename is not detached: %+v", rows)
+	}
+}
