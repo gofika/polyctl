@@ -90,7 +90,7 @@ func TestLBPicks(t *testing.T) {
 	if l := prompttest.Labels(p.Asked[0].Options); strings.Contains(l, "lb-tcp-db") {
 		t.Errorf("cert set offered a TCP load balancer:\n%s", l)
 	}
-	if !strings.Contains(prompttest.Labels(p.Asked[1].Options), "other.com  (on proxy proxy-https-web-1)") {
+	if !strings.Contains(prompttest.Labels(p.Asked[1].Options), "other.com  on proxy proxy-https-web-1") {
 		t.Errorf("domains offered:\n%s", prompttest.Labels(p.Asked[1].Options))
 	}
 

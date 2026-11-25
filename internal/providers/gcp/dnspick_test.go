@@ -90,8 +90,8 @@ func TestDNSRecordDeletePicks(t *testing.T) {
 	}
 	p.Done()
 	l := prompttest.Labels(p.Find("Record set to delete").Options)
-	if strings.Contains(l, "SOA") || strings.Contains(l, "example.com  NS") || !strings.Contains(l, "www.example.com  A  1.1.1.1, +1 more  ttl 300") ||
-		!strings.Contains(l, "example.com  MX  10 mail.example.com") {
+	if strings.Contains(l, "SOA") || strings.Contains(l, "example.com  NS") || !strings.Contains(l, "www.example.com  A  1.1.1.1  ttl 300  +1 more") ||
+		!strings.Contains(l, "example.com  MX  10 mail.example.com  ttl 3600") {
 		t.Errorf("sets offered:\n%s", l)
 	}
 	if rs := g.rrset("example-zone", "www.example.com.", "A"); rs == nil || strings.Join(rs.Rrdatas, ",") != "1.1.1.1" {

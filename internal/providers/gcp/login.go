@@ -615,10 +615,10 @@ func chooseProjects(ctx context.Context, in platform.LoginInput, pio *prompt.IO,
 
 // projectLabel: "my-project  My Project".
 func projectLabel(id, name string) string {
-	if name == "" || name == id {
-		return id
+	if name == id {
+		name = ""
 	}
-	return id + "  " + name
+	return prompt.Cells(id, name)
 }
 
 func hasOption(opts []prompt.Option, v string) bool {

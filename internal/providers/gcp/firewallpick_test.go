@@ -52,8 +52,8 @@ func TestFirewallCreateAsks(t *testing.T) {
 	}
 	p.Done()
 	ranges := p.Find("Source ranges of the rule on network default")
-	if l := prompttest.Labels(ranges.Options); !strings.Contains(l, "10.128.0.0/20  subnet default (us-central1)") || !strings.Contains(l, iapRange+"  (IAP TCP forwarding)") ||
-		!strings.Contains(l, "0.0.0.0/0  (anywhere)") {
+	if l := prompttest.Labels(ranges.Options); !strings.Contains(l, "10.128.0.0/20  subnet default  us-central1") || !strings.Contains(l, iapRange+"  IAP TCP forwarding") ||
+		!strings.Contains(l, "0.0.0.0/0  anywhere") {
 		t.Errorf("ranges offered:\n%s", l)
 	}
 	fw := h.gce.firewall("allow-ssh")
@@ -158,8 +158,8 @@ func TestFirewallUpdateAsksWhatToChange(t *testing.T) {
 		t.Fatalf("add ranges: %v\n%s", err, h.stderr.String())
 	}
 	p.Done()
-	if l := prompttest.Labels(p.Find("What to change on rule allow-ssh").Options); !strings.Contains(l, "Allowed protocols and ports (now tcp:22)") ||
-		!strings.Contains(l, "Add source ranges (now 10.0.0.0/8)") || !strings.Contains(l, "Target tags (now ssh)") || !strings.Contains(l, "Priority (now 1000)") {
+	if l := prompttest.Labels(p.Find("What to change on rule allow-ssh").Options); !strings.Contains(l, "Allowed protocols and ports  now tcp:22") ||
+		!strings.Contains(l, "Add source ranges  now 10.0.0.0/8") || !strings.Contains(l, "Target tags  now ssh") || !strings.Contains(l, "Priority  now 1000") {
 		t.Errorf("options:\n%s", l)
 	}
 	if fw := h.gce.firewall("allow-ssh"); strings.Join(fw.SourceRanges, ",") != "10.0.0.0/8,10.128.0.0/20" {

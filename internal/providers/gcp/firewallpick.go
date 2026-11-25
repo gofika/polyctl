@@ -21,8 +21,10 @@ import (
 const iapRange = "35.235.240.0/20"
 
 // firewallOptionLabel: "allow-ssh  default  INGRESS  prio 1000  tcp:22
-// 10.0.0.0/8  tags ssh".
-func firewallOptionLabel(fw *compute.Firewall) string {
+// 10.0.0.0/8  tags ssh  project p1  disabled"; a rule without ranges shows
+// "-" in their cell. The project cell is there only with project (a list
+// of the rules of several projects).
+func firewallOptionLabel(fw *compute.Firewall, project string) string {
 	ranges := fw.SourceRanges
 	if fw.Direction == dirEgress {
 		ranges = fw.DestinationRanges
@@ -35,13 +37,22 @@ func firewallOptionLabel(fw *compute.Firewall) string {
 	if fw.Disabled {
 		dis = "disabled"
 	}
-	return joinLabel(fw.Name, lastSegment(fw.Network), fw.Direction, "prio "+strconv.FormatInt(fw.Priority, 10), ruleLabel(fw),
-		strings.Join(ranges, ","), tags, dis)
+	cells := []string{fw.Name, lastSegment(fw.Network), fw.Direction, "prio " + strconv.FormatInt(fw.Priority, 10), ruleLabel(fw),
+		strings.Join(ranges, ","), tags}
+	if project != "" {
+		cells = append(cells, "project "+project)
+	}
+	return prompt.Cells(append(cells, dis)...)
 }
 
 // firewallOptions lists the rules of the project as options, sorted by
-// network and name; keep (nil: all) keeps the usable ones.
-func firewallOptions(ctx context.Context, c *client, keep func(*compute.Firewall) bool) ([]prompt.Option, error) {
+// network and name; keep (nil: all) keeps the usable ones. withProject
+// adds the project to the labels.
+func firewallOptions(ctx context.Context, c *client, withProject bool, keep func(*compute.Firewall) bool) ([]prompt.Option, error) {
+	project := ""
+	if withProject {
+		project = c.project
+	}
 	all, err := c.listFirewalls(ctx)
 	if err != nil {
 		return nil, err
@@ -55,7 +66,7 @@ func firewallOptions(ctx context.Context, c *client, keep func(*compute.Firewall
 	var opts []prompt.Option
 	for _, fw := range all {
 		if keep == nil || keep(fw) {
-			opts = append(opts, prompt.Option{Label: firewallOptionLabel(fw), Value: fw.Name})
+			opts = append(opts, prompt.Option{Label: firewallOptionLabel(fw, project), Value: fw.Name})
 		}
 	}
 	return opts, nil
@@ -82,12 +93,12 @@ func firewallArg(ctx context.Context, rt *app.Runtime, c *client, profile string
 	var clients []*client
 	several := len(c.listProjects()) > 1
 	err := c.forProjects(ctx, func(pc *client) error {
-		po, err := firewallOptions(ctx, pc, nil)
+		po, err := firewallOptions(ctx, pc, several, nil)
 		for _, o := range po {
 			// The value names the project too: two projects may hold a
 			// rule of one name.
 			if several {
-				o = prompt.Option{Label: joinLabel(o.Label, "project "+pc.project), Value: strconv.Itoa(len(clients)) + "/" + o.Value}
+				o.Value = strconv.Itoa(len(clients)) + "/" + o.Value
 			}
 			opts = append(opts, o)
 		}
@@ -130,12 +141,12 @@ func askFirewallName(ctx context.Context, rt *app.Runtime, c *client) (string, e
 
 // commonAllows are the --allow values offered by askAllow.
 var commonAllows = []prompt.Option{
-	{Label: "tcp:22  (SSH)", Value: "tcp:22"},
-	{Label: "tcp:80  (HTTP)", Value: "tcp:80"},
-	{Label: "tcp:443  (HTTPS)", Value: "tcp:443"},
-	{Label: "tcp:3389  (RDP)", Value: "tcp:3389"},
-	{Label: "icmp  (ping)", Value: "icmp"},
-	{Label: "all  (every protocol and port)", Value: "all"},
+	{Label: "tcp:22  SSH", Value: "tcp:22"},
+	{Label: "tcp:80  HTTP", Value: "tcp:80"},
+	{Label: "tcp:443  HTTPS", Value: "tcp:443"},
+	{Label: "tcp:3389  RDP", Value: "tcp:3389"},
+	{Label: "icmp  ping", Value: "icmp"},
+	{Label: "all  every protocol and port", Value: "all"},
 }
 
 // chooseWithOther is a multiple choice among opts plus "Other (typed)...",
@@ -217,10 +228,11 @@ func askRanges(ctx context.Context, rt *app.Runtime, c *client, title, network, 
 	for _, h := range have {
 		seen[h] = true
 	}
-	add := func(cidr, label string) {
+	// The cells: the range, what it is, its region.
+	add := func(cidr, what, region string) {
 		if cidr != "" && !seen[cidr] {
 			seen[cidr] = true
-			opts = append(opts, prompt.Option{Label: joinLabel(cidr, label), Value: cidr})
+			opts = append(opts, prompt.Option{Label: prompt.Cells(cidr, what, region), Value: cidr})
 		}
 	}
 	for _, s := range subs {
@@ -228,15 +240,15 @@ func askRanges(ctx context.Context, rt *app.Runtime, c *client, title, network, 
 		if region == "" {
 			region = regionFromURL(s.SelfLink)
 		}
-		add(s.IpCidrRange, fmt.Sprintf("subnet %s (%s)", s.Name, lastSegment(region)))
+		add(s.IpCidrRange, "subnet "+s.Name, lastSegment(region))
 		for _, r := range s.SecondaryIpRanges {
-			add(r.IpCidrRange, fmt.Sprintf("secondary range %s of subnet %s", r.RangeName, s.Name))
+			add(r.IpCidrRange, fmt.Sprintf("secondary range %s of subnet %s", r.RangeName, s.Name), lastSegment(region))
 		}
 	}
 	if direction != dirEgress && remoteLogin(allow) {
-		add(iapRange, "(IAP TCP forwarding)")
+		add(iapRange, "IAP TCP forwarding", "")
 	}
-	add("0.0.0.0/0", "(anywhere)")
+	add("0.0.0.0/0", "anywhere", "")
 	return chooseWithOther(rt, title, "--"+flag, opts, "Other (typed CIDR)...", "CIDR (such as 203.0.113.0/24)", func(s string) error {
 		_, err := parseCIDRs(flag, []string{s})
 		return err
@@ -340,7 +352,7 @@ func pickHealthCheckRegion(ctx context.Context, rt *app.Runtime, c *client, netw
 	sort.Strings(regions)
 	var opts []prompt.Option
 	for _, r := range regions {
-		opts = append(opts, prompt.Option{Label: joinLabel(r, plural(count[r], "subnet")), Value: r})
+		opts = append(opts, prompt.Option{Label: prompt.Cells(r, plural(count[r], "subnet")), Value: r})
 	}
 	def := ""
 	if len(opts) == 1 {
@@ -363,7 +375,7 @@ func pickEnsureRule(ctx context.Context, rt *app.Runtime) (preset, name string, 
 	if err != nil {
 		return "", "", err
 	}
-	opts, err := firewallOptions(ctx, c, func(fw *compute.Firewall) bool {
+	opts, err := firewallOptions(ctx, c, false, func(fw *compute.Firewall) bool {
 		return !fw.Disabled && len(fw.Denied) == 0 && len(fw.TargetServiceAccounts) == 0
 	})
 	if err != nil {
@@ -397,13 +409,13 @@ func askFirewallUpdate(ctx context.Context, rt *app.Runtime, c *client, fw *comp
 	}
 	var opts []prompt.Option
 	if len(fw.Denied) == 0 {
-		opts = append(opts, prompt.Option{Label: "Allowed protocols and ports (now " + joinOrNone(have, " ") + ")", Value: "allow"})
+		opts = append(opts, prompt.Option{Label: prompt.Cells("Allowed protocols and ports", "now "+joinOrNone(have, " ")), Value: "allow"})
 	}
 	opts = append(opts,
-		prompt.Option{Label: "Add " + strings.ToLower(rangeWord) + " (now " + joinOrNone(ranges, ", ") + ")", Value: rangeFlag},
-		prompt.Option{Label: "Target tags (now " + joinOrNone(fw.TargetTags, ", ") + ")", Value: "target-tag"},
-		prompt.Option{Label: "Description (now " + orNone(fw.Description) + ")", Value: "description"},
-		prompt.Option{Label: "Priority (now " + strconv.FormatInt(fw.Priority, 10) + ")", Value: "priority"},
+		prompt.Option{Label: prompt.Cells("Add "+strings.ToLower(rangeWord), "now "+joinOrNone(ranges, ", ")), Value: rangeFlag},
+		prompt.Option{Label: prompt.Cells("Target tags", "now "+joinOrNone(fw.TargetTags, ", ")), Value: "target-tag"},
+		prompt.Option{Label: prompt.Cells("Description", "now "+orNone(fw.Description)), Value: "description"},
+		prompt.Option{Label: prompt.Cells("Priority", "now "+strconv.FormatInt(fw.Priority, 10)), Value: "priority"},
 	)
 	key, err := rt.Pick().Select("What to change on rule "+fw.Name, opts, "")
 	if err != nil {

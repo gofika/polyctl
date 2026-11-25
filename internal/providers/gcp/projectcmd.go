@@ -259,7 +259,7 @@ func visibleProjectOptions(ctx context.Context, rt *app.Runtime, profile string,
 		case r.Selected:
 			mark = "selected"
 		}
-		opts = append(opts, prompt.Option{Label: joinLabel(r.ProjectID, r.Name, mark), Value: r.ProjectID})
+		opts = append(opts, prompt.Option{Label: prompt.Cells(r.ProjectID, r.Name, mark), Value: r.ProjectID})
 	}
 	return opts, nil
 }
@@ -429,7 +429,7 @@ next sync rebuilds change. Works with --offline.`,
 					if p == cur.Project {
 						mark = "default"
 					}
-					opts = append(opts, prompt.Option{Label: joinLabel(p, mark), Value: p})
+					opts = append(opts, prompt.Option{Label: prompt.Cells(p, mark), Value: p})
 				}
 				if ids, err = rt.ChooseMany(app.Choice{Title: "Projects to remove", Options: opts, Arg: "<project-id>", What: "selected project"}); err != nil {
 					return err

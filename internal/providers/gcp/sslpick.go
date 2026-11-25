@@ -43,7 +43,7 @@ func askCertFiles(rt *app.Runtime, certFile, keyFile *string, prefer string) err
 				if err != nil || b == nil || !now.Before(b.NotAfter) {
 					continue
 				}
-				opts = append(opts, prompt.Option{Label: joinLabel(root, strings.Join(b.Names, ","),
+				opts = append(opts, prompt.Option{Label: prompt.Cells(root, strings.Join(b.Names, ","),
 					fmt.Sprintf("expires %s (%d days)", b.NotAfter.UTC().Format("2006-01-02"), b.DaysLeft(now))), Value: root})
 				if prefer != "" && def == "" && b.Covers(prefer) {
 					def = root
@@ -121,9 +121,9 @@ func pickCertScope(ctx context.Context, rt *app.Runtime, c *client, profile stri
 	if err != nil {
 		return "", err
 	}
-	opts := []prompt.Option{{Label: "Global  (global external load balancers)", Value: globalScope}}
+	opts := []prompt.Option{{Label: prompt.Cells("Global", "global external load balancers"), Value: globalScope}}
 	for _, r := range regions {
-		opts = append(opts, prompt.Option{Label: joinLabel(r.Name, "(regional load balancers of "+r.Name+")"), Value: r.Name})
+		opts = append(opts, prompt.Option{Label: prompt.Cells(r.Name, "regional load balancers of "+r.Name), Value: r.Name})
 	}
 	def := ""
 	if z, _ := rt.Setting(profile, platform.GCP, "zone", ""); z != "" {
@@ -140,7 +140,8 @@ func pickCertScope(ctx context.Context, rt *app.Runtime, c *client, profile stri
 }
 
 // certOptionLabel: "web-cert  us-central1  SELF_MANAGED  example.com
-// expires 2027-01-01 (40 days)  used by web-https-proxy".
+// expires 2027-01-01 (40 days)  used by web-https-proxy"; a certificate
+// without domains or an expiry shows "-" in that cell.
 func certOptionLabel(sc *compute.SslCertificate, users []string) string {
 	v := sslCertificateFrom(sc)
 	scope := v.Region
@@ -155,7 +156,7 @@ func certOptionLabel(sc *compute.SslCertificate, users []string) string {
 	if len(users) > 0 {
 		used = "used by " + strings.Join(users, ",")
 	}
-	return joinLabel(v.Name, scope, v.Type, strings.Join(v.Domains, ","), exp, used)
+	return prompt.Cells(v.Name, scope, v.Type, strings.Join(v.Domains, ","), exp, used)
 }
 
 // certTarget is a certificate picked or found among every scope.

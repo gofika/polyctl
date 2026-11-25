@@ -15,6 +15,7 @@ import (
 	"github.com/gofika/polyctl/internal/cert"
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt"
 )
 
 // A load balancer has no certificate of its own: certificates hang on its
@@ -178,7 +179,7 @@ func resolveLB(ctx context.Context, rt *app.Runtime, ref, region string, all boo
 			cands = append(cands, cand{profile: h.profile, project: h.rule.Project, where: (certScope{region: h.rule.Region}).label(), id: h.rule.ID})
 		}
 		h, err := disambiguate(rt, ambiguous("load balancer", ref, cands, regionFlags, ""), inScope, func(h ruleHit) string {
-			return joinLabel(h.rule.Name, (certScope{region: h.rule.Region}).label(), h.rule.IPAddress, "project "+h.rule.Project, "gcp/"+h.profile)
+			return prompt.Cells(h.rule.Name, (certScope{region: h.rule.Region}).label(), h.rule.IPAddress, "project "+h.rule.Project, "gcp/"+h.profile)
 		})
 		if err != nil {
 			return nil, err
@@ -256,7 +257,7 @@ func resolveLB(ctx context.Context, rt *app.Runtime, ref, region string, all boo
 		cands = append(cands, cand{profile: h.profile, project: h.c.project, where: (certScope{region: h.region}).label()})
 	}
 	h, err := disambiguate(rt, ambiguous("load balancer", ref, cands, regionFlags, ""), hits, func(h hit) string {
-		return joinLabel(ref, (certScope{region: h.region}).label(), "project "+h.c.project, "gcp/"+h.profile)
+		return prompt.Cells(ref, (certScope{region: h.region}).label(), "project "+h.c.project, "gcp/"+h.profile)
 	})
 	if err != nil {
 		return nil, err

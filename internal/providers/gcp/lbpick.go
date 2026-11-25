@@ -33,7 +33,7 @@ func lbTargetLabel(t *lbTarget) string {
 	if scope == "" {
 		scope = "global"
 	}
-	return joinLabel(t.name, scope, strings.Join(protos, ","), strings.Join(fronts, ", "), "project "+t.c.project, "gcp/"+t.profile)
+	return prompt.Cells(t.name, scope, strings.Join(protos, ","), strings.Join(fronts, ", "), "project "+t.c.project, "gcp/"+t.profile)
 }
 
 // lbTargets lists the load balancers of every selected GCP account, read
@@ -155,11 +155,11 @@ func lbRefOf(t *lbTarget, timeout time.Duration) *lbRef {
 func pickCertDomain(ctx context.Context, rt *app.Runtime, lb *lbRef) (string, error) {
 	var opts []prompt.Option
 	seen := map[string]bool{}
-	add := func(d, where string) {
+	add := func(d, where, expires string) {
 		d = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(d)), ".")
 		if d != "" && !seen[d] {
 			seen[d] = true
-			opts = append(opts, prompt.Option{Label: joinLabel(d, where), Value: d})
+			opts = append(opts, prompt.Option{Label: prompt.Cells(d, where, expires), Value: d})
 		}
 	}
 	if proxies, err := lb.scope.listProxies(ctx); err == nil {
@@ -170,7 +170,7 @@ func pickCertDomain(ctx context.Context, rt *app.Runtime, lb *lbRef) (string, er
 			for _, u := range p.SslCertificates {
 				if sc, err := lb.scope.getCert(ctx, lastSegment(u)); err == nil {
 					for _, d := range factsOf(sc).Domains {
-						add(d, "(on proxy "+p.Name+")")
+						add(d, "on proxy "+p.Name, "")
 					}
 				}
 			}
@@ -181,7 +181,7 @@ func pickCertDomain(ctx context.Context, rt *app.Runtime, lb *lbRef) (string, er
 		now := instanceClock.Now()
 		for _, root := range roots {
 			if b, err := st.Load(root, false); err == nil && b != nil && now.Before(b.NotAfter) {
-				add(root, fmt.Sprintf("(certificate store, expires %s)", b.NotAfter.UTC().Format("2006-01-02")))
+				add(root, "certificate store", "expires "+b.NotAfter.UTC().Format("2006-01-02"))
 			}
 		}
 	}

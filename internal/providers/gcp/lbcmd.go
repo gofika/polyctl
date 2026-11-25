@@ -114,8 +114,8 @@ step of the plan.`,
 			protocol = strings.ToLower(strings.TrimSpace(protocol))
 			if protocol == "" && rt.Interactive() {
 				if protocol, err = rt.Choose(app.Choice{Title: "Front end protocol", Default: lbProtoHTTP, Arg: "--protocol", Options: []prompt.Option{
-					{Label: "http  (port 80)", Value: lbProtoHTTP}, {Label: "https  (port 443, needs a certificate)", Value: lbProtoHTTPS},
-					{Label: "tcp  (a port of your choice)", Value: lbProtoTCP}}}); err != nil {
+					{Label: "http  port 80", Value: lbProtoHTTP}, {Label: "https  port 443  needs a certificate", Value: lbProtoHTTPS},
+					{Label: "tcp  a port of your choice", Value: lbProtoTCP}}}); err != nil {
 					return err
 				}
 			}

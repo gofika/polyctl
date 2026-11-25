@@ -229,7 +229,7 @@ func locateComponent(ctx context.Context, rt *app.Runtime, kind lbKind, name str
 		locFlag = "--zone <z>"
 	}
 	h, err := disambiguate(rt, ambiguous(string(kind), name, cands, locFlag, ""), hits, func(h located) string {
-		return joinLabel(h.name, h.where(), "project "+h.c.project, "gcp/"+h.profile)
+		return prompt.Cells(h.name, h.where(), "project "+h.c.project, "gcp/"+h.profile)
 	})
 	if err != nil {
 		return nil, err
@@ -255,7 +255,7 @@ func componentArg(ctx context.Context, rt *app.Runtime, spec componentSpec, args
 	var opts []prompt.Option
 	for i, h := range hits {
 		_, row := spec.row(h.component)
-		opts = append(opts, prompt.Option{Label: joinLabel(append(row, "gcp/"+h.profile)...), Value: strconv.Itoa(i)})
+		opts = append(opts, prompt.Option{Label: prompt.Cells(append(row, "gcp/"+h.profile)...), Value: strconv.Itoa(i)})
 	}
 	v, err := rt.Choose(app.Choice{Title: strings.ToUpper(string(spec.kind)[:1]) + string(spec.kind)[1:], Options: opts, Arg: "<name>", What: string(spec.kind)})
 	if err != nil {

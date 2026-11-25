@@ -273,7 +273,7 @@ func locateProject(ctx context.Context, rt *app.Runtime, c *client, profile, wha
 		cands = append(cands, cand{profile: profile, project: f.project})
 	}
 	return disambiguate(rt, ambiguous(what, name, cands, "", ""), found, func(f *client) string {
-		return joinLabel(name, "project "+f.project, "gcp/"+profile)
+		return prompt.Cells(name, "project "+f.project, "gcp/"+profile)
 	})
 }
 
@@ -304,7 +304,7 @@ func chooseListProject(rt *app.Runtime, c *client, profile string) (*client, err
 		if i == 0 {
 			mark = "default"
 		}
-		opts = append(opts, prompt.Option{Label: joinLabel(p, mark), Value: p})
+		opts = append(opts, prompt.Option{Label: prompt.Cells(p, mark), Value: p})
 	}
 	p, err := rt.Choose(app.Choice{Title: "Project", Options: opts, Default: projects[0], Arg: "--project", What: "selected project of gcp/" + profile})
 	if err != nil {

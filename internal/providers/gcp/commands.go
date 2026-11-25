@@ -15,6 +15,7 @@ import (
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/output"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt"
 )
 
 // Command returns the `polyctl gcp` command tree.
@@ -267,7 +268,7 @@ func chooseZone(rt *app.Runtime, profile, arg string, found []platform.Zone) (*z
 	cands := make([]cand, 0, len(found))
 	for _, z := range found {
 		project, name := splitZoneID(z.ID)
-		cands = append(cands, cand{profile: profile, project: project, id: "zone " + name, detail: joinLabel(z.Name, z.Status)})
+		cands = append(cands, cand{profile: profile, project: project, id: "zone " + name, detail: prompt.Cells(z.Name, z.Status)})
 	}
 	z, err := disambiguate(rt, ambiguous("managed zone", arg, cands, "", "the zone id <project>/<managed zone>"), found, func(z platform.Zone) string {
 		return zoneLabel(z)
@@ -282,7 +283,7 @@ func chooseZone(rt *app.Runtime, profile, arg string, found []platform.Zone) (*z
 // p1".
 func zoneLabel(z platform.Zone) string {
 	project, name := splitZoneID(z.ID)
-	return joinLabel(name, z.Name, z.Status, fmt.Sprintf("%d nameservers", len(z.Nameservers)), "project "+project)
+	return prompt.Cells(name, z.Name, z.Status, fmt.Sprintf("%d nameservers", len(z.Nameservers)), "project "+project)
 }
 
 type zoneResult struct {

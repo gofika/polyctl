@@ -25,25 +25,18 @@ import (
 // otherValue is the value of the "Other ..." option of a pick.
 const otherValue = "\x00other"
 
-// joinLabel joins the non-empty parts of a label with two spaces.
-func joinLabel(parts ...string) string {
-	var out []string
-	for _, p := range parts {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
-		}
-	}
-	return strings.Join(out, "  ")
-}
+// The labels are rows of cells (prompt.Cells): a fact keeps its position
+// in every row of a list, and "-" stands for one a row does not have.
 
 // instanceOptionLabel: "web-1  1234  RUNNING  e2-medium  us-central1-a
-// 10.128.0.5  203.0.113.10  project p1  gcp/lab".
+// 10.128.0.5  203.0.113.10  project p1  gcp/lab"; an instance without an
+// external address shows "-" in its cell.
 func instanceOptionLabel(in Instance, profile string) string {
 	project := ""
 	if in.Project != "" {
 		project = "project " + in.Project
 	}
-	return joinLabel(in.Name, in.ID, in.Status, in.MachineType, in.Zone, in.InternalIP, in.ExternalIP, project, "gcp/"+profile)
+	return prompt.Cells(in.Name, in.ID, in.Status, in.MachineType, in.Zone, in.InternalIP, in.ExternalIP, project, "gcp/"+profile)
 }
 
 // statusIn keeps the instances in one of the statuses.
@@ -129,7 +122,7 @@ func machineTypeLabel(mt *compute.MachineType) string {
 	if mt.IsSharedCpu {
 		shared = "shared core"
 	}
-	return joinLabel(mt.Name, fmt.Sprintf("%d vCPU", mt.GuestCpus), gb+" GB", shared)
+	return prompt.Cells(mt.Name, fmt.Sprintf("%d vCPU", mt.GuestCpus), gb+" GB", shared)
 }
 
 // e2Rank orders the E2 presets first, in the order of e2Presets.
@@ -247,7 +240,7 @@ func pickZone(ctx context.Context, rt *app.Runtime, c *client, profile string) (
 	var opts []prompt.Option
 	def, best := "", 0
 	for _, z := range zones {
-		opts = append(opts, prompt.Option{Label: joinLabel(z.Name, "("+lastSegment(z.Region)+")"), Value: z.Name})
+		opts = append(opts, prompt.Option{Label: prompt.Cells(z.Name, lastSegment(z.Region)), Value: z.Name})
 		if used[z.Name] > best {
 			def, best = z.Name, used[z.Name]
 		}
@@ -257,7 +250,7 @@ func pickZone(ctx context.Context, rt *app.Runtime, c *client, profile string) (
 
 // networkLabel: "default  auto  42 subnets".
 func networkLabel(n *compute.Network) string {
-	return joinLabel(n.Name, networkMode(n), fmt.Sprintf("%d subnets", len(n.Subnetworks)))
+	return prompt.Cells(n.Name, networkMode(n), fmt.Sprintf("%d subnets", len(n.Subnetworks)))
 }
 
 // builtinNetwork returns the network a command uses when neither the flag
@@ -306,7 +299,7 @@ func pickSubnet(rt *app.Runtime, network, region string, subs []*compute.Subnetw
 		if !ordinarySubnet(s) {
 			continue
 		}
-		opts = append(opts, prompt.Option{Label: joinLabel(s.Name, s.IpCidrRange, region), Value: s.Name})
+		opts = append(opts, prompt.Option{Label: prompt.Cells(s.Name, s.IpCidrRange, region), Value: s.Name})
 	}
 	sort.Slice(opts, func(i, j int) bool { return opts[i].Value < opts[j].Value })
 	if len(opts) == 1 {
@@ -543,17 +536,18 @@ func recordValue(r platform.Record) string {
 	return r.Value
 }
 
-// recordSetLabel: "www.example.com  A  192.0.2.1, +1 more  ttl 300".
+// recordSetLabel: "www.example.com  A  192.0.2.1  ttl 300  +1 more"; a set
+// without a TTL and with several values shows "-" in the TTL cell.
 func recordSetLabel(s recordSet) string {
-	v := recordValue(s.Records[0])
+	v, more := recordValue(s.Records[0]), ""
 	if n := len(s.Records); n > 1 {
-		v += fmt.Sprintf(", +%d more", n-1)
+		more = fmt.Sprintf("+%d more", n-1)
 	}
 	ttl := ""
 	if s.Records[0].TTL > 0 {
 		ttl = fmt.Sprintf("ttl %d", s.Records[0].TTL)
 	}
-	return joinLabel(s.Name, s.Type, v, ttl)
+	return prompt.Cells(s.Name, s.Type, v, ttl, more)
 }
 
 // pickRecordToDelete asks, in the interactive flow, which record set of
