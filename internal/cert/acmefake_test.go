@@ -20,7 +20,7 @@ import (
 // fakeACME is a minimal ACME (RFC 8555) server over TLS for the tests of
 // the lego issuer: directory, nonces, accounts, orders, DNS-01
 // authorizations, finalization and certificate download. Signatures are
-// not checked. Challenges are validated by looking the expected TXT value
+// not checked, but newAccount must carry the key (jwk) and no kid. Challenges are validated by looking the expected TXT value
 // up with lookup (the fake DNS of the test).
 type fakeACME struct {
 	t      *testing.T
@@ -70,6 +70,14 @@ func newFakeACME(t *testing.T, ca *certtest.CA, lookup func(string) []string) *f
 	f.srv = httptest.NewTLSServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.srv.Close)
 	return f
+}
+
+// forgetAccounts makes the CA forget every account, like a reset staging
+// CA or deactivated accounts.
+func (f *fakeACME) forgetAccounts() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.accounts = map[string]string{}
 }
 
 func (f *fakeACME) url(p string) string { return f.srv.URL + p }
@@ -172,6 +180,11 @@ func (f *fakeACME) newAccount(w http.ResponseWriter, req jwsReq) {
 		OnlyReturnExisting   bool     `json:"onlyReturnExisting"`
 	}
 	_ = json.Unmarshal(req.payload, &body)
+	if req.jwk == nil || req.kid != "" {
+		// RFC 8555 section 7.3: newAccount is signed with "jwk", never "kid".
+		f.problem(w, 400, "malformed", "newAccount must be signed with a JWK, not a kid")
+		return
+	}
 	th := thumbprint(req.jwk)
 	if acct, ok := f.accounts[th]; ok {
 		w.Header().Set("Location", acct)

@@ -160,7 +160,10 @@ func (l *LegoIssuer) ResolveAccount(ctx context.Context, a *Account) (string, er
 // Register registers the account, agreeing to the terms of service.
 func (l *LegoIssuer) Register(ctx context.Context, a *Account) (string, error) {
 	return runCtx(ctx, func() (string, error) {
-		c, err := l.client(a, "", 0)
+		// newAccount is signed with the key itself (RFC 8555 section 7.3):
+		// lego would sign with the account URI as kid when it has one, and
+		// a URI the store kept from an account the CA forgot is refused.
+		c, err := l.client(&Account{Email: a.Email, Key: a.Key}, "", 0)
 		if err != nil {
 			return "", err
 		}

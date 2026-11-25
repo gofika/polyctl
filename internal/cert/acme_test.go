@@ -170,3 +170,27 @@ func TestRunCtxStopsAtDeadline(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// Register signs newAccount with the key even when the account still holds
+// the URI of an account the CA forgot.
+func TestLegoIssuerRegisterIgnoresStaleURI(t *testing.T) {
+	s := newACMESetup(t)
+	iss := s.acme.issuer()
+	store := OpenStore(t.TempDir(), iss.Directory)
+	ctx := context.Background()
+	acct, err := store.NewAccount("ops@example.net")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if acct.URI, err = iss.Register(ctx, acct); err != nil {
+		t.Fatal(err)
+	}
+	s.acme.forgetAccounts()
+	if _, err := iss.ResolveAccount(ctx, acct); !errors.Is(err, ErrAccountNotFound) {
+		t.Fatalf("resolve after forget: %v", err)
+	}
+	uri, err := iss.Register(ctx, acct)
+	if err != nil || uri == "" || uri == acct.URI {
+		t.Fatalf("register again = %q, %v (old %q)", uri, err, acct.URI)
+	}
+}

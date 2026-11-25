@@ -64,6 +64,11 @@ func (f *fakeIssuer) ResolveAccount(ctx context.Context, a *Account) (string, er
 func (f *fakeIssuer) Register(ctx context.Context, a *Account) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if a.URI != "" {
+		// A CA refuses a newAccount request signed with an account URI (kid)
+		// instead of the key itself (RFC 8555 section 7.3).
+		return "", errors.New("malformed: newAccount must be signed with a JWK, not a kid")
+	}
 	f.registers++
 	u := fmt.Sprintf("https://ca.test/acme/acct/%d", 100+f.registers)
 	f.accounts[pubID(a)] = u
@@ -584,6 +589,69 @@ func TestEnsureUsageAndOffline(t *testing.T) {
 	fx.seedCert(t, Names("example.com"), 80*24*time.Hour, KeyEC256)
 	if res, err := Ensure(context.Background(), fx.env, o); err != nil || res.Changes[0].Action != platform.Unchanged {
 		t.Errorf("offline with a good certificate: %v", err)
+	}
+}
+
+// An account the CA forgot (a reset staging CA, a deactivated account) is
+// registered again with the key itself, not with the URI the store kept,
+// and the certificate is issued in the same run.
+func TestEnsureWithLegoRegistersForgottenAccount(t *testing.T) {
+	s := newACMESetup(t)
+	fx := newEnsureFixture(t)
+	fx.dns = s.dns
+	iss := s.acme.issuer()
+	fx.env.Issuer = iss
+	fx.env.Store = OpenStore(fx.env.Store.Dir, iss.Directory)
+	fx.env.DNS.SettleDelay = 0
+	fx.env.Lookup = func(ctx context.Context, r, fqdn string) txtAnswer {
+		return txtAnswer{Kind: platform.NSOK, Values: s.dns.values(strings.TrimSuffix(fqdn, "."))}
+	}
+	if _, err := Ensure(context.Background(), fx.env, fx.opts()); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := fx.env.Store.LoadAccount("ops@example.net")
+	s.acme.forgetAccounts()
+	o := fx.opts()
+	o.Force = true
+	res, err := Ensure(context.Background(), fx.env, o)
+	if err != nil {
+		t.Fatalf("ensure after the CA forgot the account: %v", err)
+	}
+	if res.Changes[0].Action != platform.Created || res.Changes[1].Action != platform.Updated {
+		t.Fatalf("changes = %+v", res.Changes)
+	}
+	after, _ := fx.env.Store.LoadAccount("ops@example.net")
+	if after.URI == "" || after.URI == before.URI {
+		t.Errorf("account URI %q, was %q", after.URI, before.URI)
+	}
+}
+
+// The terms are asked before the lock when the CA forgot the account.
+func TestEnsureAsksTermsForForgottenAccountBeforeLock(t *testing.T) {
+	fx := newEnsureFixture(t)
+	if _, err := Ensure(context.Background(), fx.env, fx.opts()); err != nil {
+		t.Fatal(err)
+	}
+	fx.iss.accounts = map[string]string{}
+	locked := false
+	fx.env.ConfirmTOS = func(ctx context.Context, dir string) (bool, error) {
+		tctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+		defer cancel()
+		unlock, err := fx.env.Store.Lock(tctx, "example.com")
+		if err != nil {
+			locked = true
+		} else {
+			unlock()
+		}
+		return true, nil
+	}
+	o := fx.opts()
+	o.Force, o.AgreeTOS = true, false
+	if _, err := Ensure(context.Background(), fx.env, o); err != nil {
+		t.Fatal(err)
+	}
+	if locked {
+		t.Error("the terms were asked while holding the lock")
 	}
 }
 

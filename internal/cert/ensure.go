@@ -279,6 +279,26 @@ func Ensure(ctx context.Context, env *Env, o EnsureOptions) (*Result, error) {
 		}
 	}
 
+	// The stored account is looked up before the lock as well: when the CA
+	// no longer knows it, registering it again needs the agreement to the
+	// terms, and that question must not be asked while holding the lock.
+	var resolvedURI string
+	var resolveErr error
+	if acct != nil && acct.URI != "" {
+		resolvedURI, resolveErr = env.Issuer.ResolveAccount(ctx, acct)
+		if errors.Is(resolveErr, ErrAccountNotFound) {
+			env.infof("the CA does not know the account of %s any more; registering it again", acct.Email)
+			// newAccount must be signed with the key itself (RFC 8555
+			// section 7.3), never with the account URI the CA forgot.
+			acct.URI, resolveErr = "", nil
+			if !agreed {
+				if agreed, err = confirmTOS(ctx, env); err != nil || !agreed {
+					return res, declined(err)
+				}
+			}
+		}
+	}
+
 	unlock, err := st.Lock(ctx, root)
 	if err != nil {
 		return res, err
@@ -302,26 +322,16 @@ func Ensure(ctx context.Context, env *Env, o EnsureOptions) (*Result, error) {
 			if acct == nil || acct.URI == "" {
 				return platform.Change{}, false, nil
 			}
-			uri, err := env.Issuer.ResolveAccount(ctx, acct)
-			switch {
-			case err == nil:
-				if uri != "" && uri != acct.URI {
-					acct.URI = uri
-					if err := st.SaveAccount(acct); err != nil {
-						return platform.Change{}, false, err
-					}
-				}
-				return platform.Change{ID: acct.ID(), Detail: acct.ID()}, true, nil
-			case errors.Is(err, ErrAccountNotFound):
-				env.infof("the CA does not know the account of %s any more; registering it again", acct.Email)
-				if !agreed {
-					if agreed, err = confirmTOS(ctx, env); err != nil || !agreed {
-						return platform.Change{}, false, declined(err)
-					}
-				}
-				return platform.Change{}, false, nil
+			if resolveErr != nil {
+				return platform.Change{}, false, fmt.Errorf("look up the ACME account: %w", resolveErr)
 			}
-			return platform.Change{}, false, fmt.Errorf("look up the ACME account: %w", err)
+			if resolvedURI != "" && resolvedURI != acct.URI {
+				acct.URI = resolvedURI
+				if err := st.SaveAccount(acct); err != nil {
+					return platform.Change{}, false, err
+				}
+			}
+			return platform.Change{ID: acct.ID(), Detail: acct.ID()}, true, nil
 		},
 		Apply: func(ctx context.Context) (platform.Change, error) {
 			if acct == nil {
@@ -357,10 +367,6 @@ func Ensure(ctx context.Context, env *Env, o EnsureOptions) (*Result, error) {
 		},
 	})
 	changes, err := plan.Run(ctx, false)
-	if errors.Is(err, ErrDeclined) {
-		// A "no" to the terms of service is not a failed step.
-		changes = slices.DeleteFunc(changes, func(c platform.Change) bool { return c.Action == platform.Failed })
-	}
 	res.Changes = changes
 	return res, err
 }
