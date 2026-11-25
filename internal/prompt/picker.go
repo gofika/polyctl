@@ -631,12 +631,40 @@ func (p *terminalPicker) sizeMsg() tea.WindowSizeMsg {
 	return tea.WindowSizeMsg{Width: w, Height: h}
 }
 
-// textRows is how many rows a title or description takes on a terminal of
-// the given width. It mirrors how the library lays a field out: the text is
-// wrapped inside the field's two-column frame (border and padding).
-func textRows(s string, cols int) int {
+// headText lays a title or description out for a terminal of the given
+// width: wrapped to the columns the field's two-column frame (border and
+// padding) and the indent leave, with every row indented. The library wraps
+// a text without counting the spaces it starts with and then breaks the
+// rows that are too long a second time, so a text that is only prefixed
+// with the indent can take a row more than its wrapping says; rows that
+// already fit are left as they are.
+func headText(s, indent string, cols int) string {
 	const frame = 2
-	return lipgloss.Height(lipgloss.Wrap(s, cols-frame, ",.-; "))
+	limit := max(cols-frame-len(indent), 1)
+	var lines []string
+	// A row may come back a column wider than asked for (a breakpoint is
+	// left hanging at its end): wrap narrower until every row fits.
+	for width := limit; width > 0; width-- {
+		lines = strings.Split(lipgloss.Wrap(s, width, ",.-; "), "\n")
+		fits := true
+		for i, l := range lines {
+			lines[i] = strings.TrimLeft(l, " ")
+			fits = fits && lipgloss.Width(lines[i]) <= limit
+		}
+		if fits {
+			break
+		}
+	}
+	for i, l := range lines {
+		lines[i] = indent + l
+	}
+	return strings.Join(lines, "\n")
+}
+
+// textRows is how many rows a title or description indented by indent takes
+// on a terminal of the given width.
+func textRows(s, indent string, cols int) int {
+	return lipgloss.Height(headText(s, indent, cols))
 }
 
 // visibleRows is how many of n options a list shows at once on a terminal
@@ -844,19 +872,13 @@ func orderValues(opts []Option, chosen []string) []string {
 }
 
 func (p *terminalPicker) Select(title string, opts []Option, def string) (string, error) {
-	title = selectIndent + output.Clean(title)
+	title = output.Clean(title)
 	if len(opts) == 0 {
 		return "", errors.New("nothing to choose from")
 	}
 	value := defaultValue(opts, def)
-	field := huh.NewSelect[string]().Title(title).Options(huhOptions(opts, p.labelWidth(selectPrefix))...).Value(&value)
-	// A list that shows every option keeps its natural height; a scrolling
-	// one needs an explicit height, which counts the title rows too.
 	cols, termRows := p.termSize()
-	titleRows := textRows(title, cols)
-	if rows := visibleRows(len(opts), termRows, titleRows); rows < len(opts) {
-		field.Height(rows + titleRows)
-	}
+	field := selectField(title, huhOptions(opts, p.labelWidth(selectPrefix)), &value, cols, termRows)
 	shortcuts := map[string]string{}
 	for _, o := range opts {
 		if o.Key != "" {
@@ -875,6 +897,19 @@ func (p *terminalPicker) Select(title string, opts []Option, def string) (string
 
 func (p *terminalPicker) MultiSelect(title string, opts []Option) ([]string, error) {
 	return p.MultiSelectPreset(title, opts, nil)
+}
+
+// selectField builds the select field for a terminal of cols by termRows.
+func selectField(title string, opts []huh.Option[string], value *string, cols, termRows int) *huh.Select[string] {
+	title = headText(title, selectIndent, cols)
+	field := huh.NewSelect[string]().Title(title).Options(opts...).Value(value)
+	// A list that shows every option keeps its natural height; a scrolling
+	// one needs an explicit height, which counts the title rows too.
+	titleRows := lipgloss.Height(title)
+	if rows := visibleRows(len(opts), termRows, titleRows); rows < len(opts) {
+		field.Height(rows + titleRows)
+	}
+	return field
 }
 
 // MultiSelectPreset is MultiSelect with the options of preset ticked.
@@ -938,23 +973,23 @@ func (g *tickGuard) remind(on bool) {
 // multiSelectField builds the multi-select field for a terminal of cols by
 // termRows, and the guard asked before Enter confirms.
 func multiSelectField(title string, opts []huh.Option[string], values *[]string, cols, termRows int) (*huh.MultiSelect[string], *tickGuard) {
-	title = multiSelectIndent + title
+	title = headText(title, multiSelectIndent, cols)
 	field := huh.NewMultiSelect[string]().Title(title).Options(opts...).Value(values)
 	// The height counts the title and description rows too, however many
 	// rows they wrap to; without an explicit one short lists are cut off.
 	// The option rows are sized for the longer description, so that showing
 	// it never hides an option.
-	titleRows := textRows(title, cols)
-	rows := visibleRows(len(opts), termRows, titleRows+max(textRows(multiSelectIndent+tickHint, cols), textRows(multiSelectIndent+tickReminder, cols)))
+	titleRows := lipgloss.Height(title)
+	rows := visibleRows(len(opts), termRows, titleRows+max(textRows(tickHint, multiSelectIndent, cols), textRows(tickReminder, multiSelectIndent, cols)))
 	guard := &tickGuard{
 		ticked: func() bool {
 			v, ok := field.GetValue().([]string)
 			return ok && len(v) > 0
 		},
 		describe: func(text string) {
-			text = multiSelectIndent + text
+			text = headText(text, multiSelectIndent, cols)
 			field.Description(text)
-			field.Height(rows + titleRows + textRows(text, cols))
+			field.Height(rows + titleRows + lipgloss.Height(text))
 		},
 	}
 	guard.remind(false)

@@ -61,11 +61,19 @@ func TestVisibleRows(t *testing.T) {
 
 func TestTextRows(t *testing.T) {
 	const text = "Nothing ticked: press space on a row first."
-	if got := textRows(text, 80); got != 1 {
+	if got := textRows(text, "", 80); got != 1 {
 		t.Errorf("textRows on 80 columns = %d, want 1", got)
 	}
-	if got := textRows(text, 30); got != 2 {
+	if got := textRows(text, "", 30); got != 2 {
 		t.Errorf("textRows on 30 columns = %d, want 2", got)
+	}
+	// The indent takes columns of every row: 43 columns of text do not fit
+	// the 44 columns a 46-column terminal leaves once four are indented.
+	if got := textRows(text, "", 46); got != 1 {
+		t.Errorf("textRows on 46 columns = %d, want 1", got)
+	}
+	if got := textRows(text, "    ", 46); got != 2 {
+		t.Errorf("indented textRows on 46 columns = %d, want 2", got)
 	}
 }
 

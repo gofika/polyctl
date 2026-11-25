@@ -61,10 +61,7 @@ func TestLongListsFitShortTerminals(t *testing.T) {
 		ticks.confirm()
 
 		var value string
-		single := huh.NewSelect[string]().Title("Pick one").Options(huhOptions(opts, 80)...).Value(&value)
-		if rows := visibleRows(len(opts), termRows, 1); rows < len(opts) {
-			single.Height(rows + 1)
-		}
+		single := selectField("Pick one", huhOptions(opts, 80), &value, 80, termRows)
 
 		for name, field := range map[string]huh.Field{"multi-select": multi, "select": single} {
 			form := huh.NewForm(huh.NewGroup(field))
@@ -76,6 +73,54 @@ func TestLongListsFitShortTerminals(t *testing.T) {
 			}
 			if !strings.Contains(view, "Pick") {
 				t.Errorf("%s on %d rows: the title is not rendered:\n%s", name, termRows, view)
+			}
+		}
+	}
+}
+
+// The title and the line below it are indented to the label column. The rows
+// they are counted as must be the rows they are drawn in at every width, or a
+// capped list is one row taller than the terminal; and a row they wrap to
+// starts in the label column too.
+func TestIndentedHeadFitsShortTerminals(t *testing.T) {
+	opts := numbered(12)
+	titles := []string{
+		"Pick",
+		"Instance to connect to (profile work, region us-east-1)",
+		strings.Repeat("word ", 15) + "end.",
+	}
+	for cols := 20; cols <= 100; cols++ {
+		for _, termRows := range []int{12, 14, 16} {
+			for _, title := range titles {
+				var values []string
+				multi, ticks := multiSelectField(title, huhOptions(opts, cols), &values, cols, termRows)
+				ticks.confirm()
+				var value string
+				single := selectField(title, huhOptions(opts, cols), &value, cols, termRows)
+				for name, c := range map[string]struct {
+					field  huh.Field
+					indent string
+					head   int
+				}{
+					"multi-select": {multi, multiSelectIndent, textRows(title, multiSelectIndent, cols) + textRows(tickReminder, multiSelectIndent, cols)},
+					"select":       {single, selectIndent, textRows(title, selectIndent, cols)},
+				} {
+					form := huh.NewForm(huh.NewGroup(c.field))
+					form.Init()
+					form.Update(tea.WindowSizeMsg{Width: cols, Height: termRows})
+					view := ansi.Strip(form.View())
+					lines := strings.Split(view, "\n")
+					// Below this the list keeps its three rows and the
+					// prompt is taller than the terminal by design.
+					if termRows-c.head >= 6 && len(lines) >= termRows {
+						t.Errorf("%s on %dx%d, title %q, takes %d rows:\n%s", name, cols, termRows, title, len(lines), view)
+					}
+					for i, line := range lines[:min(c.head, len(lines))] {
+						if !strings.HasPrefix(line, "┃ "+c.indent) {
+							t.Errorf("%s on %dx%d, title %q: head row %d does not start in the label column: %q", name, cols, termRows, title, i, line)
+						}
+					}
+				}
 			}
 		}
 	}
