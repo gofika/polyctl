@@ -141,23 +141,12 @@ func (rt *Runtime) ResolveDomain(ctx context.Context, domain string, kind platfo
 		}
 		return fmt.Errorf("%w: %q is not a %s in %s", ErrDomainUnknown, domain, kind, where)
 	}
-	index := func() {
-		rt.Infof("indexing %s across %d account(s)...", kind, len(profiles))
-		for _, p := range profiles {
-			if _, err := rt.SyncAccount(ctx, p, []platform.ResourceType{kind}); err != nil {
-				rt.Infof("warning: index %s: %v", p.Label(), err)
-			}
-		}
-	}
 	// --refresh re-indexes before the lookup, so that a zone moved to
 	// another account or deleted is not served from the old row.
 	refreshed := rt.routeRefreshed[kind]
-	if rt.Flags.Refresh && !refreshed && len(profiles) > 0 {
-		index()
-		if rt.routeRefreshed == nil {
-			rt.routeRefreshed = map[platform.ResourceType]bool{}
-		}
-		rt.routeRefreshed[kind] = true
+	var indexErr error
+	if rt.Flags.Refresh && len(profiles) > 0 {
+		indexErr = rt.refreshIndex(ctx, kind, profiles)
 		refreshed = true
 	}
 	t, err := lookup()
@@ -177,6 +166,10 @@ func (rt *Runtime) ResolveDomain(ctx context.Context, domain string, kind platfo
 		return nil, fmt.Errorf("%w: %q, and no account is able to manage %ss (run `polyctl auth login`)", ErrDomainUnknown, domain, kind)
 	}
 	if refreshed {
+		if indexErr != nil {
+			// Not "unknown": no account could be asked.
+			return nil, indexErr
+		}
 		return nil, notFound()
 	}
 	// Without --refresh, index automatically only when the index has never
@@ -204,15 +197,125 @@ func (rt *Runtime) ResolveDomain(ctx context.Context, domain string, kind platfo
 	if !needIndex {
 		return nil, fmt.Errorf("%w: %q (%s); run `polyctl domain index` or retry with --refresh", ErrDomainUnknown, domain, kind)
 	}
-	index()
+	indexErr = rt.indexKind(ctx, kind, profiles)
 	t, err = lookup()
 	if err != nil {
 		return nil, err
 	}
 	if t == nil {
+		if indexErr != nil {
+			return nil, indexErr
+		}
 		return nil, notFound()
 	}
 	return t, nil
+}
+
+// refreshIndex indexes kind in profiles for --refresh, once per run: a
+// later call returns the outcome of the first.
+func (rt *Runtime) refreshIndex(ctx context.Context, kind platform.ResourceType, profiles []config.AccountRef) error {
+	if rt.routeRefreshed[kind] {
+		return rt.routeRefreshErr[kind]
+	}
+	err := rt.indexKind(ctx, kind, profiles)
+	if rt.routeRefreshed == nil {
+		rt.routeRefreshed = map[platform.ResourceType]bool{}
+		rt.routeRefreshErr = map[platform.ResourceType]error{}
+	}
+	rt.routeRefreshed[kind], rt.routeRefreshErr[kind] = true, err
+	return err
+}
+
+// indexKind syncs kind in each of profiles. A failing account is a
+// warning while another one succeeds; when every one fails the error says
+// so (see IndexFailure), because a lookup that finds nothing then means
+// "could not ask", not "unknown domain".
+func (rt *Runtime) indexKind(ctx context.Context, kind platform.ResourceType, profiles []config.AccountRef) error {
+	rt.Infof("indexing %s across %d account(s)...", kind, len(profiles))
+	var errs []error
+	for _, p := range profiles {
+		if err := SyncError(rt.SyncAccount(ctx, p, []platform.ResourceType{kind})); err != nil {
+			rt.Infof("warning: index %s: %v", p.Label(), err)
+			errs = append(errs, fmt.Errorf("%s: %w", p.Label(), err))
+		}
+	}
+	if len(profiles) == 0 || len(errs) < len(profiles) {
+		return nil
+	}
+	return IndexFailure(ctx, string(kind)+"s", errs, len(profiles))
+}
+
+// SyncError is the error of a SyncAccount: its own, or else the first
+// error of its reports (a type that failed does not stop the others, so
+// SyncAccount itself does not return it).
+func SyncError(reports []SyncReport, err error) error {
+	if err != nil {
+		return err
+	}
+	for _, r := range reports {
+		if r.Err != nil {
+			return r.Err
+		}
+		if r.Error != "" {
+			return errors.New(r.Error)
+		}
+	}
+	return nil
+}
+
+// IndexFailure is the error of an indexing in which errs failed out of
+// total accounts: exit code 3 when every failure is a credential or
+// permission one, 1 otherwise (the causes differ; the messages list them).
+// A cancelled context is returned as is.
+func IndexFailure(ctx context.Context, what string, errs []error, total int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	auth := true
+	msgs := make([]string, len(errs))
+	for i, e := range errs {
+		msgs[i] = e.Error()
+		if !errors.Is(e, platform.ErrUnauthorized) && !errors.Is(e, platform.ErrForbidden) {
+			auth = false
+		}
+	}
+	which := "any account"
+	if len(errs) < total {
+		which = fmt.Sprintf("%d of %d account(s)", len(errs), total)
+	}
+	if auth {
+		return fmt.Errorf("could not index the %s of %s: %w", what, which, errors.Join(errs...))
+	}
+	return fmt.Errorf("could not index the %s of %s: %s", what, which, strings.Join(msgs, "; "))
+}
+
+// IndexForLookup indexes kind for the lookup of a domain the index does
+// not hold, as ResolveDomain would, but without resolving an owner (so it
+// never asks which one): with --refresh once per run, otherwise only when
+// no candidate account of kind was ever indexed. The error is that of
+// indexKind: every account failed.
+func (rt *Runtime) IndexForLookup(ctx context.Context, kind platform.ResourceType) error {
+	profiles, err := rt.indexCandidates(ctx, kind)
+	if err != nil || len(profiles) == 0 || rt.Flags.Offline {
+		return err
+	}
+	if rt.Flags.Refresh {
+		return rt.refreshIndex(ctx, kind, profiles)
+	}
+	db, err := rt.DB()
+	if err != nil {
+		return err
+	}
+	for _, p := range profiles {
+		st, err := db.GetState(ctx, inventory.Set{Platform: p.Platform, Profile: p.Profile, Type: kind})
+		if err != nil {
+			return err
+		}
+		if st != nil {
+			return nil
+		}
+	}
+	return rt.indexKind(ctx, kind, profiles)
 }
 
 // indexCandidates returns the accounts able to hold kind, restricted to

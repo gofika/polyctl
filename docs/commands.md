@@ -136,8 +136,8 @@ All take `--profile` and `--platform`.
   polyctl domain ns set example.com ns1.example.net ns2.example.net
   ```
 
-- **`domain which`** lists every index entry for the domain and its parents: kind (`zone` or `domain`), platform, profile, resource id, index time. Use it when routing surprises you. With `--profile` / `--platform` the list is narrowed; no owner under the selection is exit code 4.
-- **`domain index`** rebuilds the domain index from every domain-capable account (narrowed by `--profile` / `--platform`). **`domain list`** prints the index; `--refresh` re-indexes first. An unknown `--profile` is exit code 4. A selection with no domain-capable account is not an error: empty output, a `nothing to do: ...` note, exit code 0.
+- **`domain which`** lists every index entry for the domain and its parents: kind (`zone` or `domain`), platform, profile, resource id, index time. Use it when routing surprises you. With `--profile` / `--platform` the list is narrowed; no owner under the selection is exit code 4. When the index holds no entry, it indexes the accounts as routing does (rule 5 below, or `--refresh`), and never asks which owner: every owner is listed.
+- **`domain index`** rebuilds the domain index from every domain-capable account (narrowed by `--profile` / `--platform`). **`domain list`** prints the index; `--refresh` re-indexes first. An account that fails to sync during `--refresh` is a warning, the index is still printed as it stands, and the exit code is then 1, or 3 when every failure is a credential or permission one (as for `domain index`). An unknown `--profile` is exit code 4. A selection with no domain-capable account is not an error: empty output, a `nothing to do: ...` note, exit code 0.
 
 ### domain ns check
 
@@ -306,7 +306,7 @@ Platform coverage:
 2. polyctl looks up the domain and its parents (`a.b.example.com`, `b.example.com`, `example.com`) in the domain index, for the kind the command needs (`zone` for `dns`, `domain` for registrar operations). **The longest match wins**, so a delegated sub-zone beats its parent. Index rows of accounts no longer in the config (kept by `auth logout --keep-inventory`, or left by a hand edit) are ignored.
 3. A match held by several accounts is exit code 5. The error lists the candidates as `platform/profile` and names the flag that tells them apart.
 4. `--refresh` re-indexes the selected accounts before the lookup (once per run), so a zone moved to another account or deleted is not routed to its old owner. Without it, a match in the index is used as is.
-5. No match: polyctl indexes the accounts automatically the first time, then retries. Otherwise: "domain not found in local index" (exit code 4); run `polyctl domain index` or pass `--refresh`.
+5. No match: polyctl indexes the accounts automatically the first time, then retries. Otherwise: "domain not found in local index" (exit code 4); run `polyctl domain index` or pass `--refresh`. When indexing (automatic or `--refresh`) could sync none of the candidate accounts and the domain is still not found, the error is that failure, not exit code 4: exit code 3 when every account failed for credentials or permissions, 1 otherwise. `cert deploy` then fails the domain instead of skipping it as managed elsewhere.
 6. With `--offline` nothing is indexed; an unknown domain is an error.
 7. An unknown `--profile`, or a `--profile` / `--platform` pair with no suitable account, is exit code 4.
 

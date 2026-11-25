@@ -312,13 +312,26 @@ func newDomainWhichCmd(rt *app.Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			var indexErrs []error
 			if len(entries) == 0 && !rt.Flags.Offline {
-				// Trigger auto-indexing through the resolver, then re-read.
-				_, _ = rt.ResolveDomain(cmd.Context(), args[0], platform.ResZone)
-				_, _ = rt.ResolveDomain(cmd.Context(), args[0], platform.ResDomain)
+				// Index as routing would (never built, or --refresh), then
+				// re-read. Resolving an owner is not needed, so nothing is
+				// asked even when several accounts hold the domain.
+				for _, kind := range []platform.ResourceType{platform.ResZone, platform.ResDomain} {
+					if err := rt.IndexForLookup(cmd.Context(), kind); err != nil {
+						if cerr := cmd.Context().Err(); cerr != nil {
+							return cerr
+						}
+						indexErrs = append(indexErrs, err)
+					}
+				}
 				if entries, err = lookup(); err != nil {
 					return err
 				}
+			}
+			if len(entries) == 0 && len(indexErrs) > 0 {
+				// No account of a kind could be asked: not "unknown".
+				return errors.Join(indexErrs...)
 			}
 			if len(entries) == 0 {
 				if filtered {
@@ -396,6 +409,11 @@ func newDomainListCmd(rt *app.Runtime) *cobra.Command {
 				return err
 			}
 			filtered := rt.Flags.Profile != "" || only != ""
+			// refreshErr is set when --refresh could not sync an account:
+			// the list is still printed (the index as it stands), and the
+			// exit code says the refresh failed.
+			var refreshErrs []error
+			var refreshErr error
 			if filtered || rt.Flags.Refresh {
 				// Validates --profile; a selection that names no account
 				// simply lists nothing.
@@ -405,9 +423,15 @@ func newDomainListCmd(rt *app.Runtime) *cobra.Command {
 				}
 				if rt.Flags.Refresh {
 					for _, n := range names {
-						if _, err := rt.SyncAccount(cmd.Context(), n, []platform.ResourceType{platform.ResZone, platform.ResDomain}); err != nil {
+						if err := app.SyncError(rt.SyncAccount(cmd.Context(), n, []platform.ResourceType{platform.ResZone, platform.ResDomain})); err != nil {
 							rt.Infof("warning: %s: %v", n.Label(), err)
+							refreshErrs = append(refreshErrs, fmt.Errorf("%s: %w", n.Label(), err))
 						}
+					}
+					if len(refreshErrs) > 0 {
+						// As domain index: any account that failed fails
+						// the run.
+						refreshErr = app.IndexFailure(cmd.Context(), "domains and zones", refreshErrs, len(names))
 					}
 				}
 			}
@@ -426,13 +450,16 @@ func newDomainListCmd(rt *app.Runtime) *cobra.Command {
 				}
 				entries = f
 			}
-			return rt.Render(entries, func() output.Grid {
+			if err := rt.Render(entries, func() output.Grid {
 				g := output.Grid{Headers: []string{"DOMAIN", "KIND", "PLATFORM", "PROFILE", "RESOURCE ID"}, Empty: empty}
 				for _, e := range entries {
 					g.Rows = append(g.Rows, []string{e.Domain, string(e.Type), string(e.Platform), e.Profile, e.ResourceID})
 				}
 				return g
-			})
+			}); err != nil {
+				return err
+			}
+			return refreshErr
 		},
 	}
 }

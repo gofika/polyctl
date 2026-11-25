@@ -113,6 +113,8 @@ type Runtime struct {
 	// routeRefreshed records the kinds whose domain index --refresh has
 	// already rebuilt in this run, so that several lookups re-index once.
 	routeRefreshed map[platform.ResourceType]bool
+	// routeRefreshErr is the error of that indexing: every account failed.
+	routeRefreshErr map[platform.ResourceType]error
 }
 
 // New creates a Runtime; nothing is loaded until first use.
