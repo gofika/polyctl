@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"slices"
@@ -295,6 +296,11 @@ func loginOAuth(ctx context.Context, in platform.LoginInput, pio *prompt.IO) (*p
 			return nil, app.UsageErrf("gcp login with method=oauth needs %s%s", strings.Join(missing, ", "), hint)
 		}
 	}
+	// What the options say of the projects is checked before the listener
+	// starts too, for the same reason.
+	if err := checkProjectOptions(in, pio); err != nil {
+		return nil, err
+	}
 	if builtin {
 		fmt.Fprintln(pio.Err, "Logging in to Google Cloud in the browser (the consent screen names \"Google Auth Library\").")
 		fmt.Fprintln(pio.Err, "Tick every permission it lists: without the Google Cloud one the login is refused.")
@@ -508,6 +514,26 @@ func optDisabled(in platform.LoginInput, def string) ([]string, error) {
 		return nil, app.UsageErrf("--set disabled_projects names %s, the default project, which is always enabled (pass --set project=<id> to make another one the default)", def)
 	}
 	return list, nil
+}
+
+// checkProjectOptions reports what is wrong with --set project, projects
+// and disabled_projects as far as the options and the login stored before
+// tell, without a request and without a note: an id that cannot be one,
+// and a default project that is named as disabled. The default is known
+// here when an option names it, and in the non-interactive flow, which
+// keeps the stored one otherwise; chooseDefault checks again with the
+// default it arrives at.
+func checkProjectOptions(in platform.LoginInput, pio *prompt.IO) error {
+	quiet := &prompt.IO{In: pio.In, Out: io.Discard, Err: io.Discard}
+	def, err := optDefault(in, quiet)
+	if err != nil {
+		return err
+	}
+	if def == "" && !in.Interactive {
+		def = strings.TrimSpace(in.Existing[metaProject])
+	}
+	_, err = optDisabled(in, def)
+	return err
 }
 
 // chooseDefault resolves the default project of the account, the one new

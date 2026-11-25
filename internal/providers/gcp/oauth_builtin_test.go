@@ -501,6 +501,44 @@ func TestLoginOAuthNonInteractiveRequirements(t *testing.T) {
 	}
 }
 
+// What --set says of the projects is refused before the browser is asked
+// for anything: an id that cannot be one, and a default project that is
+// named as disabled, also the default a re-login keeps.
+func TestLoginOAuthChecksProjectOptionsBeforeTheBrowser(t *testing.T) {
+	f := newFake(t)
+	withFakeEndpoints(t, f)
+	withBuiltinClient(t, testBuiltin)
+	p := &provider{}
+	for _, tc := range []struct {
+		opts     map[string]string
+		existing map[string]string
+		interact bool
+		want     string
+	}{
+		{opts: map[string]string{"project": "p-one", "disabled_projects": "p-one,p-two"}, want: "--set disabled_projects names p-one, the default project"},
+		{opts: map[string]string{"disabled_projects": "p-one"}, existing: map[string]string{"project": "p-one"}, want: "--set disabled_projects names p-one, the default project"},
+		{opts: map[string]string{"project": "p-one", "disabled_projects": "Not An Id"}, want: "--set disabled_projects=<id>,<id>,..."},
+		{opts: map[string]string{"project": "Not An Id"}, want: "--set project=<id>"},
+		{opts: map[string]string{"project": "p-one", "disabled_projects": "p-one"}, interact: true, want: "--set disabled_projects names p-one, the default project"},
+	} {
+		tc.opts["method"] = "oauth"
+		in, errBuf := loginInput("", tc.opts)
+		if tc.interact {
+			in, errBuf = loginInput("\n", tc.opts)
+		}
+		in.Existing = tc.existing
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_, err := p.Login(ctx, in)
+		cancel()
+		if !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%v: %v", tc.opts, err)
+		}
+		if strings.Contains(errBuf.String(), "http") || strings.Contains(errBuf.String(), "note:") {
+			t.Errorf("%v: stderr %q", tc.opts, errBuf.String())
+		}
+	}
+}
+
 // A build without a built-in client, on a terminal, with no method given
 // and no previous login: Application Default Credentials when the machine
 // has them (TestLoginADC), else a question instead of a failure.
