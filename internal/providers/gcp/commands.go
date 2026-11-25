@@ -695,6 +695,9 @@ of one record. --dry-run asks nothing.`,
 			if err != nil {
 				return err
 			}
+			// A record id with a bare managed zone name (--id) is of the
+			// project of the zone, not of the default project.
+			c = c.inProject(z.Project)
 			var what string
 			switch {
 			case id != "":

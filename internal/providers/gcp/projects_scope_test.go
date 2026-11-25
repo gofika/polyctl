@@ -143,3 +143,29 @@ func TestZoneIDMustBeOfThePinnedProject(t *testing.T) {
 		t.Errorf("matching --project = %v", err)
 	}
 }
+
+// A record id whose zone is a bare managed zone name is of the project of
+// the zone the command resolved, not of the default project: the record of
+// a zone of p2 is deleted by the id polyctl printed before ids carried the
+// project.
+func TestBareRecordIDIsOfTheZonesProject(t *testing.T) {
+	h, g := multiDNS(t)
+	h.nonInteractive()
+	g.addZone("p1", "own", "example.com", "public")
+	g.addZone("p2", "main", "example.org", "public")
+	g.addRRSet("p2", "main", &dns.ResourceRecordSet{Name: "www.example.org.", Type: "A", Ttl: 300, Rrdatas: []string{"192.0.2.2"}})
+	if err := h.run("dns", "record", "delete", "main", "--id", "main|A|www.example.org|192.0.2.2", "--yes"); err != nil {
+		t.Fatalf("delete by a bare id = %v", err)
+	}
+	if left := g.rrsets["p2/main"]; len(left) != 0 {
+		t.Errorf("record sets left in p2/main: %+v", left)
+	}
+	// An id that names another zone is refused.
+	g.addRRSet("p2", "main", &dns.ResourceRecordSet{Name: "www.example.org.", Type: "A", Ttl: 300, Rrdatas: []string{"192.0.2.2"}})
+	if err := h.run("dns", "record", "delete", "main", "--id", "p1/own|A|www.example.org|192.0.2.2", "--yes"); err == nil || !has(err, "belongs to managed zone") {
+		t.Errorf("an id of another zone = %v", err)
+	}
+	if left := g.rrsets["p2/main"]; len(left) != 1 {
+		t.Errorf("record sets in p2/main: %+v", left)
+	}
+}

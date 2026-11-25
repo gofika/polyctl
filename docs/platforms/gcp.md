@@ -66,7 +66,7 @@ polyctl gcp project remove acme-prod --default acme-dns   # removing the default
 - A zone id names its project: `--project` with a zone id of another project (`gcp dns record list acme-dns/example-zone --project acme-prod`) is exit code 2, and nothing is read or written.
 - A value that cannot be a project id (empty, or with a slash, comma or space) is exit code 2. `gcp project ...` and the platform-neutral commands do not take the flag.
 
-**Ids.** A managed zone id is `<project>/<managed zone>` (`acme-prod/example-zone`), a DNS record id starts with it (`acme-prod/example-zone|A|www.example.com|203.0.113.10`), and a certificate's inventory id is `<project>/<region or global>/<name>`. Instance, forwarding rule and address ids are the numeric ids of Compute Engine. Where a command takes a zone or a record id, a bare managed zone name (`example-zone`, `example-zone|A|...`) is still accepted and means the zone of that name: in the project of `--project` when given, else in the selected projects.
+**Ids.** A managed zone id is `<project>/<managed zone>` (`acme-prod/example-zone`), a DNS record id starts with it (`acme-prod/example-zone|A|www.example.com|203.0.113.10`), and a certificate's inventory id is `<project>/<region or global>/<name>`. Instance, forwarding rule and address ids are the numeric ids of Compute Engine. Where a command takes a zone or a record id, a bare managed zone name (`example-zone`, `example-zone|A|...`) is still accepted and means the zone of that name: in the project of `--project` when given, else in the selected projects. A record id with a bare zone name given to `gcp dns record delete <zone> --id` is of the project of `<zone>`.
 
 **The same name in several projects** (or zones, regions, accounts):
 
