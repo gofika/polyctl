@@ -1,10 +1,13 @@
 package gcp
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
 	"google.golang.org/api/dns/v1"
+
+	"github.com/gofika/polyctl/internal/platform"
 )
 
 // The rows a still fresh set holds of a project that is no longer selected
@@ -79,5 +82,36 @@ func TestZoneOfDeselectedProjectIsOutOfScope(t *testing.T) {
 	}
 	if err := h.run("dns", "zone", "list"); err != nil || strings.Contains(h.stdout.String(), "example.org") {
 		t.Errorf("zone list = %v\n%s", err, h.stdout.String())
+	}
+}
+
+// A re-login tells the login command which projects left the selection
+// (their cached rows are dropped) and whether the selection changed at all.
+func TestCoverageChange(t *testing.T) {
+	meta := func(def, projects string) map[string]string {
+		m := map[string]string{metaProject: def}
+		if projects != "" {
+			m[metaProjects] = projects
+		}
+		return m
+	}
+	p := &provider{}
+	var _ platform.CoverageChanger = p
+	for _, c := range []struct {
+		name          string
+		before, after map[string]string
+		dropped       []string
+		changed       bool
+	}{
+		{"same single project", meta("a", ""), meta("a", ""), nil, false},
+		{"another default of the same selection", meta("a", "a,b"), meta("b", "b,a"), nil, false},
+		{"a project added", meta("a", ""), meta("a", "a,b"), nil, true},
+		{"a project removed", meta("a", "a,b,c"), meta("a", "a,c"), []string{"b"}, true},
+		{"another single project", meta("a", ""), meta("b", ""), []string{"a"}, true},
+	} {
+		dropped, changed := p.CoverageChange(c.before, c.after)
+		if !reflect.DeepEqual(dropped, c.dropped) || changed != c.changed {
+			t.Errorf("%s: dropped %v, changed %v; want %v, %v", c.name, dropped, changed, c.dropped, c.changed)
+		}
 	}
 }

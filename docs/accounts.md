@@ -231,6 +231,7 @@ Projects. One account works on several projects: the selected ones, of which one
 - The default project must be reachable (exit code 3 otherwise). Another selected project that cannot be reached is a warning and stays selected; take it out with `polyctl gcp project remove <id>`.
 - The selection is stored in `config.yaml` as `project` (the default) and `projects` (comma-separated; absent when only the default is selected). An account stored without `projects`, as every login before the selection existed stored it, has exactly its one project selected.
 - `polyctl gcp project use`, `add` and `remove` change the default project and the selection without a new login.
+- A login that changes the selection drops what the inventory cached of the projects that left it and makes the cached inventory of the account due, so that the next command syncs the new selection.
 
 **Non-interactive:** nothing is asked, no browser is opened, and the default method is `adc`. `service_account` needs `key_file` (and `project` if the key names none). `oauth` needs `project` or `projects` (and `client_id`, `client_secret=-` for your own client, or in a build without a built-in one); it prints the consent URL and waits up to 5 minutes for the browser to return. The default project otherwise falls back to the previous login's, the ADC project, or the only visible one; several and no default is a usage error. The projects selected before stay selected.
 

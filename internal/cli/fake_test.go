@@ -55,6 +55,21 @@ func resetFake() {
 	fakeRevoked = nil
 	fakeRevokeErr = nil
 	fakeRecordTypes = nil
+	fakeCoverage = false
+}
+
+// fakeCoverage makes the fake providers report a change of what an account
+// covers when a re-login changes its "account" metadata: the old account
+// is the tree dropped (platform.CoverageChanger).
+var fakeCoverage bool
+
+func (p *fakeProvider) CoverageChange(before, after map[string]string) ([]string, bool) {
+	fakeMu.Lock()
+	defer fakeMu.Unlock()
+	if !fakeCoverage || before["account"] == after["account"] {
+		return nil, false
+	}
+	return []string{before["account"]}, true
 }
 
 // RecordTypes returns fakeRecordTypes.

@@ -319,6 +319,18 @@ type OwnerHinter interface {
 	OwnerHint(kind ResourceType, ids []string) string
 }
 
+// CoverageChanger is implemented by providers whose account covers a set
+// of inventory trees named in its metadata (the selected projects of a
+// Google Cloud account). After a re-login replaced the metadata before by
+// after, dropped are the trees the account no longer covers, whose cached
+// rows must go at once (a fresh set would otherwise keep serving them, and
+// domain routing would keep sending writes to them), and changed reports
+// whether what the account covers changed at all, so that its cached sets
+// are due.
+type CoverageChanger interface {
+	CoverageChange(before, after map[string]string) (dropped []string, changed bool)
+}
+
 // DetailProvider is implemented by clients that can look up the network
 // details of a matched instance (find --detail). It returns ErrNotSupported
 // for matches it has nothing to add to.

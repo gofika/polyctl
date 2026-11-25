@@ -33,6 +33,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
@@ -106,6 +107,26 @@ func (*provider) OwnerHint(kind platform.ResourceType, ids []string) string {
 		return "the managed zones are in different projects: use `polyctl gcp dns ... --project <id>`, or `polyctl gcp dns ...` with the zone id <project>/<managed zone>, to choose"
 	}
 	return "the project holds several managed zones of this DNS name: use `polyctl gcp dns ...` with the zone id <project>/<managed zone> to choose"
+}
+
+var _ platform.CoverageChanger = (*provider)(nil)
+
+// CoverageChange compares the selections of an account before and after a
+// re-login: the projects that left it are dropped from the inventory, and
+// any change of the selection makes the cached sets due.
+func (*provider) CoverageChange(before, after map[string]string) (dropped []string, changed bool) {
+	was, is := selectedProjects(before), selectedProjects(after)
+	for _, p := range was {
+		if !slices.Contains(is, p) {
+			dropped = append(dropped, p)
+		}
+	}
+	for _, p := range is {
+		if !slices.Contains(was, p) {
+			changed = true
+		}
+	}
+	return dropped, changed || len(dropped) > 0
 }
 
 func (*provider) ResourceTypes() []platform.ResourceType {

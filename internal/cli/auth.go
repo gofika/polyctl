@@ -320,12 +320,46 @@ func loginAccount(ctx context.Context, rt *app.Runtime, prov platform.Provider, 
 		cfg.CurrentProfile = prevCurrent
 		return fmt.Errorf("save config: %w (stored %s credentials for profile %q were %s)", err, id, name, kept)
 	}
+	if !isNew {
+		forgetUncovered(ctx, rt, prov, name, before.Metadata, res.Metadata)
+	}
 	label := res.Label
 	if label != "" {
 		label = " (" + label + ")"
 	}
 	rt.Infof("logged in to %s in profile %q%s; credentials stored in %s", prov.DisplayName(), name, label, store.Name())
 	return nil
+}
+
+// forgetUncovered brings the inventory in line with a re-login that changed
+// what the account covers (platform.CoverageChanger: the selected projects
+// of a Google Cloud account): the rows cached for what it no longer covers
+// are dropped, and its cached sets are made due. The login has succeeded by
+// now, so a failure here is a warning that says how to get there by hand.
+func forgetUncovered(ctx context.Context, rt *app.Runtime, prov platform.Provider, name string, before, after map[string]string) {
+	cc, ok := prov.(platform.CoverageChanger)
+	if !ok {
+		return
+	}
+	dropped, changed := cc.CoverageChange(before, after)
+	if !changed {
+		return
+	}
+	err := func() error {
+		db, err := rt.DB()
+		if err != nil {
+			return err
+		}
+		for _, tree := range dropped {
+			if err := db.PurgeTree(ctx, prov.ID(), name, tree); err != nil {
+				return err
+			}
+		}
+		return db.Expire(ctx, prov.ID(), name)
+	}()
+	if err != nil {
+		rt.Infof("warning: the cached inventory of %s/%s still holds what the account covered before (%v); run `polyctl sync --platform %s --profile %s`", prov.ID(), name, err, prov.ID(), name)
+	}
 }
 
 // profileRow is one row of `auth list`: an account, or a profile without
