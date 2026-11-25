@@ -313,8 +313,11 @@ func TestLoginOwnClientUnchanged(t *testing.T) {
 	withBuiltinClient(t, testBuiltin)
 	in, errBuf := loginInput("", nil)
 	in.Existing = map[string]string{"method": methodOAuth, "project": "proj"}
+	in.ProfileName = "me"
 	if _, err := p.Login(ctx, in); !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "--set client_id=<id>") || strings.Contains(errBuf.String(), "Open this URL") {
 		t.Errorf("re-login of an own client: %v / %q", err, errBuf.String())
+	} else if !strings.Contains(err.Error(), "polyctl auth logout gcp --profile me") {
+		t.Errorf("the error does not say how to move to the built-in client: %v", err)
 	}
 	a := &approval{}
 	in, errBuf = browserLogin("own-id\nown-secret\n\n", nil, a)
@@ -323,8 +326,15 @@ func TestLoginOwnClientUnchanged(t *testing.T) {
 	if err != nil || !maps.Equal(res.Secret, own) || res.Metadata["oauth_client"] != "" {
 		t.Errorf("interactive re-login of an own client: %v (stderr %q)", err, errBuf.String())
 	}
-	if !strings.Contains(errBuf.String(), "OAuth client id") {
-		t.Errorf("the client was not asked for: %q", errBuf.String())
+	if !strings.Contains(errBuf.String(), "OAuth client id") || !strings.Contains(errBuf.String(), "polyctl auth logout gcp") {
+		t.Errorf("the client was not asked for, or the way to the built-in client not named: %q", errBuf.String())
+	}
+	// A build without a built-in client has nothing to move to.
+	withBuiltinClient(t, oauthClient{})
+	in, _ = loginInput("", nil)
+	in.Existing = map[string]string{"method": methodOAuth, "project": "proj"}
+	if _, err := p.Login(ctx, in); !errors.Is(err, app.ErrUsage) || strings.Contains(err.Error(), "auth logout") {
+		t.Errorf("re-login of an own client without a built-in one: %v", err)
 	}
 }
 

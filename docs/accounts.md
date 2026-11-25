@@ -213,7 +213,7 @@ Keys: `method`, `project`, `key_file`, `client_id`, `client_secret`.
 Which method a login uses:
 
 - `--set method=` when given.
-- Else the method of the account when it is logged in again. An account of your own OAuth client keeps to such a client and needs `client_id` and `client_secret` again.
+- Else the method of the account when it is logged in again. An account of your own OAuth client keeps to such a client and needs `client_id` and `client_secret` again; to move it to the built-in client, remove it with `polyctl auth logout gcp --profile <name>` and log in again.
 - Else, on a terminal, the browser login with the built-in client; no question is asked about the method.
 - Else (non-interactive) `adc`.
 

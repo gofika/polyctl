@@ -292,7 +292,11 @@ func loginOAuth(ctx context.Context, in platform.LoginInput, pio *prompt.IO) (*p
 			missing = append(missing, "--set project=<id>")
 		}
 		if len(missing) > 0 {
-			return nil, app.UsageErrf("gcp login with method=oauth needs %s", strings.Join(missing, ", "))
+			hint := ""
+			if ownAccount && builtinClient.set() && (client.ID == "" || client.Secret == "") {
+				hint = " (" + ownClientNote(in.ProfileName) + ")"
+			}
+			return nil, app.UsageErrf("gcp login with method=oauth needs %s%s", strings.Join(missing, ", "), hint)
 		}
 	}
 	if builtin {
@@ -301,6 +305,9 @@ func loginOAuth(ctx context.Context, in platform.LoginInput, pio *prompt.IO) (*p
 	} else if client.ID == "" || client.Secret == "" {
 		fmt.Fprintln(pio.Err, "polyctl needs an OAuth client of your own: in the Google Cloud console open APIs & Services > Credentials,")
 		fmt.Fprintln(pio.Err, "create an OAuth client ID of type \"Desktop app\", and enter its id and secret below.")
+		if ownAccount && builtinClient.set() {
+			fmt.Fprintln(pio.Err, "Note: "+ownClientNote(in.ProfileName)+".")
+		}
 	}
 	var err error
 	if client.ID == "" {
@@ -340,6 +347,17 @@ func loginOAuth(ctx context.Context, in platform.LoginInput, pio *prompt.IO) (*p
 		secret["client_id"], secret["client_secret"] = client.ID, client.Secret
 	}
 	return &platform.LoginResult{Secret: secret, Metadata: meta, Label: label(c.email, project)}, nil
+}
+
+// ownClientNote says why a re-login of an account that holds an OAuth
+// client of the user does not use the built-in client, and how to move the
+// account to it.
+func ownClientNote(profile string) string {
+	logout := "polyctl auth logout gcp"
+	if profile != "" {
+		logout += " --profile " + profile
+	}
+	return "this account was logged in with an OAuth client of your own and keeps to it; to use polyctl's built-in client instead, run `" + logout + "` and log in again"
 }
 
 // runLoopbackFlow performs the authorization-code dance on a random
