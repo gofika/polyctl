@@ -266,6 +266,7 @@ polyctl gcp compute instance password win-1 --reset --yes   # set a new one
 
 - `create` of a Windows instance asks the guest agent to create `--windows-user` (default `polyctl-admin`; 1-20 characters without spaces or `"/\[]:;|=,+*?<>@`, else exit code 2) and waits up to `--password-timeout` (default `10m`). If the agent does not answer in time, the serial port cannot be read (`compute.instances.getSerialPortOutput`) or `--no-wait` is given, the create still succeeds and a note names `--reset`. `--windows-user` and `--password-timeout` with a Linux image are exit code 2.
 - `password` shows the stored login; nothing stored is exit code 4 with a hint to use `--reset`.
+- A name whose login is stored for several instances is a pick on a terminal and exit code 5 otherwise; the candidates show the project and zone of each, and the instance id, `--project` or `--zone` chooses. The login is stored by zone and instance id, so `--project` tells the instances apart by the inventory: it leaves out an instance the inventory knows to be of another project.
 - `--reset` sets a new password on a running Windows instance (also one polyctl did not create) for the stored user, else `polyctl-admin`, or `--user`. The old password stops working, so it asks for confirmation. A Linux instance is exit code 2, a stopped one exit code 1, no answer within `--password-timeout` exit code 1.
 
 ## Firewall rules

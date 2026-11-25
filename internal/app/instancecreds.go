@@ -209,6 +209,15 @@ type PasswordCommand struct {
 	// Reset says the platform adds a --reset flag that sets a new password
 	// through the platform (the help then says so).
 	Reset bool
+	// Project, when set, tells the project of a stored instance ("" when
+	// it is not known) and Pinned the project the call names ("" for
+	// none): a platform whose account spans several projects (Google
+	// Cloud) stores credentials by location and id, so two projects may
+	// hold an instance of one name in one location. A pinned project
+	// leaves out the instances known to be of another one, and the
+	// candidates of an ambiguous name show their project.
+	Project func(ctx context.Context, profile, instanceID string) string
+	Pinned  func() string
 }
 
 // pickStoredInstance asks for one of the instances of the profile whose
@@ -277,6 +286,9 @@ func InstancePasswordCommand(rt *Runtime, pc PasswordCommand) *cobra.Command {
 	if pc.LocationFlag != "" {
 		long += " or --" + pc.LocationFlag
 	}
+	if pc.Pinned != nil {
+		long += ";\n--project chooses among instances of one name in several projects"
+	}
 	long += "). An instance with no\nstored credentials is exit code 4; credentials that cannot be decrypted (the\n" +
 		"data key was removed from the credential store) are exit code 1."
 	if pc.Detail != "" {
@@ -319,18 +331,55 @@ func InstancePasswordCommand(rt *Runtime, pc PasswordCommand) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// The project of each match, where the platform has projects.
+			projects := map[string]string{}
+			if pc.Project != nil {
+				pin := ""
+				if pc.Pinned != nil {
+					pin = pc.Pinned()
+				}
+				kept := found[:0:0]
+				for _, c := range found {
+					p := pc.Project(ctx, profile, c.InstanceID)
+					if pin != "" && p != "" && p != pin {
+						continue
+					}
+					projects[c.InstanceID] = p
+					kept = append(kept, c)
+				}
+				if len(found) > 0 && len(kept) == 0 {
+					return fmt.Errorf("%w: no Windows credentials stored for instance %q in project %s of profile %s (they are stored for an instance of that name in another project)",
+						platform.ErrNotFound, ref, pin, profile)
+				}
+				found = kept
+			}
 			if len(found) > 1 {
 				cands := make([]string, 0, len(found))
+				differ := false
 				for _, c := range found {
-					cands = append(cands, c.InstanceID+" ("+c.Location+")")
+					where := c.Location
+					if p := projects[c.InstanceID]; p != "" {
+						where = "project " + p + " " + where
+					}
+					cands = append(cands, c.InstanceID+" ("+where+")")
+					if projects[c.InstanceID] != projects[found[0].InstanceID] {
+						differ = true
+					}
 				}
 				hint := "pass the instance id"
+				if differ && pc.Pinned != nil {
+					hint += ", --project"
+				}
 				if pc.LocationFlag != "" {
 					hint += " or --" + pc.LocationFlag
 				}
 				amb := &AmbiguousError{What: "instance " + ref, Candidates: cands, Hint: hint}
 				for _, c := range found {
-					amb.Options = append(amb.Options, prompt.Option{Label: storedLabel(c.Name, c.InstanceID, c.Location, c.User), Value: c.InstanceID})
+					label := storedLabel(c.Name, c.InstanceID, c.Location, c.User)
+					if p := projects[c.InstanceID]; p != "" {
+						label += "  project " + p
+					}
+					amb.Options = append(amb.Options, prompt.Option{Label: label, Value: c.InstanceID})
 				}
 				id, err := rt.Disambiguate(amb)
 				if err != nil {

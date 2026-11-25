@@ -465,6 +465,31 @@ func passwordResetHint(ref string) string {
 	return "`" + app.PasswordCommandLine(computeInstanceTree, ref) + " --reset` sets a new password through the guest agent of a running Windows instance (asks first)"
 }
 
+// storedInstanceProject tells the project of an instance whose credentials
+// are stored, from its inventory row: the credentials are stored by zone
+// and id, without their project. "" when the inventory does not hold the
+// instance (deleted, or of a project outside the selection).
+func storedInstanceProject(rt *app.Runtime) func(ctx context.Context, profile, id string) string {
+	return func(ctx context.Context, profile, id string) string {
+		db, err := rt.DB()
+		if err != nil {
+			return ""
+		}
+		r, err := db.Get(ctx, inventory.Set{Platform: platform.GCP, Profile: profile, Type: platform.ResInstance}, platform.ResInstance, id)
+		if err != nil || r == nil {
+			return ""
+		}
+		var in Instance
+		if err := r.Decode(&in); err != nil {
+			return ""
+		}
+		if in.Project == "" {
+			in.Project, _, _ = accountProjects(rt, profile)
+		}
+		return in.Project
+	}
+}
+
 func computePasswordCmd(rt *app.Runtime) *cobra.Command {
 	var reset bool
 	var user string
@@ -494,7 +519,9 @@ never sets a password on them. A stopped instance is exit code 1. With
 --dry-run nothing is generated, written or asked. Without --reset, an
 instance with nothing stored is exit code 4 with a hint to use --reset.
 Deleting the instance with polyctl removes its stored credentials.`,
-		Hint: passwordResetHint,
+		Hint:    passwordResetHint,
+		Project: storedInstanceProject(rt),
+		Pinned:  func() string { return pinnedProject(rt) },
 	})
 	cmd.Short = "Show (or with --reset set) the Windows user name and password of an instance"
 	cmd.Example += "\n  polyctl " + computeInstanceTree + " password win-1 --reset\n" +

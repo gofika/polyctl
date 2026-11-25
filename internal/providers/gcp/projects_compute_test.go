@@ -11,6 +11,7 @@ import (
 	"github.com/gofika/polyctl/internal/cert"
 	"github.com/gofika/polyctl/internal/platform"
 	"github.com/gofika/polyctl/internal/prompt/prompttest"
+	"github.com/gofika/polyctl/internal/secrets"
 )
 
 // twoProjects is a harness on the Compute Engine fake with the lab account
@@ -527,5 +528,59 @@ func TestNetworkDetailReadsTheInstancesProject(t *testing.T) {
 	d, err := c.NetworkDetail(t.Context(), &platform.FindMatch{Type: platform.ResInstance, Data: b, Matched: "10.99.0.5"})
 	if err != nil || d.SubnetCIDR != "10.99.0.0/24" {
 		t.Errorf("detail = %+v, %v; want the subnetwork of p2", d, err)
+	}
+}
+
+// The stored Windows credentials are kept by zone and id, without their
+// project: password shows the project of each candidate of a name two
+// projects hold, names --project among what chooses, and --project leaves
+// out the instance of the other project.
+func TestStoredPasswordAcrossProjects(t *testing.T) {
+	h := twoProjects(t)
+	a := h.gce.addInstance("proj", "us-central1-a", "win", "10.0.0.1", "")
+	b := h.gce.addInstance("p2", "us-central1-a", "win", "10.0.0.2", "")
+	if _, err := h.sync(platform.ResInstance); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.rt.PrepareSecrets(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := h.rt.Secrets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	idA, idB := strconv.FormatUint(a.Id, 10), strconv.FormatUint(b.Id, 10)
+	for id, pw := range map[string]string{idA: "pw-proj", idB: "pw-p2"} {
+		if err := st.Put(t.Context(), secrets.Credentials{Ref: secrets.Ref{Platform: platform.GCP, Profile: "lab", Location: "us-central1-a", InstanceID: id},
+			Name: "win", User: "admin", Password: pw}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	show := func(args ...string) (string, error) {
+		err := h.run(append([]string{"compute", "instance", "password"}, args...)...)
+		return h.stdout.String(), err
+	}
+	_, err = show("win")
+	if exitClass(err) != "ambiguous" || !has(err, idA+" (project proj us-central1-a)", idB+" (project p2 us-central1-a)", "pass the instance id, --project or --zone") {
+		t.Fatalf("a name stored for two projects = %v", err)
+	}
+	if out, err := show("win", "--project", "p2"); err != nil || !strings.Contains(out, "pw-p2") || strings.Contains(out, "pw-proj") {
+		t.Errorf("--project p2 = %v\n%s", err, out)
+	}
+	if out, err := show("win", "--project", "proj"); err != nil || !strings.Contains(out, "pw-proj") {
+		t.Errorf("--project proj = %v\n%s", err, out)
+	}
+	// The id of an instance of another project than --project is not found.
+	if out, err := show(idA, "--project", "p2"); exitClass(err) != "notfound" || strings.Contains(out, "pw-proj") {
+		t.Errorf("an id of another project = %v\n%s", err, out)
+	}
+	// The interactive flow asks, showing the project of each.
+	p := h.interactive(prompttest.Label("project p2"))
+	if out, err := show("win"); err != nil || !strings.Contains(out, "pw-p2") {
+		t.Fatalf("interactive = %v\n%s", err, out)
+	}
+	p.Done()
+	if l := prompttest.Labels(p.Asked[0].Options); !strings.Contains(l, "project proj") || !strings.Contains(l, "project p2") {
+		t.Errorf("offered:\n%s", l)
 	}
 }
