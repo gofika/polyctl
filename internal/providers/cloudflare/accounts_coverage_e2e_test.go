@@ -15,6 +15,7 @@ import (
 	"github.com/gofika/polyctl/internal/config"
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt/prompttest"
 )
 
 // unbind takes the account and the selection off the stored login of a
@@ -247,5 +248,85 @@ func TestAccountListingThatFails(t *testing.T) {
 	}
 	if code, stdout, stderr = e.run("cloudflare", "zone", "list", "--profile", "all", "--account", "Beta Inc"); code != cli.ExitAuth {
 		t.Errorf("--account with refused credentials: exit %d, %s%s", code, stdout, stderr)
+	}
+}
+
+// Credentials that may not list their accounts (a token without
+// Account:Read) have them read off their zones: a name is one of an account
+// with a zone, and an id that list does not hold is taken unchecked, which
+// is said.
+func TestAccountsOfCredentialsThatCannotListThem(t *testing.T) {
+	e := newR2Env(t)
+	e.loginAll()
+	e.f.accountsStatus = http.StatusForbidden
+	acct := func(args ...string) (int, string) {
+		t.Helper()
+		code, stdout, stderr := e.run(append([]string{"cloudflare", "account", "--profile", "all"}, args...)...)
+		return code, stdout + stderr
+	}
+	// A name the zones carry needs no note: the account was seen.
+	if code, out := acct("add", "Beta"); code != cli.ExitOK || e.selection("all") != "acc1|Acme|acc1,acc2" || strings.Contains(out, "was not checked") {
+		t.Fatalf("add by a name of the zones: exit %d, %s, %s", code, e.selection("all"), out)
+	}
+	// An id the zones do not show may be an account without a zone.
+	if code, out := acct("add", "acc7"); code != cli.ExitOK || e.selection("all") != "acc1|Acme|acc1,acc2,acc7" ||
+		!strings.Contains(out, "note: the credentials of cloudflare/all cannot list accounts: access to acc7 was not checked") {
+		t.Fatalf("add of an id that cannot be checked: exit %d, %s, %s", code, e.selection("all"), out)
+	}
+	if code, out := acct("use", "acc8"); code != cli.ExitOK || !strings.HasPrefix(e.selection("all"), "acc8||acc8,") ||
+		!strings.Contains(out, "access to acc8 was not checked") {
+		t.Fatalf("use of an id that cannot be checked: exit %d, %s, %s", code, e.selection("all"), out)
+	}
+	// What cannot be an id is not found among the accounts of the zones.
+	if code, out := acct("add", "No Such Name"); code != cli.ExitNotFound || !strings.Contains(out, `account "No Such Name" is not visible to the credentials of cloudflare/all`) {
+		t.Errorf("add of an unknown name: exit %d, %s", code, out)
+	}
+	// --account: an account of the zones by its name, read live when it is
+	// not selected.
+	code, stdout, stderr := e.run("cloudflare", "zone", "list", "--profile", "all", "--account", "Gamma", "-o", "json")
+	if code != cli.ExitOK || !strings.Contains(stdout, "example.org") || strings.Contains(stdout, "example.com") {
+		t.Errorf("--account by a name of the zones: exit %d, %s%s", code, stdout, stderr)
+	}
+	if got := e.rows("all", platform.ResZone); slices.Contains(got, "zone-gamma acc3") {
+		t.Errorf("the zones of an unselected account were cached: %v", got)
+	}
+}
+
+// Credentials that see no account at all (no Account:Read and no zone)
+// take an account id as it is, with a note; a name cannot be looked up
+// (exit code 2), and nothing can be offered on a terminal.
+func TestAccountsOfCredentialsThatSeeNone(t *testing.T) {
+	e := newR2Env(t)
+	e.f.accounts["acc4"] = &r2Account{id: "acc4", name: "Delta", domains: map[string][]map[string]any{}}
+	e.f.tokens["tok-none"] = "acc4"
+	e.f.accountsStatus = http.StatusForbidden
+	if code, _, stderr := e.run("auth", "login", "cloudflare", "--profile", "none", "--set", "token=tok-none"); code != cli.ExitOK ||
+		!strings.Contains(stderr, "the token cannot list accounts") || e.selection("none") != "||" {
+		t.Fatalf("login: exit %d, %s, %s", code, e.selection("none"), stderr)
+	}
+	acct := func(args ...string) (int, string) {
+		t.Helper()
+		code, stdout, stderr := e.run(append([]string{"cloudflare", "account", "--profile", "none"}, args...)...)
+		return code, stdout + stderr
+	}
+	if code, out := acct("add", "Delta Inc"); code != cli.ExitUsage || !strings.Contains(out, "the credentials of cloudflare/none cannot list accounts, so an account name cannot be looked up: pass the account id") {
+		t.Errorf("add by name: exit %d, %s", code, out)
+	}
+	code, stdout, stderr := e.run("cloudflare", "zone", "list", "--profile", "none", "--account", "Delta Inc")
+	if code != cli.ExitUsage || !strings.Contains(stderr, "--account: the credentials of cloudflare/none cannot list accounts, so an account name cannot be looked up: pass the account id") {
+		t.Errorf("--account by name: exit %d, %s%s", code, stdout, stderr)
+	}
+	if code, stdout, stderr = e.run("cloudflare", "zone", "list", "--profile", "none", "--account", "acc4"); code != cli.ExitOK {
+		t.Errorf("--account by id: exit %d, %s%s", code, stdout, stderr)
+	}
+	p := prompttest.New(t)
+	if code, _, stderr = e.runPick(p, "cloudflare", "account", "use", "--profile", "none"); code != cli.ExitUsage ||
+		!strings.Contains(stderr, "the credentials of cloudflare/none cannot list accounts: pass the account id") {
+		t.Errorf("use on a terminal: exit %d, %s", code, stderr)
+	}
+	p.Done()
+	if code, out := acct("use", "acc4"); code != cli.ExitOK || e.selection("none") != "acc4||" ||
+		!strings.Contains(out, "note: the credentials of cloudflare/none cannot list accounts: access to acc4 was not checked") {
+		t.Errorf("use by id: exit %d, %s, %s", code, e.selection("none"), out)
 	}
 }
