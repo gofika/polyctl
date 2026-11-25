@@ -357,3 +357,36 @@ func TestAccountFlagByIDOnALoginWithoutAnAccount(t *testing.T) {
 		t.Errorf("--account of an unknown id --offline: exit %d, %s", code, stderr)
 	}
 }
+
+// A name two visible accounts carry is ambiguous in account use and add
+// (exit code 5), also when one of them is the default account, whose name
+// the profile knows; among the selected accounts it is in account remove.
+func TestAccountNameOfTwoAccounts(t *testing.T) {
+	e := newR2Env(t)
+	e.loginAll()
+	e.f.accounts["acc3"].name = "Acme"
+	acct := func(args ...string) (int, string) {
+		t.Helper()
+		code, stdout, stderr := e.run(append([]string{"cloudflare", "account", "--profile", "all"}, args...)...)
+		return code, stdout + stderr
+	}
+	for _, verb := range []string{"add", "use"} {
+		code, out := acct(verb, "acme")
+		if code != cli.ExitAmbiguous || !strings.Contains(out, "Acme (acc1)") || !strings.Contains(out, "Acme (acc3)") || !strings.Contains(out, "pass the account id to choose") || e.selection("all") != "acc1|Acme|" {
+			t.Errorf("account %s by a name of two accounts: exit %d, %s, %s", verb, code, e.selection("all"), out)
+		}
+	}
+	// One selected account carries the name: remove means that one.
+	if code, out := acct("add", "acc2"); code != cli.ExitOK {
+		t.Fatalf("add: exit %d, %s", code, out)
+	}
+	if code, out := acct("remove", "Acme", "--default", "acc2"); code != cli.ExitOK || e.selection("all") != "acc2|Beta|" {
+		t.Fatalf("remove by a name one selected account carries: exit %d, %s, %s", code, e.selection("all"), out)
+	}
+	if code, out := acct("add", "acc1", "acc3"); code != cli.ExitOK || e.selection("all") != "acc2|Beta|acc2,acc1,acc3" {
+		t.Fatalf("add by id: exit %d, %s, %s", code, e.selection("all"), out)
+	}
+	if code, out := acct("remove", "Acme"); code != cli.ExitAmbiguous || !strings.Contains(out, "acc1 (Acme)") || !strings.Contains(out, "acc3 (Acme)") || e.selection("all") != "acc2|Beta|acc2,acc1,acc3" {
+		t.Errorf("remove by a name of two selected accounts: exit %d, %s, %s", code, e.selection("all"), out)
+	}
+}

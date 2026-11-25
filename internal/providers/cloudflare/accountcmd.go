@@ -2,6 +2,7 @@ package cloudflare
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -250,27 +251,46 @@ func (b *accountBook) list(ctx context.Context) ([]account, error) {
 }
 
 // resolve turns the accounts named on the command line, by id or by name,
-// into ids. A name the profile knows needs no request. With --offline what
-// is not known is taken as an id.
+// into ids. The id of a selected account needs no request. Anything else
+// is looked up among the accounts the credentials see, so that a name two
+// of them carry is ambiguous (exit code 5) whatever the profile knows.
+// Credentials that cannot list their accounts leave that to the profile
+// first. With --offline only the profile is asked,
+// and what it does not know is taken as an id.
 func (b *accountBook) resolve(ctx context.Context, args []string) ([]string, error) {
 	var out []string
 	for _, ref := range args {
 		ref = strings.TrimSpace(ref)
-		id, ok := knownAccount(ctx, b.rt, b.profile, ref)
+		id := ref
 		switch {
-		case ok:
+		case slices.Contains(b.cur.Accounts, ref):
 		case b.rt.Flags.Offline:
-			if err := checkAccountID(ref); err != nil {
-				return nil, fmt.Errorf("%w: account %q is not known to cloudflare/%s and cannot be looked up with --offline: pass the account id", app.ErrOffline, ref, b.profile)
+			known, ok := knownAccount(ctx, b.rt, b.profile, ref)
+			if !ok {
+				if err := checkAccountID(ref); err != nil {
+					return nil, fmt.Errorf("%w: account %q is not known to cloudflare/%s and cannot be looked up with --offline: pass the account id", app.ErrOffline, ref, b.profile)
+				}
+				known = ref
 			}
-			id = ref
+			id = known
 		default:
 			accounts, err := b.list(ctx)
 			if err != nil {
 				return nil, err
 			}
+			known, ok := knownAccount(ctx, b.rt, b.profile, ref)
+			if ok && !b.complete {
+				// The list is not the whole truth: what the profile knows
+				// comes first.
+				id = known
+				break
+			}
 			if id, err = matchAccount(b.profile, ref, "", accounts, b.complete); err != nil {
-				return nil, err
+				var amb *app.AmbiguousError
+				if errors.As(err, &amb) || !ok {
+					return nil, err
+				}
+				id = known
 			}
 		}
 		if !slices.Contains(out, id) {
