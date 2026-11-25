@@ -103,7 +103,7 @@ func (rt *Runtime) ResolveDomain(ctx context.Context, domain string, kind platfo
 			profiles, platforms := map[string]bool{}, map[platform.ID]bool{}
 			for _, o := range owners {
 				names = append(names, fmt.Sprintf("%s/%s (%s %s)", o.Platform, o.Profile, o.Type, o.ResourceID))
-				labels = append(labels, fmt.Sprintf("%s/%s  %s %s  id %s", o.Platform, o.Profile, o.Type, o.Domain, o.ResourceID))
+				labels = append(labels, prompt.Cells(string(o.Platform)+"/"+o.Profile, string(o.Type), o.Domain, "id "+o.ResourceID))
 				profiles[o.Profile], platforms[o.Platform] = true, true
 			}
 			// Name only the flags that actually narrow the candidates down.
@@ -139,7 +139,7 @@ func (rt *Runtime) ResolveDomain(ctx context.Context, domain string, kind platfo
 							}
 							if v := d.DescribeOwner(o.Type, row.ID, row.ParentID, row.Data); v != "" {
 								names[i] = fmt.Sprintf("%s/%s %s", o.Platform, o.Profile, v)
-								labels[i] = fmt.Sprintf("%s/%s  %s", o.Platform, o.Profile, v)
+								labels[i] = prompt.Cells(string(o.Platform)+"/"+o.Profile, v)
 							}
 						}
 					}

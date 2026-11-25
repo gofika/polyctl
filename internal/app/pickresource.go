@@ -2,8 +2,6 @@ package app
 
 import (
 	"context"
-	"fmt"
-	"strings"
 	"time"
 
 	"github.com/gofika/polyctl/internal/config"
@@ -27,7 +25,8 @@ type ResourcePick struct {
 	// Filter keeps the usable rows only (a running instance for stop, an
 	// unlocked domain for lock, ...); nil keeps every row.
 	Filter func(inventory.Resource) bool
-	// Label describes a row; nil shows "name  id  platform/profile".
+	// Label describes a row; nil shows "name  id  platform/profile" ("-"
+	// for the name of a row that has none but its id).
 	Label func(inventory.Resource) string
 	// Value is what the command resolves the pick with; nil means the id.
 	Value func(inventory.Resource) string
@@ -79,10 +78,7 @@ func (rt *Runtime) resourceOptions(ctx context.Context, p ResourcePick) ([]promp
 		if p.Filter != nil && !p.Filter(r) {
 			continue
 		}
-		label := fmt.Sprintf("%s  %s  %s/%s", r.Name, r.ID, r.Platform, r.Profile)
-		if r.Name == "" || r.Name == r.ID {
-			label = fmt.Sprintf("%s  %s/%s", r.ID, r.Platform, r.Profile)
-		}
+		label := resourceLabel(r)
 		if p.Label != nil {
 			label = p.Label(r)
 		}
@@ -193,34 +189,44 @@ func (rt *Runtime) DomainArg(ctx context.Context, args []string, id platform.ID,
 	return []string{v}, nil
 }
 
-// domainLabel shows a domain or zone row: "example.com  ACTIVE  expires
-// 2027-03-01  locked  autorenew  namecom/acme".
+// resourceLabel shows an inventory row as the cells "name  id
+// platform/profile  <more>...": a row whose id is its name has "-" for the
+// name, so the ids stay in one column.
+func resourceLabel(r inventory.Resource, more ...string) string {
+	name := r.Name
+	if name == r.ID {
+		name = ""
+	}
+	return prompt.Cells(append([]string{name, r.ID, string(r.Platform) + "/" + r.Profile}, more...)...)
+}
+
+// domainLabel shows a domain or zone row as the cells "example.com  ACTIVE
+// expires 2027-03-01  locked  autorenew  namecom/acme", "-" for what the
+// row does not say.
 func domainLabel(r inventory.Resource) string {
 	name := r.Name
 	if name == "" {
 		name = r.ID
 	}
-	parts := []string{name}
+	var status, expires, locked, autoRenew string
 	if r.Type == platform.ResDomain {
 		var d platform.Domain
 		if r.Decode(&d) == nil {
-			if d.Status != "" {
-				parts = append(parts, d.Status)
-			}
+			status = d.Status
 			if d.ExpiresAt != "" {
 				exp := d.ExpiresAt
 				if len(exp) > 10 {
 					exp = exp[:10]
 				}
-				parts = append(parts, "expires "+exp)
+				expires = "expires " + exp
 			}
 			if d.Locked != nil && *d.Locked {
-				parts = append(parts, "locked")
+				locked = "locked"
 			}
 			if d.AutoRenew != nil && *d.AutoRenew {
-				parts = append(parts, "autorenew")
+				autoRenew = "autorenew"
 			}
 		}
 	}
-	return strings.Join(append(parts, string(r.Platform)+"/"+r.Profile), "  ")
+	return prompt.Cells(name, status, expires, locked, autoRenew, string(r.Platform)+"/"+r.Profile)
 }

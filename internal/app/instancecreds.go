@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -243,21 +242,17 @@ func (rt *Runtime) pickStoredInstance(ctx context.Context, p platform.ID, profil
 	return rt.Choose(c)
 }
 
-// storedLabel shows an instance with stored credentials: "win-1  i-1
-// cn-shanghai  user Administrator".
-func storedLabel(name, id, location, user string) string {
-	parts := []string{}
-	if name != "" && name != id {
-		parts = append(parts, name)
-	}
-	parts = append(parts, id)
-	if location != "" {
-		parts = append(parts, location)
+// storedLabel shows an instance with stored credentials as the cells
+// "win-1  i-1  cn-shanghai  user Administrator  <more>...", "-" for what is
+// not known (the name of an instance that has none but its id).
+func storedLabel(name, id, location, user string, more ...string) string {
+	if name == id {
+		name = ""
 	}
 	if user != "" {
-		parts = append(parts, "user "+user)
+		user = "user " + user
 	}
-	return strings.Join(parts, "  ")
+	return prompt.Cells(append([]string{name, id, location, user}, more...)...)
 }
 
 // InstancePasswordCommand builds `<tree> password <name|id>`: it shows the
@@ -372,10 +367,11 @@ func InstancePasswordCommand(rt *Runtime, pc PasswordCommand) *cobra.Command {
 				}
 				amb := &AmbiguousError{What: "instance " + ref, Candidates: cands, Hint: hint}
 				for _, c := range found {
-					label := storedLabel(c.Name, c.InstanceID, c.Location, c.User)
+					project := ""
 					if p := projects[c.InstanceID]; p != "" {
-						label += "  project " + p
+						project = "project " + p
 					}
+					label := storedLabel(c.Name, c.InstanceID, c.Location, c.User, project)
 					amb.Options = append(amb.Options, prompt.Option{Label: label, Value: c.InstanceID})
 				}
 				id, err := rt.Disambiguate(amb)

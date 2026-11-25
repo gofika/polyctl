@@ -41,7 +41,7 @@ func TestRegistrarDomainPick(t *testing.T) {
 	if r.err != nil || !strings.Contains(r.stdout, "example.org") {
 		t.Fatalf("get: %v, %q", r.err, r.stderr)
 	}
-	if a := p.Find("Domain"); prompttest.Values(a.Options) != "example.org open.org" || a.Options[0].Label != "example.org  ACTIVE  locked  godaddy/a" {
+	if a := p.Find("Domain"); prompttest.Values(a.Options) != "example.org open.org" || a.Options[0].Label != "example.org  ACTIVE  -  locked  -  godaddy/a" || a.Options[1].Label != "open.org  -  -  -  -  godaddy/a" {
 		t.Errorf("domain options %+v", a.Options)
 	}
 	p.Done()

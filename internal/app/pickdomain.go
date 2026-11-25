@@ -28,7 +28,8 @@ type DomainPick struct {
 	// Filter, when set, keeps only the domains it accepts (one call per
 	// domain with its index entries).
 	Filter func(domain string, entries []inventory.IndexEntry) bool
-	// Label, when set, adds to the label of a domain.
+	// Label, when set, adds a cell after the domain, before its owners
+	// ("" shows "-").
 	Label func(domain string, entries []inventory.IndexEntry) string
 	// Another, when set, adds a last option "Another domain..." that runs
 	// it (a domain the index does not know, typed and checked); without
@@ -80,17 +81,17 @@ func (rt *Runtime) PickDomain(ctx context.Context, p DomainPick) (string, error)
 		if p.Filter != nil && !p.Filter(d, es) {
 			continue
 		}
-		var owners []string
-		for _, e := range es {
-			owners = append(owners, fmt.Sprintf("%s %s/%s", e.Type, e.Platform, e.Profile))
-		}
-		label := d + "  " + strings.Join(owners, ", ")
+		// "domain  <note>  zone cloudflare/acme  domain namecom/acme": the
+		// note of p.Label comes before the owners, whose number differs
+		// from row to row.
+		cells := []string{d}
 		if p.Label != nil {
-			if extra := p.Label(d, es); extra != "" {
-				label += "  " + extra
-			}
+			cells = append(cells, p.Label(d, es))
 		}
-		opts = append(opts, prompt.Option{Label: label, Value: d})
+		for _, e := range es {
+			cells = append(cells, fmt.Sprintf("%s %s/%s", e.Type, e.Platform, e.Profile))
+		}
+		opts = append(opts, prompt.Option{Label: prompt.Cells(cells...), Value: d})
 	}
 	what := "indexed domain"
 	if len(p.Kinds) == 1 {
@@ -155,7 +156,7 @@ func (rt *Runtime) PickNameservers(ctx context.Context, domain string) ([]string
 				continue
 			}
 			seen[v] = true
-			opts = append(opts, prompt.Option{Label: fmt.Sprintf("zone %s at %s/%s: %s", z.Name, e.Platform, e.Profile, strings.Join(z.Nameservers, ", ")), Value: v})
+			opts = append(opts, prompt.Option{Label: prompt.Cells("zone "+z.Name, string(e.Platform)+"/"+e.Profile, strings.Join(z.Nameservers, ", ")), Value: v})
 		}
 	}
 	opts = append(opts, prompt.Option{Label: "Enter nameservers...", Value: enterNameservers})

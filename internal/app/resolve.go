@@ -179,10 +179,13 @@ func (rt *Runtime) ResolveResourceWith(ctx context.Context, l ResourceLookup) (i
 	}
 	amb := &AmbiguousError{What: fmt.Sprintf("%s %q", what, ref), Candidates: names, Hint: hint}
 	for i, r := range found {
-		label := fmt.Sprintf("%s/%s  %s  %s", r.Platform, r.Profile, r.Name, r.ID)
+		// "name  id  platform/profile  in <parent>": what the resource is,
+		// then what tells the candidates apart.
+		parent := ""
 		if r.ParentID != "" {
-			label += "  in " + r.ParentID
+			parent = "in " + r.ParentID
 		}
+		label := resourceLabel(r, parent)
 		if l.Candidate != nil {
 			label = l.Candidate(r)
 		}

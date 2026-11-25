@@ -19,7 +19,7 @@ func TestDomainNSSetPicks(t *testing.T) {
 	if _, stderr, err := run(t, cfgPath, "domain", "index"); err != nil {
 		t.Fatalf("index: %v (%s)", err, stderr)
 	}
-	p := prompttest.New(t, "example.com", prompttest.Label("zone example.com at cloudflare/a"))
+	p := prompttest.New(t, "example.com", prompttest.Label("zone example.com  cloudflare/a  alice.ns.example.net, bob.ns.example.net"))
 	r := runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), "domain", "ns", "set", "--dry-run", "-o", "json")
 	if r.err != nil {
 		t.Fatalf("ns set: %v (%s)", r.err, r.stderr)

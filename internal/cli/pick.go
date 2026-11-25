@@ -36,7 +36,7 @@ var (
 )
 
 // certStoreOptions lists the certificates of a store in domain order, each
-// labelled with key type, expiry and days left.
+// labelled "domain  key type  expires 2027-01-01 (30 days)".
 func certStoreOptions(st *cert.Store) ([]prompt.Option, error) {
 	roots, err := st.List()
 	if err != nil {
@@ -49,18 +49,19 @@ func certStoreOptions(st *cert.Store) ([]prompt.Option, error) {
 			continue
 		}
 		days := int(time.Until(b.NotAfter).Hours() / 24)
-		label := fmt.Sprintf("%s  %s  expires %s (%d days)", root, b.KeyType, b.NotAfter.UTC().Format("2006-01-02"), days)
+		expiry := fmt.Sprintf("expires %s (%d days)", b.NotAfter.UTC().Format("2006-01-02"), days)
 		if days < 0 {
-			label = fmt.Sprintf("%s  %s  expired %s", root, b.KeyType, b.NotAfter.UTC().Format("2006-01-02"))
+			expiry = "expired " + b.NotAfter.UTC().Format("2006-01-02")
 		}
-		opts = append(opts, prompt.Option{Label: label, Value: root})
+		opts = append(opts, prompt.Option{Label: prompt.Cells(root, b.KeyType, expiry), Value: root})
 	}
 	return opts, nil
 }
 
 // pickRecords lets the user tick records of a zone to delete: every record
-// but the zone's own (SOA, apex NS), labelled with name, type, value and
-// TTL, a record owned by another service marked with that service.
+// but the zone's own (SOA, apex NS), labelled "name  type  value  ttl 300
+// proxied  [owner]" ("-" for what a record does not have), a record owned
+// by another service marked with that service.
 func pickRecords(rt *app.Runtime, dns platform.DNSService, zone platform.Zone, existing []platform.Record) ([]platform.Record, error) {
 	items := platform.ClassifyDeleteAll(platform.DNSDeleteAll{Zone: zone, DNS: dns, Records: existing})
 	byID := map[string]platform.Record{}
@@ -70,18 +71,12 @@ func pickRecords(rt *app.Runtime, dns platform.DNSService, zone platform.Zone, e
 			continue
 		}
 		r := it.Record
-		label := fmt.Sprintf("%s  %s  %s", r.Name, r.Type, r.Value)
-		if r.TTL > 0 {
-			label += fmt.Sprintf("  ttl %d", r.TTL)
-		}
-		if r.Proxied != nil && *r.Proxied {
-			label += "  proxied"
-		}
+		owner := ""
 		if it.Owner != "" {
-			label += "  [" + it.Owner + "]"
+			owner = "[" + it.Owner + "]"
 		}
 		byID[r.ID] = r
-		opts = append(opts, prompt.Option{Label: label, Value: r.ID})
+		opts = append(opts, prompt.Option{Label: app.RecordLabel(r, owner), Value: r.ID})
 	}
 	ids, err := rt.ChooseMany(app.Choice{Title: "Delete which records of " + zone.Name + "?", Options: opts, What: "record in zone " + zone.Name})
 	if err != nil {

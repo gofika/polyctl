@@ -985,3 +985,44 @@ func TestPickersIgnoreRowsOfRemovedAccounts(t *testing.T) {
 	}
 	p.Done()
 }
+
+// The domain picker keeps the note of the command in the cell after the
+// domain ("-" for a domain without one) and the owners after it, however
+// many a domain has.
+func TestPickDomainLabelsKeepTheirCells(t *testing.T) {
+	t.Setenv(app.EnvNonInteractive, "")
+	h := newHarness(t, app.Flags{}, nil)
+	h.seedStandard()
+	p := prompttest.New(t, "example.com")
+	h.rt.Picker = p
+	if _, err := h.rt.PickDomain(ctx, app.DomainPick{Arg: "<domain>", Label: func(d string, _ []inventory.IndexEntry) string {
+		if d == "example.com" {
+			return "store: none"
+		}
+		return ""
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	labels := "\n" + prompttest.Labels(p.Find("Domain").Options) + "\n"
+	for _, want := range []string{
+		"\nexample.com  store: none  zone namecom/a\n",
+		"\nother.com  -  zone namecom/b\n",
+		"\nshared.com  -  zone namecom/a  zone namecom/b\n",
+	} {
+		if !strings.Contains(labels, want) {
+			t.Errorf("domain labels lack %q:%s", want, labels)
+		}
+	}
+	p.Done()
+
+	// Without a note there is no cell for it.
+	p = prompttest.New(t, "example.com")
+	h.rt.Picker = p
+	if _, err := h.rt.PickDomain(ctx, app.DomainPick{Arg: "<domain>"}); err != nil {
+		t.Fatal(err)
+	}
+	if l := prompttest.Labels(p.Find("Domain").Options); !strings.Contains(l, "example.com  zone namecom/a\n") {
+		t.Errorf("domain labels without a note:\n%s", l)
+	}
+	p.Done()
+}

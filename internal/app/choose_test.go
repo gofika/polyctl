@@ -167,7 +167,10 @@ func TestAmbiguityIsAPickInTheInteractiveFlow(t *testing.T) {
 	if err != nil || r.ID != "z-shared-a" {
 		t.Fatalf("ResolveResource = %+v, %v", r, err)
 	}
-	if a := p.Find(`Ambiguous owner of zone "shared.com"; use which one?`); len(a.Options) != 2 || !strings.Contains(a.Options[0].Label, "namecom/a  zone shared.com  id z-shared-a") {
+	if a := p.Find(`Ambiguous namecom zone "shared.com"; use which one?`); len(a.Options) != 2 || a.Options[0].Label != "shared.com  z-shared-a  namecom/a" {
+		t.Errorf("resource options %+v", a.Options)
+	}
+	if a := p.Find(`Ambiguous owner of zone "shared.com"; use which one?`); len(a.Options) != 2 || !strings.Contains(a.Options[0].Label, "namecom/a  zone  shared.com  id z-shared-a") {
 		t.Errorf("owner options %+v", a.Options)
 	}
 	p.Done()
@@ -200,7 +203,8 @@ func TestPickResource(t *testing.T) {
 	}
 }
 
-// PickRecordID labels the records and leaves the SOA out.
+// PickRecordID labels the records, every fact in its cell ("-" for what a
+// record does not have), and leaves the SOA out.
 func TestPickRecordID(t *testing.T) {
 	rt, p := interactiveRT(t, "r2")
 	on := true
@@ -216,7 +220,7 @@ func TestPickRecordID(t *testing.T) {
 	if err != nil || got != "r2" {
 		t.Fatalf("pick = %q, %v", got, err)
 	}
-	if l := prompttest.Labels(p.Find("Delete which record?").Options); l != "www.example.com  A  203.0.113.10  ttl 300  r1\ncdn.example.com  CNAME  b.r2.dev  proxied  [R2 bucket b]  r2" {
+	if l := prompttest.Labels(p.Find("Delete which record?").Options); l != "www.example.com  A  203.0.113.10  ttl 300  -  -  r1\ncdn.example.com  CNAME  b.r2.dev  -  proxied  [R2 bucket b]  r2" {
 		t.Errorf("labels:\n%s", l)
 	}
 }

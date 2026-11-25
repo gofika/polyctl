@@ -37,29 +37,38 @@ func (rt *Runtime) AskRecordValue(typ, def string) (string, error) {
 	})
 }
 
+// RecordLabel is the label of a record in a selection list: the cells
+// "name  type  value  ttl 300  proxied  <more>...", "-" for a TTL the
+// record does not carry or for a record that is not proxied when a later
+// cell follows. more are the cells after them (a note, the record id).
+func RecordLabel(r platform.Record, more ...string) string {
+	ttl, proxied := "", ""
+	if r.TTL > 0 {
+		ttl = fmt.Sprintf("ttl %d", r.TTL)
+	}
+	if r.Proxied != nil && *r.Proxied {
+		proxied = "proxied"
+	}
+	return prompt.Cells(append([]string{r.Name, r.Type, r.Value, ttl, proxied}, more...)...)
+}
+
 // PickRecordID asks for one record of a zone (the <record-id> of an
-// update or delete command), labelled "name  type  value  ttl  [proxied]
-// id". mark, when set, adds a note to a record (the service owning it).
+// update or delete command), labelled "name  type  value  ttl 300  proxied
+// [note]  id" ("-" for what a record does not have). mark, when set, adds
+// a note to a record (the service owning it).
 func (rt *Runtime) PickRecordID(title string, recs []platform.Record, mark func(platform.Record) string) (string, error) {
 	var opts []prompt.Option
 	for _, r := range recs {
 		if r.Type == "SOA" || strings.TrimSpace(r.ID) == "" {
 			continue
 		}
-		label := fmt.Sprintf("%s  %s  %s", r.Name, r.Type, r.Value)
-		if r.TTL > 0 {
-			label += fmt.Sprintf("  ttl %d", r.TTL)
-		}
-		if r.Proxied != nil && *r.Proxied {
-			label += "  proxied"
-		}
+		note := ""
 		if mark != nil {
 			if m := mark(r); m != "" {
-				label += "  [" + m + "]"
+				note = "[" + m + "]"
 			}
 		}
-		label += "  " + r.ID
-		opts = append(opts, prompt.Option{Label: label, Value: r.ID})
+		opts = append(opts, prompt.Option{Label: RecordLabel(r, note, r.ID), Value: r.ID})
 	}
 	return rt.Choose(Choice{Title: title, Options: opts, Arg: "<record-id>", What: "record"})
 }
