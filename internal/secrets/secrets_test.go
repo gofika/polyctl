@@ -426,3 +426,27 @@ func TestDataKeyAdoptedFromTheSharedService(t *testing.T) {
 		}
 	}
 }
+
+// Lookup finds the login of an instance detached by a logout, and Forget
+// (a deleted instance) removes it with the one under the profile.
+func TestLookupAndForgetDetached(t *testing.T) {
+	ctx := context.Background()
+	db, _ := openDB(t)
+	s := New(db, newMemKeys())
+	if err := s.Put(ctx, Credentials{Ref: ref, Name: "win-1", User: "Administrator", Password: "pw", KeyPair: "kp"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.DetachSecrets(ctx, ref.Platform, ref.Profile); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Lookup(ctx, ref)
+	if err != nil || !got.Detached || got.KeyPair != "kp" || got.Profile != ref.Profile {
+		t.Fatalf("Lookup = %+v, %v", got, err)
+	}
+	if err := s.Forget(ctx, ref); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Lookup(ctx, ref); !errors.Is(err, platform.ErrNotFound) {
+		t.Errorf("Lookup after Forget = %v, want not found", err)
+	}
+}

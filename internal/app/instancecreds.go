@@ -142,15 +142,16 @@ func label(c secrets.Credentials) string {
 func instanceArg(c secrets.Credentials) string { return c.InstanceID }
 
 // ForgetCredentials removes the stored credentials of an instance after it
-// was deleted. It is best effort: a failure is a warning, the delete
-// stands. A dry run removes nothing.
+// was deleted, also those detached from the profile by a logout. It is best
+// effort: a failure is a warning, the delete stands. A dry run removes
+// nothing.
 func (rt *Runtime) ForgetCredentials(ctx context.Context, ref secrets.Ref) {
 	if rt.DryRun() {
 		return
 	}
 	st, err := rt.Secrets()
 	if err == nil {
-		err = st.Delete(ctx, ref)
+		err = st.Forget(ctx, ref)
 	}
 	if err != nil {
 		rt.Infof("warning: the stored credentials of deleted instance %s could not be removed: %v", ref.InstanceID, err)

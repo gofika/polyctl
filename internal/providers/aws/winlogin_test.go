@@ -588,6 +588,34 @@ func TestWindowsDeleteKeepsAKeyPairTheInstanceDoesNotUse(t *testing.T) {
 	}
 }
 
+// After a logout detached the stored login and the same account logged in
+// again, deleting the instance still deletes the key pair polyctl created
+// for it and the detached login.
+func TestWindowsDeleteAfterLogoutAndLogin(t *testing.T) {
+	h := winHarness(t, app.Flags{Yes: true})
+	if err := h.run(winCreate...); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	id := storedWin(t, h, "win-a")[0].InstanceID
+	db, err := h.rt.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.DetachSecrets(ctx, platform.AWS, "lab"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.run("ec2", "instance", "delete", id); err != nil {
+		t.Fatalf("%v\n%s", err, h.stderr.String())
+	}
+	if strings.Join(h.ec2.deletedKeyPairs, ",") != "win-a-win" {
+		t.Errorf("deleted key pairs = %v", h.ec2.deletedKeyPairs)
+	}
+	if rows, _ := db.FindDetachedSecret(ctx, platform.AWS, "lab", "", id); len(rows) != 0 {
+		t.Errorf("the detached login survived the delete: %+v", rows)
+	}
+}
+
 // The key flags that cannot serve Windows, unusable types and keys, and a
 // key pair name that is taken are usage errors before anything is
 // written.

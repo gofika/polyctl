@@ -464,15 +464,16 @@ func (w *windowsLogin) finish(ctx context.Context) error {
 }
 
 // createdKeyPairOf returns the key pair polyctl created for an instance
-// and recorded with its credentials, when the instance still uses it; ""
-// otherwise (a key pair of the user's is never deleted).
+// and recorded with its credentials (also when a logout detached them from
+// the profile), when the instance still uses it; "" otherwise (a key pair of
+// the user's is never deleted).
 func createdKeyPairOf(ctx context.Context, rt *app.Runtime, l *locatedInstance) string {
 	st, err := rt.Secrets()
 	if err != nil {
 		rt.Verbosef("read the stored login of %s: %v", l.id(), err)
 		return ""
 	}
-	c, err := st.Get(ctx, secrets.Ref{Platform: platform.AWS, Profile: l.profile, Location: l.region, InstanceID: l.id()})
+	c, err := st.Lookup(ctx, secrets.Ref{Platform: platform.AWS, Profile: l.profile, Location: l.region, InstanceID: l.id()})
 	if err != nil {
 		if !errors.Is(err, platform.ErrNotFound) {
 			rt.Infof("warning: cannot read the stored login of instance %s: %v; a key pair polyctl created for it is not deleted", l.id(), err)

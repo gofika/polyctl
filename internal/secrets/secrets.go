@@ -371,6 +371,35 @@ func (s *Store) Get(ctx context.Context, r Ref) (*Credentials, error) {
 	return &c, nil
 }
 
+// Lookup returns the credentials stored for an instance under its profile,
+// or else those detached from the profile by a logout (marked Detached).
+// The caller must know the instance to be the account's (the platform's
+// API showed it): an instance id identifies one instance, and the detached
+// row then is the one of this very instance. Nothing stored is an error
+// wrapping platform.ErrNotFound.
+func (s *Store) Lookup(ctx context.Context, r Ref) (*Credentials, error) {
+	c, err := s.Get(ctx, r)
+	if err == nil || !errors.Is(err, platform.ErrNotFound) {
+		return c, err
+	}
+	d := r
+	d.Profile = inventory.DetachedProfile(r.Profile)
+	row, derr := s.db.GetSecret(ctx, d.key())
+	if derr != nil {
+		return nil, derr
+	}
+	if row == nil {
+		return nil, err
+	}
+	got, err := s.open(*row)
+	if err != nil {
+		return nil, err
+	}
+	got.Ref.Profile = r.Profile
+	got.Detached = true
+	return &got, nil
+}
+
 // Find returns the credentials stored for the instances of a profile whose
 // id or name is ref, in location ("" for every location). Nothing stored
 // is an empty list, not an error. When nothing of the profile matches, the
@@ -411,4 +440,17 @@ func (s *Store) Find(ctx context.Context, p platform.ID, profile, location, ref 
 // not an error. It needs no data key.
 func (s *Store) Delete(ctx context.Context, r Ref) error {
 	return s.db.DeleteSecret(ctx, r.key())
+}
+
+// Forget removes the credentials stored for an instance that was deleted:
+// those under its profile and those detached from the profile by a logout
+// (see Lookup for why the detached row is the instance's). Nothing stored
+// is not an error. It needs no data key.
+func (s *Store) Forget(ctx context.Context, r Ref) error {
+	if err := s.Delete(ctx, r); err != nil {
+		return err
+	}
+	d := r
+	d.Profile = inventory.DetachedProfile(r.Profile)
+	return s.db.DeleteSecret(ctx, d.key())
 }
