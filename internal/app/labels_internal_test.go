@@ -48,3 +48,29 @@ func TestOptionLabelsKeepTheirCells(t *testing.T) {
 		}
 	}
 }
+
+// One resource reached through two profiles gives two candidates that
+// differ in their profile only: it has to be in the part of the label an
+// 80-column terminal shows (a label is cut at its end, after 75 columns),
+// however long the name is.
+func TestCandidateLabelShowsTheProfile(t *testing.T) {
+	shown := func(label string) string {
+		if r := []rune(label); len(r) > 75 {
+			return string(r[:75])
+		}
+		return label
+	}
+	r := inventory.Resource{Platform: platform.Aliyun, Profile: "prod-ro", ParentID: "vpc-1",
+		Name: "billing-export-worker-production-eu-central-1-blue-green-canary-2026", ID: "i-0123456789abcdef0"}
+	other := r
+	other.Profile = "prod-rw"
+	if a, b := shown(candidateLabel(r)), shown(candidateLabel(other)); a == b {
+		t.Errorf("one resource of two profiles is shown as the same row: %q", a)
+	}
+	if got, want := candidateLabel(r), "aliyun/prod-ro  i-0123456789abcdef0  "+r.Name+"  in vpc-1"; got != want {
+		t.Errorf("candidate:\n got %q\nwant %q", got, want)
+	}
+	if got, want := candidateLabel(inventory.Resource{Platform: platform.Aliyun, Profile: "a", Name: "i-1", ID: "i-1", ParentID: "vpc-1"}), "aliyun/a  i-1  -  in vpc-1"; got != want {
+		t.Errorf("candidate named by its id:\n got %q\nwant %q", got, want)
+	}
+}

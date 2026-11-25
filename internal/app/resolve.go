@@ -183,13 +183,7 @@ func (rt *Runtime) ResolveResourceWith(ctx context.Context, l ResourceLookup) (i
 	}
 	amb := &AmbiguousError{What: fmt.Sprintf("%s %q", what, ref), Candidates: names, Hint: hint}
 	for i, r := range found {
-		// "name  id  platform/profile  in <parent>": what the resource is,
-		// then what tells the candidates apart.
-		parent := ""
-		if r.ParentID != "" {
-			parent = "in " + r.ParentID
-		}
-		label := resourceLabel(r, parent)
+		label := candidateLabel(r)
 		switch {
 		case l.Option != nil:
 			label = l.Option(r)
@@ -239,4 +233,21 @@ func (rt *Runtime) resourceAccounts(id platform.ID, kind platform.ResourceType) 
 		out = append(out, ref)
 	}
 	return out, nil
+}
+
+// candidateLabel shows a candidate of an ambiguous lookup as the cells
+// "platform/profile  id  name  in <parent>". The candidates share the name
+// or the id that was asked for, and one resource reached through two
+// profiles shares both: what tells them apart, the profile and then the id,
+// comes first, because a label is cut at its end when the terminal is
+// narrower than its cells. A row whose id is its name has "-" for the name.
+func candidateLabel(r inventory.Resource) string {
+	name, parent := r.Name, ""
+	if name == r.ID {
+		name = ""
+	}
+	if r.ParentID != "" {
+		parent = "in " + r.ParentID
+	}
+	return prompt.Cells(string(r.Platform)+"/"+r.Profile, r.ID, name, parent)
 }

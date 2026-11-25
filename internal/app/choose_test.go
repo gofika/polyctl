@@ -167,7 +167,7 @@ func TestAmbiguityIsAPickInTheInteractiveFlow(t *testing.T) {
 	if err != nil || r.ID != "z-shared-a" {
 		t.Fatalf("ResolveResource = %+v, %v", r, err)
 	}
-	if a := p.Find(`Ambiguous namecom zone "shared.com"; use which one?`); len(a.Options) != 2 || a.Options[0].Label != "shared.com  z-shared-a  namecom/a" {
+	if a := p.Find(`Ambiguous namecom zone "shared.com"; use which one?`); len(a.Options) != 2 || a.Options[0].Label != "namecom/a  z-shared-a  shared.com" {
 		t.Errorf("resource options %+v", a.Options)
 	}
 	if a := p.Find(`Ambiguous owner of zone "shared.com"; use which one?`); len(a.Options) != 2 || !strings.Contains(a.Options[0].Label, "namecom/a  zone  shared.com  id z-shared-a") {
