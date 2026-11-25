@@ -92,14 +92,14 @@ func (e *zoneEnsure) run(ctx context.Context, event string) error {
 	}
 	if len(zs) > 0 {
 		e.z = &zs[0]
-		dropZoneNamed(ctx, e.rt, e.profile, e.domain, e.z.ID)
+		dropZoneNamed(ctx, e.rt, e.profile, e.domain, e.account, e.z.ID)
 		storeZone(ctx, e.rt, e.profile, *e.z)
 		if e.create {
 			return fmt.Errorf("zone %s already exists in profile %s (id=%s); use 'polyctl cloudflare zone ensure'", e.domain, e.profile, e.z.ID)
 		}
 	} else {
 		// The inventory may remember a zone of that name that is gone.
-		dropZoneNamed(ctx, e.rt, e.profile, e.domain, "")
+		dropZoneNamed(ctx, e.rt, e.profile, e.domain, e.account, "")
 	}
 
 	var plan platform.Plan

@@ -395,3 +395,191 @@ func TestZoneNameInTwoAccounts(t *testing.T) {
 		t.Errorf("zone options: %+v", a)
 	}
 }
+
+// loginBoth logs the profile "both" in with the token that sees acc1 and
+// acc2, and stores the selection: def is the default account.
+func (e *zoneEnv) loginBoth(def string, accounts ...string) {
+	e.t.Helper()
+	if code, _, stderr := e.run("auth", "login", "cloudflare", "--profile", "both", "--set", "token=tok-both", "--set", "account_id="+def); code != cli.ExitOK {
+		e.t.Fatalf("login both: exit %d, %s", code, stderr)
+	}
+	cfg, err := config.Load(filepath.Join(e.dir, "config.yaml"))
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	meta := cfg.Profiles["both"].Platforms[platform.Cloudflare].Metadata
+	if len(accounts) > 0 {
+		meta["accounts"] = strings.Join(accounts, ",")
+	} else {
+		delete(meta, "accounts")
+	}
+	if err := cfg.Save(); err != nil {
+		e.t.Fatal(err)
+	}
+	e.f.reset()
+}
+
+// zoneRows lists the ids of the cached zones of a profile.
+func (e *zoneEnv) zoneRows(profile string) string {
+	e.t.Helper()
+	var ids []string
+	for _, r := range e.inventory(platform.ResZone) {
+		if r.Profile == profile {
+			ids = append(ids, r.ID)
+		}
+	}
+	sort.Strings(ids)
+	return strings.Join(ids, " ")
+}
+
+// The commands that find their zone among the logins (zone setting, zone
+// delete, the rules) find it in every selected account of a login; a name
+// two of them hold a zone of is ambiguous (exit code 5), a pick on a
+// terminal, and --account, by id or by name, chooses.
+func TestRoutedZoneSeveralAccounts(t *testing.T) {
+	e := newZoneEnv(t)
+	ex := e.f.addZone("example.com", "acc1", "free", "active")
+	dup := e.f.addZone("example.com", "acc2", "free", "pending")
+	net := e.f.addZone("example.net", "acc2", "free", "active")
+	dup.settings["ssl"].value = "strict"
+	e.loginBoth("acc1", "acc1", "acc2")
+
+	// A zone of the account that is not the default one.
+	code, stdout, stderr := e.run("cloudflare", "zone", "setting", "get", "example.net", "ssl", "--profile", "both", "-o", "json")
+	if code != cli.ExitOK || !strings.Contains(stdout, `"value": "full"`) {
+		t.Fatalf("setting get in acc2: exit %d, %s%s", code, stdout, stderr)
+	}
+	if code, _, stderr = e.run("cloudflare", "cache", "rule", "list", "example.net", "--profile", "both"); code != cli.ExitOK {
+		t.Fatalf("rule list in acc2: exit %d, %s", code, stderr)
+	}
+
+	for _, args := range [][]string{
+		{"zone", "setting", "get", "example.com", "ssl"},
+		{"zone", "delete", "example.com", "--yes"},
+		{"cache", "rule", "list", "example.com"},
+	} {
+		code, _, stderr = e.run(append(append([]string{"cloudflare"}, args...), "--profile", "both")...)
+		if code != cli.ExitAmbiguous {
+			t.Fatalf("%v: exit %d, %s", args, code, stderr)
+		}
+		for _, want := range []string{"account acc1 (Account acc1) zone " + ex.id + " active", "account acc2 (Account acc2) zone " + dup.id + " pending",
+			"pass --account <id or name>, or the zone id, to choose"} {
+			if !strings.Contains(stderr, want) {
+				t.Errorf("%v: the ambiguity lacks %q: %s", args, want, stderr)
+			}
+		}
+		if strings.Contains(stderr, "--profile <name>") {
+			t.Errorf("%v: --profile does not tell the zones apart: %s", args, stderr)
+		}
+	}
+	if ex.deleted || dup.deleted {
+		t.Fatal("an ambiguous zone delete deleted a zone")
+	}
+	for _, ref := range []string{"acc2", "account ACC2"} {
+		code, stdout, stderr = e.run("cloudflare", "zone", "setting", "get", "example.com", "ssl", "--profile", "both", "--account", ref, "-o", "json")
+		if code != cli.ExitOK || !strings.Contains(stdout, `"value": "strict"`) {
+			t.Errorf("--account %q: exit %d, %s%s", ref, code, stdout, stderr)
+		}
+	}
+	// The zone id chooses too; with the --account of the other account
+	// it is a usage error.
+	code, stdout, stderr = e.run("cloudflare", "zone", "setting", "get", dup.id, "ssl", "--profile", "both", "-o", "json")
+	if code != cli.ExitOK || !strings.Contains(stdout, `"value": "strict"`) {
+		t.Errorf("by id: exit %d, %s%s", code, stdout, stderr)
+	}
+	code, _, stderr = e.run("cloudflare", "zone", "setting", "get", dup.id, "ssl", "--profile", "both", "--account", "acc1")
+	if code != cli.ExitUsage || !strings.Contains(stderr, "is of account acc2, not of --account acc1") {
+		t.Errorf("zone id with the other --account: exit %d, %s", code, stderr)
+	}
+	// On a terminal: the two zones with their accounts.
+	p := prompttest.New(t, prompttest.Label(dup.id))
+	code, stdout, stderr = e.runPick(p, "cloudflare", "zone", "setting", "get", "example.com", "ssl", "--profile", "both", "-o", "json")
+	if code != cli.ExitOK || !strings.Contains(stdout, `"value": "strict"`) {
+		t.Errorf("pick: exit %d, %s%s", code, stdout, stderr)
+	}
+	if a := p.Find(`Ambiguous cloudflare zone "example.com"; use which one?`); a == nil || len(a.Options) != 2 || !strings.Contains(prompttest.Labels(a.Options), "account acc2 (Account acc2)") {
+		t.Errorf("questions asked: %v", p.Titles())
+	}
+	p.Done()
+	// A pick without a name shows the account of the zones of the login.
+	p = prompttest.New(t, net.id, "ssl")
+	if code, _, stderr = e.runPick(p, "cloudflare", "zone", "setting", "get", "--profile", "both"); code != cli.ExitOK {
+		t.Errorf("pick without a name: exit %d, %s", code, stderr)
+	}
+	if a := p.Find("Zone"); a == nil || len(a.Options) != 3 || !strings.Contains(prompttest.Labels(a.Options), "account Account acc2") {
+		t.Errorf("zone options: %+v", a)
+	}
+	p.Done()
+
+	// zone delete with --account deletes the zone of that account only,
+	// and the inventory keeps the zone of the same name of the other one.
+	code, _, stderr = e.run("cloudflare", "zone", "delete", "example.com", "--profile", "both", "--account", "acc2", "--yes")
+	if code != cli.ExitOK || !dup.deleted || ex.deleted {
+		t.Fatalf("delete --account acc2: exit %d, dup %v, ex %v, %s", code, dup.deleted, ex.deleted, stderr)
+	}
+	if got, want := e.zoneRows("both"), strings.Join(sortedIDs(ex.id, net.id), " "); got != want {
+		t.Errorf("zones of both after the delete: %s, want %s", got, want)
+	}
+}
+
+func sortedIDs(ids ...string) []string {
+	sort.Strings(ids)
+	return ids
+}
+
+// The same commands read the zones of an account outside the selection
+// live with --account and store nothing of it; without --profile the flag
+// finds the login that selects the account.
+func TestRoutedZoneUnselectedAccount(t *testing.T) {
+	e := newZoneEnv(t)
+	ex := e.f.addZone("example.com", "acc1", "free", "active")
+	net := e.f.addZone("example.net", "acc2", "free", "active")
+	e.loginBoth("acc1")
+
+	code, _, stderr := e.run("cloudflare", "zone", "setting", "get", "example.net", "ssl", "--profile", "both")
+	if code != cli.ExitNotFound {
+		t.Fatalf("without --account: exit %d, %s", code, stderr)
+	}
+	for _, ref := range []string{"acc2", "Account acc2"} {
+		code, stdout, stderr := e.run("cloudflare", "zone", "setting", "get", "example.net", "ssl", "--profile", "both", "--account", ref, "-o", "json")
+		if code != cli.ExitOK || !strings.Contains(stdout, `"value": "full"`) {
+			t.Fatalf("--account %q: exit %d, %s%s", ref, code, stdout, stderr)
+		}
+	}
+	code, _, stderr = e.run("cloudflare", "zone", "setting", "set", net.id, "ssl", "strict", "--profile", "both", "--account", "acc2")
+	if code != cli.ExitOK || net.settings["ssl"].value != "strict" {
+		t.Fatalf("setting set: exit %d, %s", code, stderr)
+	}
+	if code, _, stderr = e.run("cloudflare", "redirect", "rule", "list", "example.net", "--profile", "both", "--account", "acc2"); code != cli.ExitOK {
+		t.Fatalf("rule list: exit %d, %s", code, stderr)
+	}
+	if got := e.zoneRows("both"); got != ex.id {
+		t.Errorf("zones stored for both: %q, want only %s", got, ex.id)
+	}
+	// A zone id of the selected account with the --account of the other.
+	code, _, stderr = e.run("cloudflare", "zone", "setting", "get", ex.id, "ssl", "--profile", "both", "--account", "acc2")
+	if code != cli.ExitUsage || !strings.Contains(stderr, "not of --account acc2") {
+		t.Errorf("zone id of acc1 with --account acc2: exit %d, %s", code, stderr)
+	}
+	// On a terminal the zone is asked for among those read from the account.
+	p := prompttest.New(t, net.id, "ssl")
+	code, stdout, stderr := e.runPick(p, "cloudflare", "zone", "setting", "get", "--profile", "both", "--account", "acc2", "-o", "json")
+	if code != cli.ExitOK || !strings.Contains(stdout, `"value": "strict"`) {
+		t.Errorf("pick in the unselected account: exit %d, %s%s", code, stdout, stderr)
+	}
+	if a := p.Find("Zone"); a == nil || len(a.Options) != 1 || !strings.Contains(a.Options[0].Label, "example.net") {
+		t.Errorf("zone options: %+v", a)
+	}
+	p.Done()
+	// Without --profile the login that selects the account is used: beta.
+	code, stdout, stderr = e.run("cloudflare", "zone", "setting", "get", "example.net", "ssl", "--account", "acc2", "-o", "json")
+	if code != cli.ExitOK || !strings.Contains(stdout, `"value": "strict"`) {
+		t.Errorf("--account without --profile: exit %d, %s%s", code, stdout, stderr)
+	}
+	if got := e.zoneRows("beta"); got != net.id {
+		t.Errorf("zones stored for beta: %q", got)
+	}
+	if code, _, stderr = e.run("cloudflare", "zone", "setting", "get", "example.com", "ssl", "--account", "acc2"); code != cli.ExitNotFound {
+		t.Errorf("a zone of acc1 with --account acc2: exit %d, %s", code, stderr)
+	}
+}

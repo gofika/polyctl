@@ -181,13 +181,9 @@ func resolveAccountRef(ctx context.Context, rt *app.Runtime, profile, ref string
 	if rt.Flags.Offline {
 		return "", fmt.Errorf("%w: account %q is not selected for cloudflare/%s and cannot be looked up with --offline", app.ErrOffline, ref, profile)
 	}
-	cl, _, err := rt.Open(ctx, profile, platform.Cloudflare)
+	c, err := openProfile(ctx, rt, profile)
 	if err != nil {
 		return "", err
-	}
-	c, ok := cl.(*Client)
-	if !ok {
-		return "", fmt.Errorf("unexpected client type %T", cl)
 	}
 	accounts, complete, err := visibleAccounts(ctx, c.api)
 	if err != nil || len(accounts) == 0 {

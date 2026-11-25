@@ -44,18 +44,21 @@ func pickCachedZone(rt *app.Runtime, zones []platform.Zone, sc acctScope) (strin
 	return rt.Choose(app.Choice{Title: "Zone", Options: opts, Arg: "<zone>", What: what})
 }
 
-// pickLiveZone asks for one of the zones of every selected Cloudflare
-// account, as the inventory knows them (the <zone> of the commands that
-// route a zone among the accounts).
-func pickLiveZone(ctx context.Context, rt *app.Runtime) (string, error) {
+// pickLiveZone asks for one of the zones of every selected account of
+// every Cloudflare login, as the inventory knows them (the <zone> of the
+// commands that route a zone among the logins). keep tells the rows in
+// the scope of the call; a zone of a login with several accounts is shown
+// with its account.
+func pickLiveZone(ctx context.Context, rt *app.Runtime, scopes map[string]acctScope, keep func(inventory.Resource) bool) (string, error) {
 	return rt.PickResource(ctx, app.ResourcePick{Platform: platform.Cloudflare, Kind: platform.ResZone, Title: "Zone", Arg: "<zone>",
+		Filter: keep,
 		Label: func(r inventory.Resource) string {
-			var z platform.Zone
-			_ = r.Decode(&z)
-			if z.Name == "" {
-				z.Name, z.ID = r.Name, r.ID
+			z := rowZone(r)
+			label := zoneLabel(z)
+			if acc := rowAccount(r); acc != "" && scopes[r.Profile].several() {
+				label += "  account " + nonEmpty(zoneAccountName(z), acc)
 			}
-			return zoneLabel(z) + "  cloudflare/" + r.Profile
+			return label + "  cloudflare/" + r.Profile
 		}})
 }
 

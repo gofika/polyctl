@@ -32,9 +32,13 @@ func (s *zoneScope) target() platform.Target {
 	return platform.Target{Platform: platform.Cloudflare, Profile: s.profile, Domain: s.name()}
 }
 
-// storeZone mirrors a zone read from the API into the inventory. A failure
-// is only reported: the platform is the source of truth.
+// storeZone mirrors a zone read from the API into the inventory, unless
+// its account is outside the selection of the login. A failure is only
+// reported: the platform is the source of truth.
 func storeZone(ctx context.Context, rt *app.Runtime, profile string, z apiZone) {
+	if !cacheable(rt, profile, z.Account.ID) {
+		return
+	}
 	db, err := rt.DB()
 	if err != nil {
 		rt.Verbosef("inventory: %v", err)
@@ -70,9 +74,11 @@ func dropZone(ctx context.Context, rt *app.Runtime, profile, zoneID string) {
 	warn(db.Delete(ctx, zoneSet(profile), platform.ResZone, zoneID))
 }
 
-// dropZoneNamed removes the zones named name (and their records) of a
-// profile from the inventory: rows left behind by a zone that is gone.
-func dropZoneNamed(ctx context.Context, rt *app.Runtime, profile, name string, keepID string) {
+// dropZoneNamed removes the zones named name (and their records) of an
+// account of a profile from the inventory: rows left behind by a zone that
+// is gone. The zone of the same name another account holds is not touched;
+// an empty account means every account of the profile.
+func dropZoneNamed(ctx context.Context, rt *app.Runtime, profile, name, account, keepID string) {
 	db, err := rt.DB()
 	if err != nil {
 		return
@@ -82,6 +88,9 @@ func dropZoneNamed(ctx context.Context, rt *app.Runtime, profile, name string, k
 		return
 	}
 	for _, r := range rows {
+		if ra := rowAccount(r); account != "" && ra != "" && ra != account {
+			continue
+		}
 		if r.ID != keepID {
 			dropZone(ctx, rt, profile, r.ID)
 		}
@@ -98,12 +107,14 @@ func zoneRef(arg string) string {
 	return ref
 }
 
-// resolveLiveZone finds the zone <zone> names among the Cloudflare accounts
-// (restricted by --profile) through the inventory, synced once when it does
-// not know the zone, and reads it live: a zone the inventory remembers but
-// the platform no longer has is removed from the inventory and looked up
-// again by name, and is not found (exit code 4) when that finds nothing. A
-// name held by several accounts is ambiguous (exit code 5).
+// resolveLiveZone finds the zone <zone> names among the Cloudflare logins
+// (restricted by --profile) and their selected accounts (or the account of
+// --account) through the inventory, synced once when it does not know the
+// zone, and reads it live: a zone the inventory remembers but the platform
+// no longer has is removed from the inventory and looked up again by name,
+// and is not found (exit code 4) when that finds nothing. A name several
+// accounts hold a zone of is a pick in the interactive flow and ambiguous
+// (exit code 5) otherwise.
 func resolveLiveZone(ctx context.Context, rt *app.Runtime, arg string) (*zoneScope, error) {
 	ref := zoneRef(arg)
 	c, res, err := routeZone(ctx, rt, ref)
@@ -117,65 +128,157 @@ func resolveLiveZone(ctx context.Context, rt *app.Runtime, arg string) (*zoneSco
 		if !strings.Contains(name, ".") {
 			return nil, fmt.Errorf("%w: zone %s no longer exists (removed from the local inventory)", platform.ErrNotFound, ref)
 		}
-		zs, ferr := c.api.findZonesNamed(ctx, name, c.api.accountID)
+		zs, ferr := c.api.zonesNamed(ctx, name)
 		if ferr != nil {
 			return nil, ferr
 		}
-		if len(zs) == 0 {
+		switch len(zs) {
+		case 0:
 			return nil, fmt.Errorf("%w: zone %s (it no longer exists in cloudflare/%s; removed from the local inventory)", platform.ErrNotFound, name, res.Profile)
+		case 1:
+			z, err = &zs[0], nil
+		default:
+			// The accounts the login works on hold several zones of the
+			// name.
+			if z, err = pickAmbiguousZone(rt, res.Profile, name, zs); err != nil {
+				return nil, err
+			}
 		}
-		if len(zs) > 1 {
-			// The profile is not pinned to an account and the name is
-			// held by several of the accounts its credentials see.
-			return nil, fmt.Errorf("%w: zone %s is held by %d accounts of cloudflare/%s; pin the account with `polyctl auth login cloudflare --profile %s --set account_id=<id>`",
-				platform.ErrAmbiguous, name, len(zs), res.Profile, res.Profile)
-		}
-		z, err = &zs[0], nil
 	}
 	if err != nil {
 		return nil, err
+	}
+	if acc := z.Account.ID; !c.api.covers(acc) {
+		// The row was of an account the login works on; the zone is not.
+		dropZone(ctx, rt, res.Profile, res.ID)
+		return nil, unselectedZoneErr(z.Name, z.ID, acc)
 	}
 	storeZone(ctx, rt, res.Profile, *z)
 	return &zoneScope{c: c, profile: res.Profile, z: z}, nil
 }
 
 // routeZone finds the zone ref (a normalized name or an id) among the
-// Cloudflare accounts (restricted by --profile) through the inventory,
-// synced once when it does not know the zone, and opens the client of the
-// account that holds it. The zone is not read: the inventory row is all the
-// caller gets. A name held by several accounts is ambiguous (exit code 5).
+// Cloudflare logins (restricted by --profile) and the accounts they select
+// (or the account of --account) through the inventory, synced once when it
+// does not know the zone, and opens the client of the login that holds it.
+// The zone is not read: the inventory row is all the caller gets. A name
+// several accounts hold a zone of is a pick in the interactive flow and
+// ambiguous (exit code 5) otherwise.
+//
+// The account of --account that no login selects is not in the inventory:
+// its zone is looked up on the platform, through the profile every
+// Cloudflare command would use.
 func routeZone(ctx context.Context, rt *app.Runtime, ref string) (*Client, inventory.Resource, error) {
 	if rt.Flags.Offline {
 		return nil, inventory.Resource{}, app.ErrOffline
 	}
+	scopes, err := routeScopes(ctx, rt)
+	if err != nil {
+		return nil, inventory.Resource{}, err
+	}
+	if len(scopes) == 1 && scopes[0].live {
+		return routeLiveZone(ctx, rt, scopes[0], ref)
+	}
+	by := map[string]acctScope{}
+	for _, s := range scopes {
+		by[s.profile] = s
+	}
+	keep := func(r inventory.Resource) bool {
+		s, ok := by[r.Profile]
+		return ok && s.keeps(rowAccount(r))
+	}
 	if ref == "" {
 		// The <zone> left out in the interactive flow: asked for among
 		// the zones of the selected accounts.
-		var err error
-		if ref, err = pickLiveZone(ctx, rt); err != nil {
+		if ref, err = pickLiveZone(ctx, rt, by, keep); err != nil {
 			return nil, inventory.Resource{}, err
 		}
 	}
-	res, err := rt.ResolveResource(ctx, platform.Cloudflare, platform.ResZone, ref)
+	cand := func(r inventory.Resource) zoneCand { return candOfZone(r.Profile, rowZone(r)) }
+	lookup := app.ResourceLookup{Platform: platform.Cloudflare, Kind: platform.ResZone, Ref: ref, Keep: keep,
+		Candidate: func(r inventory.Resource) string { return cand(r).String() },
+		Hint: func(found []inventory.Resource) string {
+			cands := make([]zoneCand, 0, len(found))
+			for _, r := range found {
+				cands = append(cands, cand(r))
+			}
+			return zoneHint(cands)
+		}}
+	res, err := rt.ResolveResourceWith(ctx, lookup)
 	if errors.Is(err, platform.ErrNotFound) && !rt.Flags.Refresh {
 		// The inventory is fresh but does not know the zone (it may have
 		// been added since): sync once before giving up.
 		rt.Flags.Refresh = true
-		res, err = rt.ResolveResource(ctx, platform.Cloudflare, platform.ResZone, ref)
+		res, err = rt.ResolveResourceWith(ctx, lookup)
 		rt.Flags.Refresh = false
 	}
+	if errors.Is(err, platform.ErrNotFound) && !strings.Contains(ref, ".") {
+		// A zone id with the --account of another account: say so.
+		for _, s := range scopes {
+			if s.pin == "" {
+				continue
+			}
+			if c, oerr := openProfile(ctx, rt, s.profile); oerr == nil {
+				if _, zerr := findLiveZone(ctx, rt, c.api, s, ref); errors.Is(zerr, app.ErrUsage) {
+					return nil, inventory.Resource{}, zerr
+				}
+			}
+			break
+		}
+	}
 	if err != nil {
 		return nil, inventory.Resource{}, err
 	}
-	cl, _, err := rt.Open(ctx, res.Profile, platform.Cloudflare)
+	c, err := openProfile(ctx, rt, res.Profile)
 	if err != nil {
 		return nil, inventory.Resource{}, err
+	}
+	if pin := by[res.Profile].pin; pin != "" {
+		c = c.pin(pin)
+	}
+	return c, res, nil
+}
+
+// routeLiveZone is routeZone for the account of --account that no login
+// selects: the zone is looked up on the platform, and asked for among the
+// zones read from it when ref is empty.
+func routeLiveZone(ctx context.Context, rt *app.Runtime, sc acctScope, ref string) (*Client, inventory.Resource, error) {
+	c, err := openProfile(ctx, rt, sc.profile)
+	if err != nil {
+		return nil, inventory.Resource{}, err
+	}
+	c = c.pin(sc.pin)
+	if ref == "" {
+		if !rt.Interactive() {
+			return nil, inventory.Resource{}, app.UsageErrf("<zone> is required")
+		}
+		zones, err := c.ListZones(ctx)
+		if err != nil {
+			return nil, inventory.Resource{}, err
+		}
+		if ref, err = pickCachedZone(rt, zones, sc); err != nil {
+			return nil, inventory.Resource{}, err
+		}
+	}
+	z, err := findLiveZone(ctx, rt, c.api, sc, ref)
+	if err != nil {
+		return nil, inventory.Resource{}, err
+	}
+	return c, inventory.Resource{Platform: platform.Cloudflare, Profile: sc.profile, Type: platform.ResZone,
+		ID: z.ID, Name: platform.NormalizeDomain(z.Name), ParentID: z.Account.ID}, nil
+}
+
+// openProfile opens the Cloudflare client of a profile.
+func openProfile(ctx context.Context, rt *app.Runtime, profile string) (*Client, error) {
+	cl, _, err := rt.Open(ctx, profile, platform.Cloudflare)
+	if err != nil {
+		return nil, err
 	}
 	c, ok := cl.(*Client)
 	if !ok {
-		return nil, inventory.Resource{}, fmt.Errorf("unexpected client type %T", cl)
+		return nil, fmt.Errorf("unexpected client type %T", cl)
 	}
-	return c, res, nil
+	return c, nil
 }
 
 // gone turns the answer "this zone does not exist" to a request about the
