@@ -80,16 +80,22 @@ func pinUnselected(rt *app.Runtime, profile string) bool {
 
 // keepProject reports whether a cached row of project (empty: the default
 // project of the account, for rows stored before they carried it) is in
-// the scope of the call: any without --project, the pinned one with it.
+// the scope of the call: the pinned project with --project, any selected
+// project without it.
+//
+// A row of a project that is no longer selected is out of scope: the
+// selection may have changed (a new login, an edited config.yaml) while
+// the set that holds the row is still fresh, and a command must not find,
+// let alone change, a resource of a project the account was taken off.
 func keepProject(rt *app.Runtime, profile, project string) bool {
-	pin := pinnedProject(rt)
-	if pin == "" {
-		return true
-	}
+	def, selected, err := accountProjects(rt, profile)
 	if project == "" {
-		project, _, _ = accountProjects(rt, profile)
+		project = def
 	}
-	return project == pin
+	if pin := pinnedProject(rt); pin != "" {
+		return project == pin
+	}
+	return err != nil || slices.Contains(selected, project)
 }
 
 // scope is one account and one of its projects.
