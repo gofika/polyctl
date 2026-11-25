@@ -57,6 +57,22 @@ func TestSaveCredentialsInteractiveTable(t *testing.T) {
 	assertNoPlaintext(t, h.dir, winPassword)
 }
 
+// An instance name holding terminal escapes (a Name tag anyone allowed to
+// tag the instance may set) is printed escaped above the password.
+func TestSaveCredentialsEscapesName(t *testing.T) {
+	h := newHarness(t, app.Flags{Profile: "a"}, nil)
+	h.rt.Picker = &terminalStub{}
+	c := winCreds()
+	c.Name = "win-1\r\x1b[2Kprod-db"
+	if err := h.rt.SaveCredentials(ctx, c, tree, nil); err != nil {
+		t.Fatal(err)
+	}
+	out := h.stdout.String()
+	if strings.ContainsAny(out, "\r\x1b") || !strings.Contains(out, `Windows login of instance win-1\x0d\x1b[2Kprod-db (i-1):`) {
+		t.Errorf("stdout %q", out)
+	}
+}
+
 func TestSaveCredentialsInteractiveJSONUsesStderr(t *testing.T) {
 	h := newHarness(t, app.Flags{Profile: "a", Output: "json"}, nil)
 	h.rt.Picker = &terminalStub{}

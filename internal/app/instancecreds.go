@@ -117,7 +117,7 @@ func (rt *Runtime) showCredentials(c secrets.Credentials, tree string, stored bo
 	if rt.format != output.Table && rt.format != "" {
 		w = rt.Stderr
 	}
-	fmt.Fprintf(w, "\nWindows login of instance %s:\n", label(c))
+	fmt.Fprintf(w, "\nWindows login of instance %s:\n", output.Clean(label(c)))
 	fmt.Fprintf(w, "  user:     %s\n", c.User)
 	if c.Password == "" {
 		fmt.Fprintf(w, "  password: not available yet; `%s` shows it once the instance has generated it\n", cmd)
