@@ -95,7 +95,7 @@ polyctl dns delete example.com --id 372e67954025e0ba6aaa6d586b9e0b59
 polyctl dns delete example.com --all --type TXT --dry-run
 ```
 
-- `--value` narrows the match. It is compared as `dns ensure` compares values: host names ignore case and a trailing dot, addresses are compared in canonical form, TXT text with or without its quotes, and an MX value may be `10 mx.example.com` (as `dns list` prints it; the priority must match) or the host alone. `--id` deletes exactly one record by platform id. An id that names several records (an older GoDaddy id, see [GoDaddy](platforms/godaddy.md#dns-records)) is exit code 5 and deletes nothing.
+- `--value` narrows the match. It is compared as `dns ensure` compares values: host names ignore case and a trailing dot, addresses are compared in canonical form, TXT text with or without its quotes, and an MX value may be `10 mx.example.com` (as `dns list` prints it; the priority must match) or the host alone. `--id` deletes exactly one record by platform id and cannot be combined with `--name`, `--type` or `--value` (exit code 2). An id that names several records (an older GoDaddy id, see [GoDaddy](platforms/godaddy.md#dns-records)) is exit code 5 and deletes nothing.
 - A selector that matches several records shows them and asks first (`-y` skips the question). Answering no deletes nothing and exits with code 0 (`nothing to do: no record was deleted`).
 - Non-interactive: nothing is asked or deleted without `-y`; the command exits with code 2 (`confirmation required: pass --yes to proceed ...`).
 - No matching record is exit code 4.

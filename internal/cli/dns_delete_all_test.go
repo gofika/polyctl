@@ -135,6 +135,11 @@ func TestDNSDeleteAllUsage(t *testing.T) {
 		{"--type", "A,TXT", "--name", "h1"},
 		{"--type", "A", "--type", "TXT", "--name", "h1"},
 		{"--all"}, // non-interactive without --yes
+		// --id with a filter: the filter would be ignored.
+		{"--id", "r1", "--name", "mail", "--type", "MX", "--value", "9.9.9.9", "-y"},
+		{"--id", "r1", "--name", "www"},
+		{"--id", "r1", "--type", "A"},
+		{"--id", "r1", "--value", "1.2.3.4"},
 	} {
 		code, _, stderr := mainRun(cfgPath, append([]string{"dns", "delete", "example.com"}, args...)...)
 		if code != ExitUsage {

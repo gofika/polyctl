@@ -310,7 +310,8 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 		Use:   "delete <domain>",
 		Short: "Delete DNS records matching --name/--type (and optionally --value), or all of them with --all",
 		Long: "Delete DNS records matching --name/--type (and optionally --value), or the\n" +
-			"one record with --id. A single match is deleted at once. Several matches are\n" +
+			"one record with --id (alone: it cannot be combined with --name, --type or\n" +
+			"--value). A single match is deleted at once. Several matches are\n" +
 			"listed on stderr and, in the interactive flow, confirmed first (default no);\n" +
 			"--yes skips the question. In the non-interactive flow (no terminal,\n" +
 			"--non-interactive or POLYCTL_NON_INTERACTIVE=1) nothing is asked and stdin is\n" +
@@ -343,6 +344,12 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 			}
 			if keepBound {
 				return usageErr("--keep-bound only applies with --all")
+			}
+			if id != "" && (name != "" || value != "" || len(types) > 0) {
+				// The id selects one record; a filter beside it would be
+				// ignored, and a wrong id would delete an unrelated record
+				// without asking.
+				return usageErr("--id selects one record; it cannot be combined with --name, --type or --value")
 			}
 			if len(types) > 1 || (len(types) == 1 && strings.Contains(types[0], ",")) {
 				return usageErr("--type takes one record type without --all")
