@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -50,11 +51,21 @@ func (p *provider) Login(ctx context.Context, in platform.LoginInput) (*platform
 	pio := in.IO(ctx)
 	method := strings.ToLower(strings.TrimSpace(in.Opt("method", "")))
 	if method == "" && in.Existing != nil {
-		// Kept from the previous login: stored metadata, not input.
-		method = storedMethod(in.Existing["method"])
+		// Kept from the previous login: stored metadata, not input. An
+		// account without the metadata is one of Application Default
+		// Credentials, as Open reads it.
+		if method = storedMethod(in.Existing["method"]); method == "" {
+			method = methodADC
+		}
+	}
+	if method == "" {
+		var err error
+		if method, err = defaultMethod(ctx, in, pio); err != nil {
+			return nil, err
+		}
 	}
 	switch method {
-	case "", methodADC:
+	case methodADC:
 		return loginADC(ctx, in, pio)
 	case methodServiceAccount:
 		return loginServiceAccount(ctx, in, pio)
@@ -78,20 +89,87 @@ func storedMethod(s string) string {
 	}
 }
 
+// Choices of the question defaultMethod asks. The first two are methods.
+const choiceGcloud = "gcloud"
+
+// defaultMethod is the method of a login that names none and has no
+// previous login to take it from.
+//
+// On a terminal it is the browser login with the built-in OAuth client,
+// which needs nothing installed. A build without that client uses
+// Application Default Credentials when the machine has them and asks which
+// way to log in when it has not, instead of failing. The non-interactive
+// flow asks nothing and opens no browser: it stays with Application
+// Default Credentials.
+func defaultMethod(ctx context.Context, in platform.LoginInput, pio *prompt.IO) (string, error) {
+	if !in.Interactive {
+		return methodADC, nil
+	}
+	if builtinClient.set() {
+		return methodOAuth, nil
+	}
+	if _, err := google.FindDefaultCredentials(ctx, scopeCloudPlatform); err == nil {
+		return methodADC, nil
+	}
+	fmt.Fprintln(pio.Err, "No Application Default Credentials were found on this machine.")
+	choice, err := in.Select(pio, "How do you want to log in to Google Cloud?", []prompt.Option{
+		{Label: "Service account key file (JSON)", Value: methodServiceAccount},
+		{Label: "Browser login with an OAuth client of your own", Value: methodOAuth},
+		{Label: "Application Default Credentials: show how to create them with gcloud", Value: choiceGcloud},
+	}, methodServiceAccount)
+	if err != nil {
+		return "", err
+	}
+	if choice != choiceGcloud {
+		return choice, nil
+	}
+	fmt.Fprintln(pio.Err)
+	printADCHowTo(pio)
+	return "", fmt.Errorf("%w: no account was added; create the Application Default Credentials, then run `polyctl auth login gcp --set method=adc`", platform.ErrNothingToDo)
+}
+
+// lookPath finds a program on PATH; tests replace it.
+var lookPath = exec.LookPath
+
+// printADCHowTo says how Application Default Credentials are created, and
+// that gcloud is missing when it is.
+func printADCHowTo(pio *prompt.IO) {
+	if _, err := lookPath("gcloud"); err != nil {
+		fmt.Fprintln(pio.Err, "They are created with gcloud (the Google Cloud CLI), which is not installed on this machine (not found on PATH).")
+		fmt.Fprintln(pio.Err, "Install it (https://cloud.google.com/sdk/docs/install), then run the following command and complete the browser login:")
+	} else {
+		fmt.Fprintln(pio.Err, "Run the following command and complete the browser login:")
+	}
+	fmt.Fprintln(pio.Err)
+	fmt.Fprintln(pio.Err, "    gcloud auth application-default login")
+	fmt.Fprintln(pio.Err)
+	fmt.Fprintf(pio.Err, "Documentation: %s\n", adcDocsURL)
+}
+
+// oauthAlternative is the command line of the browser login, as the
+// messages about missing credentials print it.
+func oauthAlternative() string {
+	if builtinClient.set() {
+		return "polyctl auth login gcp --set method=oauth --set project=<id>"
+	}
+	return "polyctl auth login gcp --set method=oauth --set client_id=<id> --set client_secret=- --set project=<id>"
+}
+
 // loginADC uses Application Default Credentials; nothing sensitive is stored.
 func loginADC(ctx context.Context, in platform.LoginInput, pio *prompt.IO) (*platform.LoginResult, error) {
 	creds, err := google.FindDefaultCredentials(ctx, scopeCloudPlatform)
 	if err != nil {
 		fmt.Fprintln(pio.Err, "No Application Default Credentials were found on this machine.")
-		fmt.Fprintln(pio.Err, "Run the following command, complete the browser login, then re-run `polyctl auth login gcp`:")
+		printADCHowTo(pio)
 		fmt.Fprintln(pio.Err)
-		fmt.Fprintln(pio.Err, "    gcloud auth application-default login")
+		fmt.Fprintln(pio.Err, "Then re-run `polyctl auth login gcp`. The other ways to log in need no gcloud:")
 		fmt.Fprintln(pio.Err)
-		fmt.Fprintf(pio.Err, "Documentation: %s\n", adcDocsURL)
+		fmt.Fprintln(pio.Err, "    polyctl auth login gcp --set method=service_account --set key_file=<path to the JSON key>")
+		fmt.Fprintln(pio.Err, "    "+oauthAlternative())
 		if in.MayOpenBrowser() {
 			_ = in.OpenBrowser(adcDocsURL)
 		}
-		return nil, fmt.Errorf("%w: application default credentials not found: %v", platform.ErrUnauthorized, err)
+		return nil, fmt.Errorf("%w: application default credentials not found (alternatives: --set method=service_account, --set method=oauth): %v", platform.ErrUnauthorized, err)
 	}
 	email := lookupEmail(ctx, creds.TokenSource)
 	project, err := chooseProject(ctx, in, pio, creds.TokenSource, creds.ProjectID)
@@ -184,18 +262,30 @@ func parseServiceAccountKey(data []byte) (*serviceAccountKey, error) {
 	return &key, nil
 }
 
-// loginOAuth runs an installed-app OAuth flow with a user-supplied client.
+// loginOAuth runs the browser login of an installed application: with the
+// client given by client_id and client_secret, or else with the built-in
+// client of polyctl.
+//
+// The built-in client is used when neither value is given and the binary
+// has one. A re-login of an account that holds a client of the user keeps
+// to such a client: its id and secret are asked for again (they are not
+// kept as metadata), so that the account does not change its client
+// without being told to.
 func loginOAuth(ctx context.Context, in platform.LoginInput, pio *prompt.IO) (*platform.LoginResult, error) {
-	clientID := in.Opt("client_id", "")
-	clientSecret := in.Opt("client_secret", "")
+	client := oauthClient{ID: in.Opt("client_id", ""), Secret: in.Opt("client_secret", "")}
+	ownAccount := in.Existing != nil && storedMethod(in.Existing["method"]) == methodOAuth && in.Existing["oauth_client"] != oauthClientBuiltin
+	builtin := client.ID == "" && client.Secret == "" && builtinClient.set() && !ownAccount
+	if builtin {
+		client = builtinClient
+	}
 	if !in.Interactive {
 		// Everything that would be asked is checked before the listener
 		// starts, so that nobody goes through the browser for nothing.
 		var missing []string
-		if clientID == "" {
+		if client.ID == "" {
 			missing = append(missing, "--set client_id=<id>")
 		}
-		if clientSecret == "" {
+		if client.Secret == "" {
 			missing = append(missing, "--set client_secret=- (the secret on stdin)")
 		}
 		if in.Opt("project", "") == "" && in.Existing["project"] == "" {
@@ -205,22 +295,25 @@ func loginOAuth(ctx context.Context, in platform.LoginInput, pio *prompt.IO) (*p
 			return nil, app.UsageErrf("gcp login with method=oauth needs %s", strings.Join(missing, ", "))
 		}
 	}
-	if clientID == "" || clientSecret == "" {
+	if builtin {
+		fmt.Fprintln(pio.Err, "Logging in to Google Cloud in the browser with polyctl's OAuth client.")
+		fmt.Fprintln(pio.Err, "If Google shows \"Google hasn't verified this app\", choose \"Advanced\", then the \"Go to ... (unsafe)\" link to continue.")
+	} else if client.ID == "" || client.Secret == "" {
 		fmt.Fprintln(pio.Err, "polyctl needs an OAuth client of your own: in the Google Cloud console open APIs & Services > Credentials,")
 		fmt.Fprintln(pio.Err, "create an OAuth client ID of type \"Desktop app\", and enter its id and secret below.")
 	}
 	var err error
-	if clientID == "" {
-		if clientID, err = pio.Required("OAuth client id"); err != nil {
+	if client.ID == "" {
+		if client.ID, err = pio.Required("OAuth client id"); err != nil {
 			return nil, err
 		}
 	}
-	if clientSecret == "" {
-		if clientSecret, err = pio.RequiredSecret("OAuth client secret"); err != nil {
+	if client.Secret == "" {
+		if client.Secret, err = pio.RequiredSecret("OAuth client secret"); err != nil {
 			return nil, err
 		}
 	}
-	tok, cfg, err := runLoopbackFlow(ctx, in, pio, clientID, clientSecret)
+	tok, cfg, err := runLoopbackFlow(ctx, in, pio, client)
 	if err != nil {
 		return nil, err
 	}
@@ -238,28 +331,29 @@ func loginOAuth(ctx context.Context, in platform.LoginInput, pio *prompt.IO) (*p
 	if email != "" {
 		meta["email"] = email
 	}
-	return &platform.LoginResult{
-		Secret:   map[string]string{"client_id": clientID, "client_secret": clientSecret, "refresh_token": tok.RefreshToken},
-		Metadata: meta,
-		Label:    label(c.email, project),
-	}, nil
+	// The built-in client is not stored: the marker tells Open to take it
+	// from the binary, whatever client that binary carries by then.
+	secret := map[string]string{"refresh_token": tok.RefreshToken}
+	if builtin {
+		meta["oauth_client"] = oauthClientBuiltin
+	} else {
+		secret["client_id"], secret["client_secret"] = client.ID, client.Secret
+	}
+	return &platform.LoginResult{Secret: secret, Metadata: meta, Label: label(c.email, project)}, nil
 }
 
-// runLoopbackFlow performs the authorization-code + PKCE dance on a random
-// 127.0.0.1 port and returns a token with a refresh token.
-func runLoopbackFlow(ctx context.Context, in platform.LoginInput, pio *prompt.IO, clientID, clientSecret string) (*oauth2.Token, *oauth2.Config, error) {
+// runLoopbackFlow performs the authorization-code dance on a random
+// 127.0.0.1 port and returns a token with a refresh token. The request
+// carries a PKCE challenge (S256) and the exchange its verifier, as Google
+// requires of desktop applications: the client secret protects nothing
+// there.
+func runLoopbackFlow(ctx context.Context, in platform.LoginInput, pio *prompt.IO, client oauthClient) (*oauth2.Token, *oauth2.Config, error) {
 	lb, err := loopback.Listen("/callback")
 	if err != nil {
 		return nil, nil, err
 	}
 	defer lb.Close()
-	cfg := &oauth2.Config{
-		ClientID:     clientID,
-		ClientSecret: clientSecret,
-		Endpoint:     google.Endpoint,
-		RedirectURL:  lb.RedirectURL(),
-		Scopes:       []string{scopeCloudPlatform, scopeUserinfoEmail},
-	}
+	cfg := oauthConfig(client, lb.RedirectURL())
 	verifier := oauth2.GenerateVerifier()
 	authURL := cfg.AuthCodeURL(lb.State,
 		oauth2.AccessTypeOffline,

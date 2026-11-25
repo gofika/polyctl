@@ -8,13 +8,19 @@
 //	project      the Google Cloud project id every command operates on
 //	email        the user account email (adc / oauth), when known
 //	client_email the service account email (service_account)
+//	oauth_client "builtin" when the account was logged in with the OAuth
+//	             client built into polyctl (oauth); absent with a client
+//	             of the user
 //
 // Profile secret keys (stored in the credential store):
 //
 //	service_account_json  the full JSON key file (service_account)
-//	client_id             OAuth client id (oauth)
-//	client_secret         OAuth client secret (oauth)
+//	client_id             OAuth client id (oauth, client of the user)
+//	client_secret         OAuth client secret (oauth, client of the user)
 //	refresh_token         OAuth refresh token (oauth)
+//
+// An account of the built-in OAuth client stores the refresh token only:
+// the client comes from the binary (see oauth_builtin.go).
 //
 // The adc method stores no secret: credentials stay in the Application
 // Default Credentials file written by `gcloud auth application-default login`.
@@ -22,6 +28,7 @@ package gcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"golang.org/x/oauth2"
@@ -46,15 +53,20 @@ type provider struct{}
 func (*provider) ID() platform.ID     { return platform.GCP }
 func (*provider) DisplayName() string { return "Google Cloud" }
 func (*provider) LoginHelp() string {
-	return `Google Cloud: --set method=adc (default) uses Application Default Credentials
-from "gcloud auth application-default login"; method=service_account stores a
-JSON key file (--set key_file=PATH); method=oauth runs a browser OAuth flow
-with your own Desktop-app OAuth client (--set client_id=...
---set client_secret=-, the secret read from stdin).
+	return `Google Cloud: without --set method, a terminal login opens the browser and
+signs in with polyctl's built-in OAuth client (gcloud is not needed); a build
+without that client uses Application Default Credentials when there are any
+and asks which way to log in otherwise. Methods: method=oauth is the browser
+login, with the built-in client or, with --set client_id=... --set
+client_secret=- (the secret read from stdin), an OAuth client of your own
+(type "Desktop app"); method=service_account stores a JSON key file (--set
+key_file=PATH); method=adc uses Application Default Credentials from "gcloud
+auth application-default login". A re-login keeps the method of the account.
 Use --set project=ID to pick the project without prompting. Non-interactive:
-nothing is asked; key_file, client_id, client_secret and (for oauth, or when
-several projects are visible) project must be given, and the oauth flow prints
-the URL and waits up to 5 minutes for the browser to return.`
+nothing is asked and the default method is adc; key_file, the project (for
+oauth, or when several are visible) and, without a built-in client, client_id
+and client_secret must be given, and the oauth flow prints the URL and waits
+up to 5 minutes for the browser to return.`
 }
 
 // LoginOptions lists the --set keys of the login (see LoginHelp).
@@ -107,9 +119,9 @@ func (*provider) Open(ctx context.Context, p platform.Profile) (platform.Client,
 		ts = creds.TokenSource
 		email = p.Meta("client_email")
 	case methodOAuth:
-		cfg, tok, err := oauthFromSecret(p.Secret)
+		cfg, tok, err := oauthFromSecret(p.Secret, p.Meta("oauth_client"))
 		if err != nil {
-			return nil, fmt.Errorf("%w: %v", platform.ErrUnauthorized, err)
+			return nil, fmt.Errorf("%w: profile %q: %v (re-run `polyctl auth login gcp --profile %s`)", platform.ErrUnauthorized, p.Name, err, p.Name)
 		}
 		ts = cfg.TokenSource(ctx, tok)
 		email = p.Meta("email")
@@ -119,17 +131,36 @@ func (*provider) Open(ctx context.Context, p platform.Profile) (platform.Client,
 	return newClient(ctx, project, email, method, clientOptions(ts)...)
 }
 
-// oauthFromSecret rebuilds the OAuth config and token from stored secrets.
-func oauthFromSecret(secret map[string]string) (*oauth2.Config, *oauth2.Token, error) {
-	id, sec, rt := secret["client_id"], secret["client_secret"], secret["refresh_token"]
-	if id == "" || rt == "" {
-		return nil, nil, fmt.Errorf("stored OAuth credentials are incomplete")
+// oauthFromSecret rebuilds the OAuth config and token of a stored account.
+// The client is the one stored with the account, or, for an account marked
+// as logged in with the built-in client (clientKind "builtin"), the one of
+// this binary.
+func oauthFromSecret(secret map[string]string, clientKind string) (*oauth2.Config, *oauth2.Token, error) {
+	client := oauthClient{ID: secret["client_id"], Secret: secret["client_secret"]}
+	rt := secret["refresh_token"]
+	if client.ID == "" && clientKind == oauthClientBuiltin {
+		if !builtinClient.set() {
+			return nil, nil, errors.New("the account uses polyctl's built-in OAuth client, which this build of polyctl does not have")
+		}
+		client = builtinClient
 	}
-	cfg := &oauth2.Config{
-		ClientID:     id,
-		ClientSecret: sec,
-		Endpoint:     google.Endpoint,
+	if client.ID == "" || rt == "" {
+		return nil, nil, errors.New("stored OAuth credentials are incomplete")
+	}
+	return oauthConfig(client, ""), &oauth2.Token{RefreshToken: rt}, nil
+}
+
+// oauthEndpoint is Google's OAuth endpoint; tests point it at a fake.
+var oauthEndpoint = google.Endpoint
+
+// oauthConfig is the OAuth configuration of a client, for the login (with
+// the redirect URL of the loopback listener) or the token refresh.
+func oauthConfig(client oauthClient, redirectURL string) *oauth2.Config {
+	return &oauth2.Config{
+		ClientID:     client.ID,
+		ClientSecret: client.Secret,
+		Endpoint:     oauthEndpoint,
+		RedirectURL:  redirectURL,
 		Scopes:       []string{scopeCloudPlatform, scopeUserinfoEmail},
 	}
-	return cfg, &oauth2.Token{RefreshToken: rt}, nil
 }

@@ -998,7 +998,7 @@ func TestOpenProfiles(t *testing.T) {
 	}
 
 	// An oauth profile builds a refreshing token source from the stored secret.
-	cfg, tok, err := oauthFromSecret(map[string]string{"client_id": "id", "client_secret": "s", "refresh_token": "rt"})
+	cfg, tok, err := oauthFromSecret(map[string]string{"client_id": "id", "client_secret": "s", "refresh_token": "rt"}, "")
 	if err != nil || cfg.ClientID != "id" || tok.RefreshToken != "rt" || len(cfg.Scopes) != 2 {
 		t.Errorf("oauthFromSecret: %v %+v", err, cfg)
 	}

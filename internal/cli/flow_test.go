@@ -332,7 +332,10 @@ func flowCases() []flowCase {
 		refusedLogin("auth login aws keys: secret", []string{"--set secret_access_key=-"}, "aws", "--set", "method=keys", "--set", "access_key_id=AKIAONE"),
 		refusedLogin("auth login aws sso: start URL", []string{"--set start_url=<url>"}, "aws", "--set", "method=sso"),
 		refusedLogin("auth login gcp service account: key file", []string{"--set key_file="}, "gcp", "--set", "method=service_account"),
-		refusedLogin("auth login gcp oauth: client and project", []string{"--set client_id=<id>", "--set client_secret=-", "--set project=<id>"}, "gcp", "--set", "method=oauth"),
+		// The project is missing with or without a built-in OAuth client;
+		// that the client is named too when the binary has none is tested
+		// with the provider (TestLoginOAuthNonInteractiveRequirements).
+		refusedLogin("auth login gcp oauth: nothing given", []string{"--set project=<id>"}, "gcp", "--set", "method=oauth"),
 		refusedLogin("auth login gcp oauth: project", []string{"--set project=<id>"}, "gcp", "--set", "method=oauth", "--set", "client_id=id", "--set", "client_secret=s"),
 		refusedLogin("auth login aliyun: access key", []string{"--set access_key_id=<id>", "--set access_key_secret=-", "ALIBABA_CLOUD_ACCESS_KEY_ID", "--set aliyun_profile=<profile>"}, "aliyun"),
 		refusedLogin("auth login aliyun: secret", []string{"--set access_key_secret=-"}, "aliyun", "--set", "access_key_id=LTAIone"),
