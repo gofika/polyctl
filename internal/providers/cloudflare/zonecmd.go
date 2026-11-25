@@ -292,44 +292,55 @@ func (s *zoneScope) gone(ctx context.Context, rt *app.Runtime, err error) error 
 }
 
 // openAccount opens the Cloudflare account a new zone goes to: the profile
-// is chosen as for every Cloudflare command, and the account is the one the
-// profile is pinned to, or the only one its credentials see.
-func openAccount(ctx context.Context, rt *app.Runtime) (*session, string, error) {
+// is chosen as for every Cloudflare command, and the account is the one of
+// --account, else the default account of the login. only says the account
+// was named for this call, so an existing zone is looked for in it alone.
+//
+// A login without an account (its credentials could not list accounts when
+// it was made) uses the only account the credentials see now; several are
+// asked for in the interactive flow and a usage error otherwise.
+func openAccount(ctx context.Context, rt *app.Runtime) (s *session, account string, only bool, err error) {
 	if rt.Flags.Offline {
-		return nil, "", app.ErrOffline
+		return nil, "", false, app.ErrOffline
 	}
-	s, err := open(ctx, rt)
-	if err != nil {
-		return nil, "", err
+	if s, err = open(ctx, rt); err != nil {
+		return nil, "", false, err
+	}
+	if ref := pinnedAccount(rt); ref != "" {
+		id, err := resolveAccountRef(ctx, rt, s.profile, ref)
+		if err != nil {
+			return nil, "", false, err
+		}
+		return s, id, true, nil
 	}
 	if id := s.client.api.accountID; id != "" {
-		return s, id, nil
+		return s, id, false, nil
 	}
 	accounts, err := s.client.api.listAccounts(ctx)
 	if err != nil {
-		return nil, "", fmt.Errorf("profile %s has no pinned account and its accounts cannot be listed: %w", s.profile, err)
+		return nil, "", false, fmt.Errorf("profile %s has no selected account and its accounts cannot be listed (pass --account <id>): %w", s.profile, err)
 	}
 	switch len(accounts) {
 	case 0:
-		return nil, "", fmt.Errorf("%w: the credentials of profile %s see no account", platform.ErrUnauthorized, s.profile)
+		return nil, "", false, fmt.Errorf("%w: the credentials of profile %s see no account", platform.ErrUnauthorized, s.profile)
 	case 1:
-		return s, accounts[0].ID, nil
+		return s, accounts[0].ID, true, nil
 	}
 	if !rt.Interactive() {
-		return nil, "", app.UsageErrf("the credentials of profile %s see %d accounts (%s); pin one with `polyctl auth login cloudflare --profile %s --set account_id=<id>`",
-			s.profile, len(accounts), accountNames(accounts), s.profile)
+		return nil, "", false, app.UsageErrf("the credentials of profile %s see %d accounts (%s): pass --account <id or name>, or select the accounts of the login with \"polyctl cloudflare account use <id>\"",
+			s.profile, len(accounts), accountNames(accounts))
 	}
 	// The interactive flow asks, for this run only.
 	var opts []prompt.Option
 	for _, a := range accounts {
 		opts = append(opts, prompt.Option{Label: fmt.Sprintf("%s  %s", a.Name, a.ID), Value: a.ID})
 	}
-	id, err := rt.Choose(app.Choice{Title: "Cloudflare account of the new zone", Options: opts, Arg: "--set account_id"})
+	id, err := rt.Choose(app.Choice{Title: "Cloudflare account of the new zone", Options: opts, Arg: "--account"})
 	if err != nil {
-		return nil, "", err
+		return nil, "", false, err
 	}
-	rt.Infof("note: to skip this question, pin the account with `polyctl auth login cloudflare --profile %s --set account_id=%s`", s.profile, id)
-	return s, id, nil
+	rt.Infof("note: to skip this question pass --account %s, or make it the default account: polyctl cloudflare account use %s", id, id)
+	return s, id, true, nil
 }
 
 // --- output ------------------------------------------------------------------

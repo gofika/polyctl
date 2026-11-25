@@ -583,3 +583,138 @@ func TestRoutedZoneUnselectedAccount(t *testing.T) {
 		t.Errorf("a zone of acc1 with --account acc2: exit %d, %s", code, stderr)
 	}
 }
+
+// createdIn is the account id of the last zone creation sent to the fake.
+func (e *zoneEnv) createdIn() string {
+	account, _ := e.f.body("POST /zones")["account"].(map[string]any)
+	id, _ := account["id"].(string)
+	return id
+}
+
+// zone create and zone ensure of a login with several accounts: a new zone
+// goes to --account, else to the default account; an existing zone is
+// looked for in every selected account and reused where it is.
+func TestZoneEnsureSeveralAccounts(t *testing.T) {
+	e := newZoneEnv(t)
+	net := e.f.addZone("example.net", "acc2", "free", "active")
+	e.loginBoth("acc1", "acc1", "acc2")
+
+	// The zone of the account that is not the default one is reused.
+	code, stdout, stderr := e.run("cloudflare", "zone", "ensure", "example.net", "--profile", "both", "-o", "json")
+	if code != cli.ExitOK {
+		t.Fatalf("ensure: exit %d, %s", code, stderr)
+	}
+	if rep := e.report(stdout); rep.Zone.ID != net.id || rep.Target.AccountID != "acc2" || len(e.f.writes()) != 0 {
+		t.Errorf("ensure reused %s in %s, writes %v", rep.Zone.ID, rep.Target.AccountID, e.f.writes())
+	}
+	code, _, stderr = e.run("cloudflare", "zone", "create", "example.net", "--profile", "both")
+	if code != cli.ExitError || !strings.Contains(stderr, "already exists in account acc2 of profile both") || len(e.f.writes()) != 0 {
+		t.Errorf("create of an existing zone: exit %d, writes %v, %s", code, e.f.writes(), stderr)
+	}
+
+	// A new zone goes to the default account, or to --account (by id or
+	// by name).
+	code, stdout, stderr = e.run("cloudflare", "zone", "create", "example.org", "--profile", "both", "--foundation-dns=false", "-o", "json")
+	if code != cli.ExitOK || e.createdIn() != "acc1" || e.report(stdout).Target.AccountID != "acc1" {
+		t.Errorf("create: exit %d, in %q, %s%s", code, e.createdIn(), stdout, stderr)
+	}
+	code, stdout, stderr = e.run("cloudflare", "zone", "create", "example.info", "--profile", "both", "--account", "Account acc2", "--foundation-dns=false", "-o", "json")
+	if code != cli.ExitOK || e.createdIn() != "acc2" || e.report(stdout).Target.AccountID != "acc2" {
+		t.Errorf("create --account: exit %d, in %q, %s%s", code, e.createdIn(), stdout, stderr)
+	}
+	code, stdout, stderr = e.run("cloudflare", "zone", "ensure", "example.dev", "--profile", "both", "--account", "acc2", "--dry-run", "-o", "json")
+	if code != cli.ExitOK || changeMap(e.report(stdout).Changes)["zone/example.dev"] != "would_create account=acc2 type=full" {
+		t.Errorf("ensure --account --dry-run: exit %d, %s%s", code, stdout, stderr)
+	}
+	// With --account only that account is looked in: the zone of the
+	// other one is not found there, and Cloudflare refuses a second one.
+	e.f.reset()
+	code, _, stderr = e.run("cloudflare", "zone", "ensure", "example.net", "--profile", "both", "--account", "acc1")
+	if code != cli.ExitError || !strings.Contains(stderr, "pass --account or --profile to target the account that holds it") {
+		t.Errorf("ensure in the other account: exit %d, %s", code, stderr)
+	}
+
+	// A domain with a zone in two selected accounts.
+	one := e.f.addZone("example.com", "acc1", "free", "active")
+	two := e.f.addZone("example.com", "acc2", "free", "pending")
+	e.f.reset()
+	code, _, stderr = e.run("cloudflare", "zone", "ensure", "example.com", "--profile", "both")
+	if code != cli.ExitAmbiguous || !strings.Contains(stderr, one.id) || !strings.Contains(stderr, two.id) || !strings.Contains(stderr, "pass --account <id or name>, or the zone id, to choose") {
+		t.Errorf("ensure of a name in two accounts: exit %d, %s", code, stderr)
+	}
+	code, _, stderr = e.run("cloudflare", "zone", "create", "example.com", "--profile", "both")
+	if code != cli.ExitError || !strings.Contains(stderr, "already exists in 2 accounts of profile both") || !strings.Contains(stderr, "--account") {
+		t.Errorf("create of a name in two accounts: exit %d, %s", code, stderr)
+	}
+	if w := e.f.writes(); len(w) != 0 {
+		t.Errorf("ambiguous runs wrote: %v", w)
+	}
+	if code, _, stderr = e.run("cloudflare", "zone", "list", "--profile", "both", "--refresh"); code != cli.ExitOK {
+		t.Fatalf("zone list: exit %d, %s", code, stderr)
+	}
+	code, stdout, stderr = e.run("cloudflare", "zone", "ensure", "example.com", "--profile", "both", "--account", "acc2", "-o", "json")
+	if code != cli.ExitOK || e.report(stdout).Zone.ID != two.id {
+		t.Errorf("ensure --account acc2: exit %d, %s%s", code, stdout, stderr)
+	}
+	p := prompttest.New(t, prompttest.Label(two.id))
+	code, stdout, stderr = e.runPick(p, "cloudflare", "zone", "ensure", "example.com", "--profile", "both", "-o", "json")
+	if code != cli.ExitOK || e.report(stdout).Zone.ID != two.id || e.report(stdout).Target.AccountID != "acc2" {
+		t.Errorf("ensure pick: exit %d, %s%s", code, stdout, stderr)
+	}
+	p.Done()
+	// Both zones stay in the inventory, each under its account.
+	if got := e.zoneRows("both"); !strings.Contains(got, one.id) || !strings.Contains(got, two.id) {
+		t.Errorf("zones of both: %s, want %s and %s among them", got, one.id, two.id)
+	}
+}
+
+// A zone created in an account outside the selection is not stored, and a
+// login without an account asks for one or takes --account.
+func TestZoneCreateOutsideTheSelection(t *testing.T) {
+	e := newZoneEnv(t)
+	e.loginBoth("acc1")
+	code, _, stderr := e.run("cloudflare", "zone", "create", "example.io", "--profile", "both", "--account", "acc2", "--foundation-dns=false")
+	if code != cli.ExitOK || e.createdIn() != "acc2" {
+		t.Fatalf("create in the unselected account: exit %d, in %q, %s", code, e.createdIn(), stderr)
+	}
+	if !strings.Contains(stderr, "account acc2 is not selected, so the new zone is not in the inventory (polyctl cloudflare account add acc2)") {
+		t.Errorf("no note about the inventory: %s", stderr)
+	}
+	if got := e.zoneRows("both"); got != "" {
+		t.Errorf("zones stored for both: %q", got)
+	}
+
+	// A login without an account.
+	cfg, err := config.Load(filepath.Join(e.dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := cfg.Profiles["both"].Platforms[platform.Cloudflare].Metadata
+	delete(meta, "account_id")
+	delete(meta, "account_name")
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	e.f.reset()
+	code, _, stderr = e.run("cloudflare", "zone", "create", "example.dev", "--profile", "both")
+	if code != cli.ExitUsage || !strings.Contains(stderr, `pass --account <id or name>, or select the accounts of the login with "polyctl cloudflare account use <id>"`) || len(e.f.writes()) != 0 {
+		t.Errorf("several accounts and none named: exit %d, writes %v, %s", code, e.f.writes(), stderr)
+	}
+	if strings.Contains(stderr, "--set account_id") {
+		t.Errorf("the old way to pin an account is still named: %s", stderr)
+	}
+	p := prompttest.New(t, "acc2")
+	code, _, stderr = e.runPick(p, "cloudflare", "zone", "create", "example.dev", "--profile", "both", "--foundation-dns=false")
+	if code != cli.ExitOK || e.createdIn() != "acc2" || !strings.Contains(stderr, "pass --account acc2, or make it the default account: polyctl cloudflare account use acc2") {
+		t.Errorf("asked account: exit %d, in %q, %s", code, e.createdIn(), stderr)
+	}
+	p.Done()
+	code, _, stderr = e.run("cloudflare", "zone", "create", "example.app", "--profile", "both", "--account", "acc1", "--foundation-dns=false")
+	if code != cli.ExitOK || e.createdIn() != "acc1" {
+		t.Errorf("--account of a login without an account: exit %d, in %q, %s", code, e.createdIn(), stderr)
+	}
+	// Such a login covers what its credentials see: the zone is stored.
+	if got := e.zoneRows("both"); got == "" {
+		t.Errorf("the zone of a login without an account was not stored")
+	}
+}

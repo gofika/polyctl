@@ -47,9 +47,15 @@ type zoneEnsure struct {
 	rt      *app.Runtime
 	c       *Client
 	profile string
+	// account is where a new zone goes: the account of --account, else the
+	// default account of the login. An existing zone found in another
+	// selected account moves it there.
 	account string
-	domain  string
-	create  bool // zone create: an existing zone is an error
+	// only: the account was named for this call; the zone is looked for in
+	// it alone, not in every selected account.
+	only   bool
+	domain string
+	create bool // zone create: an existing zone is an error
 	// foundation: try to switch Foundation DNS on for a new zone (and, when
 	// foundationSet, converge an existing zone to it).
 	foundation    bool
@@ -83,23 +89,62 @@ func (e *zoneEnsure) report(changes []platform.Change) zoneReport {
 	return rep
 }
 
+// find looks for the zone: in the named account alone, else in every
+// selected account of the login, since a domain may have a zone in more
+// than one account and a second one must not be made next to the first.
+func (e *zoneEnsure) find(ctx context.Context) ([]apiZone, error) {
+	if e.only {
+		return e.c.api.findZonesNamed(ctx, e.domain, e.account)
+	}
+	return e.c.api.zonesNamed(ctx, e.domain)
+}
+
+// several reports whether the run looked in more than one account.
+func (e *zoneEnsure) several() bool { return !e.only && len(e.c.api.scopeIDs()) > 1 }
+
 // run observes the zone, then creates it when it is missing (with
 // Foundation DNS) and converges the settings, printing the report.
 func (e *zoneEnsure) run(ctx context.Context, event string) error {
-	zs, err := e.c.api.findZonesNamed(ctx, e.domain, e.account)
+	zs, err := e.find(ctx)
 	if err != nil {
 		return err
 	}
+	switch {
+	case len(zs) > 1 && e.create:
+		held := make([]string, 0, len(zs))
+		for _, z := range zs {
+			held = append(held, fmt.Sprintf("%s in account %s", z.ID, accountLabel(z.Account.ID, z.Account.Name)))
+		}
+		return fmt.Errorf("zone %s already exists in %d accounts of profile %s (%s); use 'polyctl cloudflare zone ensure' with --account", e.domain, len(zs), e.profile, strings.Join(held, ", "))
+	case len(zs) > 1:
+		z, err := pickAmbiguousZone(e.rt, e.profile, e.domain, zs)
+		if err != nil {
+			return err
+		}
+		zs = []apiZone{*z}
+	}
 	if len(zs) > 0 {
 		e.z = &zs[0]
+		if acc := e.z.Account.ID; acc != "" {
+			// The zone is reused where it is.
+			e.account = acc
+		}
 		dropZoneNamed(ctx, e.rt, e.profile, e.domain, e.account, e.z.ID)
 		storeZone(ctx, e.rt, e.profile, *e.z)
 		if e.create {
+			if e.several() {
+				return fmt.Errorf("zone %s already exists in account %s of profile %s (id=%s); use 'polyctl cloudflare zone ensure'", e.domain, e.account, e.profile, e.z.ID)
+			}
 			return fmt.Errorf("zone %s already exists in profile %s (id=%s); use 'polyctl cloudflare zone ensure'", e.domain, e.profile, e.z.ID)
 		}
 	} else {
-		// The inventory may remember a zone of that name that is gone.
-		dropZoneNamed(ctx, e.rt, e.profile, e.domain, e.account, "")
+		// The inventory may remember a zone of that name that is gone,
+		// in the accounts that were looked in.
+		account := ""
+		if e.only {
+			account = e.account
+		}
+		dropZoneNamed(ctx, e.rt, e.profile, e.domain, account, "")
 	}
 
 	var plan platform.Plan
@@ -171,13 +216,16 @@ func (e *zoneEnsure) createZone(ctx context.Context) (platform.Change, error) {
 				return platform.Change{Action: platform.Unchanged, ID: e.z.ID, Detail: fmt.Sprintf("id=%s status=%s (created meanwhile)", e.z.ID, e.z.Status)}, nil
 			}
 		}
-		return platform.Change{}, fmt.Errorf("zone %s already exists, in this account or another one (Cloudflare holds a domain in one account only); pass --profile to target the account that holds it: %w", e.domain, err)
+		return platform.Change{}, fmt.Errorf("zone %s already exists, in this account or in another one the login does not select (Cloudflare holds an active domain in one account only): pass --account or --profile to target the account that holds it: %w", e.domain, err)
 	}
 	if err != nil {
 		return platform.Change{}, err
 	}
 	e.z, e.created, e.wrote = z, true, true
 	storeZone(ctx, e.rt, e.profile, *z)
+	if !cacheable(e.rt, e.profile, e.account) {
+		e.rt.Infof("note: account %s is not selected, so the new zone is not in the inventory (polyctl cloudflare account add %s)", e.account, e.account)
+	}
 	return platform.Change{ID: z.ID, Detail: fmt.Sprintf("id=%s status=%s", z.ID, z.Status)}, nil
 }
 
@@ -333,21 +381,24 @@ func newZoneCreateCmd(rt *app.Runtime) *cobra.Command {
 	var foundation bool
 	cmd := &cobra.Command{
 		Use:   "create <domain>",
-		Short: "Add a zone to the profile's Cloudflare account (fails when it exists; see ensure)",
-		Long: `Add the zone <domain> (a registered domain such as example.com) to the
-Cloudflare account of the profile: the account the profile is pinned to, or
-the only one its credentials see. A new zone is "pending" until its
-nameservers, printed below the report, are set at the registrar; polyctl does
-not wait for it to become active.
+		Short: "Add a zone to the account of --account, else the default account of the login (fails when it exists; see ensure)",
+		Long: `Add the zone <domain> (a registered domain such as example.com) to a
+Cloudflare account of the profile: --account, else the default account of
+the login. A new zone is "pending" until its nameservers, printed below the
+report, are set at the registrar; polyctl does not wait for it to become
+active.
 
 Foundation DNS is switched on for the new zone (--foundation-dns=false skips
 it); an account that cannot use it keeps the default nameservers and the
 step is reported as skipped.
 
-A zone that exists already in the account is an error (exit code 1): use
-` + "`zone ensure`" + `, which reuses it. Cloudflare holds a domain in one account
-only, so a zone of that name in another account is an error as well.`,
-		Example: "  polyctl cloudflare zone create example.com --profile acme",
+A zone of that name that exists already is an error (exit code 1): use
+` + "`zone ensure`" + `, which reuses it. Without --account it is looked for in
+every selected account of the login, and the error names the account that
+holds it; with --account in that account alone. Cloudflare holds an active
+domain in one account only, so a zone it refuses because another account,
+one the login does not select, holds the domain is an error as well.`,
+		Example: "  polyctl cloudflare zone create example.com --profile acme\n  polyctl cloudflare zone create example.com --account acme-eu",
 		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			arg, err := newZoneDomain(cmd.Context(), rt, args)
@@ -358,11 +409,11 @@ only, so a zone of that name in another account is an error as well.`,
 			if err != nil {
 				return err
 			}
-			s, account, err := openAccount(cmd.Context(), rt)
+			s, account, only, err := openAccount(cmd.Context(), rt)
 			if err != nil {
 				return err
 			}
-			e := &zoneEnsure{rt: rt, c: s.client, profile: s.profile, account: account, domain: domain, create: true, foundation: foundation}
+			e := &zoneEnsure{rt: rt, c: s.client, profile: s.profile, account: account, only: only, domain: domain, create: true, foundation: foundation}
 			return e.run(cmd.Context(), "cloudflare.zone.create")
 		},
 	}
@@ -376,11 +427,17 @@ func newZoneEnsureCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "ensure <domain>",
 		Short: "Create the zone when it is missing and converge its settings (--preset optimized, --ssl)",
-		Long: `Make sure the zone <domain> exists in the Cloudflare account of the profile
+		Long: `Make sure the zone <domain> exists in a Cloudflare account of the profile
 (created as ` + "`zone create`" + ` does, with Foundation DNS, when it is missing; reused
 when it exists) and, with --preset or --ssl, converge its settings: each
 setting is read first and written only when it differs. Running it again
 changes nothing.
+
+Without --account the zone is looked for in every selected account of the
+login: it is reused in the account that holds it (the report names that
+account), two accounts holding one are a pick on a terminal and ambiguous
+(exit code 5) otherwise, and a missing zone is created in the default
+account. With --account only that account is looked in and created in.
 
 --preset optimized sets, in this order: 0rtt on, early_hints on, rum on,
 response_buffering on, ipv6 off and Argo Smart Routing on (these three on
@@ -417,7 +474,7 @@ set at the registrar; ensure does not wait for it.`,
 			if cmd.Flags().Changed("ssl") && ssl != "flexible" && ssl != "strict" {
 				return app.UsageErrf("--ssl takes flexible or strict, got %q (use `polyctl cloudflare ssl-mode` for off and full)", ssl)
 			}
-			s, account, err := openAccount(cmd.Context(), rt)
+			s, account, only, err := openAccount(cmd.Context(), rt)
 			if err != nil {
 				return err
 			}
@@ -432,7 +489,7 @@ set at the registrar; ensure does not wait for it.`,
 			case ssl != "":
 				items = []presetItem{{id: "ssl", want: ssl}}
 			}
-			e := &zoneEnsure{rt: rt, c: s.client, profile: s.profile, account: account, domain: domain,
+			e := &zoneEnsure{rt: rt, c: s.client, profile: s.profile, account: account, only: only, domain: domain,
 				foundation: foundation, foundationSet: cmd.Flags().Changed("foundation-dns"), items: items}
 			return e.run(cmd.Context(), "cloudflare.zone.ensure")
 		},

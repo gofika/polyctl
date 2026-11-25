@@ -72,16 +72,21 @@ polyctl cf zone ensure example.com --preset optimized --dry-run -o json
 polyctl cf zone delete example.com --yes
 ```
 
-The account is the one the profile is pinned to (`account_id`), or the only one its credentials see; several are a usage error (pin one with `--set account_id`). The zone commands read the platform, so `--offline` is refused (exit code 6).
+A login works on its selected accounts, one of them the default account. `--account <id or name>` on the `zone`, `dns`, `cache`, `redirect`, `dev-mode` and `ssl-mode` commands names one account for the call: lookups and lists cover that account instead of every selected one, and a new zone goes to it instead of the default account. An account outside the selection is read live with `--account` and nothing of it is stored in the inventory; without the flag its zones are not found (exit code 4, naming the account). A zone id given with the `--account` of another account is a usage error (exit code 2).
 
-**`zone create <domain>`** adds a full zone to the account.
+A zone name that two accounts in the scope of the call hold a zone of (an active zone in one, a pending one in the other) is asked about on a terminal and exit code 5 otherwise, listing each zone with its account: `--account`, `--profile` when the zones are in different logins, or the zone id choose. `zone list` shows an `ACCOUNT` column when its zones are of several accounts.
+
+A login without an account (its credentials could not list accounts) uses the only account the credentials see for a new zone; when they see several, the account is asked for on a terminal and a usage error otherwise (pass `--account`). The zone lifecycle commands read the platform, so `--offline` is refused (exit code 6).
+
+**`zone create <domain>`** adds a full zone to the account of `--account`, else to the default account.
 
 - `<domain>` is a registered domain such as `example.com`. Something plainly not a domain (no dot, a URL, an IP address, spaces) is a usage error (exit code 2).
 - The new zone stays `pending` until you set its nameservers at the registrar; polyctl does not wait and never changes the registrar itself. The nameservers are printed under `Nameservers (set these at your registrar):`, with the matching `polyctl domain ns set` command on stderr.
 - Foundation DNS is switched on by default (`--foundation-dns=false` skips it). An account that cannot use it is reported `skipped`; any other refusal fails the command (the zone stays created).
-- A zone that already exists in the account is exit code 1 (use `ensure`). So is one in another account (Cloudflare code 1061, `already exists`): pass `--profile` for that account.
+- A zone that already exists is exit code 1 (use `ensure`). Without `--account` it is looked for in every selected account and the error names the account that holds it; with `--account` in that account alone. A zone Cloudflare refuses because an account the login does not select holds the domain (code 1061, `already exists`) is exit code 1 as well: pass `--account` or `--profile` for that account.
+- A zone created with `--account` in an account outside the selection is not stored in the inventory (a note says so).
 
-**`zone ensure <domain>`** reuses the zone (`unchanged`) or creates it as `create` does, then:
+**`zone ensure <domain>`** reuses the zone (`unchanged`) or creates it as `create` does. Without `--account` the zone is looked for in every selected account and reused in the one that holds it (`target.account_id` of the report names it); zones of the name in two of them are asked about on a terminal and exit code 5 otherwise. With `--account` only that account is looked in. Then:
 
 - `--preset optimized` converges, reading first and writing only what differs, in this order: `0rtt` on, `early_hints` on, `rum` on, `response_buffering` on; on Enterprise zones only, `ipv6` off and Argo Smart Routing on (elsewhere `skipped`, since Argo is billed); `always_use_https` on, `automatic_https_rewrites` on; last `ssl`.
 - `ssl` is `--ssl` (`flexible` or `strict`), else `defaults.cloudflare.ssl`, else `strict`. `strict` replaces `flexible` (`flexible -> strict`), so pass `--ssl flexible` for an origin without HTTPS. `off` and `full` are set with `cloudflare ssl-mode`. `--ssl` without `--preset` sets the SSL mode only.
@@ -94,7 +99,7 @@ The account is the one the profile is pinned to (`account_id`), or the only one 
 
 **`zone delete <zone>`** deletes a zone (name or id) with all of its DNS records.
 
-- It asks for confirmation, showing the plan, status and number of DNS records (`--yes` in the non-interactive flow; see [Confirmations](../interactive.md#confirmations)). A name found in several accounts is exit code 5: pass `--profile`.
+- It asks for confirmation, showing the plan, status and number of DNS records (`--yes` in the non-interactive flow; see [Confirmations](../interactive.md#confirmations)). A name found in several accounts is exit code 5: pass `--account`, `--profile` or the zone id.
 - An Enterprise zone must be moved to the Free plan first. polyctl does that only with `--downgrade-enterprise` (changes billing); otherwise it stops with exit code 1. A token without billing permission is exit code 3 and nothing is deleted. If the downgrade succeeds and the deletion fails, the zone stays on Free: run the command again.
 - `--dry-run` reports `zone/<domain>  would delete  plan=free records=12` (plus `zone/<domain>/subscription  would update  enterprise -> free`).
 
