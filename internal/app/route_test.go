@@ -1007,7 +1007,7 @@ func TestPickDomainLabelsKeepTheirCells(t *testing.T) {
 	for _, want := range []string{
 		"\nexample.com  store: none  zone namecom/a\n",
 		"\nother.com  -  zone namecom/b\n",
-		"\nshared.com  -  zone namecom/a  zone namecom/b\n",
+		"\nshared.com  -  zone namecom/a, namecom/b\n",
 	} {
 		if !strings.Contains(labels, want) {
 			t.Errorf("domain labels lack %q:%s", want, labels)
@@ -1023,6 +1023,40 @@ func TestPickDomainLabelsKeepTheirCells(t *testing.T) {
 	}
 	if l := prompttest.Labels(p.Find("Domain").Options); !strings.Contains(l, "example.com  zone namecom/a\n") {
 		t.Errorf("domain labels without a note:\n%s", l)
+	}
+	p.Done()
+
+	// The registration of a domain stays in the cell after its zones: a
+	// domain that is registered and has no zone shows "-" for them.
+	reg := inventory.Set{Platform: platform.GoDaddy, Profile: "c", Type: platform.ResDomain}
+	if err := h.db().Replace(ctx, reg, app.DomainResources([]platform.Domain{{Name: "example.com"}, {Name: "parked.com"}}), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	p = prompttest.New(t, "example.com")
+	h.rt.Picker = p
+	if _, err := h.rt.PickDomain(ctx, app.DomainPick{Arg: "<domain>"}); err != nil {
+		t.Fatal(err)
+	}
+	labels = "\n" + prompttest.Labels(p.Find("Domain").Options) + "\n"
+	for _, want := range []string{
+		"\nexample.com  zone namecom/a  domain godaddy/c\n",
+		"\nother.com  zone namecom/b\n",
+		"\nparked.com  -  domain godaddy/c\n",
+	} {
+		if !strings.Contains(labels, want) {
+			t.Errorf("domain labels lack %q:%s", want, labels)
+		}
+	}
+	p.Done()
+
+	// A list of one kind has no cell for the other.
+	p = prompttest.New(t, "parked.com")
+	h.rt.Picker = p
+	if _, err := h.rt.PickDomain(ctx, app.DomainPick{Arg: "<domain>", Kinds: []platform.ResourceType{platform.ResDomain}}); err != nil {
+		t.Fatal(err)
+	}
+	if l := prompttest.Labels(p.Find("Domain").Options); strings.TrimSpace(l) != "example.com  domain godaddy/c\nparked.com  domain godaddy/c" {
+		t.Errorf("registration labels:\n%s", l)
 	}
 	p.Done()
 }

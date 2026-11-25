@@ -40,8 +40,10 @@ type DomainPick struct {
 // PickDomain asks for one of the domains of the local index in the
 // interactive flow, restricted by --profile and --platform like domain
 // routing. Each domain is one option, labelled with its kinds and owners
-// ("example.com  zone cloudflare/acme, domain namecom/acme"); when several
-// accounts own the chosen one, ResolveDomain asks which.
+// ("example.com  zone cloudflare/acme  domain namecom/acme"): the accounts
+// holding its zone in one cell and those holding its registration in the
+// next, "-" for a domain without a zone. When several accounts own the
+// chosen one, ResolveDomain asks which.
 func (rt *Runtime) PickDomain(ctx context.Context, p DomainPick) (string, error) {
 	if !rt.Interactive() {
 		return "", UsageErrf("%s is required", p.Arg)
@@ -75,21 +77,47 @@ func (rt *Runtime) PickDomain(ctx context.Context, p DomainPick) (string, error)
 		}
 		byDomain[e.Domain] = append(byDomain[e.Domain], e)
 	}
+	// The kinds of the entries kept, zones before registrations and any
+	// other kind after them in the order of the index.
+	var kinds []platform.ResourceType
+	for _, k := range []platform.ResourceType{platform.ResZone, platform.ResDomain} {
+		if len(p.Kinds) == 0 || slices.Contains(p.Kinds, k) {
+			kinds = append(kinds, k)
+		}
+	}
+	for _, d := range order {
+		for _, e := range byDomain[d] {
+			if !slices.Contains(kinds, e.Type) {
+				kinds = append(kinds, e.Type)
+			}
+		}
+	}
 	var opts []prompt.Option
 	for _, d := range order {
 		es := byDomain[d]
 		if p.Filter != nil && !p.Filter(d, es) {
 			continue
 		}
-		// "domain  <note>  zone cloudflare/acme  domain namecom/acme": the
-		// note of p.Label comes before the owners, whose number differs
-		// from row to row.
+		// "domain  <note>  zone cloudflare/acme  domain namecom/acme": one
+		// cell per kind offered, zones first, with every owner of that
+		// kind in it, so that a domain without a zone does not show its
+		// registrar in the column of the zones.
 		cells := []string{d}
 		if p.Label != nil {
 			cells = append(cells, p.Label(d, es))
 		}
-		for _, e := range es {
-			cells = append(cells, fmt.Sprintf("%s %s/%s", e.Type, e.Platform, e.Profile))
+		for _, kind := range kinds {
+			var owners []string
+			for _, e := range es {
+				if e.Type == kind {
+					owners = append(owners, string(e.Platform)+"/"+e.Profile)
+				}
+			}
+			cell := ""
+			if len(owners) > 0 {
+				cell = string(kind) + " " + strings.Join(owners, ", ")
+			}
+			cells = append(cells, cell)
 		}
 		opts = append(opts, prompt.Option{Label: prompt.Cells(cells...), Value: d})
 	}
