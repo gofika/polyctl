@@ -1350,6 +1350,44 @@ func TestNonDefaultDirAdoptsSharedKeyringEntries(t *testing.T) {
 	}
 }
 
+// The first run of a non-default directory copies the data key of instance
+// secrets whatever the inventory's location (POLYCTL_INVENTORY_DB), and also
+// when credentials.json holds one: earlier releases read the keyring's
+// first, and it may be another key.
+func TestNonDefaultDirAdoptsTheDataKeyWithTheInventoryElsewhere(t *testing.T) {
+	keyring.MockInit()
+	registerFakes()
+	resetFakes()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	dir := t.TempDir()
+	t.Setenv(config.EnvConfigDir, dir)
+	t.Setenv("POLYCTL_INVENTORY_DB", filepath.Join(t.TempDir(), "inv.db"))
+	t.Setenv("POLYCTL_CREDENTIAL_STORE", "auto")
+	t.Setenv("POLYCTL_OUTPUT", "")
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("profiles: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := creds.NewFile(dir).Set("/instance-secrets", map[string]string{"key": "file"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := (creds.Keyring{}).Set("/instance-secrets", map[string]string{"key": "k"}); err != nil {
+		t.Fatal(err)
+	}
+	rt := app.New(app.Flags{}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	if err := rt.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.Creds(); err != nil {
+		t.Fatal(err)
+	}
+	own := creds.Keyring{Service: creds.ServiceFor(dir, filepath.Join(home, ".config", "polyctl"))}
+	if s, err := own.Get("/instance-secrets"); err != nil || s["key"] != "k" {
+		t.Errorf("data key not copied: %v, %v", s, err)
+	}
+}
+
 func TestReloadConfig(t *testing.T) {
 	rt := newHarness(t, app.Flags{}, nil).rt
 	cfg, err := rt.Config()

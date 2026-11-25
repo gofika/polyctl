@@ -14,6 +14,7 @@ import (
 	"github.com/gofika/polyctl/internal/creds"
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/zalando/go-keyring"
 )
 
 // memKeys is an in-memory credential store.
@@ -380,5 +381,48 @@ func TestFindDetachedByIDOnly(t *testing.T) {
 	got, err := s.Find(ctx, ref.Platform, ref.Profile, "", ref.InstanceID)
 	if err != nil || len(got) != 1 || !got[0].Detached || got[0].Password != "pw" {
 		t.Errorf("Find by id = %+v, %v; want the detached credentials", got, err)
+	}
+}
+
+// A configuration directory other than the default one keeps the data key
+// under a keyring service of its own. When the key is still only under the
+// shared service of earlier releases (a directory whose first run did not
+// copy it), it is copied on use instead of a new key being created, and a
+// key there that differs from the directory's own still opens its rows.
+func TestDataKeyAdoptedFromTheSharedService(t *testing.T) {
+	keyring.MockInit()
+	ctx := context.Background()
+	db, _ := openDB(t)
+	shared := &creds.Multi{Primary: creds.Keyring{}}
+	if err := New(db, shared).Put(ctx, Credentials{Ref: ref, User: "u", Password: "shared"}); err != nil {
+		t.Fatal(err)
+	}
+	own := creds.Keyring{Service: "polyctl:0123456789abcdef"}
+	store := &creds.Multi{Primary: own, Others: []creds.Store{creds.NewFile(t.TempDir())}}
+	if got, err := New(db, store).Get(ctx, ref); err != nil || got.Password != "shared" {
+		t.Fatalf("Get = %+v, %v", got, err)
+	}
+	if _, err := own.Get(DataKeyName); err != nil {
+		t.Errorf("the data key was not copied: %v", err)
+	}
+	// A key of its own that differs (forked): rows sealed with the shared
+	// one still open.
+	k := make([]byte, dataKeyBytes)
+	k[0] = 7
+	if err := own.Set(DataKeyName, map[string]string{dataKeyField: base64.StdEncoding.EncodeToString(k), dataKeyVersion: dataKeyV1}); err != nil {
+		t.Fatal(err)
+	}
+	ref2 := ref
+	ref2.InstanceID = "i-2"
+	if err := New(db, store).Put(ctx, Credentials{Ref: ref2, User: "u", Password: "own"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		r    Ref
+		want string
+	}{{ref, "shared"}, {ref2, "own"}} {
+		if got, err := New(db, store).Get(ctx, c.r); err != nil || got.Password != c.want {
+			t.Errorf("Get(%s) = %+v, %v; want %q", c.r.InstanceID, got, err, c.want)
+		}
 	}
 }

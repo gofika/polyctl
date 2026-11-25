@@ -430,18 +430,12 @@ func (rt *Runtime) adoptSharedKeyring(cfg *config.Config, st *creds.Multi, dir s
 			keys = append(keys, ref.Profile)
 		}
 	}
-	// The data key, when this directory has instance secrets and no data
-	// key in its file store.
-	if _, err := os.Stat(filepath.Join(dir, "inventory.db")); err == nil {
-		inFile := false
-		if f, ok := st.File(); ok {
-			_, err := f.Get(secrets.DataKeyName)
-			inFile = err == nil
-		}
-		if !inFile {
-			keys = append(keys, secrets.DataKeyName)
-		}
-	}
+	// The data key of instance secrets. It is copied whether or not the
+	// inventory (which POLYCTL_INVENTORY_DB may put anywhere) has secrets,
+	// and also when credentials.json holds a data key: that one may be
+	// another key (a store forked while the keyring was out of reach), and
+	// earlier releases read the keyring's first.
+	keys = append(keys, secrets.DataKeyName)
 	copied, err := kr.Adopt(keys)
 	if len(copied) > 0 {
 		rt.Verbosef("copied %d keyring entries of %s from the shared service %q to %q", len(copied), dir, creds.Service, kr.Service)

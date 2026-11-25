@@ -108,6 +108,11 @@ type (
 	eacher interface {
 		GetEach(key string) []map[string]string
 	}
+	// adopter copies key from where earlier releases stored it, when the
+	// store lacks it, and reports whether it did.
+	adopter interface {
+		Adopt(key string) (bool, error)
+	}
 	// haser reports whether a backend is part of the store.
 	haser interface {
 		Has(backend string) bool
@@ -148,6 +153,16 @@ func (s *Store) dataKey(create bool) ([]byte, error) {
 		return nil
 	}
 	err := read()
+	if errors.Is(err, creds.ErrNotFound) {
+		// A configuration directory other than the default one keeps the
+		// key under a keyring service of its own; earlier releases (or the
+		// directory before it moved) stored it under another one.
+		if a, ok := s.keys.(adopter); ok {
+			if copied, aerr := a.Adopt(DataKeyName); aerr == nil && copied {
+				err = read()
+			}
+		}
+	}
 	switch {
 	case err == nil:
 	case errors.Is(err, creds.ErrNotFound) && create:

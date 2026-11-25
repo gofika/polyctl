@@ -78,6 +78,25 @@ type Store interface {
 // keyring service its entries are stored under ("" means Service).
 type Keyring struct {
 	Service string
+	// Sources are the services where entries of the same configuration
+	// directory may have been stored before (by earlier releases, or before
+	// the directory moved), most recent first; Adopt reads them. nil means
+	// the shared service Service, for every service but Service itself.
+	Sources []string
+}
+
+func (k Keyring) sources() []string {
+	src := k.Sources
+	if src == nil && !k.Shared() {
+		src = []string{Service}
+	}
+	var out []string
+	for _, s := range src {
+		if s != k.service() {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func (Keyring) Name() string { return "keyring" }
@@ -251,15 +270,16 @@ func (k Keyring) Delete(key string) error {
 func (k Keyring) Shared() bool { return k.service() == Service }
 
 // Adopt copies to the keyring's own service the entries under keys that it
-// lacks and that exist under the shared service Service, where earlier
-// releases stored the entries of every configuration directory. The
-// shared entries stay: they may belong to the default directory. It does
-// nothing for the default directory's keyring. It returns the keys copied.
+// lacks and that exist under one of its sources (Sources; by default the
+// shared service Service, where earlier releases stored the entries of every
+// configuration directory). The source entries stay: they may belong to the
+// default directory. It does nothing for the default directory's keyring. It
+// returns the keys copied.
 func (k Keyring) Adopt(keys []string) (copied []string, err error) {
-	if k.Shared() {
+	src := k.sources()
+	if len(src) == 0 {
 		return nil, nil
 	}
-	legacy := Keyring{}
 	for _, key := range keys {
 		_, err := k.Get(key)
 		if err == nil {
@@ -268,19 +288,35 @@ func (k Keyring) Adopt(keys []string) (copied []string, err error) {
 		if !errors.Is(err, ErrNotFound) {
 			return copied, err
 		}
-		s, err := legacy.Get(key)
-		if errors.Is(err, ErrNotFound) {
-			continue
+		for _, svc := range src {
+			s, err := (Keyring{Service: svc}).Get(key)
+			if errors.Is(err, ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return copied, err
+			}
+			if err := k.Set(key, s); err != nil {
+				return copied, err
+			}
+			copied = append(copied, key)
+			break
 		}
-		if err != nil {
-			return copied, err
-		}
-		if err := k.Set(key, s); err != nil {
-			return copied, err
-		}
-		copied = append(copied, key)
 	}
 	return copied, nil
+}
+
+// SourceValues returns the values the sources of the keyring (Sources) hold
+// under key, most recent source first. Sources that fail to answer are
+// skipped.
+func (k Keyring) SourceValues(key string) []map[string]string {
+	var out []map[string]string
+	for _, svc := range k.sources() {
+		if v, err := (Keyring{Service: svc}).Get(key); err == nil {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // Probe checks that the keyring is usable on this machine.
@@ -515,7 +551,9 @@ func (m *Multi) Lacks(backend, key string) bool {
 }
 
 // GetEach returns the secret stored under key by each backend that holds
-// one, primary first. Backends that fail to answer are skipped.
+// one, primary first, then the copies under the keyring's sources (where
+// earlier releases, or the directory before it moved, stored it). Backends
+// that fail to answer are skipped.
 func (m *Multi) GetEach(key string) []map[string]string {
 	var out []map[string]string
 	for _, s := range m.stores() {
@@ -523,7 +561,22 @@ func (m *Multi) GetEach(key string) []map[string]string {
 			out = append(out, v)
 		}
 	}
+	if k, ok := m.Keyring(); ok {
+		out = append(out, k.SourceValues(key)...)
+	}
 	return out
+}
+
+// Adopt copies the entry under key from the keyring's sources to its own
+// service when the keyring lacks it (Keyring.Adopt), and reports whether it
+// did. A store without a keyring copies nothing.
+func (m *Multi) Adopt(key string) (bool, error) {
+	k, ok := m.Keyring()
+	if !ok {
+		return false, nil
+	}
+	copied, err := k.Adopt([]string{key})
+	return len(copied) > 0, err
 }
 
 // Backend returns the name of the backend a Get of key is served from, or ""
