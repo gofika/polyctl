@@ -792,7 +792,11 @@ func cachedInstances(ctx context.Context, rt *app.Runtime, profile string) ([]In
 		}
 		res, err := c.syncInstances(ctx)
 		if err != nil {
-			return nil, false, err
+			// Unreachable zones leave the instances of the others.
+			if platform.AsRegionSyncError(err) == nil {
+				return nil, false, err
+			}
+			rt.Infof("warning: gcp/%s project %s: %v", profile, c.project, err)
 		}
 		out := make([]Instance, 0, len(res))
 		for _, r := range res {

@@ -169,3 +169,20 @@ func TestBareRecordIDIsOfTheZonesProject(t *testing.T) {
 		t.Errorf("record sets in p2/main: %+v", left)
 	}
 }
+
+// The live list of a project outside the selection keeps the instances of
+// the zones that answered when one zone is unreachable, as a synced list
+// does.
+func TestUnselectedProjectListToleratesAnUnreachableZone(t *testing.T) {
+	h := twoProjects(t)
+	h.gce.addInstance("p3", "us-central1-a", "solo", "10.0.0.9", "")
+	h.gce.unreachable = "zones/europe-west1-b"
+	if err := h.run("compute", "instance", "list", "--project", "p3"); err != nil {
+		t.Fatalf("list = %v", err)
+	}
+	var res instanceResult
+	h.jsonOut(&res)
+	if len(res.Instances) != 1 || res.Instances[0].Name != "solo" || !strings.Contains(h.stderr.String(), "p3/europe-west1-b") {
+		t.Errorf("list = %+v, stderr %q", res.Instances, h.stderr.String())
+	}
+}
