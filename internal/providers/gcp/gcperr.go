@@ -29,7 +29,7 @@ import (
 // capacityMarkers name quota and capacity problems in reasons, codes and
 // messages.
 var capacityMarkers = []string{"QUOTA_EXCEEDED", "quotaExceeded", "ZONE_RESOURCE_POOL_EXHAUSTED", "RESOURCE_POOL_EXHAUSTED",
-	"rateLimitExceeded", "userRateLimitExceeded"}
+	"rateLimitExceeded", "userRateLimitExceeded", "RATE_LIMIT_EXCEEDED"}
 
 func isCapacity(s string) bool { return containsAny(s, capacityMarkers...) }
 

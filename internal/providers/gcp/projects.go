@@ -139,18 +139,50 @@ func locationOf(parent string) (project, location string) {
 	return parent, ""
 }
 
-// isAPIDisabled reports the answer of a project in which the API asked is
-// not enabled (403 accessNotConfigured / SERVICE_DISABLED).
+// isAPIDisabled reports the answer of a project that cannot hold anything
+// of the API asked: the API is not enabled in it, or its billing is off
+// (403 accessNotConfigured / SERVICE_DISABLED / billingNotEnabled /
+// BILLING_DISABLED, or one of the messages those answers carry). A quota
+// or capacity answer is never one, whatever else it says: that project
+// may hold resources.
 func isAPIDisabled(err error) bool {
 	var ge *googleapi.Error
 	if !errors.As(err, &ge) || ge.Code != http.StatusForbidden {
 		return false
 	}
-	switch googleReason(err) {
-	case "accessNotConfigured", "SERVICE_DISABLED":
-		return true
+	reasons := append([]string{googleReason(err)}, detailReasons(ge)...)
+	for _, r := range reasons {
+		if isCapacity(r) {
+			return false
+		}
 	}
-	return strings.Contains(ge.Message, "has not been used") || strings.Contains(ge.Message, "is disabled")
+	if isCapacityMessage(ge.Message) {
+		return false
+	}
+	for _, r := range reasons {
+		switch r {
+		case "accessNotConfigured", "SERVICE_DISABLED", "billingNotEnabled", "BILLING_DISABLED":
+			return true
+		}
+	}
+	return containsAny(strings.ToLower(ge.Message), "has not been used", "is disabled", "requires billing to be enabled", "billing is disabled")
+}
+
+// detailReasons returns the reasons of the google.rpc.ErrorInfo details
+// of an API error ("SERVICE_DISABLED", "BILLING_DISABLED", ...): the
+// newer APIs name the cause there and not in Errors[0].Reason.
+func detailReasons(ge *googleapi.Error) []string {
+	var out []string
+	for _, d := range ge.Details {
+		m, ok := d.(map[string]any)
+		if !ok {
+			continue
+		}
+		if r, ok := m["reason"].(string); ok && r != "" {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // projectConcurrency bounds the projects read at the same time.
