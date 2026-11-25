@@ -443,7 +443,7 @@ equal to the given --value list (repeat --value for multi-value sets).
 
 MX and SRV values take the priority from --priority, or as a leading number
 inside the value ("10 mail.example.com"). Hostnames get the trailing dot
-Cloud DNS expects; TXT values are quoted automatically.
+Cloud DNS expects; TXT and SPF values are quoted automatically.
 
 On a terminal, a missing <zone> is picked from the managed zones of the
 profile, a missing --type from the record types, and a missing --value is
