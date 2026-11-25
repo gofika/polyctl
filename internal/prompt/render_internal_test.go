@@ -348,3 +348,11 @@ func TestTickReminderGoesWithTheFirstTick(t *testing.T) {
 		t.Errorf("no row is ticked:\n%s", view)
 	}
 }
+
+// Option labels of the picker are escaped like every other remote text.
+func TestHuhOptionsEscapeControls(t *testing.T) {
+	opts := huhOptions([]Option{{Label: "web-1\r\x1b[Kprod", Value: "i-1"}}, 80)
+	if len(opts) != 1 || opts[0].Key != `web-1\x0d\x1b[Kprod` || opts[0].Value != "i-1" {
+		t.Errorf("options %+v", opts)
+	}
+}

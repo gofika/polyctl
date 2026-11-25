@@ -370,6 +370,30 @@ func TestSSHKeyRemoveFromAuthorizedKeys2(t *testing.T) {
 	}
 }
 
+// A key comment holding terminal escapes (written by any user of the
+// instance) is printed escaped in the listing and in the lines shown before
+// the removal is confirmed.
+func TestSSHKeyEscapesComments(t *testing.T) {
+	r := newKeyRig(t, "ec2-user")
+	evil := newSSHTestKey(t)
+	comment := "x\x1b]52;c;aGk=\x07\x1b[2K\brenamed"
+	r.authorized("ec2-user", r.login.line("me")+"\n"+evil.line(comment)+"\n")
+	if err := r.run("list", "web-1", "--accept-new-host-key"); err != nil {
+		t.Fatal(err)
+	}
+	out := r.h.stdout.String()
+	if strings.ContainsAny(out, "\x1b\x07\b") || !strings.Contains(out, `x\x1b]52;c;aGk=\x07\x1b[2K\x08renamed`) {
+		t.Errorf("list %q", out)
+	}
+	r.h.rt.Flags.Yes = true
+	if err := r.run("remove", "web-1", "--fingerprint", ssh.FingerprintSHA256(evil.pub)); err != nil {
+		t.Fatal(err)
+	}
+	if all := r.h.stdout.String() + r.h.stderr.String(); strings.ContainsAny(all, "\x1b\x07\b") || !strings.Contains(r.h.stderr.String(), `\x1b[2K`) {
+		t.Errorf("remove stdout %q stderr %q", r.h.stdout.String(), r.h.stderr.String())
+	}
+}
+
 // Another user's keys go through sudo -n, and the report says so.
 func TestSSHKeyAddForAnotherUser(t *testing.T) {
 	r := newKeyRig(t, "ec2-user", "deploy")

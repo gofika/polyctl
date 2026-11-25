@@ -121,7 +121,7 @@ polyctl aws ec2 instance list
 polyctl cloudflare zone list --profile acme
 ```
 
-Status lines go to stderr and results to stdout, so `polyctl dns list example.com -o json | jq` works.
+Status lines go to stderr and results to stdout, so `polyctl dns list example.com -o json | jq` works. Text shown on the terminal (tables, status lines, questions, errors) has its control characters escaped (`\x1b`, `\u009b`), so a name, tag, key comment or remote message cannot rewrite what you see; `-o json` and `-o yaml` keep the raw value.
 
 ## Documentation
 

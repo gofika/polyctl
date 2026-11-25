@@ -14,6 +14,8 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"golang.org/x/term"
+
+	"github.com/gofika/polyctl/internal/output"
 )
 
 // ErrAborted is returned by a Picker when the user leaves a prompt with Esc
@@ -664,7 +666,7 @@ func mapAbort(err error) error {
 func huhOptions(opts []Option, width int) []huh.Option[string] {
 	out := make([]huh.Option[string], 0, len(opts))
 	for _, o := range opts {
-		out = append(out, huh.NewOption(truncate(o.Label, width), o.Value))
+		out = append(out, huh.NewOption(truncate(output.Clean(o.Label), width), o.Value))
 	}
 	return out
 }
@@ -700,6 +702,7 @@ func orderValues(opts []Option, chosen []string) []string {
 }
 
 func (p *terminalPicker) Select(title string, opts []Option, def string) (string, error) {
+	title = output.Clean(title)
 	if len(opts) == 0 {
 		return "", errors.New("nothing to choose from")
 	}
@@ -729,6 +732,7 @@ func (p *terminalPicker) Select(title string, opts []Option, def string) (string
 }
 
 func (p *terminalPicker) MultiSelect(title string, opts []Option) ([]string, error) {
+	title = output.Clean(title)
 	if len(opts) == 0 {
 		return nil, errors.New("nothing to choose from")
 	}
@@ -809,6 +813,7 @@ func multiSelectField(title string, opts []huh.Option[string], values *[]string,
 }
 
 func (p *terminalPicker) Confirm(title string, def bool) (bool, error) {
+	title = output.Clean(title)
 	value := def
 	// What was typed before the question appeared is not an answer to it: a
 	// "y" and Enter typed ahead would confirm it unseen. The keys are dropped
@@ -826,6 +831,7 @@ func (p *terminalPicker) Confirm(title string, def bool) (bool, error) {
 }
 
 func (p *terminalPicker) Input(title, def string, validate func(string) error) (string, error) {
+	title = output.Clean(title)
 	value := def
 	field := huh.NewInput().Title(title).Value(&value)
 	if validate != nil {

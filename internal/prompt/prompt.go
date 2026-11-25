@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"golang.org/x/term"
+
+	"github.com/gofika/polyctl/internal/output"
 )
 
 // ErrNotInteractive is returned when a question would have to be asked in the
@@ -130,6 +132,7 @@ const rawLineEditor = runtime.GOOS != "windows"
 // line, an interrupted command, input that ends) is ErrAborted. In the
 // non-interactive flow nothing is printed or read: it is ErrNotInteractive.
 func (p *IO) read(label string, secret bool) (string, error) {
+	label = output.Clean(label)
 	if !p.interactive {
 		return "", refuse(label)
 	}
@@ -376,7 +379,7 @@ func (p *IO) Choose(label string, options []string, def string) (string, error) 
 		if o == def {
 			marker = "*"
 		}
-		fmt.Fprintf(p.Err, " %s %d) %s\n", marker, i+1, o)
+		fmt.Fprintf(p.Err, " %s %d) %s\n", marker, i+1, output.Clean(o))
 	}
 	for {
 		s, err := p.Line(label, def)

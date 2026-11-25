@@ -191,3 +191,19 @@ func TestReadValue(t *testing.T) {
 		t.Errorf("ReadValue on an ended context = %v, want context.Canceled", err)
 	}
 }
+
+// A question or option naming remote text (an instance Name tag) is
+// printed with its control characters escaped.
+func TestPromptEscapesControls(t *testing.T) {
+	var errw bytes.Buffer
+	p := New(strings.NewReader("y\n2\n"), io.Discard, &errw).WithInteractive(true)
+	if ok, err := p.Confirm("Delete instance \r\x1b[Kprod-db?", false); err != nil || !ok {
+		t.Fatalf("confirm: %v %v", ok, err)
+	}
+	if v, err := p.Choose("Pick", []string{"a", "b\x1b[2K"}, ""); err != nil || v != "b\x1b[2K" {
+		t.Fatalf("choose: %q %v", v, err)
+	}
+	if s := errw.String(); strings.ContainsAny(s, "\x1b\r") || !strings.Contains(s, `\x0d\x1b[Kprod-db?`) || !strings.Contains(s, `b\x1b[2K`) {
+		t.Errorf("prompt output %q", s)
+	}
+}

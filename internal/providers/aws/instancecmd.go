@@ -509,7 +509,7 @@ an empty value is exit code 1.`,
 					}
 					return fmt.Errorf("instance %s has no %s", l.name(), field)
 				}
-				_, err := fmt.Fprintln(rt.Stdout, v)
+				_, err := fmt.Fprintln(rt.Stdout, output.Clean(v))
 				return err
 			}
 			if d.State != stateRunning {

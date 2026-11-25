@@ -280,7 +280,7 @@ func renderZoneReport(rt *app.Runtime, rep zoneReport, showNS bool) error {
 		for _, ns := range rep.Zone.NameServers {
 			b.WriteString("  " + ns + "\n")
 		}
-		if _, err := fmt.Fprint(rt.Stdout, b.String()); err != nil {
+		if _, err := fmt.Fprint(rt.Stdout, output.Clean(b.String())); err != nil {
 			return err
 		}
 	}

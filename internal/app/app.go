@@ -178,13 +178,15 @@ func (rt *Runtime) Render(value any, grid func() output.Grid) error {
 // Verbosef prints to stderr when --verbose is set.
 func (rt *Runtime) Verbosef(format string, args ...any) {
 	if rt.Flags.Verbose {
-		fmt.Fprintf(rt.Stderr, format+"\n", args...)
+		fmt.Fprintln(rt.Stderr, output.Clean(fmt.Sprintf(format, args...)))
 	}
 }
 
 // Infof prints a status line to stderr (never stdout, which holds results).
+// Control characters of the text (a name or comment from an instance or an
+// API) are escaped, so they cannot change what the terminal shows.
 func (rt *Runtime) Infof(format string, args ...any) {
-	fmt.Fprintf(rt.Stderr, format+"\n", args...)
+	fmt.Fprintln(rt.Stderr, output.Clean(fmt.Sprintf(format, args...)))
 }
 
 // Prompt returns the line prompts on the runtime's streams, in the flow
@@ -221,7 +223,7 @@ func (rt *Runtime) Confirm(ctx context.Context, action string, def bool) (bool, 
 	if err := rt.CanConfirm(action); err != nil {
 		return false, err
 	}
-	ok, err := rt.Prompt().WithContext(ctx).Confirm(action, def)
+	ok, err := rt.Prompt().WithContext(ctx).Confirm(output.Clean(action), def)
 	if errors.Is(err, prompt.ErrAborted) {
 		return false, nil
 	}

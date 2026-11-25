@@ -504,7 +504,7 @@ nothing on stdout.`,
 					}
 					return fmt.Errorf("instance %s has no %s", d.Name, field)
 				}
-				_, err := fmt.Fprintln(rt.Stdout, v)
+				_, err := fmt.Fprintln(rt.Stdout, output.Clean(v))
 				return err
 			}
 			d := detailFrom(l, l.instanceDisks(ctx, func(s string) { rt.Infof("%s", s) }))

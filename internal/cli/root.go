@@ -18,6 +18,7 @@ import (
 	"github.com/gofika/polyctl/internal/config"
 	"github.com/gofika/polyctl/internal/httpx"
 	"github.com/gofika/polyctl/internal/inventory"
+	"github.com/gofika/polyctl/internal/output"
 	"github.com/gofika/polyctl/internal/platform"
 	"github.com/gofika/polyctl/internal/prompt"
 )
@@ -276,12 +277,19 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return ExitOK
 	}
 	code := ExitCodeFor(err)
-	if code == ExitOK {
-		fmt.Fprintf(stderr, "%v\n", err) // nothing to do: a note, not an error
-		return code
-	}
-	fmt.Fprintf(stderr, "error: %v\n", err)
+	printError(stderr, code, err)
 	return code
+}
+
+// printError prints the error a command ended with: a note when it exits
+// 0 (nothing to do). Its control characters are escaped: an error may
+// quote remote text (an instance's stderr, an API message).
+func printError(w io.Writer, code int, err error) {
+	if code == ExitOK {
+		fmt.Fprintf(w, "%s\n", output.Clean(err.Error())) // nothing to do: a note, not an error
+		return
+	}
+	fmt.Fprintf(w, "error: %s\n", output.Clean(err.Error()))
 }
 
 // notifyFunc has the signature of signal.NotifyContext.

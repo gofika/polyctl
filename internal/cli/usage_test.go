@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -319,5 +320,20 @@ func TestPlatformValueErrorsAreUsageErrors(t *testing.T) {
 		if r.code != ExitUsage {
 			t.Errorf("%v: exit %d, %v", args, r.code, r.err)
 		}
+	}
+}
+
+// The final error is printed with its control characters escaped: it may
+// quote an instance's stderr or an API message.
+func TestPrintErrorEscapesControls(t *testing.T) {
+	var b bytes.Buffer
+	printError(&b, ExitError, errors.New("ssh: remote said \x1b[2K\rall good"))
+	if b.String() != `error: ssh: remote said \x1b[2K\x0dall good`+"\n" {
+		t.Errorf("error line %q", b.String())
+	}
+	b.Reset()
+	printError(&b, ExitOK, errors.New("cancelled; nothing removed from \x1b]0;x\x07"))
+	if strings.Contains(b.String(), "\x1b") || strings.HasPrefix(b.String(), "error:") {
+		t.Errorf("note %q", b.String())
 	}
 }

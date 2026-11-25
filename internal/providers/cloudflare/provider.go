@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/gofika/polyctl/internal/app"
+	"github.com/gofika/polyctl/internal/output"
 	"github.com/gofika/polyctl/internal/platform"
 	"github.com/gofika/polyctl/internal/prompt"
 )
@@ -39,7 +40,7 @@ const tokenEnv = "CLOUDFLARE_API_TOKEN"
 
 // warnf reports non-fatal conditions (skipped zones during sync). Tests
 // replace it to capture the output.
-var warnf = func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) }
+var warnf = func(format string, args ...any) { fmt.Fprintln(os.Stderr, output.Clean(fmt.Sprintf(format, args...))) }
 
 // Login methods, as given with --set method=.
 const (

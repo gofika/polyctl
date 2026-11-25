@@ -219,11 +219,12 @@ func fillSlices(v reflect.Value, depth int) (reflect.Value, bool) {
 	return v, false
 }
 
-// RenderGrid prints a grid with aligned columns.
+// RenderGrid prints a grid with aligned columns; control characters of the
+// cells are escaped (see Clean).
 func RenderGrid(w io.Writer, g Grid) error {
 	if len(g.Rows) == 0 {
 		if g.Empty != "" {
-			_, err := fmt.Fprintln(w, g.Empty)
+			_, err := fmt.Fprintln(w, Clean(g.Empty))
 			return err
 		}
 		if len(g.Headers) == 0 {
@@ -232,12 +233,12 @@ func RenderGrid(w io.Writer, g Grid) error {
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	if len(g.Headers) > 0 {
-		fmt.Fprintln(tw, strings.Join(g.Headers, "\t"))
+		fmt.Fprintln(tw, Clean(strings.Join(g.Headers, "\t")))
 	}
 	for _, r := range g.Rows {
 		cells := make([]string, len(r))
 		for i, c := range r {
-			cells[i] = strings.ReplaceAll(strings.ReplaceAll(c, "\t", " "), "\n", " ")
+			cells[i] = Clean(strings.ReplaceAll(strings.ReplaceAll(c, "\t", " "), "\n", " "))
 		}
 		fmt.Fprintln(tw, strings.Join(cells, "\t"))
 	}
