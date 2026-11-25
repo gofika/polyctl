@@ -116,6 +116,19 @@ func (rt *Runtime) ResolveDomain(ctx context.Context, domain string, kind platfo
 				hint = "pass --profile <name> to choose"
 			default:
 				hint = "the account holds several resources with this name; use the platform's own command with the resource id"
+				// The platform may know what tells them apart (the
+				// projects of one Google Cloud account).
+				if prov, err := platform.Get(owners[0].Platform); err == nil {
+					if h, ok := prov.(platform.OwnerHinter); ok {
+						ids := make([]string, 0, len(owners))
+						for _, o := range owners {
+							ids = append(ids, o.ResourceID)
+						}
+						if v := h.OwnerHint(kind, ids); v != "" {
+							hint = v
+						}
+					}
+				}
 			}
 			amb := &AmbiguousError{What: fmt.Sprintf("owner of %s %q", kind, best), Candidates: names, Hint: hint}
 			for i, o := range owners {

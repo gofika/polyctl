@@ -301,8 +301,8 @@ func lbListCmd(rt *app.Runtime) *cobra.Command {
 	var sf scopeFlags
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List the load balancers of the project, one row per forwarding rule",
-		Long: `List the load balancers of the project, read live: one row per forwarding rule,
+		Short: "List the load balancers of the selected projects, one row per forwarding rule",
+		Long: `List the load balancers of the selected projects, read live: one row per forwarding rule,
 named after its load balancer (the polyctl-lb label of the rule, else the URL
 map of its target proxy, else the rule's own name), with the protocol, IP,
 port, backend services and the health of their instances (HEALTHY, 1/2

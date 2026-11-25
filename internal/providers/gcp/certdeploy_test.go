@@ -174,12 +174,12 @@ func TestGCPDeployerReplacesDueCertificatesInOneSwitch(t *testing.T) {
 	}
 	rows := reportRows(rep)
 	for _, w := range []string{
-		"gcp-lb/lab/us-central1/ssl-certificate/cert-example-com-20260401 created regional, us-central1, expires 2026-04-01",
-		"gcp-lb/lab/us-central1/proxy-web updated example-com-old,example-org-old -> cert-example-com-20260401,cert-example-org-20260401",
-		"gcp-lb/lab/us-central1/ssl-certificate/example-com-old deleted old, no longer referenced",
-		"gcp-lb/lab/us-central1/proxy-web unchanged days_left=60",
-		"gcp-lb/lab/global/proxy-g skipped certificate managed-expired is Google-managed and renewed by Google",
-		"gcp-lb/lab/global/proxy-map skipped uses the certificate map m; not managed by polyctl",
+		"gcp-lb/lab/proj/us-central1/ssl-certificate/cert-example-com-20260401 created regional, us-central1, expires 2026-04-01",
+		"gcp-lb/lab/proj/us-central1/proxy-web updated example-com-old,example-org-old -> cert-example-com-20260401,cert-example-org-20260401",
+		"gcp-lb/lab/proj/us-central1/ssl-certificate/example-com-old deleted old, no longer referenced",
+		"gcp-lb/lab/proj/us-central1/proxy-web unchanged days_left=60",
+		"gcp-lb/lab/proj/global/proxy-g skipped certificate managed-expired is Google-managed and renewed by Google",
+		"gcp-lb/lab/proj/global/proxy-map skipped uses the certificate map m; not managed by polyctl",
 	} {
 		if !slices.Contains(rows, w) {
 			t.Errorf("missing row %q in\n%s", w, strings.Join(rows, "\n"))
@@ -228,8 +228,8 @@ func TestGCPDeployerKeepsTheCertificateOfAnotherKeyType(t *testing.T) {
 	}
 	rows := reportRows(rep)
 	for _, w := range []string{
-		"gcp-lb/lab/us-central1/ssl-certificate/example-com-rsa skipped RSA certificate example-com-rsa of example.com kept on proxy-web beside the ECDSA one: the store has no RSA certificate of example.com",
-		"gcp-lb/lab/us-central1/proxy-web updated example-com-ec,example-org-rsa -> cert-example-com-20260401,cert-example-org-20260401 (key type changes, example-org-rsa: RSA -> ECDSA)",
+		"gcp-lb/lab/proj/us-central1/ssl-certificate/example-com-rsa skipped RSA certificate example-com-rsa of example.com kept on proxy-web beside the ECDSA one: the store has no RSA certificate of example.com",
+		"gcp-lb/lab/proj/us-central1/proxy-web updated example-com-ec,example-org-rsa -> cert-example-com-20260401,cert-example-org-20260401 (key type changes, example-org-rsa: RSA -> ECDSA)",
 	} {
 		if !slices.Contains(rows, w) {
 			t.Errorf("missing row %q in\n%s", w, strings.Join(rows, "\n"))
@@ -318,7 +318,7 @@ func TestGCPDeployerNamesAndFailures(t *testing.T) {
 	}
 	// proxy-b still uses the old one: it is kept, and that is no failure.
 	if g.cert("global", "example-com-old") == nil ||
-		!slices.Contains(reportRows(rep), "gcp-lb/lab/global/ssl-certificate/example-com-old skipped old, still used by proxy-b; kept") {
+		!slices.Contains(reportRows(rep), "gcp-lb/lab/proj/global/ssl-certificate/example-com-old skipped old, still used by proxy-b; kept") {
 		t.Errorf("rows = %v", reportRows(rep))
 	}
 	// A failed insert stops the replacement of that proxy only.
@@ -337,7 +337,7 @@ func TestGCPDeployerNamesAndFailures(t *testing.T) {
 	delete(g2.opFail, "insertSslCertificate")
 	rep, err = d2.run(cert.DeployOptions{DryRun: true})
 	if err != nil || len(g2.lbWrites()) != 0 ||
-		!slices.Contains(reportRows(rep), "gcp-lb/lab/global/proxy-a would_update example-com-old -> cert-example-com-20260401") {
+		!slices.Contains(reportRows(rep), "gcp-lb/lab/proj/global/proxy-a would_update example-com-old -> cert-example-com-20260401") {
 		t.Errorf("dry run: %v %v %v", err, g2.lbWrites(), reportRows(rep))
 	}
 }
@@ -356,8 +356,8 @@ func TestGCPDeployerPrune(t *testing.T) {
 	}
 	rows := reportRows(rep)
 	if g.cert("global", "gone-com") != nil || g.cert("us-central1", "used-com") == nil ||
-		!slices.Contains(rows, "gcp-lb/lab/global/ssl-certificate/gone-com deleted cert=gone-com expired (2025-12-29)") ||
-		!slices.Contains(rows, "gcp-lb/lab/us-central1/ssl-certificate/used-com skipped cert=used-com expired (2025-12-31); still used by proxy-u") {
+		!slices.Contains(rows, "gcp-lb/lab/proj/global/ssl-certificate/gone-com deleted cert=gone-com expired (2025-12-29)") ||
+		!slices.Contains(rows, "gcp-lb/lab/proj/us-central1/ssl-certificate/used-com skipped cert=used-com expired (2025-12-31); still used by proxy-u") {
 		t.Errorf("rows = %v", rows)
 	}
 }

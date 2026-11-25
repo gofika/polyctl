@@ -310,8 +310,8 @@ func componentListCmd(rt *app.Runtime, spec componentSpec) *cobra.Command {
 	var query func() (componentQuery, error)
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List the " + spec.plural + " of the project",
-		Long: "List the " + spec.plural + " of the project, read live in every scope (" + scopeHelp(spec) + `
+		Short: "List the " + spec.plural + " of the selected projects",
+		Long: "List the " + spec.plural + " of the selected projects, read live in every scope (" + scopeHelp(spec) + `
 narrows it). No match is exit code 0 with an empty list and a note.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {

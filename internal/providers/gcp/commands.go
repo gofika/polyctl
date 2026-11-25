@@ -251,7 +251,7 @@ func zoneGrid(zones []platform.Zone) output.Grid {
 func newZoneListCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List managed zones of the project",
+		Short: "List the managed zones of the selected projects",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			profile, err := rt.ProfileFor(platform.GCP)
@@ -271,9 +271,12 @@ func newZoneListCmd(rt *app.Runtime) *cobra.Command {
 func newZoneGetCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "get <zone>",
-		Short: "Show one managed zone (by managed zone name or DNS name)",
-		Long: `Show one managed zone, given by its managed zone name or DNS name. On a
-terminal, without <zone> the managed zones of the profile are offered.`,
+		Short: "Show one managed zone (by zone id, managed zone name or DNS name)",
+		Long: `Show one managed zone, given by its id (<project>/<managed zone>), its
+managed zone name or its DNS name. A name several zones of the selected
+projects answer to is asked on a terminal and is exit code 5 otherwise;
+--project or the zone id chooses. On a terminal, without <zone> the managed
+zones of the profile are offered.`,
 		Args: app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			profile, err := rt.ProfileFor(platform.GCP)
@@ -737,7 +740,7 @@ of one record. --dry-run asks nothing.`,
 	cmd.Flags().StringVar(&name, "name", "", "record name relative to the zone (www, @) or FQDN; default: the zone apex")
 	cmd.Flags().StringVar(&value, "value", "", "only remove this value from the set")
 	cmd.Flags().IntVar(&priority, "priority", 0, "priority of the MX/SRV value given with --value")
-	cmd.Flags().StringVar(&id, "id", "", "delete the record value with this id (zone|TYPE|name|value)")
+	cmd.Flags().StringVar(&id, "id", "", "delete the record value with this id (project/zone|TYPE|name|value)")
 	return cmd
 }
 
@@ -819,7 +822,7 @@ func cachedInstances(ctx context.Context, rt *app.Runtime, profile string) ([]In
 func newComputeListCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List Compute Engine instances across all zones",
+		Short: "List the Compute Engine instances of the selected projects across all zones",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			profile, err := rt.ProfileFor(platform.GCP)

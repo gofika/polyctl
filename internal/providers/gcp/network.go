@@ -303,7 +303,7 @@ func openGCP(ctx context.Context, rt *app.Runtime) (*client, string, error) {
 func networkListCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List the VPC networks of the project",
+		Short: "List the VPC networks of the selected projects",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, profile, err := openGCP(cmd.Context(), rt)
@@ -429,7 +429,7 @@ func subnetListCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List subnetworks, of every region or of --region, optionally of one --network",
-		Long: `List the subnetworks of the project with their primary and secondary ranges,
+		Long: `List the subnetworks of the selected projects with their primary and secondary ranges,
 purpose and role. --region lists one region, otherwise every region is
 listed. --network keeps the subnetworks of that network (its name must
 match exactly). --proxy-only keeps the proxy-only subnetworks (purpose

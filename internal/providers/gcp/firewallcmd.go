@@ -53,8 +53,8 @@ func firewallListCmd(rt *app.Runtime) *cobra.Command {
 	var network string
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List the firewall rules of the project, or of one --network",
-		Long: `List the VPC firewall rules of the project, sorted by priority (lower numbers
+		Short: "List the firewall rules of the selected projects, or of one --network",
+		Long: `List the VPC firewall rules of the selected projects, each project's sorted by priority (lower numbers
 win; at the same priority a deny rule wins over an allow rule). Without
 --network the rules of every network are listed; --network keeps the rules
 of that network, matched by its exact name.`,
@@ -308,8 +308,9 @@ func firewallCreateCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create <name>",
 		Short: "Create a firewall rule (an existing rule of that name is an error)",
-		Long: `Create a VPC firewall rule. A rule of that name already in the project is
-exit code 1: use ensure to converge an existing rule, update to change it.
+		Long: `Create a VPC firewall rule in the default project of the account, or in the
+project of --project. A rule of that name already in the project is exit
+code 1: use ensure to converge an existing rule, update to change it.
 
 --allow (required, repeatable) is <protocol> or <protocol>:<ports> with the
 protocol tcp, udp, icmp or all; only tcp and udp take ports: numbers,

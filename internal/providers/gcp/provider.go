@@ -88,6 +88,25 @@ func (*provider) RecordTypes() []string {
 }
 
 var _ platform.RecordTyper = (*provider)(nil)
+var _ platform.OwnerHinter = (*provider)(nil)
+
+// OwnerHint says how to choose among several managed zones of one account
+// that hold the same DNS name: zones of different projects are told apart
+// by --project of the gcp dns commands, any zones by their id.
+func (*provider) OwnerHint(kind platform.ResourceType, ids []string) string {
+	if kind != platform.ResZone {
+		return ""
+	}
+	projects := map[string]bool{}
+	for _, id := range ids {
+		p, _ := splitZoneID(id)
+		projects[p] = true
+	}
+	if len(projects) > 1 {
+		return "the managed zones are in different projects: use `polyctl gcp dns ... --project <id>`, or `polyctl gcp dns ...` with the zone id <project>/<managed zone>, to choose"
+	}
+	return "the project holds several managed zones of this DNS name: use `polyctl gcp dns ...` with the zone id <project>/<managed zone> to choose"
+}
 
 func (*provider) ResourceTypes() []platform.ResourceType {
 	return []platform.ResourceType{platform.ResZone, platform.ResDNSRecord, platform.ResInstance, platform.ResLoadBalancer, platform.ResEIP, platform.ResCertificate}

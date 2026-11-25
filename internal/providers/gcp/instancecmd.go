@@ -760,8 +760,9 @@ func computeCreateCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create <name>",
 		Short: "Create a Compute Engine instance",
-		Long: `Create a Compute Engine instance named <name> in --zone, in the project of the
-selected profile (--profile, or the default GCP profile). An instance of that
+		Long: `Create a Compute Engine instance named <name> in --zone, in the default
+project of the selected profile's account (--profile, or the default GCP
+profile) or in the project of --project. An instance of that
 name in the zone is exit code 1: create is not ensure. The name must start
 with a lower-case letter (exit code 2 otherwise).
 

@@ -135,16 +135,42 @@ func scopeOf(c *client, region string, timeout time.Duration) certScope {
 	return certScope{c: c, region: region, timeout: timeout}
 }
 
-// Discover lists, for every proxy a forwarding rule serves, its
-// self-managed certificates. A proxy that uses a certificate map is
-// skipped; so is a Google-managed certificate (Google renews it; an
-// expired one is a warning, its domain validation failed) and one whose
-// domain or expiry cannot be told.
+// Discover lists, for every proxy a forwarding rule serves in the selected
+// projects of the account, its self-managed certificates. A proxy that
+// uses a certificate map is skipped; so is a Google-managed certificate
+// (Google renews it; an expired one is a warning, its domain validation
+// failed) and one whose domain or expiry cannot be told.
+//
+// A target is named "<project>/<scope>/<proxy>" and carries its project
+// in Attrs["project"], which PlanBatch reads. A selected project without
+// the Compute Engine API has no targets; any other failure of a project
+// fails the discovery, so that no certificate is left out unnoticed.
 func (d lbDeployer) Discover(ctx context.Context, acct *platform.DeployAccount, o platform.DeployOptions) ([]platform.DeployTarget, []platform.Change, error) {
 	c, err := deployClient(acct)
 	if err != nil {
 		return nil, nil, err
 	}
+	var targets []platform.DeployTarget
+	var skipped []platform.Change
+	err = c.forProjects(ctx, func(pc *client) error {
+		t, s, err := d.discoverProject(ctx, pc, acct, o)
+		targets, skipped = append(targets, t...), append(skipped, s...)
+		return err
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return targets, skipped, nil
+}
+
+// deployName is the name of a deploy target or resource of a project:
+// "<project>/<scope>/<name>".
+func deployName(c *client, s certScope, name string) string {
+	return c.project + "/" + s.scopeName() + "/" + name
+}
+
+// discoverProject is Discover for the client's project.
+func (d lbDeployer) discoverProject(ctx context.Context, c *client, acct *platform.DeployAccount, o platform.DeployOptions) ([]platform.DeployTarget, []platform.Change, error) {
 	found, err := c.discoverHTTPSTargets(ctx, o.Timeout)
 	if err != nil {
 		return nil, nil, err
@@ -164,9 +190,9 @@ func (d lbDeployer) Discover(ctx context.Context, acct *platform.DeployAccount, 
 		if err != nil {
 			return nil, nil, err
 		}
-		name := s.scopeName() + "/" + p.Name
+		name := deployName(c, s, p.Name)
 		res := platform.DeployResource(gcpDeployerID, acct.Profile, name)
-		attrs := map[string]string{"deployer": gcpDeployerID, "platform": string(platform.GCP), "profile": acct.Profile, "region": s.scopeName()}
+		attrs := map[string]string{"deployer": gcpDeployerID, "platform": string(platform.GCP), "profile": acct.Profile, "project": c.project, "region": s.scopeName()}
 		if p.CertificateMap != "" {
 			skipped = append(skipped, platform.Change{Resource: res, Action: platform.Skipped, Attrs: attrs,
 				Detail: "uses the certificate map " + lastSegment(p.CertificateMap) + "; not managed by polyctl"})
@@ -208,7 +234,7 @@ func (d lbDeployer) Discover(ctx context.Context, acct *platform.DeployAccount, 
 			}
 			targets = append(targets, platform.DeployTarget{Deployer: gcpDeployerID, Platform: platform.GCP, Profile: acct.Profile, Region: s.scopeName(),
 				Kind: "gcp-https-proxy", ID: sc.Name, Name: name, Group: name, CurrentCertID: sc.Name, CurrentDomains: f.Domains,
-				CurrentNotAfter: f.Expire, CurrentSerial: serial, Attrs: map[string]string{"proxy": p.Name, "fingerprint": f.Fingerprint, "key_family": family}})
+				CurrentNotAfter: f.Expire, CurrentSerial: serial, Attrs: map[string]string{"proxy": p.Name, "project": c.project, "fingerprint": f.Fingerprint, "key_family": family}})
 		}
 		// proxy_key_families are the key families of the other
 		// certificates of the proxy that cover every name of a target:
@@ -302,6 +328,9 @@ func (d lbDeployer) PlanBatch(ctx context.Context, acct *platform.DeployAccount,
 		return nil, err
 	}
 	first := items[0].Target
+	// The target names its project; one discovered before targets did is
+	// of the default project.
+	c = c.inProject(first.Attrs["project"])
 	s := scopeOf(c, first.Region, o.Timeout)
 	proxy := first.Attrs["proxy"]
 	p, err := s.getProxy(ctx, proxy)
@@ -333,7 +362,7 @@ func (d lbDeployer) PlanBatch(ctx context.Context, acct *platform.DeployAccount,
 		replaced = append(replaced, it)
 	}
 	for _, it := range kept {
-		steps = append(steps, platform.Step{Resource: platform.DeployResource(gcpDeployerID, acct.Profile, s.scopeName()+"/ssl-certificate/"+it.Target.ID),
+		steps = append(steps, platform.Step{Resource: platform.DeployResource(gcpDeployerID, acct.Profile, deployName(c, s, "ssl-certificate/"+it.Target.ID)),
 			Action: platform.Skipped, ID: it.Target.ID,
 			Desc: fmt.Sprintf("%s certificate %s of %s kept on %s beside the %s one: the store has no %s certificate of %s",
 				it.Target.Attrs["key_family"], it.Target.ID, it.Cert.Root, proxy, newFamily(it), it.Target.Attrs["key_family"], it.Cert.Root)})
@@ -353,8 +382,8 @@ func (d lbDeployer) PlanBatch(ctx context.Context, acct *platform.DeployAccount,
 		}
 		name, ok := newOf[root]
 		if !ok {
-			res := platform.DeployResource(gcpDeployerID, acct.Profile, s.scopeName()+"/ssl-certificate/")
-			attrs := map[string]string{"deployer": gcpDeployerID, "platform": string(platform.GCP), "profile": acct.Profile, "region": s.scopeName(), "domain": root}
+			res := platform.DeployResource(gcpDeployerID, acct.Profile, deployName(c, s, "ssl-certificate/"))
+			attrs := map[string]string{"deployer": gcpDeployerID, "platform": string(platform.GCP), "profile": acct.Profile, "project": c.project, "region": s.scopeName(), "domain": root}
 			if it.Cert.Pending {
 				name = deployCertName(root, time.Time{})
 				attrs["cert_name"] = name
@@ -431,7 +460,7 @@ func (d lbDeployer) PlanBatch(ctx context.Context, acct *platform.DeployAccount,
 		}})
 	for _, old := range olds {
 		name := old
-		steps = append(steps, platform.Step{Resource: platform.DeployResource(gcpDeployerID, acct.Profile, s.scopeName()+"/ssl-certificate/"+name),
+		steps = append(steps, platform.Step{Resource: platform.DeployResource(gcpDeployerID, acct.Profile, deployName(c, s, "ssl-certificate/"+name)),
 			Action: platform.Deleted, ID: s.certURL(name), Desc: "old, replaced on " + proxy,
 			Apply: func(ctx context.Context) (platform.Change, error) {
 				err := deleteRetry(ctx, s, name)
@@ -448,19 +477,33 @@ func (d lbDeployer) PlanBatch(ctx context.Context, acct *platform.DeployAccount,
 	return steps, nil
 }
 
-// Prune deletes the expired self-managed certificates of the project (of
-// --region when given) that no target HTTPS proxy uses.
+// Prune deletes the expired self-managed certificates of the selected
+// projects (of --region when given) that no target HTTPS proxy uses.
 func (d lbDeployer) Prune(ctx context.Context, acct *platform.DeployAccount, o platform.DeployOptions) ([]platform.Step, error) {
 	c, err := deployClient(acct)
 	if err != nil {
 		return nil, err
 	}
+	var steps []platform.Step
+	err = c.forProjects(ctx, func(pc *client) error {
+		s, err := d.pruneProject(ctx, pc, acct, o)
+		steps = append(steps, s...)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return steps, nil
+}
+
+// pruneProject is Prune for the client's project.
+func (d lbDeployer) pruneProject(ctx context.Context, c *client, acct *platform.DeployAccount, o platform.DeployOptions) ([]platform.Step, error) {
 	certs, unreachable, err := c.listAllCerts(ctx)
 	if err != nil {
 		return nil, err
 	}
 	if len(unreachable) > 0 {
-		o.Warnf("%s: the certificates of %s could not be listed", acct.Profile, strings.Join(unreachable, ", "))
+		o.Warnf("%s, project %s: the certificates of %s could not be listed", acct.Profile, c.project, strings.Join(unreachable, ", "))
 	}
 	users, err := c.proxyUsers(ctx)
 	if err != nil {
@@ -480,7 +523,7 @@ func (d lbDeployer) Prune(ctx context.Context, acct *platform.DeployAccount, o p
 		if f.Expire.IsZero() || now.Before(f.Expire) {
 			continue
 		}
-		res := platform.DeployResource(gcpDeployerID, acct.Profile, s.scopeName()+"/ssl-certificate/"+sc.Name)
+		res := platform.DeployResource(gcpDeployerID, acct.Profile, deployName(c, s, "ssl-certificate/"+sc.Name))
 		desc := fmt.Sprintf("cert=%s expired (%s)", sc.Name, f.Expire.Format("2006-01-02"))
 		if by := users[resourceKey(s.certURL(sc.Name))]; len(by) > 0 {
 			steps = append(steps, platform.Step{Resource: res, Action: platform.Skipped, ID: sc.Name, Desc: desc + "; still used by " + strings.Join(by, ", ")})

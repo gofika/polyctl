@@ -687,3 +687,40 @@ func TestProjectCommandsPick(t *testing.T) {
 		t.Errorf("new default asked %+v", a)
 	}
 }
+
+// Domain routing (the platform-neutral dns commands) finds a zone in any
+// selected project and reads its records there. The same DNS name in two
+// projects is a pick in the interactive flow and exit code 5 otherwise,
+// with a hint that names --project and the zone id.
+func TestDomainRoutingCoversSelectedProjects(t *testing.T) {
+	h, g := multiDNS(t)
+	h.nonInteractive()
+	g.addZone("p1", "one", "one.example", "public")
+	g.addZone("p2", "two", "two.example", "public")
+	g.addRRSet("p2", "two", &dns.ResourceRecordSet{Name: "www.two.example.", Type: "A", Ttl: 300, Rrdatas: []string{"192.0.2.2"}})
+	ctx := context.Background()
+	tg, err := h.rt.ResolveDomain(ctx, "www.two.example", platform.ResZone)
+	if err != nil || tg.ResourceID != "p2/two" || tg.Profile != "lab" {
+		t.Fatalf("target = %+v, %v; want the zone of p2", tg, err)
+	}
+	recs, _, err := h.rt.ZoneRecords(ctx, tg)
+	if err != nil || len(recs) != 1 || recs[0].Value != "192.0.2.2" || recs[0].ZoneID != "p2/two" {
+		t.Fatalf("records = %+v, %v", recs, err)
+	}
+
+	g.addZone("p1", "dup", "dup.example", "public")
+	g.addZone("p2", "dup", "dup.example", "public")
+	h.rt.Flags.Refresh = true
+	_, err = h.rt.ResolveDomain(ctx, "dup.example", platform.ResZone)
+	if exitClass(err) != "ambiguous" || !strings.Contains(err.Error(), "p1/dup") || !strings.Contains(err.Error(), "p2/dup") ||
+		!strings.Contains(err.Error(), "gcp dns ... --project <id>") || !strings.Contains(err.Error(), "<project>/<managed zone>") {
+		t.Fatalf("same DNS name in two projects = %v", err)
+	}
+	p := h.answer(prompttest.Label("p2/dup"))
+	h.rt.Flags.NonInteractive = false
+	tg, err = h.rt.ResolveDomain(ctx, "dup.example", platform.ResZone)
+	if err != nil || tg.ResourceID != "p2/dup" {
+		t.Errorf("interactive = %+v, %v", tg, err)
+	}
+	p.Done()
+}

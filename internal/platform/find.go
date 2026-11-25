@@ -213,19 +213,21 @@ func MatchedField(kind IPKind, rt ResourceType) string {
 
 // FindMatch is one resource found by `polyctl find`.
 type FindMatch struct {
-	Platform     ID           `json:"platform" yaml:"platform"`
-	Profile      string       `json:"profile" yaml:"profile"`
-	Type         ResourceType `json:"type" yaml:"type"`
-	ID           string       `json:"id" yaml:"id"`
-	Name         string       `json:"name" yaml:"name"`
-	Region       string       `json:"region" yaml:"region"`
-	Zone         string       `json:"zone,omitempty" yaml:"zone,omitempty"`
-	State        string       `json:"state" yaml:"state"`
-	MatchedField string       `json:"matched_field" yaml:"matched_field"`
-	InternalIPs  []string     `json:"internal_ips" yaml:"internal_ips"`
-	ExternalIPs  []string     `json:"external_ips" yaml:"external_ips"`
-	DNSNames     []string     `json:"dns_names,omitempty" yaml:"dns_names,omitempty"`
-	Network      string       `json:"network" yaml:"network"`
+	Platform ID           `json:"platform" yaml:"platform"`
+	Profile  string       `json:"profile" yaml:"profile"`
+	Type     ResourceType `json:"type" yaml:"type"`
+	ID       string       `json:"id" yaml:"id"`
+	Name     string       `json:"name" yaml:"name"`
+	// Project is the Google Cloud project of the resource.
+	Project      string   `json:"project,omitempty" yaml:"project,omitempty"`
+	Region       string   `json:"region" yaml:"region"`
+	Zone         string   `json:"zone,omitempty" yaml:"zone,omitempty"`
+	State        string   `json:"state" yaml:"state"`
+	MatchedField string   `json:"matched_field" yaml:"matched_field"`
+	InternalIPs  []string `json:"internal_ips" yaml:"internal_ips"`
+	ExternalIPs  []string `json:"external_ips" yaml:"external_ips"`
+	DNSNames     []string `json:"dns_names,omitempty" yaml:"dns_names,omitempty"`
+	Network      string   `json:"network" yaml:"network"`
 	// Subnet is the subnet (or vSwitch) of the matched address, as stored;
 	// --detail looks it up.
 	Subnet string `json:"subnet,omitempty" yaml:"subnet,omitempty"`
@@ -306,6 +308,15 @@ type MatchDescriber interface {
 // of a match. It returns "" when there is no reliable link.
 type ConsoleLinker interface {
 	ConsoleURL(meta map[string]string, m *FindMatch) string
+}
+
+// OwnerHinter is implemented by providers that can say how to choose among
+// several resources of one account that own the same domain (ids are their
+// resource ids): the hint of the ambiguity error of domain routing, which
+// otherwise only says that the account holds several of them. An empty
+// hint keeps that default.
+type OwnerHinter interface {
+	OwnerHint(kind ResourceType, ids []string) string
 }
 
 // DetailProvider is implemented by clients that can look up the network

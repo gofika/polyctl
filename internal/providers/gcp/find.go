@@ -409,14 +409,23 @@ func matchedIface(i Instance, m *platform.FindMatch) *NetIface {
 	return nil
 }
 
-// DescribeMatch fills a find match from the stored data.
-func (*provider) DescribeMatch(_ map[string]string, m *platform.FindMatch) error {
+// DescribeMatch fills a find match from the stored data. Its project is
+// the one the row carries, or the default project of the account for a
+// row stored before rows carried it.
+func (*provider) DescribeMatch(meta map[string]string, m *platform.FindMatch) error {
+	project := func(p string) string {
+		if p == "" {
+			return meta[metaProject]
+		}
+		return p
+	}
 	switch m.Type {
 	case platform.ResInstance:
 		var i Instance
 		if err := json.Unmarshal(m.Data, &i); err != nil {
 			return err
 		}
+		m.Project = project(i.Project)
 		s := i.ipSet()
 		m.Zone, m.Region, m.State = i.Zone, regionOf(i.Zone), i.Status
 		m.InternalIPs, m.ExternalIPs = s.Values(platform.IPInternal), s.Values(platform.IPExternal)
@@ -428,6 +437,7 @@ func (*provider) DescribeMatch(_ map[string]string, m *platform.FindMatch) error
 		if err := json.Unmarshal(m.Data, &f); err != nil {
 			return err
 		}
+		m.Project = project(f.Project)
 		m.Region = f.Region
 		if m.Region == "" {
 			m.Region = "global"
@@ -455,6 +465,7 @@ func (*provider) DescribeMatch(_ map[string]string, m *platform.FindMatch) error
 		if err := json.Unmarshal(m.Data, &a); err != nil {
 			return err
 		}
+		m.Project = project(a.Project)
 		m.Region, m.State = a.Region, a.Status
 		if m.Region == "" {
 			m.Region = "global"
@@ -486,7 +497,12 @@ const consoleBase = "https://console.cloud.google.com"
 // ConsoleURL returns the Cloud Console page of a match. A static address
 // links to the resource using it; one used by nothing has no page.
 func (*provider) ConsoleURL(meta map[string]string, m *platform.FindMatch) string {
-	project := meta["project"]
+	// The project of the match, set by DescribeMatch from its row; the
+	// default project of the account otherwise.
+	project := m.Project
+	if project == "" {
+		project = meta[metaProject]
+	}
 	if project == "" {
 		return ""
 	}
@@ -568,6 +584,8 @@ func (c *client) NetworkDetail(ctx context.Context, m *platform.FindMatch) (*pla
 	if n == nil || n.Subnetwork == "" || n.SubnetRegion == "" {
 		return nil, fmt.Errorf("%w: the instance has no subnetwork in the inventory (run polyctl find --refresh)", platform.ErrNotSupported)
 	}
+	// The subnetwork is read in the project of the instance.
+	c = c.inProject(c.projectOr(i.Project))
 	sn, err := c.compute.Subnetworks.Get(c.project, n.SubnetRegion, n.Subnetwork).Context(ctx).Do()
 	if err != nil {
 		return nil, computeErr(err)

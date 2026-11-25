@@ -151,8 +151,8 @@ func sslCertListCmd(rt *app.Runtime) *cobra.Command {
 	var expiring int
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List the SSL certificates of the project with their expiry and the proxies that use them",
-		Long: `List the SSL certificates of the project, read live: every region and the
+		Short: "List the SSL certificates of the selected projects with their expiry and the proxies that use them",
+		Long: `List the SSL certificates of the selected projects, read live: every region and the
 global scope by default, one region with --region, the global scope with
 --global. Each certificate shows its type (SELF_MANAGED or MANAGED), its
 domains, its expiry in UTC, the whole days left and the target HTTPS proxies

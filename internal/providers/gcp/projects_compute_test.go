@@ -1,12 +1,14 @@
 package gcp
 
 import (
+	"encoding/json"
 	"strconv"
 	"strings"
 	"testing"
 
 	"google.golang.org/api/compute/v1"
 
+	"github.com/gofika/polyctl/internal/cert"
 	"github.com/gofika/polyctl/internal/platform"
 	"github.com/gofika/polyctl/internal/prompt/prompttest"
 )
@@ -414,5 +416,116 @@ func TestListsSkipProjectWithoutTheAPI(t *testing.T) {
 	// Pinned to it, the answer is the error it is.
 	if err := h.run("compute", "firewall", "list", "--project", "p2"); exitClass(err) != "auth" {
 		t.Errorf("list --project p2 = %v", err)
+	}
+}
+
+// cert deploy covers every selected project: a due certificate of a proxy
+// in the second project is replaced there, and its rows name the project.
+func TestCertDeployCoversSelectedProjects(t *testing.T) {
+	d := newGCPDeploy(t)
+	d.h.selectProjects("proj", "proj", "p2")
+	c, err := openProfile(t.Context(), d.h.rt, "lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.c = c
+	g := d.h.gce
+	due := newPair(t, []string{"example.com", "*.example.com"}, 20)
+	d.h.addCertIn("p2", "us-central1", "example-com-old", due.chain)
+	g.mu.Lock()
+	g.lb().httpsProxies["p2/us-central1/proxy-web"] = &compute.TargetHttpsProxy{Name: "proxy-web", Region: apiBase + "projects/p2/regions/us-central1",
+		UrlMap: selfLink("p2", "us-central1", "urlMaps", "lb-web"), SelfLink: selfLink("p2", "us-central1", "targetHttpsProxies", "proxy-web"),
+		SslCertificates: []string{selfLink("p2", "us-central1", "sslCertificates", "example-com-old")}}
+	if g.forwardingRules == nil {
+		g.forwardingRules = map[string][]*compute.ForwardingRule{}
+	}
+	g.forwardingRules["p2"] = append(g.forwardingRules["p2"], &compute.ForwardingRule{Name: "fr-web", IPAddress: "34.1.2.3", IPProtocol: "TCP", PortRange: "443",
+		LoadBalancingScheme: "EXTERNAL_MANAGED", Region: apiBase + "projects/p2/regions/us-central1",
+		Target: selfLink("p2", "us-central1", "targetHttpsProxies", "proxy-web"), SelfLink: selfLink("p2", "us-central1", "forwardingRules", "fr-web")})
+	g.mu.Unlock()
+	d.bundle("example.com", 90)
+
+	rep, err := d.run(cert.DeployOptions{})
+	if err != nil {
+		t.Fatalf("deploy: %v\n%s", err, strings.Join(reportRows(rep), "\n"))
+	}
+	g.mu.Lock()
+	p := g.lb().httpsProxies["p2/us-central1/proxy-web"]
+	_, old := g.lb().certs["p2/us-central1/example-com-old"]
+	_, created := g.lb().certs["p2/us-central1/cert-example-com-20260401"]
+	_, inDefault := g.lb().certs["proj/us-central1/cert-example-com-20260401"]
+	g.mu.Unlock()
+	if len(p.SslCertificates) != 1 || lastSegment(p.SslCertificates[0]) != "cert-example-com-20260401" || old || !created || inDefault {
+		t.Errorf("proxy of p2 = %v (old %v, created in p2 %v, in proj %v)", p.SslCertificates, old, created, inDefault)
+	}
+	rows := reportRows(rep)
+	for _, w := range []string{
+		"gcp-lb/lab/p2/us-central1/ssl-certificate/cert-example-com-20260401 created regional, us-central1, expires 2026-04-01",
+		"gcp-lb/lab/p2/us-central1/proxy-web updated example-com-old -> cert-example-com-20260401",
+	} {
+		found := false
+		for _, r := range rows {
+			found = found || r == w
+		}
+		if !found {
+			t.Errorf("missing row %q in\n%s", w, strings.Join(rows, "\n"))
+		}
+	}
+}
+
+// find reports the project of a match and links its console page in that
+// project, not in the default project of the account; a row stored before
+// rows carried their project is of the default one.
+func TestFindMatchCarriesItsProject(t *testing.T) {
+	p := &provider{}
+	meta := map[string]string{"project": "proj", "projects": "proj,p2"}
+	match := func(rt platform.ResourceType, data any) *platform.FindMatch {
+		t.Helper()
+		b, err := json.Marshal(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := &platform.FindMatch{Type: rt, Name: "web", Data: b}
+		if err := p.DescribeMatch(meta, m); err != nil {
+			t.Fatal(err)
+		}
+		m.URL = p.ConsoleURL(meta, m)
+		return m
+	}
+	m := match(platform.ResInstance, Instance{Name: "web", ID: "7", Project: "p2", Zone: "us-central1-a"})
+	if m.Project != "p2" || !strings.HasSuffix(m.URL, "/instances/web?project=p2") {
+		t.Errorf("instance of p2: project %q, url %s", m.Project, m.URL)
+	}
+	m = match(platform.ResInstance, Instance{Name: "web", ID: "7", Zone: "us-central1-a"})
+	if m.Project != "proj" || !strings.HasSuffix(m.URL, "?project=proj") {
+		t.Errorf("row without a project: project %q, url %s", m.Project, m.URL)
+	}
+	m = match(platform.ResLoadBalancer, ForwardingRule{Name: "web", Project: "p2", Region: "us-central1", IPAddress: "34.1.1.1"})
+	if m.Project != "p2" || !strings.HasSuffix(m.URL, "?project=p2") {
+		t.Errorf("forwarding rule of p2: project %q, url %s", m.Project, m.URL)
+	}
+	m = match(platform.ResEIP, StaticAddress{Name: "web", Project: "p2", Address: "34.1.1.1", Status: "IN_USE",
+		Users: []string{apiBase + "projects/p2/zones/us-central1-a/instances/web"}})
+	if m.Project != "p2" || !strings.HasSuffix(m.URL, "?project=p2") {
+		t.Errorf("address of p2: project %q, url %s", m.Project, m.URL)
+	}
+}
+
+// find --detail reads the subnetwork in the project of the instance.
+func TestNetworkDetailReadsTheInstancesProject(t *testing.T) {
+	h := twoProjects(t)
+	h.gce.mu.Lock()
+	h.gce.subnets["p2/us-central1"] = []*compute.Subnetwork{{Name: "default", Network: apiBase + "projects/p2/global/networks/default",
+		Region: apiBase + "projects/p2/regions/us-central1", IpCidrRange: "10.99.0.0/24", GatewayAddress: "10.99.0.1"}}
+	h.gce.mu.Unlock()
+	in := h.gce.addInstance("p2", "us-central1-a", "web", "10.99.0.5", "")
+	c, err := openAccount(t.Context(), h.rt, "lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(c.inProject("p2").instanceOf(in))
+	d, err := c.NetworkDetail(t.Context(), &platform.FindMatch{Type: platform.ResInstance, Data: b, Matched: "10.99.0.5"})
+	if err != nil || d.SubnetCIDR != "10.99.0.0/24" {
+		t.Errorf("detail = %+v, %v; want the subnetwork of p2", d, err)
 	}
 }
