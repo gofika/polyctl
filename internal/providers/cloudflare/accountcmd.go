@@ -620,7 +620,13 @@ func (b *accountBook) pick(ctx context.Context, newDefault string) error {
 func (b *accountBook) apply(ctx context.Context, def string, disabled []string) error {
 	off, on := accountDiff(b.cur, def, disabled)
 	acc := account{ID: def}
-	if def != "" {
+	switch {
+	case def == "":
+	case def == b.cur.AccountID:
+		// The default account stays: its name is not worth a request of
+		// a command that changes the local configuration only.
+		acc.Name = b.localName(ctx, def)
+	default:
 		acc.Name = b.name(ctx, def)
 	}
 	if err := saveAccounts(ctx, b.rt, b.profile, acc, disabled); err != nil {

@@ -385,6 +385,27 @@ func TestAccountsOfCredentialsThatCannotListThem(t *testing.T) {
 	}
 }
 
+// Enabling or disabling an account by its id asks Cloudflare nothing for
+// the name of a default account that does not change, also when the login
+// stored none and the credentials cannot list their accounts.
+func TestAccountEnableAsksNothingForTheDefaultName(t *testing.T) {
+	e := newR2Env(t)
+	e.loginAll()
+	e.f.accountsStatus = http.StatusForbidden
+	for _, args := range [][]string{{"use", "acc8"}, {"disable", "acc2"}} {
+		if code, _, stderr := e.run(append([]string{"cloudflare", "account", "--profile", "all"}, args...)...); code != cli.ExitOK {
+			t.Fatalf("account %v: exit %d, %s", args, code, stderr)
+		}
+	}
+	if e.stored("all") != "acc8||acc2" {
+		t.Fatalf("stored %s", e.stored("all"))
+	}
+	e.f.reset()
+	if code, _, stderr := e.run("cloudflare", "account", "enable", "acc2", "--profile", "all"); code != cli.ExitOK || e.stored("all") != "acc8||" || len(e.f.requests) != 0 {
+		t.Errorf("enable: exit %d, %s, requests %v, %s", code, e.stored("all"), e.f.requests, stderr)
+	}
+}
+
 // Credentials that see no account at all (no Account:Read and no zone)
 // take an account id as it is, with a note; a name cannot be looked up
 // (exit code 2), and nothing can be offered on a terminal.
