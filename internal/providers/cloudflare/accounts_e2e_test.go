@@ -834,6 +834,42 @@ func TestZoneCreateInADisabledAccount(t *testing.T) {
 	}
 }
 
+// The status line of r2 bucket list counts the accounts that were read,
+// also the enabled ones that hold no bucket. The inventory does not tell
+// them, so a listing it answered counts the buckets alone.
+func TestR2BucketListCountsAccountsWithoutABucket(t *testing.T) {
+	e := newR2Env(t)
+	e.f.accounts["acc1"].buckets = []string{"assets"}
+	e.loginBoth("acc1")
+	list := func(args ...string) string {
+		t.Helper()
+		code, stdout, stderr := e.run(append([]string{"cloudflare", "r2", "bucket", "list", "--profile", "both"}, args...)...)
+		if code != cli.ExitOK {
+			t.Fatalf("bucket list %v: exit %d, %s%s", args, code, stdout, stderr)
+		}
+		return stderr
+	}
+	if got := list(); !strings.Contains(got, "1 bucket(s) in 2 account(s)") || e.f.count("GET /accounts/acc2/r2/buckets?") != 1 {
+		t.Errorf("first listing: %s, requests %v", got, e.f.requests)
+	}
+	e.f.reset()
+	if got := list(); !strings.Contains(got, "1 bucket(s) (local inventory)") || strings.Contains(got, "account(s)") || len(e.f.requests) != 0 {
+		t.Errorf("cached listing: %s, requests %v", got, e.f.requests)
+	}
+	if got := list("--account", "acc2"); !strings.Contains(got, "0 bucket(s) in 1 account(s)") {
+		t.Errorf("--account: %s", got)
+	}
+	if got := list("--jurisdiction", "eu"); !strings.Contains(got, "in 2 account(s)") {
+		t.Errorf("--jurisdiction: %s", got)
+	}
+	// A login without a default account and without a bucket.
+	e.f.accounts["acc1"].buckets = nil
+	e.unbind("both")
+	if got := list("--refresh"); !strings.Contains(got, "0 bucket(s) in 2 account(s)") {
+		t.Errorf("no default account, no bucket: %s", got)
+	}
+}
+
 // The R2 buckets of a login with several accounts: the listing shows those
 // of every enabled account with their account, --account narrows it, and
 // a disabled account is read live and not cached.
@@ -874,7 +910,7 @@ func TestR2BucketListSeveralAccounts(t *testing.T) {
 	// A profile of one account says nothing of accounts; an account one
 	// profile listed is not listed again by another.
 	code, stdout, stderr = e.run("cloudflare", "r2", "bucket", "list")
-	if code != cli.ExitOK || strings.Contains(stdout, "ACCOUNT") || strings.Contains(stdout, "both") || !strings.Contains(stderr, "4 bucket(s) in 2 account(s)") {
+	if code != cli.ExitOK || strings.Contains(stdout, "ACCOUNT") || strings.Contains(stdout, "both") || !strings.Contains(stderr, "4 bucket(s) (local inventory)") {
 		t.Errorf("every profile: exit %d, %s%s", code, stdout, stderr)
 	}
 	// Another jurisdiction is read live in every enabled account.

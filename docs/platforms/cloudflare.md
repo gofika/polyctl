@@ -274,7 +274,7 @@ polyctl cf r2 domain detach assets cdn.example.com --yes
 
 **Commands**
 
-- `bucket list`: profile, account (when a profile lists several), name, creation date; `--wide` adds location, storage class and jurisdiction (one request per bucket).
+- `bucket list`: profile, account (when a profile lists several), name, creation date; `--wide` adds location, storage class and jurisdiction (one request per bucket). stderr says `<n> bucket(s) in <m> account(s)`, the accounts being the ones that were read, also those without a bucket; a listing the local inventory answered says `<n> bucket(s) (local inventory)`, as the inventory holds the buckets and not the accounts.
 - `domain list` / `get`: enabled state, zone, minimum TLS (`-` when never set), ownership and SSL status (`pending` / `initializing` right after binding is normal). A domain not bound to the bucket is exit code 4.
 - `domain attach`: binds `<domain>` (no wildcards). The zone is `--zone` (name or id) or the longest zone name the domain ends in, within the bucket's account; it must be active. Cloudflare creates the proxied CNAME `<domain> -> public.r2.dev`. A domain already bound (to any bucket), or an existing A, AAAA or CNAME record of that name, is exit code 1 (a TXT record is fine). `--disabled` binds it disabled; `--min-tls` sets the minimum TLS version (not set by default).
 - `domain update`: changes `--enabled` / `--enabled=false` and/or `--min-tls` (at least one).

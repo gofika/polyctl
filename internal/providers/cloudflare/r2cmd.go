@@ -526,9 +526,11 @@ command fails only when no account could be read.`,
 			owner := map[string]string{} // account -> the profile that lists it
 			clients := map[string]*Client{}
 			var failures []error
-			read, cachedSets := 0, 0
+			// counted says every scope told the accounts it read: the
+			// inventory does not, it holds the buckets alone.
+			read, cachedSets, counted := 0, 0, true
 			for _, sc := range scopes {
-				list, cached, err := scopeBuckets(ctx, rt, sc, *jur)
+				list, accounts, cached, err := scopeBuckets(ctx, rt, sc, *jur)
 				if cached {
 					cachedSets++
 				}
@@ -544,17 +546,17 @@ command fails only when no account could be read.`,
 					failures = append(failures, err)
 					continue
 				}
-				// The accounts the profile answered for: the account of
-				// --account, else its default account and those of its
-				// buckets.
-				var covered []string
-				switch {
-				case sc.pin != "":
-					covered = []string{sc.pin}
-				case sc.def != "":
-					covered = []string{sc.def}
-				}
-				if sc.pin == "" {
+				// The accounts the profile answered for: the ones it read.
+				// The inventory names those of its buckets and the default
+				// account only: an enabled account without a bucket is not
+				// told from one that was never read, so the accounts are
+				// not counted then.
+				covered := accounts
+				if covered == nil {
+					counted = false
+					if sc.def != "" {
+						covered = []string{sc.def}
+					}
 					for _, row := range list {
 						if !slices.Contains(covered, row.AccountID) {
 							covered = append(covered, row.AccountID)
@@ -623,7 +625,11 @@ command fails only when no account could be read.`,
 			if cachedSets > 0 {
 				note = " (local inventory)"
 			}
-			rt.Infof("%d bucket(s) in %d account(s)%s", len(rows), read, note)
+			if counted {
+				rt.Infof("%d bucket(s) in %d account(s)%s", len(rows), read, note)
+			} else {
+				rt.Infof("%d bucket(s)%s", len(rows), note)
+			}
 			return rt.Render(rows, func() output.Grid {
 				g := output.Grid{Headers: []string{"PROFILE"}, Empty: "no buckets"}
 				if several {
@@ -654,26 +660,29 @@ command fails only when no account could be read.`,
 
 // scopeBuckets lists the buckets of a scope: through the inventory in the
 // default jurisdiction, live in another one and for an account that is
-// disabled for the login. cached says the inventory answered.
-func scopeBuckets(ctx context.Context, rt *app.Runtime, sc acctScope, jurisdiction string) ([]r2BucketRow, bool, error) {
+// disabled for the login. accounts are the accounts that were read: the
+// one of --account, or the enabled ones the listing asked; nil when the
+// inventory answered for the enabled accounts, which it does not name.
+// cached says the inventory answered.
+func scopeBuckets(ctx context.Context, rt *app.Runtime, sc acctScope, jurisdiction string) (list []r2BucketRow, accounts []string, cached bool, err error) {
 	if jurisdiction == "" && !sc.live {
-		list, cached, err := cachedBuckets(ctx, rt, sc)
+		list, accounts, cached, err = cachedBuckets(ctx, rt, sc)
 		if err != nil || len(list) > 0 || sc.pin == "" || sc.pin == sc.def || rt.Flags.Offline {
-			return list, cached, err
+			return list, accounts, cached, err
 		}
 		// The inventory holds no bucket of the account of --account. It
 		// may hold none because the sync does not reach the account
 		// (credentials that cannot list their accounts sync the default
 		// one alone): the account is asked.
 	}
-	list, err := liveBuckets(ctx, rt, sc, jurisdiction)
-	return list, false, err
+	list, accounts, err = liveBuckets(ctx, rt, sc, jurisdiction)
+	return list, accounts, false, err
 }
 
 // cachedBuckets serves the buckets of the accounts of a scope (default
 // jurisdiction) through the inventory, which holds those of every enabled
-// account of the profile.
-func cachedBuckets(ctx context.Context, rt *app.Runtime, sc acctScope) ([]r2BucketRow, bool, error) {
+// account of the profile. accounts is as scopeBuckets says.
+func cachedBuckets(ctx context.Context, rt *app.Runtime, sc acctScope) (list []r2BucketRow, accounts []string, cached bool, err error) {
 	set := inventory.Set{Platform: platform.Cloudflare, Profile: sc.profile, Type: platform.ResR2Bucket}
 	res, cached, err := rt.EnsureSet(ctx, set, func(ctx context.Context) ([]platform.Resource, error) {
 		c, err := openProfile(ctx, rt, sc.profile)
@@ -685,16 +694,24 @@ func cachedBuckets(ctx context.Context, rt *app.Runtime, sc acctScope) ([]r2Buck
 			// The account of a login without one is known by now.
 			err = r2Err(err, newR2Acct(c, acctScope{profile: sc.profile, def: sc.def}, nonEmpty(c.api.accountID, c.r2AccountID), "", false), "")
 		}
+		// The listing asked for the enabled accounts: they are remembered
+		// by the client, so this is no request.
+		if ids, idErr := c.enabledAccounts(ctx); idErr == nil {
+			accounts = ids
+		}
 		return out, err
 	})
 	if err != nil {
-		return nil, cached, err
+		return nil, nil, cached, err
+	}
+	if sc.pin != "" {
+		accounts = []string{sc.pin}
 	}
 	out := make([]r2BucketRow, 0, len(res))
 	for _, r := range res {
 		var row r2BucketRow
 		if err := r.Decode(&row); err != nil {
-			return nil, cached, fmt.Errorf("decode cached bucket %s: %w", r.ID, err)
+			return nil, nil, cached, fmt.Errorf("decode cached bucket %s: %w", r.ID, err)
 		}
 		row.Profile = sc.profile
 		row.AccountID = bucketRowAccount(r, row)
@@ -703,25 +720,27 @@ func cachedBuckets(ctx context.Context, rt *app.Runtime, sc acctScope) ([]r2Buck
 		}
 		out = append(out, row)
 	}
-	return out, cached, nil
+	return out, accounts, cached, nil
 }
 
 // liveBuckets reads the buckets of the accounts of a scope in a
-// jurisdiction. Of several accounts, one that cannot be used for R2 is
-// left out; when none can, that is the answer.
-func liveBuckets(ctx context.Context, rt *app.Runtime, sc acctScope, jurisdiction string) ([]r2BucketRow, error) {
+// jurisdiction, and tells those accounts. Of several accounts, one that
+// cannot be used for R2 is left out; when none can, that is the answer.
+func liveBuckets(ctx context.Context, rt *app.Runtime, sc acctScope, jurisdiction string) ([]r2BucketRow, []string, error) {
 	accts, err := openR2Accounts(ctx, rt, sc, jurisdiction)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	out := []r2BucketRow{}
+	ids := make([]string, 0, len(accts))
 	var unusable []error
 	for _, a := range accts {
+		ids = append(ids, a.account)
 		buckets, err := a.api.listBuckets(ctx, a.account, "")
 		if err != nil {
 			err = r2Err(err, a, "")
 			if len(accts) == 1 || skipReason(err) == "" {
-				return nil, err
+				return nil, nil, err
 			}
 			rt.Verbosef("cloudflare/%s account %s: skipped: %v", a.profile, a.account, err)
 			unusable = append(unusable, err)
@@ -732,9 +751,9 @@ func liveBuckets(ctx context.Context, rt *app.Runtime, sc acctScope, jurisdictio
 		}
 	}
 	if len(unusable) == len(accts) && len(unusable) > 0 {
-		return nil, errors.Join(unusable...)
+		return nil, nil, errors.Join(unusable...)
 	}
-	return out, nil
+	return out, ids, nil
 }
 
 // --- domain list / get -------------------------------------------------------

@@ -204,7 +204,7 @@ func bucketArgs(ctx context.Context, rt *app.Runtime, args []string) ([]string, 
 	accounts := map[string][]string{} // profile -> the accounts of its buckets
 	names := map[string]int{}
 	for _, sc := range scopes {
-		rows, _, err := scopeBuckets(ctx, rt, sc, "")
+		rows, _, _, err := scopeBuckets(ctx, rt, sc, "")
 		if err != nil {
 			rt.Infof("warning: buckets of cloudflare/%s: %v", sc.profile, err)
 			continue
