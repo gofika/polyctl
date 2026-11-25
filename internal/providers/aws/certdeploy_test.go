@@ -173,6 +173,48 @@ func TestACMDeployerKeyAlgorithmChangeAndDryRun(t *testing.T) {
 	}
 }
 
+// After a renewal, the certificate an earlier run imported with the new
+// key type still holds the old serial. Whichever of the old certificate
+// and its replacement is handled first, the replacement is re-imported in
+// place and no further certificate is imported.
+func TestACMDeployerReplacementIndependentOfOrder(t *testing.T) {
+	for _, oldFirst := range []bool{true, false} {
+		t.Run(fmt.Sprint("oldFirst=", oldFirst), func(t *testing.T) {
+			d := newACMDeploy(t)
+			addOld := func() *fakeCert {
+				return d.h.addCert(&fakeCert{region: "us-east-1", domain: "example.com", typ: acmImported, status: acmIssued, keyAlg: "RSA_2048",
+					notAfter: at(3), serial: "0b:02", inUseBy: []string{"arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/web/1"}})
+			}
+			addNew := func() *fakeCert {
+				return d.h.addCert(&fakeCert{region: "us-east-1", domain: "example.com", names: []string{"example.com", "*.example.com"}, typ: acmImported,
+					status: acmIssued, notAfter: at(4), serial: "0c:01", tags: map[string]string{"polyctl:domain": "example.com"}})
+			}
+			var old, repl *fakeCert
+			if oldFirst {
+				old, repl = addOld(), addNew()
+			} else {
+				repl, old = addNew(), addOld()
+			}
+			rep, err := d.run(cert.DeployOptions{}, "us-east-1")
+			if err != nil {
+				t.Fatalf("deploy: %v %v", err, acmRows(rep))
+			}
+			s := d.h.acm()
+			if len(s.certs) != 2 || len(s.imports) != 1 || s.imports[0].CertificateArn == nil || *s.imports[0].CertificateArn != repl.arn {
+				t.Fatalf("certs=%d imports=%+v", len(s.certs), s.imports)
+			}
+			if platform.SerialKey(repl.serial) != platform.SerialKey(d.bundle.Serial) || old.serial != "0b:02" {
+				t.Errorf("serials: replacement %s, old %s", repl.serial, old.serial)
+			}
+			if !slices.ContainsFunc(acmRows(rep), func(r string) bool {
+				return strings.HasPrefix(r, "aws-acm/lab/us-east-1/"+old.arn+" skipped") && strings.Contains(r, repl.arn)
+			}) {
+				t.Errorf("rows = %v", acmRows(rep))
+			}
+		})
+	}
+}
+
 func TestACMDeployerRefusedReimportImportsOnce(t *testing.T) {
 	d := newACMDeploy(t)
 	old := d.h.addCert(&fakeCert{region: "us-east-1", domain: "example.com", typ: acmImported, status: acmIssued, notAfter: at(3), serial: "0b:02"})

@@ -160,9 +160,15 @@ func (d acmDeployer) Plan(ctx context.Context, acct *platform.DeployAccount, t p
 	}
 	// replaced is the change of a target whose certificate an earlier run
 	// imported as a new certificate already: it is not imported again.
-	replaced := func(arn, why string) platform.Change {
+	// pending: that certificate holds an older serial and is re-imported
+	// in place as a target of its own.
+	replaced := func(arn, why string, pending bool) platform.Change {
 		detail := fmt.Sprintf("%s; the certificate (serial %s) is imported as %s already: update the load balancers and CloudFront distributions that use %s, then delete it",
 			why, cert.Serial, arn, t.ID)
+		if pending {
+			detail = fmt.Sprintf("%s; %s, imported by an earlier run with the new key type, replaces it (cert deploy re-imports serial %s into it when it is due): update the load balancers and CloudFront distributions that use %s, then delete it",
+				why, arn, cert.Serial, t.ID)
+		}
 		if t.Attrs["in_use_by"] != "" {
 			o.Warnf("%s: %s", acct.Profile, detail)
 		}
@@ -170,12 +176,12 @@ func (d acmDeployer) Plan(ctx context.Context, acct *platform.DeployAccount, t p
 	}
 	if have := t.Attrs["key_algorithm"]; have != "" && have != alg {
 		why := fmt.Sprintf("ACM cannot change the key algorithm of %s (%s, the new certificate has %s)", t.ID, have, alg)
-		arn, err := c.importedWithSerial(ctx, t.Region, cert, t.ID)
+		arn, pending, err := c.replacementOf(ctx, t.Region, cert, alg, t.ID)
 		if err != nil {
 			return nil, err
 		}
 		if arn != "" {
-			ch := replaced(arn, why)
+			ch := replaced(arn, why, pending)
 			return []platform.Step{{Resource: res, Action: platform.Skipped, ID: t.ID, Desc: ch.Detail}}, nil
 		}
 		return []platform.Step{{Resource: res, Action: platform.Updated, ID: t.ID, Desc: "import as a new certificate (" + desc + "): the ARN changes",
@@ -192,7 +198,7 @@ func (d acmDeployer) Plan(ctx context.Context, acct *platform.DeployAccount, t p
 					return platform.Change{}, err
 				}
 				if arn != "" {
-					return replaced(arn, why), nil
+					return replaced(arn, why, false), nil
 				}
 				return importNew(ctx, why)
 			}
@@ -211,11 +217,24 @@ func (d acmDeployer) Plan(ctx context.Context, acct *platform.DeployAccount, t p
 // it as a new certificate), or "". Only certificates whose domain cert
 // covers are read.
 func (c *client) importedWithSerial(ctx context.Context, region string, cert *platform.DeployCert, except string) (string, error) {
+	arn, _, err := c.replacementOf(ctx, region, cert, "", except)
+	return arn, err
+}
+
+// replacementOf returns the certificate that replaces target except,
+// whose key type ACM cannot change: another imported certificate of the
+// region that holds the serial number of cert, or else, when alg is not
+// "", (pending) an unexpired one of key algorithm alg whose names cert
+// covers. Such a certificate is a target of the same deploy run and is re-imported in
+// place, whether it is handled before or after except: the new key type
+// is imported as a new certificate once, not again after every renewal.
+func (c *client) replacementOf(ctx context.Context, region string, cert *platform.DeployCert, alg, except string) (string, bool, error) {
 	certs, err := c.ListCertificates(ctx, platform.CertificateFilter{Region: region, KeyTypes: acmSyncKeyTypes})
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	want := platform.SerialKey(cert.Serial)
+	pending := ""
 	for _, s := range certs {
 		if s.Type != acmImported || s.ID == except {
 			continue
@@ -228,13 +247,29 @@ func (c *client) importedWithSerial(ctx context.Context, region string, cert *pl
 			continue
 		}
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
 		if platform.SerialKey(full.Serial) == want {
-			return s.ID, nil
+			return s.ID, false, nil
+		}
+		if pending == "" && alg != "" && full.Status != acmExpired && normalizeKeyAlgorithm(full.KeyAlgorithm) == alg && coversAll(cert.Names, full) {
+			pending = s.ID
 		}
 	}
-	return "", nil
+	return pending, pending != "", nil
+}
+
+// coversAll reports whether names cover every name of certificate e.
+func coversAll(names []string, e *platform.Certificate) bool {
+	if len(names) == 0 {
+		return false
+	}
+	for _, n := range append([]string{e.Domain}, e.Names...) {
+		if n != "" && !platform.CertCovers(names, n) {
+			return false
+		}
+	}
+	return true
 }
 
 // Prune deletes the expired imported certificates of the regions that
