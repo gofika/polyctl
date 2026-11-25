@@ -1538,6 +1538,35 @@ func TestCopiedConfigDirWithAnEarlierMarker(t *testing.T) {
 	}
 }
 
+// An earlier release gave the default directory, reached by another letter
+// case, a service of its own and marked it: the default directory now uses
+// the shared service and copies the entries it lacks from that one.
+func TestDefaultConfigDirMarkedByAnEarlierRelease(t *testing.T) {
+	keyringDirSetup(t)
+	def, err := config.DefaultDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeKeyringDirConfig(t, def)
+	upper := filepath.Join(filepath.Dir(filepath.Dir(def)), ".CONFIG", "polyctl")
+	if _, err := os.Stat(upper); err != nil {
+		t.Skip("case-sensitive file system")
+	}
+	old := creds.ServiceFor(upper, "polyctl-was-not-the-default")
+	if err := (creds.Keyring{Service: old}).Set("p/namecom", map[string]string{"token": "t"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(def, app.KeyringMarker), []byte(old+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if p, err := keyringDirRun(t, upper); err != nil || p.Secret["token"] != "t" {
+		t.Fatalf("LoadProfile = %+v, %v", p, err)
+	}
+	if got, err := (creds.Keyring{}).Get("p/namecom"); err != nil || got["token"] != "t" {
+		t.Errorf("shared service entry = %v, %v", got, err)
+	}
+}
+
 // keyringDirStore opens the credential store of the configuration
 // directory dir.
 func keyringDirStore(t *testing.T, dir string) *creds.Multi {

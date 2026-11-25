@@ -491,6 +491,14 @@ func sourcesAfter(former ...string) []string {
 func (rt *Runtime) keyringFor(dir, def string) (kr creds.Keyring, adopt, record bool, next keyringMarker) {
 	svc := creds.ServiceFor(dir, def)
 	if svc == creds.Service {
+		if m, ok := readKeyringMarker(dir); ok {
+			// An earlier release reached the default directory by another
+			// spelling (another letter case) and gave it a service of its
+			// own: the entries the shared service lacks are copied from
+			// it, and a data key there still opens its rows. The marker
+			// stays as the record of that service.
+			return creds.Keyring{Sources: append([]string{m.service}, m.former...)}, true, false, keyringMarker{}
+		}
 		return creds.Keyring{}, false, false, keyringMarker{}
 	}
 	here := creds.CanonicalDir(dir)
@@ -534,7 +542,7 @@ func (rt *Runtime) keyringFor(dir, def string) (kr creds.Keyring, adopt, record 
 // later run while the keyring is out of reach or a copy fails.
 func (rt *Runtime) adoptSharedKeyring(cfg *config.Config, st *creds.Multi, dir string, next keyringMarker) {
 	kr, ok := st.Keyring()
-	if !ok || kr.Shared() {
+	if !ok || (kr.Shared() && len(kr.Sources) == 0) {
 		return
 	}
 	var keys []string
@@ -562,7 +570,9 @@ func (rt *Runtime) adoptSharedKeyring(cfg *config.Config, st *creds.Multi, dir s
 		rt.Verbosef("copy keyring entries from an earlier service: %v", err)
 		return
 	}
-	rt.writeKeyringMarker(dir, next)
+	if next.service != "" {
+		rt.writeKeyringMarker(dir, next)
+	}
 }
 
 // migrateSecrets moves the secrets of accounts converted from the legacy
