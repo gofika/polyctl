@@ -46,6 +46,12 @@ type ResourceLookup struct {
 	// Candidate describes one of several rows found, in the error and in
 	// the question (nil: "platform/profile (id)").
 	Candidate func(inventory.Resource) string
+	// SyncDue syncs the candidate accounts whose set of Kind is missing or
+	// expired before the lookup answers, also when it found the resource:
+	// for a lookup by a name that an account whose set is due may hold as
+	// well (a Cloudflare login whose selection of accounts changed), where
+	// answering from the old rows would hide the ambiguity.
+	SyncDue bool
 }
 
 // ResolveResourceWith is ResolveResource with the options of l.
@@ -94,7 +100,7 @@ func (rt *Runtime) ResolveResourceWith(ctx context.Context, l ResourceLookup) (i
 	if err != nil {
 		return inventory.Resource{}, err
 	}
-	if len(found) == 0 && !rt.Flags.Offline {
+	if (len(found) == 0 || l.SyncDue) && !rt.Flags.Offline {
 		var stale []config.AccountRef
 		for _, a := range accounts {
 			st, err := db.GetState(ctx, inventory.Set{Platform: a.Platform, Profile: a.Profile, Type: kind})

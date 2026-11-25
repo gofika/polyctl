@@ -195,7 +195,9 @@ func routeZone(ctx context.Context, rt *app.Runtime, ref string) (*Client, inven
 		}
 	}
 	cand := func(r inventory.Resource) zoneCand { return candOfZone(r.Profile, rowZone(r)) }
-	lookup := app.ResourceLookup{Platform: platform.Cloudflare, Kind: platform.ResZone, Ref: ref, Keep: keep,
+	// A name is looked up in zone sets that are not due: after the
+	// selection changed, an account that was added may hold a zone of it too.
+	lookup := app.ResourceLookup{Platform: platform.Cloudflare, Kind: platform.ResZone, Ref: ref, Keep: keep, SyncDue: strings.Contains(ref, "."),
 		Candidate: func(r inventory.Resource) string { return cand(r).String() },
 		Hint: func(found []inventory.Resource) string {
 			cands := make([]zoneCand, 0, len(found))

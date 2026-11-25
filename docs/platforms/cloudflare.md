@@ -164,7 +164,7 @@ A login without an account (its credentials could not list accounts) uses the on
 - An Enterprise zone must be moved to the Free plan first. polyctl does that only with `--downgrade-enterprise` (changes billing); otherwise it stops with exit code 1. A token without billing permission is exit code 3 and nothing is deleted. If the downgrade succeeds and the deletion fails, the zone stays on Free: run the command again.
 - `--dry-run` reports `zone/<domain>  would delete  plan=free records=12` (plus `zone/<domain>/subscription  would update  enterprise -> free`).
 
-A zone the inventory remembers but Cloudflare no longer has is dropped from the inventory and looked up again by name (not found: exit code 4). A zone the inventory does not know triggers one sync of the Cloudflare accounts.
+A zone the inventory remembers but Cloudflare no longer has is dropped from the inventory and looked up again by name (not found: exit code 4). A zone the inventory does not know triggers one sync of the Cloudflare accounts, and a zone name is looked up only after the zone sets that are due were synced (their TTL passed, or the selection of the login changed), so that a zone of that name in an account that was added is seen.
 
 ## Zone settings
 

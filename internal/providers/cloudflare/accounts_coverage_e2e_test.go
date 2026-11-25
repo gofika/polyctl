@@ -390,3 +390,33 @@ func TestAccountNameOfTwoAccounts(t *testing.T) {
 		t.Errorf("remove by a name of two selected accounts: exit %d, %s, %s", code, e.selection("all"), out)
 	}
 }
+
+// After the selection changed, the commands that find their zone through
+// the inventory (zone delete, zone setting, the rules) sync the due zone
+// set before they answer, as the others do: a zone of the same name in the
+// account that was added makes the name ambiguous (exit code 5) instead of
+// the command acting on the one zone the stale inventory knows.
+func TestRoutedZoneAfterAccountAdd(t *testing.T) {
+	e := newR2Env(t)
+	e.loginBoth("acc1")
+	if code, _, stderr := e.run("sync", "--profile", "both", "--platform", "cloudflare"); code != cli.ExitOK {
+		t.Fatalf("sync: exit %d, %s", code, stderr)
+	}
+	e.f.zones = append(e.f.zones, r2Zone{"zone-dup", "example.com", "pending", "acc2"})
+	if code, _, stderr := e.run("cloudflare", "account", "add", "acc2", "--profile", "both"); code != cli.ExitOK {
+		t.Fatalf("add: exit %d, %s", code, stderr)
+	}
+	e.f.reset()
+	code, stdout, stderr := e.run("cloudflare", "zone", "delete", "example.com", "--profile", "both", "--yes")
+	if code != cli.ExitAmbiguous || !strings.Contains(stderr, "zone-dup") || !strings.Contains(stderr, "zone-ex") || !strings.Contains(stderr, "--account <id or name>") {
+		t.Errorf("zone delete: exit %d, %s%s", code, stdout, stderr)
+	}
+	if w := e.f.writes(); len(w) != 0 {
+		t.Errorf("zone delete wrote %v", w)
+	}
+	// A fresh set is not synced again.
+	e.f.reset()
+	if code, _, stderr = e.run("cloudflare", "zone", "delete", "example.net", "--profile", "both", "--dry-run"); code != cli.ExitOK || e.f.count("GET /zones?") != 0 {
+		t.Errorf("zone delete of a fresh set: exit %d, %d listing(s), %s", code, e.f.count("GET /zones?"), stderr)
+	}
+}
