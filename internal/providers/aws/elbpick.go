@@ -19,7 +19,7 @@ import (
 // lbOptionLabel: "site-lb  network  internet-facing  active  vpc-0abc
 // site-lb-0123.elb.ap-east-1.amazonaws.com  aws/lab/ap-east-1".
 func lbOptionLabel(profile string, l loadBalancer) string {
-	return joinLabel(l.Name, l.Type, l.Scheme, l.State, l.VpcID, l.DNSName, "aws/"+profile+"/"+l.Region)
+	return prompt.Cells(l.Name, l.Type, l.Scheme, l.State, l.VpcID, l.DNSName, "aws/"+profile+"/"+l.Region)
 }
 
 // pickLB asks for a load balancer of the selected AWS accounts in the
@@ -62,13 +62,13 @@ func lbArg(ctx context.Context, rt *app.Runtime, args []string, arg, region, wha
 // activeLB keeps the active load balancers.
 func activeLB(l loadBalancer) bool { return l.State == "active" }
 
-// tgOptionLabel: "web-80  TCP:80  instance  vpc-0abc  2 load balancers".
+// tgOptionLabel: "web-80  TCP:80  instance  vpc-0abc  2 load balancer(s)".
 func tgOptionLabel(g platform.LBTargetGroup) string {
 	lbs := ""
 	if n := len(g.LoadBalancers); n > 0 {
 		lbs = fmt.Sprintf("%d load balancer(s)", n)
 	}
-	return joinLabel(g.Name, fmt.Sprintf("%s:%d", g.Protocol, g.Port), g.TargetType, g.VPC, lbs)
+	return prompt.Cells(g.Name, fmt.Sprintf("%s:%d", g.Protocol, g.Port), g.TargetType, g.VPC, lbs)
 }
 
 // pickTG asks for a target group of the scope in the interactive flow:
@@ -192,7 +192,8 @@ func tgFits(lb platform.LoadBalancer) func(platform.LBTargetGroup) bool {
 
 // listenerArg fills in a missing <listener-arn|lb:port> in the interactive
 // flow: the load balancer, then one of its listeners (keep accepts; none is
-// nothing to do). The value is the listener's ARN.
+// nothing to do), labelled "443  TLS  web-443  arn:..." (port, protocol,
+// what it forwards to, certificates). The value is the listener's ARN.
 func listenerArg(ctx context.Context, rt *app.Runtime, args []string, region string, keep func(platform.LBListener) bool) ([]string, error) {
 	if len(args) > 0 {
 		return args, nil
@@ -212,7 +213,7 @@ func listenerArg(ctx context.Context, rt *app.Runtime, args []string, region str
 	var opts []prompt.Option
 	for _, l := range listeners {
 		if keep == nil || keep(l) {
-			opts = append(opts, prompt.Option{Label: joinLabel(strconv.Itoa(int(l.Port)), l.Protocol, listenerSummary(l), strings.Join(l.Certificates, ",")), Value: l.ID})
+			opts = append(opts, prompt.Option{Label: prompt.Cells(strconv.Itoa(int(l.Port)), l.Protocol, listenerTarget(l), strings.Join(l.Certificates, ",")), Value: l.ID})
 		}
 	}
 	v, err := rt.Choose(app.Choice{Title: "Listener of " + lb.Name, Options: opts, Arg: "<listener-arn|lb:port>",
@@ -223,9 +224,11 @@ func listenerArg(ctx context.Context, rt *app.Runtime, args []string, region str
 	return []string{v}, nil
 }
 
-// certOptionLabel: "example.com  +2 names  ISSUED  expires 2027-03-01  in
-// use  arn:...".
-func certOptionLabel(c platform.Certificate) string {
+// certOptionLabel: "example.com  +2 names  ISSUED  expires 2027-03-01
+// [where]  arn:...  in use": "-" for what a certificate does not have, the
+// mark "in use" last. where, when set, is the cell of the account and
+// region in a list over several of them.
+func certOptionLabel(c platform.Certificate, where ...string) string {
 	more := ""
 	if n := len(c.Names) - 1; n > 0 {
 		more = fmt.Sprintf("+%d names", n)
@@ -238,7 +241,7 @@ func certOptionLabel(c platform.Certificate) string {
 	if c.InUse {
 		use = "in use"
 	}
-	return joinLabel(c.Domain, more, c.Status, exp, use, c.ID)
+	return prompt.Cells(slices.Concat([]string{c.Domain, more, c.Status, exp}, where, []string{c.ID, use})...)
 }
 
 // pickCert asks for the certificate of a TLS or HTTPS listener (--cert) in
@@ -449,21 +452,23 @@ func onOff(b bool) string {
 // flow and its new value: deletion protection or cross-zone (on/off, the
 // opposite of the current setting preselected), the IP address type, the
 // security groups (not for a Network Load Balancer created without any) or
-// the subnets (of the load balancer's VPC). It returns the flag answered.
+// the subnets (of the load balancer's VPC), each labelled with its current
+// value as a second cell ("Deletion protection  now off"). It returns the
+// flag answered.
 func askLBUpdate(ctx context.Context, rt *app.Runtime, s *lbScope, lb *platform.LoadBalancer, u lbUpdateAnswers) (string, error) {
 	attrs, err := s.c.LoadBalancerAttributes(ctx, s.region, lb.ID)
 	if err != nil {
 		return "", err
 	}
 	opts := []prompt.Option{
-		{Label: "Deletion protection (now " + onOff(attrs.DeletionProtection) + ")", Value: "deletion-protection"},
-		{Label: "Cross-zone load balancing (now " + onOff(attrs.CrossZone) + ")", Value: "cross-zone"},
-		{Label: "IP address type (now " + lb.IPAddressType + ")", Value: "ip-address-type"},
+		{Label: prompt.Cells("Deletion protection", "now "+onOff(attrs.DeletionProtection)), Value: "deletion-protection"},
+		{Label: prompt.Cells("Cross-zone load balancing", "now "+onOff(attrs.CrossZone)), Value: "cross-zone"},
+		{Label: prompt.Cells("IP address type", "now "+lb.IPAddressType), Value: "ip-address-type"},
 	}
 	if lb.Type != "network" || len(lb.SecurityGroups) > 0 {
-		opts = append(opts, prompt.Option{Label: "Security groups (now " + joinOrNone(lb.SecurityGroups) + ")", Value: "sg"})
+		opts = append(opts, prompt.Option{Label: prompt.Cells("Security groups", "now "+joinOrNone(lb.SecurityGroups)), Value: "sg"})
 	}
-	opts = append(opts, prompt.Option{Label: "Subnets (now " + joinOrNone(lb.Subnets()) + ")", Value: "subnet"})
+	opts = append(opts, prompt.Option{Label: prompt.Cells("Subnets", "now "+joinOrNone(lb.Subnets())), Value: "subnet"})
 	key, err := rt.Pick().Select("What to change on "+lb.Name, opts, "")
 	if err != nil {
 		return "", err
@@ -518,7 +523,7 @@ func askTargets(ctx context.Context, rt *app.Runtime, s *lbScope, tg *platform.L
 		var opts []prompt.Option
 		for _, t := range current {
 			spec := fmt.Sprintf("%s:%d", t.ID, t.Port)
-			opts = append(opts, prompt.Option{Label: joinLabel(spec, t.Zone, t.State, t.Description), Value: spec})
+			opts = append(opts, prompt.Option{Label: prompt.Cells(spec, t.Zone, t.State, t.Description), Value: spec})
 		}
 		remove, err = rt.ChooseMany(app.Choice{Title: "Targets to deregister from " + tg.Name, Options: opts, Arg: "--remove-target"})
 		return nil, remove, err
@@ -539,7 +544,7 @@ func askTargets(ctx context.Context, rt *app.Runtime, s *lbScope, tg *platform.L
 		if id == "" || isRegistered(current, id, tg.Port) {
 			continue
 		}
-		cands = append(cands, prompt.Option{Label: joinLabel(nameOr(in.Name, in.ID), in.ID, in.PrivateIP, in.AZ, in.Type), Value: id})
+		cands = append(cands, prompt.Option{Label: prompt.Cells(nameOr(in.Name, in.ID), in.ID, in.PrivateIP, in.AZ, in.Type), Value: id})
 	}
 	add, err = rt.ChooseMany(app.Choice{Title: "Targets to register in " + tg.Name, Options: cands, Arg: "--add-target",
 		What: "running instance of " + tg.VPC + " that is not registered yet"})

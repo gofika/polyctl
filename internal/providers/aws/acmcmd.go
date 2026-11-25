@@ -754,7 +754,7 @@ them while the certificate is in use (ACM renews it through them).`,
 					Label: func(r inventory.Resource) string {
 						var c acmCertificate
 						_ = r.Decode(&c)
-						return joinLabel(certOptionLabel(c.certificate()), "aws/"+r.Profile+"/"+c.Region)
+						return certOptionLabel(c.certificate(), "aws/"+r.Profile+"/"+c.Region)
 					},
 					Value: func(r inventory.Resource) string { return r.ID }})
 				if err != nil {
@@ -888,7 +888,7 @@ them while the certificate is in use (ACM renews it through them).`,
 					amb := &app.AmbiguousError{What: "certificate of " + domain, Candidates: names, Hint: "pass --profile <name> and/or --region <region> to choose"}
 					// The interactive flow asks which one.
 					h, err := disambiguate(rt, amb, hits, func(h certHit) string {
-						return joinLabel(certOptionLabel(h.cert), "aws/"+h.profile+"/"+h.cert.Region)
+						return certOptionLabel(h.cert, "aws/"+h.profile+"/"+h.cert.Region)
 					})
 					if err != nil {
 						return err

@@ -57,7 +57,7 @@ func locateInstanceVolume(ctx context.Context, rt *app.Runtime, ref, device, reg
 			dev = awssdk.ToString(a.Device)
 		}
 		cands = append(cands, fmt.Sprintf("%s %s %dGB", dev, awssdk.ToString(v.VolumeId), awssdk.ToInt32(v.Size)))
-		opts = append(opts, prompt.Option{Label: joinLabel(dev, awssdk.ToString(v.VolumeId), fmt.Sprintf("%d GB", awssdk.ToInt32(v.Size)), string(v.VolumeType), tagName(v.Tags)), Value: strconv.Itoa(i)})
+		opts = append(opts, prompt.Option{Label: prompt.Cells(dev, awssdk.ToString(v.VolumeId), fmt.Sprintf("%d GB", awssdk.ToInt32(v.Size)), string(v.VolumeType), tagName(v.Tags)), Value: strconv.Itoa(i)})
 	}
 	if rt.Interactive() {
 		// The interactive flow asks which volume is meant.

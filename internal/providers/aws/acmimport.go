@@ -224,11 +224,7 @@ Amazon-issued certificates are renewed by ACM and never replaced.`,
 					// new certificate (--new).
 					var opts []prompt.Option
 					for _, e := range cands {
-						use := ""
-						if e.InUse {
-							use = "in use"
-						}
-						opts = append(opts, prompt.Option{Label: joinLabel(e.ID, e.Domain, "expires "+timeStr(e.NotAfter), use), Value: e.ID})
+						opts = append(opts, prompt.Option{Label: certOptionLabel(e), Value: e.ID})
 					}
 					opts = append(opts, prompt.Option{Label: "Import as a new certificate (a new ARN)", Value: ""})
 					pick, err := rt.Pick().Select("Re-import into which certificate?", opts, "")
@@ -353,7 +349,7 @@ func askImportDomain(rt *app.Runtime, files, staging bool) (string, error) {
 			continue
 		}
 		days := int(time.Until(b.NotAfter).Hours() / 24)
-		opts = append(opts, prompt.Option{Label: fmt.Sprintf("%s  %s  expires %s (%d days)", root, b.KeyType, b.NotAfter.UTC().Format("2006-01-02"), days), Value: root})
+		opts = append(opts, prompt.Option{Label: prompt.Cells(root, b.KeyType, fmt.Sprintf("expires %s (%d days)", b.NotAfter.UTC().Format("2006-01-02"), days)), Value: root})
 	}
 	return rt.Choose(app.Choice{Title: "Certificate of the local store to import", Options: opts, Arg: "<domain>",
 		Empty: app.NothingToDof("the store %s holds no unexpired certificate (run `polyctl cert ensure <domain>`, or pass --cert-file and --key-file)", st.Base)})

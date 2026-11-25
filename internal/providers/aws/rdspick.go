@@ -21,7 +21,7 @@ import (
 // ap-east-1a  aws/lab/ap-east-1  db-prod-01.abc.rds.amazonaws.com".
 func dbOptionLabel(profile string, d dbInstance) string {
 	eng := strings.TrimSpace(d.Engine + " " + d.EngineVersion)
-	return joinLabel(d.ID, eng, d.Class, d.Status, d.Zone, "aws/"+profile+"/"+d.Region, d.Endpoint)
+	return prompt.Cells(d.ID, eng, d.Class, d.Status, d.Zone, "aws/"+profile+"/"+d.Region, d.Endpoint)
 }
 
 // dbOptions lists the RDS instances of the selected AWS accounts as the

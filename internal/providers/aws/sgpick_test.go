@@ -93,7 +93,7 @@ func TestSGRulePicks(t *testing.T) {
 	if err := h.run("ec2", "security-group", "rule", "remove", "web"); err != nil {
 		t.Fatalf("rule remove: %v", err)
 	}
-	if l := prompttest.Labels(p.Asked[0].Options); !strings.Contains(l, "tcp 22 0.0.0.0/0  ssh") {
+	if l := prompttest.Labels(p.Asked[0].Options); !strings.Contains(l, "tcp  22  0.0.0.0/0  ssh") {
 		t.Errorf("rules offered: %s", l)
 	}
 	if a := actions(h.report()); a["security-group/web/rule deleted"] != 1 {

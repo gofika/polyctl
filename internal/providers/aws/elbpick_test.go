@@ -57,6 +57,9 @@ func TestLBPicks(t *testing.T) {
 		t.Fatalf("update: %v", err)
 	}
 	p.Done()
+	if l := prompttest.Labels(p.Asked[1].Options); !strings.Contains(l, "Deletion protection  now off") || !strings.Contains(l, "Subnets  now subnet-") {
+		t.Errorf("settings offered: %s", l)
+	}
 	if p.Asked[2].Default != "on" {
 		t.Errorf("toggle default = %q, want the opposite of off", p.Asked[2].Default)
 	}
@@ -103,6 +106,9 @@ func TestListenerCreateAsks(t *testing.T) {
 		t.Fatalf("update: %v", err)
 	}
 	p.Done()
+	if l := prompttest.Labels(p.Asked[1].Options); !strings.Contains(l, "80  TCP  site-xz7-80-target\n") || !strings.Contains(l, "443  TLS  db-target  arn:aws:acm:") {
+		t.Errorf("listeners offered: %s", l)
+	}
 	if a := actions(h.report()); a["listener/site-xz7-lb:80 updated"] != 1 {
 		t.Errorf("update = %v", a)
 	}

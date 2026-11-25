@@ -20,19 +20,9 @@ import (
 
 // The interactive picks of the aws commands: what a resource is (name, id)
 // and the facts that tell candidates apart (zone, state, type, CIDR,
-// account). Every list holds only usable candidates; see
-// docs/interactive.md.
-
-// joinLabel joins the non-empty parts of a label with two spaces.
-func joinLabel(parts ...string) string {
-	var out []string
-	for _, p := range parts {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
-		}
-	}
-	return strings.Join(out, "  ")
-}
+// account). A label is a row of cells (prompt.Cells): every fact keeps its
+// position in every row of a list, "-" standing for a fact a row does not
+// have. Every list holds only usable candidates; see docs/interactive.md.
 
 // nameOr returns name, else id.
 func nameOr(name, id string) string {
@@ -43,9 +33,9 @@ func nameOr(name, id string) string {
 }
 
 // instanceOptionLabel: "web-01  i-0abc  running  t3.medium  ap-east-1a
-// 10.0.1.23  198.51.100.7  aws/lab".
+// 10.0.1.23  198.51.100.7  aws/lab" ("-" for an address it does not have).
 func instanceOptionLabel(in instanceInfo, profile string) string {
-	return joinLabel(nameOr(in.Name, in.ID), in.ID, in.State, in.Type, in.AZ, in.PrivateIP, in.PublicIP, "aws/"+profile)
+	return prompt.Cells(nameOr(in.Name, in.ID), in.ID, in.State, in.Type, in.AZ, in.PrivateIP, in.PublicIP, "aws/"+profile)
 }
 
 // instanceInfoOf decodes an inventory row of an instance; the region falls
@@ -131,13 +121,14 @@ func disambiguate[T any](rt *app.Runtime, amb *app.AmbiguousError, found []T, la
 }
 
 // locatedLabel shows a live instance found by a lookup: "web-01  i-0abc
-// running  t3.medium  ap-east-1a  aws/lab/ap-east-1".
+// running  t3.medium  ap-east-1a  10.0.1.23  198.51.100.7
+// aws/lab/ap-east-1" ("-" for an address it does not have).
 func locatedLabel(l *locatedInstance) string {
 	az := ""
 	if l.inst.Placement != nil {
 		az = awssdk.ToString(l.inst.Placement.AvailabilityZone)
 	}
-	return joinLabel(l.name(), l.id(), instanceState(l.inst), string(l.inst.InstanceType), az,
+	return prompt.Cells(l.name(), l.id(), instanceState(l.inst), string(l.inst.InstanceType), az,
 		awssdk.ToString(l.inst.PrivateIpAddress), awssdk.ToString(l.inst.PublicIpAddress), "aws/"+l.profile+"/"+l.region)
 }
 
@@ -177,7 +168,7 @@ func pickInstanceType(ctx context.Context, rt *app.Runtime, c *client, region, a
 			}
 			gib := strconv.FormatFloat(float64(p.MemMiB)/1024, 'f', -1, 64)
 			size := fmt.Sprintf("%dH%sG", p.Cores, gib)
-			opts = append(opts, prompt.Option{Label: joinLabel(size, p.Name, fmt.Sprintf("%d vCPU", p.Cores), gib+" GiB"), Value: size})
+			opts = append(opts, prompt.Option{Label: prompt.Cells(size, p.Name, fmt.Sprintf("%d vCPU", p.Cores), gib+" GiB"), Value: size})
 		}
 	}
 	title := "Instance size"
@@ -273,7 +264,7 @@ func tagName(tags []ec2types.Tag) string {
 }
 
 // subnetLabel: "public-a  subnet-0def  ap-east-1a  10.0.1.0/24  vpc-0abc
-// 250 free IPs  [default for zone]".
+// 250 free IPs  [default for zone]" (the mark is the last cell).
 func subnetLabel(sn ec2types.Subnet) string {
 	free := ""
 	if sn.AvailableIpAddressCount != nil {
@@ -284,7 +275,7 @@ func subnetLabel(sn ec2types.Subnet) string {
 		def = "[default for zone]"
 	}
 	id := awssdk.ToString(sn.SubnetId)
-	return joinLabel(nameOr(tagName(sn.Tags), id), id, awssdk.ToString(sn.AvailabilityZone), awssdk.ToString(sn.CidrBlock), awssdk.ToString(sn.VpcId), free, def)
+	return prompt.Cells(nameOr(tagName(sn.Tags), id), id, awssdk.ToString(sn.AvailabilityZone), awssdk.ToString(sn.CidrBlock), awssdk.ToString(sn.VpcId), free, def)
 }
 
 // pickSubnet asks for the subnet of a create (--subnet) in the interactive
@@ -371,7 +362,7 @@ func vpcLabel(v ec2types.Vpc) string {
 		def = "[default]"
 	}
 	id := awssdk.ToString(v.VpcId)
-	return joinLabel(nameOr(tagName(v.Tags), id), id, awssdk.ToString(v.CidrBlock), def)
+	return prompt.Cells(nameOr(tagName(v.Tags), id), id, awssdk.ToString(v.CidrBlock), def)
 }
 
 // pickVPC asks for the VPC of a create (--vpc) in the interactive flow: the
@@ -402,14 +393,15 @@ func pickVPC(ctx context.Context, rt *app.Runtime, c *client, region string, mis
 }
 
 // volumeOptionLabel: "site-data  vol-0222  400 GB  gp3  in-use  ap-east-1a
-// i-0abc as /dev/sdb  aws/lab".
+// i-0abc as /dev/sdb  aws/lab" ("-" for the attachment of a volume that
+// has none).
 func volumeOptionLabel(profile string, v volumeInfo) string {
 	att := ""
 	for _, a := range v.Attachments {
 		att = a.InstanceID + " as " + a.Device
 		break
 	}
-	return joinLabel(nameOr(v.Name, v.ID), v.ID, fmt.Sprintf("%d GB", v.Size), v.Type, v.State, v.AZ, att, "aws/"+profile)
+	return prompt.Cells(nameOr(v.Name, v.ID), v.ID, fmt.Sprintf("%d GB", v.Size), v.Type, v.State, v.AZ, att, "aws/"+profile)
 }
 
 // pickVolume asks for an EBS volume of the selected AWS accounts in the
@@ -480,12 +472,12 @@ func (c *client) availableZones(ctx context.Context, region string) ([]string, e
 }
 
 // snapshotOptionLabel: "site-data-20260102T0304Z  snap-0aaa  400 GB
-// 2026-01-02  description".
+// 2026-01-02 03:04  description".
 func snapshotOptionLabel(sn ec2types.Snapshot) string {
 	start := ""
 	if sn.StartTime != nil {
 		start = sn.StartTime.UTC().Format("2006-01-02 15:04")
 	}
 	id := awssdk.ToString(sn.SnapshotId)
-	return joinLabel(nameOr(tagName(sn.Tags), id), id, fmt.Sprintf("%d GB", awssdk.ToInt32(sn.VolumeSize)), start, awssdk.ToString(sn.Description))
+	return prompt.Cells(nameOr(tagName(sn.Tags), id), id, fmt.Sprintf("%d GB", awssdk.ToInt32(sn.VolumeSize)), start, awssdk.ToString(sn.Description))
 }

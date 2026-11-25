@@ -538,15 +538,20 @@ func (e *lbEnsure) build() {
 
 // listenerSummary describes a listener as "tcp:80 -> target-group".
 func listenerSummary(l platform.LBListener) string {
-	to := l.DefaultAction
-	if len(l.TargetGroups) > 0 {
-		var names []string
-		for _, tg := range l.TargetGroups {
-			names = append(names, arnName(tg))
-		}
-		to = strings.Join(names, ",")
+	return fmt.Sprintf("%s:%d -> %s", strings.ToLower(l.Protocol), l.Port, listenerTarget(l))
+}
+
+// listenerTarget is what a listener forwards to: the names of its target
+// groups, else its default action.
+func listenerTarget(l platform.LBListener) string {
+	if len(l.TargetGroups) == 0 {
+		return l.DefaultAction
 	}
-	return fmt.Sprintf("%s:%d -> %s", strings.ToLower(l.Protocol), l.Port, to)
+	var names []string
+	for _, tg := range l.TargetGroups {
+		names = append(names, arnName(tg))
+	}
+	return strings.Join(names, ",")
 }
 
 // createLB creates the load balancer and waits until it is active (unless

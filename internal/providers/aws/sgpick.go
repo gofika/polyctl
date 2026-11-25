@@ -13,7 +13,7 @@ import (
 
 // sgOptionLabel: "web  sg-0abc  vpc-0abc  3 rules  description".
 func sgOptionLabel(g platform.SecurityGroup) string {
-	return joinLabel(nameOr(g.Name, g.ID), g.ID, g.VPC, fmt.Sprintf("%d rules", len(g.Ingress)), g.Description)
+	return prompt.Cells(nameOr(g.Name, g.ID), g.ID, g.VPC, fmt.Sprintf("%d rules", len(g.Ingress)), g.Description)
 }
 
 // sgOptions lists the groups of the scope (of vpc when given) that keep
@@ -125,7 +125,7 @@ func askRules(rt *app.Runtime, c *client, sg platform.SecurityGroup) ([]string, 
 }
 
 // pickRules asks for the rules rule remove removes (multiple choice), from
-// the ingress rules of the group, labelled "tcp 22 0.0.0.0/0
+// the ingress rules of the group, labelled "tcp  22  0.0.0.0/0
 // description". No rule is nothing to do.
 func pickRules(rt *app.Runtime, sg platform.SecurityGroup) ([]platform.IngressRule, error) {
 	var rules []platform.IngressRule
@@ -136,7 +136,7 @@ func pickRules(rt *app.Runtime, sg platform.SecurityGroup) ([]platform.IngressRu
 			continue
 		}
 		ir := platform.IngressRule{Protocol: r.Protocol, FromPort: r.FromPort, ToPort: r.ToPort, Source: r.Source, SourceKind: r.SourceType, Description: r.Description}
-		opts = append(opts, prompt.Option{Label: joinLabel(ir.String(), r.Description), Value: strconv.Itoa(len(rules))})
+		opts = append(opts, prompt.Option{Label: prompt.Cells(ir.Protocol, ir.Ports(), ir.Source, r.Description), Value: strconv.Itoa(len(rules))})
 		rules = append(rules, ir)
 	}
 	picked, err := rt.ChooseMany(app.Choice{Title: "Rules to remove from " + nameOr(sg.Name, sg.ID), Options: opts, Arg: "--rule",

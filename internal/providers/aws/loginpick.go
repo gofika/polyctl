@@ -125,7 +125,7 @@ func askSharedProfile(in platform.LoginInput, io *prompt.IO, def string) (string
 	}
 	var opts []prompt.Option
 	for _, p := range profiles {
-		opts = append(opts, prompt.Option{Label: joinLabel(p.name, p.region, strings.Join(p.kinds, ",")), Value: p.name})
+		opts = append(opts, prompt.Option{Label: prompt.Cells(p.name, p.region, strings.Join(p.kinds, ",")), Value: p.name})
 	}
 	const other = "\x00other"
 	opts = append(opts, prompt.Option{Label: "Another profile...", Value: other})

@@ -38,7 +38,7 @@ func TestVolumeTargetPicks(t *testing.T) {
 	if v := prompttest.Values(p.Asked[0].Options); v != "vol-0333" {
 		t.Errorf("delete offered %q, want the available volume only", v)
 	}
-	if l := prompttest.Labels(p.Asked[0].Options); !strings.Contains(l, "orphan  vol-0333  8 GB  gp2  available  ap-east-1a  aws/lab") {
+	if l := prompttest.Labels(p.Asked[0].Options); !strings.Contains(l, "orphan  vol-0333  8 GB  gp2  available  ap-east-1a  -  aws/lab") {
 		t.Errorf("labels: %s", l)
 	}
 

@@ -101,7 +101,7 @@ func pickZone(rt *app.Runtime, zones []platform.Zone, arg string) (*platform.Zon
 			if n, ok := z.Extra["record_count"]; ok {
 				count = fmt.Sprintf("%v records", n)
 			}
-			return joinLabel(z.Name, z.ID, z.Status, count)
+			return prompt.Cells(z.Name, z.ID, z.Status, count)
 		})
 		if err != nil {
 			return nil, true, err
@@ -1116,7 +1116,9 @@ func pickRecordSet(ctx context.Context, rt *app.Runtime, c *client, z *platform.
 		if s.setID != "" {
 			id = "set " + s.setID
 		}
-		opts = append(opts, prompt.Option{Label: joinLabel(s.name, s.typ, id, strings.Join(s.values, ", "), ttl), Value: s.name + "\x00" + s.typ + "\x00" + s.setID})
+		// The cells of a record list (name, type, value, TTL), the values
+		// of the set as one cell, then the set identifier.
+		opts = append(opts, prompt.Option{Label: prompt.Cells(s.name, s.typ, strings.Join(s.values, ", "), ttl, id), Value: s.name + "\x00" + s.typ + "\x00" + s.setID})
 	}
 	v, err := rt.Choose(app.Choice{Title: "Record set to delete from " + z.Name, Options: opts, Arg: "--type",
 		Empty: app.NothingToDof("zone %s has no record set to delete", z.Name)})

@@ -113,8 +113,12 @@ func TestRoute53RecordSetIdentifiers(t *testing.T) {
 	if err := h.run("route53", "record", "delete", "other.org"); err != nil {
 		t.Fatalf("picked delete: %v", err)
 	}
-	if l := prompttest.Labels(p.Asked[0].Options); !strings.Contains(l, "set eu") || !strings.Contains(l, "set us") {
+	l := prompttest.Labels(p.Asked[0].Options)
+	if !strings.Contains(l, "set eu") || !strings.Contains(l, "set us") {
 		t.Errorf("options: %s", l)
+	}
+	if !strings.Contains(l, "www.other.org  A  198.51.100.2  ttl 60  set us") {
+		t.Errorf("cells of a record set: %s", l)
 	}
 	if len(r53.sets["Z3"]) != 1 || awssdk.ToString(r53.sets["Z3"][0].SetIdentifier) != "eu" {
 		t.Errorf("sets left: %+v", r53.sets["Z3"])

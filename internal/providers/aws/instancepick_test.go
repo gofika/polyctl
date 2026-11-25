@@ -43,7 +43,7 @@ func TestInstanceStartStopPick(t *testing.T) {
 	if v := prompttest.Values(a.Options); v != "i-0aaaaaaaaaaaaaaa2" {
 		t.Errorf("start offered %q, want the stopped instance only", v)
 	}
-	if l := prompttest.Labels(a.Options); !strings.Contains(l, "web-02  i-0aaaaaaaaaaaaaaa2  stopped  t3.nano  ap-east-1a  10.0.1.5  aws/lab") {
+	if l := prompttest.Labels(a.Options); !strings.Contains(l, "web-02  i-0aaaaaaaaaaaaaaa2  stopped  t3.nano  ap-east-1a  10.0.1.5  -  aws/lab") {
 		t.Errorf("label: %s", l)
 	}
 	if st, _ := h.instState("ap-east-1", "i-0aaaaaaaaaaaaaaa2"); st == stateStopped {
@@ -106,7 +106,7 @@ func TestInstanceGetPickAndAmbiguous(t *testing.T) {
 	if !strings.Contains(h.stdout.String(), "i-0aaaaaaaaaaaaaaa2") {
 		t.Errorf("stdout = %s", h.stdout.String())
 	}
-	if l := prompttest.Labels(p.Asked[0].Options); !strings.Contains(l, "web  i-0aaaaaaaaaaaaaaa2  stopped  t3.nano  ap-east-1a  10.0.1.5  aws/lab/ap-east-1") {
+	if l := prompttest.Labels(p.Asked[0].Options); !strings.Contains(l, "web  i-0aaaaaaaaaaaaaaa2  stopped  t3.nano  ap-east-1a  10.0.1.5  -  aws/lab/ap-east-1") {
 		t.Errorf("labels: %s", l)
 	}
 
