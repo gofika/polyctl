@@ -76,7 +76,9 @@ profiles:
     platforms:
       cloudflare:
         metadata:
-          account_id: 0123456789abcdef0123456789abcdef
+          account_id: 0123456789abcdef0123456789abcdef    # the default account
+          account_name: Acme Ltd
+          accounts: 0123456789abcdef0123456789abcdef,fedcba9876543210fedcba9876543210   # the selected accounts, when there are several
           email: ops@example.com
         credential_backend: keyring
         created_at: 2026-11-01T10:00:00Z

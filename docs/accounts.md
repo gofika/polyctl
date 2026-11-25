@@ -136,15 +136,16 @@ A login works on the accounts selected for it, one of which is the default accou
 - A selected account the credentials no longer see is left out of the new login, with a note; a token whose default account is gone fails until `--set account_id` names another.
 - The selection is stored as the metadata `account_id`, `account_name` (the default account) and `accounts` (the ids, when there are several). A login stored with `account_id` alone has that one account selected.
 - An account that a new login no longer selects loses its cached zones, records and R2 buckets at once.
-- `polyctl cloudflare account use`, `add` and `remove` change the default account and the selection without a new login; `account current` shows them.
+- `polyctl cloudflare account use`, `add` and `remove` change the default account and the selection without a new login; `account current` shows them. What the selection covers, and `--account` for one call, is in [Cloudflare: Accounts](platforms/cloudflare.md#accounts).
 
 **Non-interactive:** export `CLOUDFLARE_API_TOKEN`, or `--set token=-` with the token on stdin (`--set token` wins). A token piped without `--set token=-` is ignored.
 
 ```sh
 polyctl auth login cloudflare
 polyctl auth login cloudflare --set method=oauth
-CLOUDFLARE_API_TOKEN=... polyctl auth login cloudflare --profile acme --set account_id=...
-CLOUDFLARE_API_TOKEN=... polyctl auth login cloudflare --profile acme --set accounts=<id>,<id>
+CLOUDFLARE_API_TOKEN=... polyctl auth login cloudflare --profile acme --set account_id=<id>                    # one account, the default
+CLOUDFLARE_API_TOKEN=... polyctl auth login cloudflare --profile acme --set accounts=<id>,<id>                 # two accounts, the first the default
+CLOUDFLARE_API_TOKEN=... polyctl auth login cloudflare --profile acme --set accounts=<id>,<id> --set account_id=<id>   # the default named
 echo "$TOKEN" | polyctl auth login cloudflare --profile acme --set token=-
 ```
 
