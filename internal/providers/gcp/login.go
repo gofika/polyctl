@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 
@@ -301,6 +302,7 @@ func loginOAuth(ctx context.Context, in platform.LoginInput, pio *prompt.IO) (*p
 	}
 	if builtin {
 		fmt.Fprintln(pio.Err, "Logging in to Google Cloud in the browser (the consent screen names \"Google Auth Library\").")
+		fmt.Fprintln(pio.Err, "Tick every permission it lists: without the Google Cloud one the login is refused.")
 	} else if client.ID == "" || client.Secret == "" {
 		fmt.Fprintln(pio.Err, "polyctl needs an OAuth client of your own: in the Google Cloud console open APIs & Services > Credentials,")
 		fmt.Fprintln(pio.Err, "create an OAuth client ID of type \"Desktop app\", and enter its id and secret below.")
@@ -405,6 +407,12 @@ func runLoopbackFlow(ctx context.Context, in platform.LoginInput, pio *prompt.IO
 	tok, err := cfg.Exchange(ctx, code, oauth2.VerifierOption(verifier))
 	if err != nil {
 		return nil, nil, fmt.Errorf("%w: exchange authorization code: %v", platform.ErrUnauthorized, err)
+	}
+	// The consent screen lets the user grant each permission on its own:
+	// a token without the Google Cloud one logs in and then fails on every
+	// call.
+	if granted, ok := tok.Extra("scope").(string); ok && granted != "" && !slices.Contains(strings.Fields(granted), scopeCloudPlatform) {
+		return nil, nil, fmt.Errorf("%w: Google returned a login without access to Google Cloud: on the consent screen tick the permission to see, edit, configure and delete your Google Cloud data, then log in again", platform.ErrUnauthorized)
 	}
 	if tok.RefreshToken == "" {
 		return nil, nil, errors.New("Google did not return a refresh token; revoke polyctl's access at https://myaccount.google.com/permissions and retry")

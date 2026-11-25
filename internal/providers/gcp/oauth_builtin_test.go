@@ -76,6 +76,8 @@ type fakeOAuth struct {
 
 	mu    sync.Mutex
 	forms []url.Values
+	// scope is the scope field of the answers ("": none).
+	scope string
 }
 
 func newFakeOAuth(t *testing.T) *fakeOAuth {
@@ -88,8 +90,12 @@ func newFakeOAuth(t *testing.T) *fakeOAuth {
 		}
 		o.mu.Lock()
 		o.forms = append(o.forms, r.PostForm)
+		scope := o.scope
 		o.mu.Unlock()
 		out := map[string]any{"access_token": "access-1", "token_type": "Bearer", "expires_in": 3600}
+		if scope != "" {
+			out["scope"] = scope
+		}
 		if r.PostForm.Get("grant_type") == "authorization_code" {
 			out["refresh_token"] = "refresh-1"
 		}
@@ -610,5 +616,29 @@ func TestLoginNonInteractiveWithoutADC(t *testing.T) {
 func TestLookPathDefault(t *testing.T) {
 	if _, err := lookPath("polyctl-no-such-program-on-path"); err == nil {
 		t.Error("lookPath found a program that does not exist")
+	}
+}
+
+// A login in which the person did not tick the Google Cloud permission on
+// the consent screen is refused (exit code 3) and adds no account; one that
+// granted it, in any order, is taken.
+func TestLoginWithoutCloudScope(t *testing.T) {
+	f := newFake(t)
+	withFakeEndpoints(t, f)
+	o := newFakeOAuth(t)
+	withBuiltinClient(t, testBuiltin)
+	p := &provider{}
+
+	o.scope = "openid https://www.googleapis.com/auth/userinfo.email"
+	in, errBuf := browserLogin("", map[string]string{"project": "proj"}, &approval{})
+	_, err := p.Login(context.Background(), in)
+	if !errors.Is(err, platform.ErrUnauthorized) || !strings.Contains(err.Error(), "without access to Google Cloud") {
+		t.Fatalf("err = %v\n%s", err, errBuf.String())
+	}
+
+	o.scope = "https://www.googleapis.com/auth/userinfo.email " + scopeCloudPlatform + " openid"
+	in, errBuf = browserLogin("", map[string]string{"project": "proj"}, &approval{})
+	if _, err := p.Login(context.Background(), in); err != nil {
+		t.Fatalf("login: %v\n%s", err, errBuf.String())
 	}
 }

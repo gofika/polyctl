@@ -219,7 +219,7 @@ Which method a login uses:
 
 The built-in client:
 
-- It is the OAuth client of the Google Cloud SDK's application-default login, so the consent screen names **Google Auth Library** and asks for access to your Google Cloud data and your e-mail address. gcloud itself is not needed. Should Google stop accepting it, `method=adc`, `method=service_account` and `method=oauth` with your own client remain available.
+- It is the OAuth client of the Google Cloud SDK's application-default login, so the consent screen names **Google Auth Library** and asks for access to your Google Cloud data and your e-mail address. gcloud itself is not needed. The screen lets you grant each permission separately: tick both, as a login without the Google Cloud permission is refused (exit code 3) and adds no account. Should Google stop accepting it, `method=adc`, `method=service_account` and `method=oauth` with your own client remain available.
 - Its id and secret are part of the program (Google does not treat the secret of a desktop client as confidential) and are never stored: the account records `oauth_client: builtin` in `config.yaml` and its refresh token in the credential store, and takes the client from the polyctl binary in use.
 - A polyctl build without a built-in client behaves as follows instead: on a terminal, `adc` when Application Default Credentials exist, else polyctl asks which way to log in (a service account key file, your own OAuth client, or instructions for creating the credentials with gcloud; the last one adds no account and exits with code 0). `method=oauth` then needs `client_id` and `client_secret`, and an account of the built-in client cannot be used (exit code 3) until you log in again.
 
