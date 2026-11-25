@@ -52,13 +52,18 @@ func newClient(ctx context.Context, project, email, method string, opts ...optio
 }
 
 // mapErr wraps Google API errors with the platform sentinels so the CLI can
-// map them to exit codes. Permission-denied is reported as unauthorized.
+// map them to exit codes. Permission-denied is reported as unauthorized,
+// except quota and rate limit errors (Cloud DNS answers a full managed
+// zone with 403 quotaExceeded), which stay general failures.
 func mapErr(err error) error {
 	if err == nil {
 		return nil
 	}
 	var ge *googleapi.Error
 	if errors.As(err, &ge) {
+		if isCapacity(googleReason(err)) || isCapacityMessage(ge.Message) {
+			return fmt.Errorf("%w (%s)", err, quotaHint)
+		}
 		switch ge.Code {
 		case http.StatusUnauthorized, http.StatusForbidden:
 			return fmt.Errorf("%w: %w", platform.ErrUnauthorized, err)

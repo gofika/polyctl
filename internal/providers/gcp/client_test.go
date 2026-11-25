@@ -40,8 +40,10 @@ type fakeGoogle struct {
 	rrsets   map[string][]*dns.ResourceRecordSet // keyed by managed zone name
 	changes  []*dns.Change
 	requests []string
-	// status forces an HTTP error for paths containing the key.
-	status map[string]int
+	// status forces an HTTP error for paths containing the key, with the
+	// reason of reasons under the same key, if any.
+	status  map[string]int
+	reasons map[string]string
 	// pageSize controls list pagination.
 	pageSize int
 	tokens   int
@@ -100,6 +102,10 @@ func (f *fakeGoogle) handle(w http.ResponseWriter, r *http.Request) {
 	for key, code := range f.status {
 		if (strings.HasPrefix(key, "/") && path == key) || (!strings.HasPrefix(key, "/") && strings.Contains(path, key)) {
 			w.WriteHeader(code)
+			if reason := f.reasons[key]; reason != "" {
+				fmt.Fprintf(w, `{"error":{"code":%d,"message":"forced %s","errors":[{"reason":%q,"message":"forced"}]}}`, code, key, reason)
+				return
+			}
 			fmt.Fprintf(w, `{"error":{"code":%d,"message":"forced %s","status":"FORCED"}}`, code, key)
 			return
 		}
@@ -647,6 +653,21 @@ func TestErrorMapping(t *testing.T) {
 	if _, err := anon.ListZones(ctx); !errors.Is(err, platform.ErrUnauthorized) {
 		t.Errorf("anonymous: %v", err)
 	}
+	// A 403 for a quota (records of a full managed zone) or a rate limit is
+	// a general failure, not a credentials problem.
+	for _, reason := range []string{"quotaExceeded", "rateLimitExceeded"} {
+		f.mu.Lock()
+		f.status["changes"] = http.StatusForbidden
+		f.reasons = map[string]string{"changes": reason}
+		f.mu.Unlock()
+		_, err := c.CreateRecord(ctx, "example-zone", platform.Record{Name: "www.example.com", Type: "A", Value: "3.3.3.3"})
+		if err == nil || errors.Is(err, platform.ErrUnauthorized) || !strings.Contains(err.Error(), "not a permission problem") {
+			t.Errorf("403 %s: %v", reason, err)
+		}
+	}
+	f.mu.Lock()
+	delete(f.status, "changes")
+	f.mu.Unlock()
 	if mapErr(nil) != nil || !errors.Is(mapErr(&oauth2.RetrieveError{}), platform.ErrUnauthorized) {
 		t.Error("mapErr sentinels")
 	}

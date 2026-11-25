@@ -46,6 +46,10 @@ func isCapacityMessage(msg string) bool {
 		strings.Contains(m, "does not have enough resources")
 }
 
+// quotaHint is appended to quota and rate limit failures outside Compute
+// Engine writes.
+const quotaHint = "quota or rate limit, not a permission problem: retry later or ask for a higher quota"
+
 // capacityHint is appended to quota and capacity failures.
 const capacityHint = "quota or capacity, not a permission problem: try another zone or machine type, or ask for a higher quota"
 
