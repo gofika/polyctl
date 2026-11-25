@@ -330,3 +330,30 @@ func TestAccountsOfCredentialsThatSeeNone(t *testing.T) {
 		t.Errorf("use by id: exit %d, %s, %s", code, e.selection("none"), out)
 	}
 }
+
+// --account filters what a login without an account cached, by the id of
+// an account as well as by its name: nothing is asked, so it works with
+// --offline.
+func TestAccountFlagByIDOnALoginWithoutAnAccount(t *testing.T) {
+	e := syncedUnbound(t)
+	for _, ref := range []string{"Acme", "acc1"} {
+		for _, offline := range []bool{true, false} {
+			args := []string{"cloudflare", "zone", "list", "--profile", "both", "--account", ref, "-o", "json"}
+			if offline {
+				args = append(args, "--offline")
+			}
+			e.f.reset()
+			code, stdout, stderr := e.run(args...)
+			if code != cli.ExitOK || !strings.Contains(stdout, "example.com") || strings.Contains(stdout, "example.net") {
+				t.Errorf("--account %s (offline %v): exit %d, %s%s", ref, offline, code, stdout, stderr)
+			}
+			if n := e.f.count(""); n != 0 {
+				t.Errorf("--account %s (offline %v) asked Cloudflare %d time(s)", ref, offline, n)
+			}
+		}
+	}
+	// An id the cache does not know still cannot be looked up offline.
+	if code, _, stderr := e.run("cloudflare", "zone", "list", "--profile", "both", "--account", "acc9", "--offline"); code != cli.ExitOffline {
+		t.Errorf("--account of an unknown id --offline: exit %d, %s", code, stderr)
+	}
+}

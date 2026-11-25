@@ -114,7 +114,9 @@ func rowAccount(r inventory.Resource) string {
 
 // knownAccount resolves an account reference without the network: the id
 // of a selected account, or a name the profile knows (that of the default
-// account, and those the cached zones carry) when it names one account.
+// account, and those the cached zones carry) when it names one account. A
+// login without an account has no selection: the id of an account it
+// cached zones of is known to it instead.
 func knownAccount(ctx context.Context, rt *app.Runtime, profile, ref string) (string, bool) {
 	def, defName, selected, err := loginAccounts(rt, profile)
 	if err != nil {
@@ -134,6 +136,9 @@ func knownAccount(ctx context.Context, rt *app.Runtime, profile, ref string) (st
 		rows, _ := db.List(ctx, inventory.Query{Platform: platform.Cloudflare, Profile: profile, Type: platform.ResZone})
 		for _, r := range rows {
 			z := rowZone(r)
+			if len(selected) == 0 && ref != "" && rowAccount(r) == ref {
+				return ref, true
+			}
 			add(zoneAccount(z), zoneAccountName(z))
 		}
 	}
