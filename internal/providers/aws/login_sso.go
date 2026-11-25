@@ -239,6 +239,12 @@ func (a ssoAccount) label() string {
 	return a.ID
 }
 
+// cells is the account as the cells of a selection list: "name  id
+// email", the id standing in for a name it does not have.
+func (a ssoAccount) cells() string {
+	return prompt.Cells(nameOr(a.Name, a.ID), a.ID, a.Email)
+}
+
 func listAccounts(ctx context.Context, c *sso.Client, token string) ([]ssoAccount, error) {
 	var out []ssoAccount
 	pg := sso.NewListAccountsPaginator(c, &sso.ListAccountsInput{AccessToken: awssdk.String(token)})
@@ -321,7 +327,7 @@ func chooseAccount(ctx context.Context, c *sso.Client, token string, in platform
 	opts := make([]prompt.Option, len(accounts))
 	defID := accounts[0].ID
 	for i, a := range accounts {
-		opts[i] = prompt.Option{Label: a.label(), Value: a.ID}
+		opts[i] = prompt.Option{Label: a.cells(), Value: a.ID}
 		if a.ID == def {
 			defID = a.ID
 		}

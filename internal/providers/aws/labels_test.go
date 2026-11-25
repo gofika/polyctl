@@ -61,6 +61,12 @@ func TestOptionLabelsKeepTheirCells(t *testing.T) {
 		"pending certificate of an account": {
 			certOptionLabel(platform.Certificate{ID: "arn:2", Domain: "example.org", Names: []string{"example.org", "a.example.org", "b.example.org"}, Status: "PENDING_VALIDATION"}, "aws/lab/ap-east-1"),
 			"example.org  +2 names  PENDING_VALIDATION  -  aws/lab/ap-east-1  arn:2"},
+		"Identity Center account": {
+			ssoAccount{ID: "123456789012", Name: "Production", Email: "ops@example.com"}.cells(),
+			"Production  123456789012  ops@example.com"},
+		"Identity Center account without a name": {
+			ssoAccount{ID: "123456789012", Email: "ops@example.com"}.cells(),
+			"123456789012  123456789012  ops@example.com"},
 	} {
 		if c.got != c.want {
 			t.Errorf("%s:\n got %q\nwant %q", name, c.got, c.want)
