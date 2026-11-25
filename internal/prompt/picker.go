@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -704,17 +705,84 @@ func huhOptions(opts []Option, width int) []huh.Option[string] {
 // columnGap separates the columns of an option label: two or more spaces.
 var columnGap = regexp.MustCompile(` {2,}`)
 
+// Cells joins the cells of an option label with the two spaces that
+// separate columns, so that the pickers line the cells of a list up. Each
+// cell is trimmed and runs of spaces inside it become one space (two would
+// start a new column). A cell that is empty while a later one is not is
+// shown as "-", so that the later cells keep their position; empty cells at
+// the end are dropped.
+func Cells(cells ...string) string {
+	out := make([]string, 0, len(cells))
+	for _, c := range cells {
+		out = append(out, strings.Join(strings.Fields(c), " "))
+	}
+	for len(out) > 0 && out[len(out)-1] == "" {
+		out = out[:len(out)-1]
+	}
+	for i, c := range out {
+		if c == "" {
+			out[i] = emptyCell
+		}
+	}
+	return strings.Join(out, "  ")
+}
+
+// emptyCell stands in for a cell without a value.
+const emptyCell = "-"
+
 // alignColumns pads the columns of the labels (parts separated by two or
 // more spaces) so that each column starts at the same position in every
-// row. The labels are returned as they are when none has a second column,
-// or when the widest aligned row would not fit width: padding must not push
-// what tells two rows apart out of sight.
+// row. A label of one cell (a special option such as "Another file...")
+// takes no part: it does not widen the first column of the other rows. A
+// column that is "-" in every row says nothing and is left out. The labels
+// are returned as they are when none has a second column, and without the
+// padding when the widest aligned row would not fit width: padding must not
+// push what tells two rows apart out of sight.
 func alignColumns(labels []string, width int) []string {
 	rows := make([][]string, len(labels))
-	var widths []int
+	columns := 0
 	for i, l := range labels {
 		rows[i] = columnGap.Split(strings.TrimSpace(l), -1)
-		for c, cell := range rows[i] {
+		if len(rows[i]) > 1 {
+			columns = max(columns, len(rows[i]))
+		}
+	}
+	if columns < 2 {
+		return labels
+	}
+	// Columns that are empty in every row go, last one first.
+	dropped := false
+	for c := columns - 1; c >= 0; c-- {
+		empty := true
+		for _, cells := range rows {
+			if len(cells) > 1 && c < len(cells) && cells[c] != emptyCell {
+				empty = false
+				break
+			}
+		}
+		if !empty {
+			continue
+		}
+		dropped = true
+		for i, cells := range rows {
+			if len(cells) > 1 && c < len(cells) {
+				rows[i] = slices.Delete(slices.Clone(cells), c, c+1)
+			}
+		}
+	}
+	plain := labels
+	if dropped {
+		plain = make([]string, len(rows))
+		for i, cells := range rows {
+			plain[i] = strings.Join(cells, "  ")
+		}
+	}
+	var widths []int
+	for _, cells := range rows {
+		if len(cells) < 2 {
+			continue
+		}
+		for c, cell := range cells {
 			if c == len(widths) {
 				widths = append(widths, 0)
 			}
@@ -722,10 +790,14 @@ func alignColumns(labels []string, width int) []string {
 		}
 	}
 	if len(widths) < 2 {
-		return labels
+		return plain
 	}
 	out := make([]string, len(labels))
 	for i, cells := range rows {
+		if len(cells) < 2 {
+			out[i] = plain[i]
+			continue
+		}
 		var b strings.Builder
 		for c, cell := range cells {
 			b.WriteString(cell)
@@ -735,7 +807,7 @@ func alignColumns(labels []string, width int) []string {
 		}
 		out[i] = b.String()
 		if lipgloss.Width(out[i]) > width {
-			return labels
+			return plain
 		}
 	}
 	return out

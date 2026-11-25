@@ -396,6 +396,67 @@ func TestOptionColumnsAlign(t *testing.T) {
 	}
 }
 
+// Cells keeps every fact of a label in its position: an empty cell before a
+// later one is "-", empty cells at the end are dropped, and no cell holds
+// two spaces in a row.
+func TestCells(t *testing.T) {
+	for _, tc := range []struct {
+		in   []string
+		want string
+	}{
+		{[]string{"web", "i-1", "RUNNING"}, "web  i-1  RUNNING"},
+		{[]string{"web", "", "RUNNING"}, "web  -  RUNNING"},
+		{[]string{"", "i-1", ""}, "-  i-1"},
+		{[]string{"web", "", ""}, "web"},
+		{[]string{" web ", "expires  2026-01-01   (30 days)", "\tx "}, "web  expires 2026-01-01 (30 days)  x"},
+		{[]string{"web", "   ", "x"}, "web  -  x"},
+		{[]string{"", ""}, ""},
+		{nil, ""},
+	} {
+		if got := Cells(tc.in...); got != tc.want {
+			t.Errorf("Cells(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// A label of one cell does not widen the first column of the other rows,
+// and a column that is "-" in every row is not shown.
+func TestOptionColumnsSkipSpecialRowsAndEmptyColumns(t *testing.T) {
+	got := alignColumns([]string{
+		Cells("web", "", "ed25519", "", "aws/acme"),
+		Cells("database-1", "", "rsa", "", "aws/beta"),
+		"Import a new key pair from a public key file...",
+	}, 80)
+	want := []string{
+		"web         ed25519  aws/acme",
+		"database-1  rsa      aws/beta",
+		"Import a new key pair from a public key file...",
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("row %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+
+	// The shortcut of a menu entry stays next to it.
+	got = alignColumns([]string{"Remove accounts or profiles", "Quit  (q)"}, 80)
+	if got[1] != "Quit  (q)" {
+		t.Errorf("menu: %q", got)
+	}
+
+	// A column that holds a value in one row stays, "-" in the others.
+	got = alignColumns([]string{Cells("a", "", "x"), Cells("bb", "1", "y"), "Other..."}, 80)
+	if got[0] != "a   -  x" || got[1] != "bb  1  y" || got[2] != "Other..." {
+		t.Errorf("kept column: %q", got)
+	}
+
+	// Rows that do not fit lose the padding, not the dropped column.
+	got = alignColumns([]string{Cells("a", "", strings.Repeat("x", 30)), Cells(strings.Repeat("y", 30), "", "b")}, 40)
+	if got[0] != "a  "+strings.Repeat("x", 30) || got[1] != strings.Repeat("y", 30)+"  b" {
+		t.Errorf("too wide: %q", got)
+	}
+}
+
 // The title of a list, and the line below it, start in the column of the
 // option labels.
 func TestTitlesStartWhereLabelsStart(t *testing.T) {
