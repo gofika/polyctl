@@ -758,6 +758,36 @@ func TestGCPProjectFlag(t *testing.T) {
 	}
 }
 
+// --account is on the Cloudflare commands that work on zones, and on no
+// other command.
+func TestCloudflareAccountFlag(t *testing.T) {
+	rt := app.New(app.Flags{}, strings.NewReader(""), &strings.Builder{}, &strings.Builder{})
+	root := NewRoot(rt)
+	for path, want := range map[string]bool{
+		"cloudflare zone list": true, "cloudflare zone get": true, "cloudflare zone create": true, "cloudflare zone ensure": true,
+		"cloudflare zone delete": true, "cloudflare zone setting set": true, "cloudflare dns list": true, "cloudflare dns create": true,
+		"cloudflare cache purge": true, "cloudflare cache rule set": true, "cloudflare redirect rule list": true,
+		"cloudflare dev-mode": true, "cloudflare ssl-mode": true,
+		"cloudflare account list": false, "cloudflare whoami": false, "gcp dns zone list": false, "dns list": false, "sync": false,
+	} {
+		c, _, err := root.Find(strings.Fields(path))
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		if got := c.Flag("account") != nil; got != want {
+			t.Errorf("%s: --account present = %v, want %v", path, got, want)
+		}
+	}
+	// The short name of the tree takes it too, and an empty value is
+	// refused as the flag is read.
+	if code, _, stderr := mainExit(t.TempDir(), "cf", "zone", "list", "--account", " "); code != ExitUsage || !strings.Contains(stderr, "an account id or name is required") {
+		t.Errorf("--account ' ': exit %d, %s", code, stderr)
+	}
+	if code, _, stderr := mainExit(t.TempDir(), "cloudflare", "account", "list", "--account", "acc1"); code != ExitUsage || !strings.Contains(stderr, "unknown flag") {
+		t.Errorf("account list --account: exit %d, %s", code, stderr)
+	}
+}
+
 // auth list names the default project of a Google Cloud account and how
 // many more are selected.
 func TestMetaSummaryCountsProjects(t *testing.T) {

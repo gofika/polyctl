@@ -1038,15 +1038,19 @@ func TestFQDNConversionForNativeCommands(t *testing.T) {
 	}
 }
 
-func TestMatchZone(t *testing.T) {
-	zones := []platform.Zone{{ID: "zone1", Name: "example.com"}, {ID: "zone2", Name: "example.org"}}
-	if z := matchZone(zones, "Example.COM."); z == nil || z.ID != "zone1" {
-		t.Fatalf("by name: %+v", z)
+func TestMatchZones(t *testing.T) {
+	zones := []platform.Zone{{ID: "zone1", Name: "example.com"}, {ID: "zone2", Name: "example.org"}, {ID: "zone3", Name: "example.com"}}
+	if zs := matchZones(zones, "Example.ORG."); len(zs) != 1 || zs[0].ID != "zone2" {
+		t.Fatalf("by name: %+v", zs)
 	}
-	if z := matchZone(zones, "zone2"); z == nil || z.Name != "example.org" {
-		t.Fatalf("by id: %+v", z)
+	if zs := matchZones(zones, "zone3"); len(zs) != 1 || zs[0].ID != "zone3" {
+		t.Fatalf("by id: %+v", zs)
 	}
-	if matchZone(zones, "nope.com") != nil {
+	// A name two accounts hold a zone of matches both.
+	if zs := matchZones(zones, "example.com"); len(zs) != 2 {
+		t.Fatalf("a name held twice: %+v", zs)
+	}
+	if matchZones(zones, "nope.com") != nil {
 		t.Fatal("unexpected match")
 	}
 }
@@ -1066,6 +1070,17 @@ func TestCommandTree(t *testing.T) {
 		}
 		if strings.Fields(w)[len(strings.Fields(w))-1] != c.Name() {
 			t.Errorf("command %q resolved to %q", w, c.Name())
+		}
+	}
+	// --account is on the commands that work on zones, and only there.
+	for path, has := range map[string]bool{"zone list": true, "zone setting get": true, "dns create": true, "cache purge": true, "cache rule list": true,
+		"redirect rule set": true, "dev-mode": true, "ssl-mode": true, "account list": false, "whoami": false} {
+		c, _, err := cmd.Find(strings.Fields(path))
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		if got := c.Flag("account") != nil; got != has {
+			t.Errorf("%s: --account present = %v, want %v", path, got, has)
 		}
 	}
 	for _, flag := range []string{"type", "name", "value", "ttl", "priority", "proxied"} {

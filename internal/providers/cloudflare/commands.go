@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -34,7 +35,12 @@ The tree is also available under its short name: polyctl cf ...`,
 	}
 	cmd.AddCommand(
 		app.WhoamiCommand(rt, platform.Cloudflare, "On Cloudflare this verifies the API token and reports its id, status and\nexpiry, with the account the profile is pinned to. For an account authorized\nin the browser it checks the authorization with a request to the API and\nreports the granted scopes."),
-		newZoneCmd(rt), newDNSCmd(rt), newCacheCmd(rt), newRedirectCmd(rt), newDevModeCmd(rt), newSSLModeCmd(rt), newR2Cmd(rt), newAccountCmd(rt))
+		newR2Cmd(rt), newAccountCmd(rt))
+	// The commands that work on zones take --account.
+	for _, c := range []*cobra.Command{newZoneCmd(rt), newDNSCmd(rt), newCacheCmd(rt), newRedirectCmd(rt), newDevModeCmd(rt), newSSLModeCmd(rt)} {
+		addAccountFlag(rt, c)
+		cmd.AddCommand(c)
+	}
 	return cmd
 }
 
@@ -68,12 +74,26 @@ func recordSet(profile, zoneID string) inventory.Set {
 	return inventory.Set{Platform: platform.Cloudflare, Profile: profile, Type: platform.ResDNSRecord, Scope: zoneID}
 }
 
-// cachedZones returns the zones of the resolved profile honouring
-// --refresh/--offline/TTL, and whether they came from the cache.
-func cachedZones(ctx context.Context, rt *app.Runtime) ([]platform.Zone, string, bool, error) {
+// cachedZones returns the zones of the resolved profile in the scope of
+// the call (the selected accounts, or the one of --account) honouring
+// --refresh/--offline/TTL, and whether they came from the cache. The zones
+// of an account outside the selection are read live and not stored.
+func cachedZones(ctx context.Context, rt *app.Runtime) ([]platform.Zone, acctScope, bool, error) {
 	profile, err := rt.ProfileFor(platform.Cloudflare)
 	if err != nil {
-		return nil, "", false, err
+		return nil, acctScope{}, false, err
+	}
+	sc, err := profileScope(ctx, rt, profile)
+	if err != nil {
+		return nil, acctScope{profile: profile}, false, err
+	}
+	if sc.live {
+		s, err := open(ctx, rt)
+		if err != nil {
+			return nil, sc, false, err
+		}
+		zones, err := s.client.pin(sc.pin).ListZones(ctx)
+		return zones, sc, false, err
 	}
 	rows, cached, err := rt.EnsureSet(ctx, zoneSet(profile), func(ctx context.Context) ([]platform.Resource, error) {
 		s, err := open(ctx, rt)
@@ -85,36 +105,55 @@ func cachedZones(ctx context.Context, rt *app.Runtime) ([]platform.Zone, string,
 		return s.client.Sync(ctx, platform.ResZone)
 	})
 	if err != nil {
-		return nil, profile, cached, err
+		return nil, sc, cached, err
 	}
 	zones := make([]platform.Zone, 0, len(rows))
 	for _, r := range rows {
 		var z platform.Zone
 		if err := r.Decode(&z); err != nil {
-			return nil, profile, cached, fmt.Errorf("decode cached zone %s: %w", r.ID, err)
+			return nil, sc, cached, fmt.Errorf("decode cached zone %s: %w", r.ID, err)
+		}
+		if !sc.keeps(rowAccount(r)) {
+			continue
 		}
 		zones = append(zones, z)
 	}
-	return zones, profile, cached, nil
+	return zones, sc, cached, nil
 }
 
-// resolveZone finds a zone by name or id: inventory first, then remotely
-// (unless --offline). A remote hit is stored in the inventory.
+// resolveZone finds a zone by name or id in the scope of the call:
+// inventory first, then remotely (unless --offline). A remote hit is stored
+// in the inventory when its account is selected. A name that several
+// accounts of the scope hold a zone of is a pick in the interactive flow
+// and ambiguous (exit code 5) otherwise.
 //
 // An empty arg (the <zone> left out in the interactive flow) is asked for
-// among the zones of the profile.
+// among the zones of the scope.
 func resolveZone(ctx context.Context, rt *app.Runtime, arg string) (*platform.Zone, string, error) {
-	zones, profile, _, err := cachedZones(ctx, rt)
+	zones, sc, _, err := cachedZones(ctx, rt)
+	profile := sc.profile
 	if err != nil {
 		return nil, profile, err
 	}
 	if arg == "" {
-		if arg, err = pickCachedZone(rt, zones, profile); err != nil {
+		if arg, err = pickCachedZone(rt, zones, sc); err != nil {
 			return nil, profile, err
 		}
 	}
-	if z := matchZone(zones, arg); z != nil {
-		return z, profile, nil
+	switch found := matchZones(zones, arg); len(found) {
+	case 0:
+	case 1:
+		return &found[0], profile, nil
+	default:
+		cands := make([]zoneCand, 0, len(found))
+		for _, z := range found {
+			cands = append(cands, candOfZone(profile, z))
+		}
+		z, err := disambiguate(rt, ambiguousZone(platform.NormalizeDomain(arg), cands), found, func(z platform.Zone) string { return candOfZone(profile, z).String() })
+		if err != nil {
+			return nil, profile, err
+		}
+		return &z, profile, nil
 	}
 	if rt.Flags.Offline {
 		return nil, profile, fmt.Errorf("%w: zone %q is not in the local inventory (profile %s)", platform.ErrNotFound, arg, profile)
@@ -123,25 +162,33 @@ func resolveZone(ctx context.Context, rt *app.Runtime, arg string) (*platform.Zo
 	if err != nil {
 		return nil, profile, err
 	}
-	z, err := s.client.GetZone(ctx, arg)
+	az, err := findLiveZone(ctx, rt, s.client.api, sc, arg)
 	if err != nil {
 		return nil, profile, err
 	}
-	if db, err := rt.DB(); err == nil {
-		cfg, _ := rt.Config()
-		_ = db.Upsert(ctx, zoneSet(profile), zoneResources([]platform.Zone{*z})[0], cfg.TTLFor(platform.ResZone))
-	}
-	return z, profile, nil
-}
-
-func matchZone(zones []platform.Zone, arg string) *platform.Zone {
-	name := platform.NormalizeDomain(arg)
-	for i := range zones {
-		if zones[i].ID == arg || platform.NormalizeDomain(zones[i].Name) == name {
-			return &zones[i]
+	z := toZone(*az)
+	if cacheable(rt, profile, az.Account.ID) {
+		if db, err := rt.DB(); err == nil {
+			cfg, _ := rt.Config()
+			_ = db.Upsert(ctx, zoneSet(profile), zoneResources([]platform.Zone{z})[0], cfg.TTLFor(platform.ResZone))
 		}
 	}
-	return nil
+	return &z, profile, nil
+}
+
+// matchZones returns the zone of the id arg, or the zones named arg.
+func matchZones(zones []platform.Zone, arg string) []platform.Zone {
+	name := platform.NormalizeDomain(arg)
+	var named []platform.Zone
+	for _, z := range zones {
+		if z.ID == arg {
+			return []platform.Zone{z}
+		}
+		if platform.NormalizeDomain(z.Name) == name {
+			named = append(named, z)
+		}
+	}
+	return named
 }
 
 // mutationSession rejects --offline and opens the client.
@@ -179,12 +226,32 @@ type recordsResult struct {
 	Records []platform.Record `json:"records" yaml:"records"`
 }
 
+// zoneGrid lists zones; those of several accounts are listed with the
+// account of each.
 func zoneGrid(zones []platform.Zone) output.Grid {
+	several := severalAccounts(zones)
 	g := output.Grid{Headers: []string{"NAME", "STATUS", "PLAN", "NAMESERVERS", "ID"}, Empty: "no zones"}
+	if several {
+		g.Headers = []string{"NAME", "ACCOUNT", "STATUS", "PLAN", "NAMESERVERS", "ID"}
+	}
 	for _, z := range zones {
-		g.Rows = append(g.Rows, []string{z.Name, z.Status, output.Str(z.Extra["plan"]), strings.Join(z.Nameservers, ","), z.ID})
+		row := []string{z.Name}
+		if several {
+			row = append(row, nonEmpty(zoneAccountName(z), zoneAccount(z)))
+		}
+		g.Rows = append(g.Rows, append(row, z.Status, output.Str(z.Extra["plan"]), strings.Join(z.Nameservers, ","), z.ID))
 	}
 	return g
+}
+
+// severalAccounts reports whether zones are of more than one account.
+func severalAccounts(zones []platform.Zone) bool {
+	for _, z := range zones[min(1, len(zones)):] {
+		if zoneAccount(z) != zoneAccount(zones[0]) {
+			return true
+		}
+	}
+	return false
 }
 
 func zoneKV(z *platform.Zone) output.Grid {
@@ -228,13 +295,14 @@ func newZoneCmd(rt *app.Runtime) *cobra.Command {
 	cmd.AddCommand(
 		&cobra.Command{
 			Use:   "list",
-			Short: "List zones of the profile",
+			Short: "List the zones of the profile, in every selected account (or the one of --account)",
 			Args:  cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
-				zones, profile, cached, err := cachedZones(cmd.Context(), rt)
+				zones, sc, cached, err := cachedZones(cmd.Context(), rt)
 				if err != nil {
 					return err
 				}
+				profile := sc.profile
 				sort.SliceStable(zones, func(i, j int) bool { return zones[i].Name < zones[j].Name })
 				rt.Infof("%d zone(s) via cloudflare/%s%s", len(zones), profile, cacheNote(cached))
 				return rt.Render(zoneListResult{Profile: profile, Cached: cached, Zones: zones}, func() output.Grid { return zoneGrid(zones) })
@@ -276,9 +344,12 @@ func completeZones(rt *app.Runtime) func(*cobra.Command, []string, string) ([]st
 		if err != nil {
 			return nil, cobra.ShellCompDirectiveError
 		}
+		sc := localScope(cmd.Context(), rt, profile)
 		out := make([]string, 0, len(rows))
 		for _, r := range rows {
-			out = append(out, r.Name)
+			if sc.keeps(rowAccount(r)) && !slices.Contains(out, r.Name) {
+				out = append(out, r.Name)
+			}
 		}
 		return out, cobra.ShellCompDirectiveNoFileComp
 	}
@@ -292,8 +363,18 @@ func newDNSCmd(rt *app.Runtime) *cobra.Command {
 	return cmd
 }
 
-// zoneRecords returns the records of a zone through the inventory.
+// zoneRecords returns the records of a zone through the inventory; those
+// of a zone in an account outside the selection are read live and not
+// stored.
 func zoneRecords(ctx context.Context, rt *app.Runtime, profile string, z *platform.Zone) ([]platform.Record, bool, error) {
+	if !cacheable(rt, profile, zoneAccount(*z)) {
+		s, err := open(ctx, rt)
+		if err != nil {
+			return nil, false, err
+		}
+		recs, err := s.client.ListRecords(ctx, z.ID)
+		return recs, false, err
+	}
 	rows, cached, err := rt.EnsureSet(ctx, recordSet(profile, z.ID), func(ctx context.Context) ([]platform.Resource, error) {
 		s, err := open(ctx, rt)
 		if err != nil {
@@ -356,8 +437,12 @@ func newDNSListCmd(rt *app.Runtime) *cobra.Command {
 	return cmd
 }
 
-// storeRecord mirrors a mutation into the inventory.
+// storeRecord mirrors a mutation into the inventory, unless the zone is in
+// an account outside the selection.
 func storeRecord(ctx context.Context, rt *app.Runtime, profile string, z *platform.Zone, rec platform.Record) {
+	if !cacheable(rt, profile, zoneAccount(*z)) {
+		return
+	}
 	db, err := rt.DB()
 	if err != nil {
 		return

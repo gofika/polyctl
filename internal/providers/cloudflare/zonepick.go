@@ -22,16 +22,26 @@ func zoneLabel(z platform.Zone) string {
 	return strings.Join(append(parts, z.ID), "  ")
 }
 
-// pickCachedZone asks for one of the zones of profile (the <zone> of the
-// commands that work on the profile's zones). No zone is nothing to do.
-func pickCachedZone(rt *app.Runtime, zones []platform.Zone, profile string) (string, error) {
+// pickCachedZone asks for one of the zones of the scope of a profile (the
+// <zone> of the commands that work on the profile's zones); zones of
+// several accounts are shown with their account. No zone is nothing to do.
+func pickCachedZone(rt *app.Runtime, zones []platform.Zone, sc acctScope) (string, error) {
 	sorted := append([]platform.Zone(nil), zones...)
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+	several := severalAccounts(sorted)
 	var opts []prompt.Option
 	for _, z := range sorted {
-		opts = append(opts, prompt.Option{Label: zoneLabel(z) + "  cloudflare/" + profile, Value: z.ID})
+		label := zoneLabel(z)
+		if acc := zoneAccount(z); several && acc != "" {
+			label += "  account " + nonEmpty(zoneAccountName(z), acc)
+		}
+		opts = append(opts, prompt.Option{Label: label + "  cloudflare/" + sc.profile, Value: z.ID})
 	}
-	return rt.Choose(app.Choice{Title: "Zone", Options: opts, Arg: "<zone>", What: "zone in cloudflare/" + profile})
+	what := "zone in cloudflare/" + sc.profile
+	if sc.pin != "" {
+		what = "zone in account " + sc.pin + " of cloudflare/" + sc.profile
+	}
+	return rt.Choose(app.Choice{Title: "Zone", Options: opts, Arg: "<zone>", What: what})
 }
 
 // pickLiveZone asks for one of the zones of every selected Cloudflare

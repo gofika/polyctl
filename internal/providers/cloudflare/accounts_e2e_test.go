@@ -2,6 +2,7 @@ package cloudflare_test
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -12,6 +13,7 @@ import (
 	"github.com/gofika/polyctl/internal/config"
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt/prompttest"
 )
 
 // loginBoth logs the profile "both" in with the token that sees acc1 and
@@ -221,5 +223,175 @@ func TestDomainRoutingAmbiguousAccounts(t *testing.T) {
 	}
 	if strings.Contains(stderr, "--profile <name>") {
 		t.Errorf("--profile does not tell the zones apart: %s", stderr)
+	}
+}
+
+// The zone list of a login covers its selected accounts and says which
+// account a zone is of; --account, by id or by name, narrows it to one.
+func TestZoneListSeveralAccounts(t *testing.T) {
+	e := newR2Env(t)
+	e.loginBoth("acc1", "acc1", "acc2")
+	code, stdout, stderr := e.run("cloudflare", "zone", "list", "--profile", "both")
+	if code != cli.ExitOK {
+		t.Fatalf("list: exit %d, %s", code, stderr)
+	}
+	for _, want := range []string{"ACCOUNT", "Acme", "Beta", "example.com", "example.net"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("the list of two accounts lacks %q:\n%s", want, stdout)
+		}
+	}
+	// One account: the list is what it always was.
+	if code, stdout, stderr = e.run("cloudflare", "zone", "list", "--profile", "acme"); code != cli.ExitOK || strings.Contains(stdout, "ACCOUNT") {
+		t.Errorf("list of one account: exit %d, %s%s", code, stdout, stderr)
+	}
+	// "beta" is a name the cached zones of the login carry: no request.
+	for _, ref := range []string{"acc2", "beta"} {
+		e.f.reset()
+		code, stdout, stderr = e.run("cloudflare", "zone", "list", "--profile", "both", "--account", ref)
+		if code != cli.ExitOK || !strings.Contains(stdout, "example.net") || strings.Contains(stdout, "example.com") || strings.Contains(stdout, "ACCOUNT") {
+			t.Errorf("--account %s: exit %d, %s%s", ref, code, stdout, stderr)
+		}
+		if n := e.f.count(""); n != 0 {
+			t.Errorf("--account %s of a selected account made %d requests", ref, n)
+		}
+	}
+	// An account the credentials do not see is not found; a name the
+	// login cannot look up offline is refused.
+	if code, _, stderr = e.run("cloudflare", "zone", "list", "--profile", "both", "--account", "nope"); code != cli.ExitNotFound || !strings.Contains(stderr, "not visible") {
+		t.Errorf("--account nope: exit %d, %s", code, stderr)
+	}
+	if code, _, stderr = e.run("cloudflare", "zone", "list", "--profile", "both", "--account", "nope", "--offline"); code != cli.ExitOffline {
+		t.Errorf("--account nope --offline: exit %d, %s", code, stderr)
+	}
+	// The zone id of another account than --account is a usage error.
+	code, _, stderr = e.run("cloudflare", "zone", "get", "zone-beta", "--profile", "both", "--account", "acc1")
+	if code != cli.ExitUsage || !strings.Contains(stderr, "is of account acc2, not of --account acc1") {
+		t.Errorf("zone id of another account: exit %d, %s", code, stderr)
+	}
+}
+
+// An account outside the selection is read live with --account, by id or
+// by name, and nothing of it reaches the inventory; without the flag its
+// zones are not found, and the answer says where they are.
+func TestUnselectedAccountIsReadLive(t *testing.T) {
+	e := newR2Env(t)
+	e.f.addRecord("zone-beta", "rec-beta", "www.example.net", "A", "192.0.2.2")
+	e.loginBoth("acc1")
+
+	code, stdout, stderr := e.run("cloudflare", "zone", "list", "--profile", "both", "--account", "acc2")
+	if code != cli.ExitOK || !strings.Contains(stdout, "example.net") || strings.Contains(stdout, "example.com") {
+		t.Fatalf("zone list: exit %d, %s%s", code, stdout, stderr)
+	}
+	code, stdout, stderr = e.run("cloudflare", "zone", "get", "example.net", "--profile", "both", "--account", "Beta", "-o", "json")
+	if code != cli.ExitOK || !strings.Contains(stdout, `"id": "zone-beta"`) {
+		t.Fatalf("zone get: exit %d, %s%s", code, stdout, stderr)
+	}
+	code, stdout, stderr = e.run("cloudflare", "dns", "list", "zone-beta", "--profile", "both", "--account", "acc2", "-o", "json")
+	if code != cli.ExitOK || !strings.Contains(stdout, "192.0.2.2") || !strings.Contains(stdout, `"cached": false`) {
+		t.Fatalf("dns list: exit %d, %s%s", code, stdout, stderr)
+	}
+	for _, typ := range []platform.ResourceType{platform.ResZone, platform.ResDNSRecord} {
+		for _, row := range e.rows("both", typ) {
+			if strings.Contains(row, "beta") {
+				t.Errorf("a row of the unselected account was stored: %s", row)
+			}
+		}
+	}
+	// Offline there is nothing to read it from.
+	if code, _, stderr = e.run("cloudflare", "zone", "list", "--profile", "both", "--account", "acc2", "--offline"); code != cli.ExitOffline {
+		t.Errorf("--offline: exit %d, %s", code, stderr)
+	}
+	// Without --account the zone is not one of the login.
+	for _, ref := range []string{"example.net", "zone-beta"} {
+		code, _, stderr = e.run("cloudflare", "zone", "get", ref, "--profile", "both")
+		if code != cli.ExitNotFound || !strings.Contains(stderr, "polyctl cloudflare account add acc2") || !strings.Contains(stderr, "--account acc2") {
+			t.Errorf("zone get %s without --account: exit %d, %s", ref, code, stderr)
+		}
+	}
+	// A zone of the selected account, named by id with the --account of
+	// the other one.
+	code, _, stderr = e.run("cloudflare", "zone", "get", "zone-ex", "--profile", "both", "--account", "acc2")
+	if code != cli.ExitUsage || !strings.Contains(stderr, "not of --account acc2") {
+		t.Errorf("zone id of the selected account: exit %d, %s", code, stderr)
+	}
+}
+
+// A cached zone of an account that left the selection is not one of the
+// login any more, although the set that holds it is still fresh.
+func TestDeselectedAccountRowsAreOutOfScope(t *testing.T) {
+	e := newR2Env(t)
+	e.loginBoth("acc1", "acc1", "acc2")
+	if code, _, stderr := e.run("cloudflare", "zone", "list", "--profile", "both"); code != cli.ExitOK {
+		t.Fatalf("list: exit %d, %s", code, stderr)
+	}
+	cfg, err := config.Load(filepath.Join(e.dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(cfg.Profiles["both"].Platforms[platform.Cloudflare].Metadata, "accounts")
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := e.run("cloudflare", "zone", "list", "--profile", "both", "--offline")
+	if code != cli.ExitOK || strings.Contains(stdout, "example.net") || !strings.Contains(stdout, "example.com") {
+		t.Errorf("list after the deselection: exit %d, %s%s", code, stdout, stderr)
+	}
+	if code, _, stderr = e.run("cloudflare", "zone", "get", "example.net", "--profile", "both", "--offline"); code != cli.ExitNotFound {
+		t.Errorf("get after the deselection: exit %d, %s", code, stderr)
+	}
+}
+
+// A zone name two selected accounts hold a zone of is ambiguous (exit code
+// 5) for the commands of one profile, a pick on a terminal, and --account
+// chooses.
+func TestZoneNameInTwoAccounts(t *testing.T) {
+	e := newR2Env(t)
+	e.f.zones = append(e.f.zones, r2Zone{"zone-dup", "example.com", "pending", "acc2"})
+	e.loginBoth("acc1", "acc1", "acc2")
+	for _, args := range [][]string{{"zone", "get", "example.com"}, {"dns", "list", "example.com"}, {"ssl-mode", "example.com"}} {
+		code, _, stderr := e.run(append(append([]string{"cloudflare"}, args...), "--profile", "both")...)
+		if code != cli.ExitAmbiguous {
+			t.Fatalf("%v: exit %d, %s", args, code, stderr)
+		}
+		for _, want := range []string{"account acc1 (Acme) zone zone-ex active", "account acc2 (Beta) zone zone-dup pending", "pass --account <id or name>, or the zone id, to choose"} {
+			if !strings.Contains(stderr, want) {
+				t.Errorf("%v: the ambiguity lacks %q: %s", args, want, stderr)
+			}
+		}
+		if strings.Contains(stderr, "--profile <name>") {
+			t.Errorf("%v: --profile does not tell the zones apart: %s", args, stderr)
+		}
+	}
+	// The same before the inventory knows the zones.
+	e.loginBoth("acc1", "acc1", "acc2")
+	if err := os.Remove(filepath.Join(e.dir, "inventory.db")); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := e.run("cloudflare", "zone", "get", "example.com", "--profile", "both", "--account", "acc2", "-o", "json")
+	if code != cli.ExitOK || !strings.Contains(stdout, `"id": "zone-dup"`) {
+		t.Errorf("--account acc2: exit %d, %s%s", code, stdout, stderr)
+	}
+	code, stdout, stderr = e.run("cloudflare", "zone", "get", "zone-dup", "--profile", "both", "-o", "json")
+	if code != cli.ExitOK || !strings.Contains(stdout, `"id": "zone-dup"`) {
+		t.Errorf("by id: exit %d, %s%s", code, stdout, stderr)
+	}
+	// On a terminal the zones are offered with their accounts.
+	p := prompttest.New(t, prompttest.Label("zone-dup"))
+	code, stdout, stderr = e.runPick(p, "cloudflare", "zone", "get", "example.com", "--profile", "both", "-o", "json")
+	if code != cli.ExitOK || !strings.Contains(stdout, `"id": "zone-dup"`) {
+		t.Errorf("pick: exit %d, %s%s", code, stdout, stderr)
+	}
+	if a := p.Find(`Ambiguous zone "example.com"; use which one?`); a == nil || len(a.Options) != 2 || !strings.Contains(prompttest.Labels(a.Options), "account acc2 (Beta)") {
+		t.Errorf("questions asked: %v", p.Titles())
+	}
+	p.Done()
+	// A pick without a name shows the account of each zone.
+	p = prompttest.New(t, "zone-dup")
+	code, stdout, stderr = e.runPick(p, "cloudflare", "zone", "get", "--profile", "both", "-o", "json")
+	if code != cli.ExitOK || !strings.Contains(stdout, `"id": "zone-dup"`) {
+		t.Errorf("pick without a name: exit %d, %s%s", code, stdout, stderr)
+	}
+	if a := p.Find("Zone"); a == nil || !strings.Contains(prompttest.Labels(a.Options), "account Beta") || !strings.Contains(prompttest.Labels(a.Options), "account Acme") {
+		t.Errorf("zone options: %+v", a)
 	}
 }
