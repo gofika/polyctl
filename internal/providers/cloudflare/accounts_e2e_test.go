@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -988,5 +989,88 @@ func TestR2LoginWithoutAnAccount(t *testing.T) {
 	code, stdout, stderr = e.run("cloudflare", "r2", "domain", "list", "media", "--profile", "both", "--account", "acc2")
 	if code != cli.ExitOK || !strings.Contains(stdout, "cdn.example.net") {
 		t.Errorf("domain list --account: exit %d, %s%s", code, stdout, stderr)
+	}
+}
+
+// domains lists the domains the index holds for a profile, sorted.
+func (e *r2Env) domains(profile string) []string {
+	e.t.Helper()
+	db, err := inventory.Open(filepath.Join(e.dir, "inventory.db"))
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer db.Close()
+	entries, err := db.IndexEntries(context.Background())
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	var out []string
+	for _, en := range entries {
+		if en.Platform == platform.Cloudflare && en.Profile == profile && !slices.Contains(out, en.Domain) {
+			out = append(out, en.Domain)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// A new login that no longer selects an account drops what the inventory
+// holds of it at once: its zones, their records, its buckets and its
+// domains in the index, which would otherwise keep routing to it.
+func TestReloginDropsADeselectedAccount(t *testing.T) {
+	e := newR2Env(t)
+	e.f.addRecord("zone-ex", "rec-ex", "www.example.com", "A", "192.0.2.1")
+	e.f.addRecord("zone-beta", "rec-beta", "www.example.net", "A", "192.0.2.2")
+	e.f.accounts["acc1"].buckets = []string{"assets"}
+	e.f.accounts["acc2"].buckets = []string{"assets"}
+	login := func(set ...string) {
+		t.Helper()
+		args := []string{"auth", "login", "cloudflare", "--profile", "both", "--set", "token=tok-both"}
+		for _, s := range set {
+			args = append(args, "--set", s)
+		}
+		if code, _, stderr := e.run(args...); code != cli.ExitOK {
+			t.Fatalf("login %v: exit %d, %s", set, code, stderr)
+		}
+	}
+	login("accounts=acc1,acc2")
+	if code, _, stderr := e.run("sync", "--profile", "both", "--platform", "cloudflare"); code != cli.ExitOK {
+		t.Fatalf("sync: exit %d, %s", code, stderr)
+	}
+	if got := e.domains("both"); !slices.Contains(got, "example.net") || !slices.Contains(got, "example.com") {
+		t.Fatalf("domains: %v", got)
+	}
+
+	// The same selection with another default: nothing is dropped and the
+	// sets stay fresh.
+	login("accounts=acc1,acc2", "account_id=acc2")
+	e.f.reset()
+	if code, stdout, stderr := e.run("cloudflare", "zone", "list", "--profile", "both"); code != cli.ExitOK || !strings.Contains(stdout, "example.net") {
+		t.Fatalf("list: exit %d, %s%s", code, stdout, stderr)
+	}
+	if n := e.f.count(""); n != 0 {
+		t.Errorf("a login with the same accounts made the zone set due (%d requests)", n)
+	}
+
+	login("accounts=acc1")
+	if got, want := e.rows("both", platform.ResZone), []string{"zone-a acc1", "zone-couk acc1", "zone-ex acc1", "zone-pend acc1"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("zones: %v", got)
+	}
+	if got, want := e.rows("both", platform.ResDNSRecord), []string{"rec-ex zone-ex"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("records: %v", got)
+	}
+	if got, want := e.rows("both", platform.ResR2Bucket), []string{"acc1/assets acc1"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("buckets: %v", got)
+	}
+	if got := e.domains("both"); slices.Contains(got, "example.net") || !slices.Contains(got, "example.com") {
+		t.Errorf("domains: %v", got)
+	}
+	// The sets are due: the next read asks Cloudflare.
+	e.f.reset()
+	if code, _, stderr := e.run("cloudflare", "zone", "list", "--profile", "both"); code != cli.ExitOK {
+		t.Fatalf("list: exit %d, %s", code, stderr)
+	}
+	if n := e.f.count(""); n == 0 {
+		t.Errorf("the zone set of a changed selection was served from the cache")
 	}
 }

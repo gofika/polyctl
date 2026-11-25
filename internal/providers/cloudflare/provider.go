@@ -140,6 +140,28 @@ func (*provider) ResourceTypes() []platform.ResourceType {
 	return []platform.ResourceType{platform.ResZone, platform.ResDNSRecord, platform.ResR2Bucket}
 }
 
+var _ platform.CoverageChanger = (*provider)(nil)
+
+// CoverageChange compares the selections of a login before and after a new
+// login: the accounts that left it are dropped from the inventory (their
+// zones, the records of those, their R2 buckets), and any change of the
+// selection makes the cached sets due. A login that only changes its
+// default account covers what it covered.
+func (*provider) CoverageChange(before, after map[string]string) (dropped []string, changed bool) {
+	was, is := selectedAccounts(before), selectedAccounts(after)
+	for _, a := range was {
+		if !slices.Contains(is, a) {
+			dropped = append(dropped, a)
+		}
+	}
+	for _, a := range is {
+		if !slices.Contains(was, a) {
+			changed = true
+		}
+	}
+	return dropped, changed || len(dropped) > 0
+}
+
 var _ platform.OwnerHinter = (*provider)(nil)
 
 // OwnerHint says how to choose among several zones of one login that hold

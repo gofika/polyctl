@@ -426,3 +426,38 @@ func TestOwnerHint(t *testing.T) {
 		t.Fatalf("another type: %q", h)
 	}
 }
+
+func TestCoverageChange(t *testing.T) {
+	p := &provider{}
+	meta := func(def, accounts string) map[string]string {
+		m := map[string]string{}
+		if def != "" {
+			m[metaAccountID] = def
+		}
+		if accounts != "" {
+			m[metaAccounts] = accounts
+		}
+		return m
+	}
+	for _, tc := range []struct {
+		name          string
+		before, after map[string]string
+		dropped       []string
+		changed       bool
+	}{
+		{"the same account", meta("acc1", ""), meta("acc1", ""), nil, false},
+		{"another default of the same selection", meta("acc1", "acc1,acc2"), meta("acc2", "acc2,acc1"), nil, false},
+		{"an account added", meta("acc1", ""), meta("acc1", "acc1,acc2"), nil, true},
+		{"an account removed", meta("acc1", "acc1,acc2"), meta("acc1", ""), []string{"acc2"}, true},
+		{"another account", meta("acc1", ""), meta("acc2", ""), []string{"acc1"}, true},
+		{"the default removed", meta("acc1", "acc1,acc2,acc3"), meta("acc3", "acc3,acc2"), []string{"acc1"}, true},
+		{"a login without an account gets one", meta("", ""), meta("acc1", ""), nil, true},
+		{"a login loses its account", meta("acc1", ""), meta("", ""), []string{"acc1"}, true},
+		{"no account before or after", meta("", ""), meta("", ""), nil, false},
+	} {
+		dropped, changed := p.CoverageChange(tc.before, tc.after)
+		if !reflect.DeepEqual(dropped, tc.dropped) || changed != tc.changed {
+			t.Errorf("%s: dropped %v changed %v, want %v %v", tc.name, dropped, changed, tc.dropped, tc.changed)
+		}
+	}
+}
