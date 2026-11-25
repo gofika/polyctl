@@ -849,6 +849,17 @@ func TestR2BucketNameInTwoAccounts(t *testing.T) {
 		t.Errorf("questions asked: %v", p.Titles())
 	}
 	p.Done()
+	// A pick of the bucket shows each with its account, and the one
+	// picked is not asked for again.
+	p = prompttest.New(t, "acc2/assets")
+	code, stdout, stderr = e.runPick(p, "cloudflare", "r2", "domain", "list", "--profile", "both", "-o", "json")
+	if code != cli.ExitOK || !strings.Contains(stdout, "cdn.example.net") {
+		t.Errorf("pick without a name: exit %d, %s%s", code, stdout, stderr)
+	}
+	if a := p.Find("R2 bucket"); a == nil || prompttest.Values(a.Options) != "acc1/assets acc2/assets" || !strings.Contains(prompttest.Labels(a.Options), "assets  cloudflare/both  account acc2") {
+		t.Errorf("bucket options: %v", p.Titles())
+	}
+	p.Done()
 }
 
 // A bucket of the second selected account of a login is found live and

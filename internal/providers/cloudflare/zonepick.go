@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -168,7 +169,10 @@ func askSettingValue(rt *app.Runtime, name string, current any) (string, error) 
 
 // bucketArgs fills in a missing <bucket> in the interactive flow with a
 // bucket of the Cloudflare accounts the command may use (as the inventory
-// knows them, synced when stale), labelled with account and location.
+// knows them, synced when stale), labelled with its profile, and with its
+// account when the profile lists the buckets of several. A name several of
+// the listed accounts hold a bucket of is offered once per account, and
+// picking one makes its account the one of --account for the call.
 func bucketArgs(ctx context.Context, rt *app.Runtime, args []string) ([]string, error) {
 	if len(args) > 0 {
 		return args, nil
@@ -177,33 +181,46 @@ func bucketArgs(ctx context.Context, rt *app.Runtime, args []string) ([]string, 
 	if err != nil {
 		return nil, err
 	}
-	var opts []prompt.Option
-	seen := map[string]bool{}
+	var found []r2BucketRow
+	accounts := map[string][]string{} // profile -> the accounts of its buckets
+	names := map[string]int{}
 	for _, sc := range scopes {
-		name := sc.profile
 		rows, _, err := scopeBuckets(ctx, rt, sc, "")
 		if err != nil {
-			rt.Infof("warning: buckets of cloudflare/%s: %v", name, err)
+			rt.Infof("warning: buckets of cloudflare/%s: %v", sc.profile, err)
 			continue
 		}
 		for _, r := range rows {
-			if seen[r.Name] {
+			if slices.ContainsFunc(found, func(f r2BucketRow) bool { return f.AccountID == r.AccountID && f.Name == r.Name }) {
 				continue // the same account in two profiles
 			}
-			seen[r.Name] = true
-			label := r.Name + "  cloudflare/" + name
-			if r.Location != "" {
-				label += "  " + r.Location
+			found = append(found, r)
+			names[r.Name]++
+			if !slices.Contains(accounts[r.Profile], r.AccountID) {
+				accounts[r.Profile] = append(accounts[r.Profile], r.AccountID)
 			}
-			if r.StorageClass != "" {
-				label += "  " + r.StorageClass
-			}
-			opts = append(opts, prompt.Option{Label: label, Value: r.Name})
 		}
+	}
+	var opts []prompt.Option
+	for _, r := range found {
+		label := r.Name + "  cloudflare/" + r.Profile
+		if len(accounts[r.Profile]) > 1 {
+			label += "  account " + r.AccountID
+		}
+		value := r.Name
+		if names[r.Name] > 1 {
+			// A bucket name has no slash: the value cannot be a name.
+			value = r.AccountID + "/" + r.Name
+		}
+		opts = append(opts, prompt.Option{Label: label, Value: value})
 	}
 	v, err := rt.Choose(app.Choice{Title: "R2 bucket", Options: opts, Arg: "<bucket>", What: "R2 bucket"})
 	if err != nil {
 		return nil, err
+	}
+	if account, name, shared := strings.Cut(v, "/"); shared {
+		rt.Flags.Account = account
+		return []string{name}, nil
 	}
 	return []string{v}, nil
 }
