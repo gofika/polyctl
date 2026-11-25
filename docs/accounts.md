@@ -3,6 +3,7 @@
 How to log in to each platform and organise accounts into profiles.
 
 - [Profiles](#profiles)
+- [Enabled, disabled and default](#enabled-disabled-and-default)
 - [Commands](#commands)
 - [Interactive management](#interactive-management)
 - [Login flows per platform](#login-flows-per-platform)
@@ -29,6 +30,25 @@ polyctl auth logout --profile acme-prod          # drop the whole profile
 ```
 
 Secrets go to the system keyring, or a 0600 file when no keyring is available; see [Configuration](configuration.md) for credential storage and exit codes.
+
+## Enabled, disabled and default
+
+One GCP account reaches several Google Cloud projects, and one Cloudflare login several Cloudflare accounts. polyctl treats both in the same way, with three words:
+
+- **Enabled.** Every project (account) the credentials see is enabled, the ones created or shared later included. Nothing has to be added. A sync, the inventory, the lists, the name lookups and the platform-neutral commands that route by domain or address (`dns`, `domain`, `find`, `cert deploy`, ...) cover every enabled one, not only the default.
+- **Disabled.** `polyctl gcp project disable <id>...` and `polyctl cloudflare account disable <account>...` keep the ones that are certainly not used out of every sync, list, lookup and routing, and drop what the inventory cached of them. `enable` takes them back. On a terminal, without arguments, both commands open one list of everything visible with the enabled ones ticked. Only the disabled ones are stored (`disabled_projects`, `disabled_accounts` in `config.yaml`).
+- **Default.** The default project (account) is only what a command works on when nothing names one: where a new instance, firewall rule, certificate or zone is created. It is always enabled. A login chooses it, and `polyctl gcp project use <id>` / `polyctl cloudflare account use <account>` change it.
+
+`--project <id>` on the `gcp` commands and `--account <id or name>` on the `cloudflare` commands name one for a single call. A disabled one can be named too: it is read live and nothing of it is cached.
+
+```sh
+polyctl gcp project list                 # every visible project, ENABLED yes or no, * the default
+polyctl gcp project disable acme-lab     # never synced or searched again, until enabled
+polyctl cf account disable "Acme Lab"
+polyctl sync                             # every enabled project and account of every profile
+```
+
+Because everything visible is enabled, a sync touches every project and account the credentials reach: disable what is not used to keep it short. Details, exit codes and what credentials that cannot list their projects or accounts cover are in [GCP: Projects](platforms/gcp.md#projects) and [Cloudflare: Accounts](platforms/cloudflare.md#accounts).
 
 ## Commands
 
@@ -58,7 +78,7 @@ Runs the platform's login flow, verifies the credentials, stores the secret and 
 
 ### auth list
 
-One row per account: profile, platform, current marker (`*`), credential backend, metadata summary. A GCP account shows its default project and how many more projects are selected (`project=acme-prod (+2 more)`). A profile without accounts shows as `(no accounts)` (in JSON/YAML: `name` and `current` only).
+One row per account: profile, platform, current marker (`*`), credential backend, metadata summary. A GCP account shows its default project and a Cloudflare login its default account, each with the number of disabled ones when there are any (`project=acme-prod (2 disabled)`, `account_id=0123456789abcdef0123456789abcdef (1 disabled)`). The enabled ones are not counted: that needs the platform, and `auth list` reads the local configuration only. A profile without accounts shows as `(no accounts)` (in JSON/YAML: `name` and `current` only).
 
 ### auth use
 
@@ -66,7 +86,7 @@ Sets `current_profile`. An unknown profile exits with code 4. Interactively, wit
 
 ### auth status
 
-Verifies the stored credentials of every account (or of `--profile`) against the platform and prints the resolved identity (account, user, email, ARN, project...; for GCP the default project, with `(+N more)` when more projects are selected). Exits with code 3 when every failing account failed for its credentials or permissions, and with code 1 when one failed for another reason (network, timeout, platform outage); each row keeps its own error. Ctrl-C stops it before the accounts left. With `--offline` it only checks that credentials are present.
+Verifies the stored credentials of every account (or of `--profile`) against the platform and prints the resolved identity (account, user, email, ARN, project...; for GCP the default project and for Cloudflare the default account, with `(N disabled)` when projects or accounts are disabled). Exits with code 3 when every failing account failed for its credentials or permissions, and with code 1 when one failed for another reason (network, timeout, platform outage); each row keeps its own error. Ctrl-C stops it before the accounts left. With `--offline` it only checks that credentials are present.
 
 ### auth rename
 
@@ -108,7 +128,7 @@ Each platform lists its `--set` keys. Required values for the non-interactive fl
 
 ### Cloudflare
 
-Keys: `method`, `token`, `account_id`, `accounts`.
+Keys: `method`, `token`, `account_id`, `disabled_accounts`.
 
 | `method` | Flow |
 | --- | --- |
@@ -126,26 +146,25 @@ Keys: `method`, `token`, `account_id`, `accounts`.
 
 Without `--set method`, a token given with `--set token` or `CLOUDFLARE_API_TOKEN` selects `token`, and a re-login keeps the stored method. `method=oauth` with `--set token` is a usage error; `CLOUDFLARE_API_TOKEN` is ignored (with a note) for `method=oauth`.
 
-A login works on the accounts selected for it, one of which is the default account, where new zones are created. Credentials that see one account work on it and nothing is asked.
+A login works on every account its credentials see ([Enabled, disabled and default](#enabled-disabled-and-default)). It chooses the default account only, where new zones are created. Credentials that see one account use it and nothing is asked.
 
-- When the credentials see several accounts, the interactive flow offers them as a list to tick (a first login ticks none; a new login ticks the previous selection) and, when several are ticked, asks which one is the default.
-- `account_id=<id>` names the default account. Alone, it keeps the selection stored before, with that account.
-- `accounts=<id>,<id>,...` sets the selected accounts; the default account is always one of them. Without `account_id`, the default stays the previous one when it is still selected, else it is the first account listed (said on stderr).
-- In the non-interactive flow a login that names neither keeps the stored selection; a first login of credentials that see several accounts is a usage error listing them.
-- Every account named must be visible to the credentials, when they can list their accounts. A token that cannot list them (no `Account:Read`) takes the ids as given, and without them is not bound to an account: it works on every zone it sees. An account-owned token sees its own account only.
-- A selected account the credentials no longer see is left out of the new login, with a note; a token whose default account is gone fails until `--set account_id` names another.
-- The selection is stored as the metadata `account_id`, `account_name` (the default account) and `accounts` (the ids, when there are several). A login stored with `account_id` alone has that one account selected.
-- An account that a new login no longer selects loses its cached zones, records and R2 buckets at once. So does every account outside the selection when the login had no account before.
-- `polyctl cloudflare account use`, `add` and `remove` change the default account and the selection without a new login; `account current` shows them. What the selection covers, and `--account` for one call, is in [Cloudflare: Accounts](platforms/cloudflare.md#accounts).
+- When the credentials see several accounts, a first login in the interactive flow asks which one is the default; in the non-interactive flow it is a usage error listing them (pass `--set account_id=<id>`). No list is ticked at a login.
+- `account_id=<id>` names the default account. It must be visible to the credentials, when they can list their accounts.
+- A later login keeps the default account stored before (said on stderr when several are visible). One the credentials no longer see: a token fails until `--set account_id` names another; a browser login says so and asks again.
+- `disabled_accounts=<id>,<id>,...` sets the disabled accounts; given empty, none is disabled. Without it a later login keeps the stored list. The ids are not checked against what the credentials see (an account may become visible later); naming the default account is a usage error.
+- `accounts=...` is not an option (it existed only in unreleased builds): it is answered by the usage error for an unknown login option.
+- A token that cannot list accounts (no `Account:Read`) takes `account_id` as given, and without it the login has no default account: it works on every zone it sees, and a new zone or R2 needs `--account`. An account-owned token sees its own account only.
+- Stored as the metadata `account_id`, `account_name` (the default account) and `disabled_accounts` (absent when none is disabled).
+- A login that disables more accounts drops their cached zones, records and R2 buckets at once; one that enables accounts again makes the cached sets of the login due.
+- When several accounts are enabled the login says so and names `polyctl cloudflare account disable`. `polyctl cloudflare account use`, `enable` and `disable` change the default and the disabled accounts without a new login; `account current` shows them. See [Cloudflare: Accounts](platforms/cloudflare.md#accounts).
 
 **Non-interactive:** export `CLOUDFLARE_API_TOKEN`, or `--set token=-` with the token on stdin (`--set token` wins). A token piped without `--set token=-` is ignored.
 
 ```sh
 polyctl auth login cloudflare
 polyctl auth login cloudflare --set method=oauth
-CLOUDFLARE_API_TOKEN=... polyctl auth login cloudflare --profile acme --set account_id=<id>                    # one account, the default
-CLOUDFLARE_API_TOKEN=... polyctl auth login cloudflare --profile acme --set accounts=<id>,<id>                 # two accounts, the first the default
-CLOUDFLARE_API_TOKEN=... polyctl auth login cloudflare --profile acme --set accounts=<id>,<id> --set account_id=<id>   # the default named
+CLOUDFLARE_API_TOKEN=... polyctl auth login cloudflare --profile acme --set account_id=<id>                    # the default account, when the token sees several
+CLOUDFLARE_API_TOKEN=... polyctl auth login cloudflare --profile acme --set account_id=<id> --set disabled_accounts=<id>,<id>   # and accounts kept out of every sync
 echo "$TOKEN" | polyctl auth login cloudflare --profile acme --set token=-
 ```
 
@@ -212,7 +231,7 @@ polyctl auth login aws --profile legacy --set method=profile --set aws_profile=d
 
 ### GCP
 
-Keys: `method`, `project`, `projects`, `key_file`, `client_id`, `client_secret`.
+Keys: `method`, `project`, `disabled_projects`, `key_file`, `client_id`, `client_secret`, and `projects` (deprecated, no longer used).
 
 `polyctl auth login gcp` on a terminal opens the browser and signs in with your Google account. gcloud is not needed.
 
@@ -235,24 +254,25 @@ The built-in client:
 - Its id and secret are part of the program (Google does not treat the secret of a desktop client as confidential) and are never stored: the account records `oauth_client: builtin` in `config.yaml` and its refresh token in the credential store, and takes the client from the polyctl binary in use.
 - A polyctl build without a built-in client behaves as follows instead: on a terminal, `adc` when Application Default Credentials exist, else polyctl asks which way to log in (a service account key file, your own OAuth client, or instructions for creating the credentials with gcloud; the last one adds no account and exits with code 0). `method=oauth` then needs `client_id` and `client_secret`, and an account of the built-in client cannot be used (exit code 3) until you log in again.
 
-Projects. One account works on several projects: the selected ones, of which one is the default project (where new resources are created). See [GCP: Projects](platforms/gcp.md#projects).
+Projects. One account works on every project its credentials see ([Enabled, disabled and default](#enabled-disabled-and-default)). A login chooses the default project only, where new resources are created. See [GCP: Projects](platforms/gcp.md#projects).
 
-- On a terminal, without `project` and `projects`, polyctl lists the visible projects for ticking. A re-login ticks what was selected before; a first login ticks the project of the Application Default Credentials, or the only visible project, and never all of them. When several are ticked it then asks which one is the default (the previous default proposed). When the projects cannot be listed, the id of one project is asked. A service account login shows no project list: its default project is the previous login's, else the key's `project_id`, and it is asked only when the key names none.
-- `project=<id>` sets the default project without a question; the projects selected before stay selected, with it.
-- `projects=<id>,<id>,...` sets the selected projects; the default project is always one of them. Without `project`, the default stays the previous one when it is still selected, else it is the first project listed (said on stderr).
-- The default project must be reachable (exit code 3 otherwise). Another selected project that cannot be reached is a warning and stays selected; take it out with `polyctl gcp project remove <id>`.
-- The selection is stored in `config.yaml` as `project` (the default) and `projects` (comma-separated; absent when only the default is selected). An account stored without `projects`, as every login before the selection existed stored it, has exactly its one project selected.
-- `polyctl gcp project use`, `add` and `remove` change the default project and the selection without a new login.
-- A login that changes the selection drops what the inventory cached of the projects that left it and makes the cached inventory of the account due, so that the next command syncs the new selection.
+- `project=<id>` sets the default project without a question.
+- On a terminal, without it: a re-login keeps the default project it had (said on stderr), unless the credentials list projects and it is not among them; then, and at a first login, the only visible project is used, several are offered in a list (the project of the Application Default Credentials proposed), and when the projects cannot be listed the id of one project is asked. No list is ticked at a login. A service account login asks nothing: its default project is the previous login's, else the key's `project_id`, and it is asked only when the key names none.
+- `disabled_projects=<id>,<id>,...` sets the disabled projects; given empty, none is disabled. Without it a re-login keeps the stored list (without the new default). Naming the default project is a usage error.
+- `projects=<id>,<id>,...`, which chose the projects of an account in 0.4.0, is accepted and no longer used: a note on stderr says so. Without `project` it still names the default project (the stored one when it is listed, else its first id), so a 0.4.0 command line keeps working.
+- The default project must be reachable (exit code 3 otherwise). The other projects are not probed at a login: a sync skips the ones that hold nothing ([GCP: Projects](platforms/gcp.md#projects)).
+- Stored in `config.yaml` as `project` (the default) and `disabled_projects` (comma-separated; absent when none is disabled).
+- When the credentials list more than one enabled project the login says how many and names `polyctl gcp project disable`. `polyctl gcp project use`, `enable` and `disable` change the default and the disabled projects without a new login.
+- A login that disables more projects drops what the inventory cached of them (stored instance passwords stay); one that changes the default or enables projects again makes the cached inventory of the account due, so that the next command syncs it.
 
-**Non-interactive:** nothing is asked, no browser is opened, and the default method is `adc`. `service_account` needs `key_file` (and `project` if the key names none). `oauth` needs `project` or `projects` (and `client_id`, `client_secret=-` for your own client, or in a build without a built-in one); it prints the consent URL and waits up to 5 minutes for the browser to return. The default project otherwise falls back to the previous login's, the ADC project, or the only visible one; several and no default is a usage error. The projects selected before stay selected.
+**Non-interactive:** nothing is asked, no browser is opened, and the default method is `adc`. `service_account` needs `key_file` (and `project` if the key names none). `oauth` needs `project` (and `client_id`, `client_secret=-` for your own client, or in a build without a built-in one); it prints the consent URL and waits up to 5 minutes for the browser to return. The default project otherwise falls back to the previous login's, the ADC project, or the only visible one; several and no default is a usage error. The disabled projects of the previous login are kept.
 
 `--no-browser` prints the consent URL instead of opening a browser; open it in a browser on the same machine, as the code returns to `127.0.0.1`.
 
 ```sh
 polyctl auth login gcp --profile acme                                          # browser login
 polyctl auth login gcp --profile acme --set method=adc --set project=acme-prod
-polyctl auth login gcp --profile acme --set project=acme-prod --set projects=acme-prod,acme-dns,acme-lab
+polyctl auth login gcp --profile acme --set project=acme-prod --set disabled_projects=acme-lab,acme-old
 polyctl auth login gcp --profile acme-ci --set method=service_account --set key_file=./sa.json --set project=acme-ci
 printf '%s\n' "$CLIENT_SECRET" | polyctl auth login gcp --profile me --set method=oauth --set client_id=<id> --set client_secret=- --set project=acme-prod
 ```
