@@ -213,7 +213,10 @@ func resolveZone(ctx context.Context, rt *app.Runtime, profile, arg string) (*zo
 	}
 	var found []platform.Zone
 	var first error
-	projects := c.listProjects()
+	projects, err := c.sweep(ctx)
+	if err != nil {
+		return nil, err
+	}
 	for _, p := range projects {
 		z, err := c.GetZone(ctx, zoneID(p, arg))
 		switch {
@@ -235,7 +238,7 @@ func resolveZone(ctx context.Context, rt *app.Runtime, profile, arg string) (*zo
 		if len(projects) == 1 && first != nil {
 			return nil, first
 		}
-		return nil, fmt.Errorf("%w: managed zone %q in the selected projects of gcp/%s (%s)", platform.ErrNotFound, arg, profile, strings.Join(projects, ", "))
+		return nil, fmt.Errorf("%w: managed zone %q in the selected projects of gcp/%s (%s)", platform.ErrNotFound, arg, profile, projectNames(projects))
 	}
 	return chooseZone(rt, profile, arg, found)
 }

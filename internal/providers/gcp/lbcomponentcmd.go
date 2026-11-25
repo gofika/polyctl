@@ -162,7 +162,7 @@ func componentsOf(ctx context.Context, rt *app.Runtime, kind lbKind, name string
 			return nil, nil, err
 		}
 	}
-	scopes, err := gcpScopes(rt)
+	scopes, err := gcpScopes(ctx, rt)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -352,9 +352,9 @@ narrows it). No match is exit code 0 with an empty list and a note.`,
 				return err
 			}
 			if len(values) == 0 {
-				rt.Infof("note: no %s in %s (gcp/%s)", spec.plural, c.projectsLabel(), profile)
+				rt.Infof("note: no %s in %s (gcp/%s)", spec.plural, c.projectsLabel(ctx), profile)
 			} else {
-				rt.Infof("%d %s in %s via gcp/%s", len(values), spec.plural, c.projectsLabel(), profile)
+				rt.Infof("%d %s in %s via gcp/%s", len(values), spec.plural, c.projectsLabel(ctx), profile)
 			}
 			headers := append([]string{spec.headers[0], "PROJECT"}, spec.headers[1:]...)
 			return rt.Render(values, func() output.Grid {

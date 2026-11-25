@@ -105,7 +105,7 @@ func sslTarget(c *client, profile, region string) platform.Target {
 // storeSSLCert upserts a certificate into the inventory.
 func storeSSLCert(ctx context.Context, rt *app.Runtime, c *client, profile string, sc *compute.SslCertificate) {
 	db, err := rt.DB()
-	if err != nil || sc == nil || !c.selected() {
+	if err != nil || sc == nil || !c.cacheable(ctx) {
 		return
 	}
 	cfg, err := rt.Config()
@@ -228,7 +228,7 @@ left. No certificate is exit code 0 with an empty list and a note.`,
 			if err != nil {
 				return err
 			}
-			where := c.projectsLabel()
+			where := c.projectsLabel(ctx)
 			if !all {
 				where = (certScope{region: region}).label() + " certificates of " + where
 			}
@@ -612,7 +612,7 @@ without --region / --global is looked up in every scope.`,
 func certProject(ctx context.Context, rt *app.Runtime, c *client, profile, name, region string, all bool) (*client, error) {
 	switch {
 	case name == "":
-		return chooseListProject(rt, c, profile)
+		return chooseListProject(ctx, rt, c, profile)
 	case all:
 		return locateProject(ctx, rt, c, profile, "certificate", name, func(ctx context.Context, pc *client) (bool, error) {
 			certs, _, err := pc.listAllCerts(ctx)

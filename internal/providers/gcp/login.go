@@ -639,7 +639,7 @@ func verifySelection(ctx context.Context, pio *prompt.IO, ts oauth2.TokenSource,
 	if err != nil {
 		return nil, err
 	}
-	c.projects = sel.projects
+	c.cov.selected = sel.projects
 	for _, p := range sel.projects {
 		if p == sel.def {
 			continue

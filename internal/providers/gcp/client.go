@@ -21,18 +21,18 @@ import (
 )
 
 // client is an authenticated Google Cloud session of one account, bound to
-// one project: every call of it goes to project. projects is the selection
-// of the account (the projects the inventory covers), with the default
-// project first; a client moved to another project (inProject) keeps it.
+// one project: every call of it goes to project. The projects of the
+// account that syncs and lists cover are asked of the client
+// (enabledProjects, sweep), whatever project it is bound to.
 type client struct {
-	project  string
-	projects []string
+	project string
 	// pinned marks a client moved to the project of --project: its lists
 	// read that project alone.
 	pinned bool
 	email  string
 	method string
-	// cov is shared by every copy of the client (inProject, pin).
+	// cov is shared by every copy of the client (inProject, pin): the
+	// projects of the account and what the run learned about them.
 	cov *coverage
 
 	dns     *dns.Service
@@ -46,7 +46,7 @@ var _ platform.DNSService = (*client)(nil)
 // newClient builds the API services. opts must carry the credentials
 // (option.WithTokenSource / WithCredentials) and, in tests, the endpoint.
 func newClient(ctx context.Context, project, email, method string, opts ...option.ClientOption) (*client, error) {
-	c := &client{project: project, projects: []string{project}, email: email, method: method, cov: &coverage{def: project}}
+	c := &client{project: project, email: email, method: method, cov: &coverage{def: project, selected: []string{project}}}
 	var err error
 	if c.dns, err = dns.NewService(ctx, opts...); err != nil {
 		return nil, fmt.Errorf("init Cloud DNS client: %w", err)
@@ -109,8 +109,8 @@ func isPermissionErr(err error) bool {
 // Verify checks that the credentials can see the project.
 func (c *client) Verify(ctx context.Context) (*platform.Identity, error) {
 	id := &platform.Identity{Account: c.project, User: c.email, Extra: map[string]string{"method": c.method}}
-	if len(c.projects) > 1 && !c.pinned {
-		id.Extra["projects"] = strings.Join(c.projects, ",")
+	if sel := c.cov.selected; len(sel) > 1 && !c.pinned {
+		id.Extra["projects"] = strings.Join(sel, ",")
 	}
 	p, err := c.crm.Projects.Get(c.project).Context(ctx).Do()
 	if err == nil {
@@ -281,7 +281,10 @@ func isPublicZone(z platform.Zone) bool {
 // fails the list, except one whose Cloud DNS API is not enabled, which
 // holds no zones (the project of --project keeps that error).
 func (c *client) ListZones(ctx context.Context) ([]platform.Zone, error) {
-	projects := c.listProjects()
+	projects, err := c.sweep(ctx)
+	if err != nil {
+		return nil, err
+	}
 	defer c.flushOff()
 	var out []platform.Zone
 	for _, p := range projects {

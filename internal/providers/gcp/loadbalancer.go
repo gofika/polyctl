@@ -1097,7 +1097,7 @@ type lbEnsureTarget struct {
 // balancer row named after the rule, with the load balancer name.
 func storeRule(ctx context.Context, rt *app.Runtime, c *client, profile string, fr *compute.ForwardingRule, lb string) {
 	db, err := rt.DB()
-	if err != nil || fr == nil || !c.selected() {
+	if err != nil || fr == nil || !c.cacheable(ctx) {
 		return
 	}
 	cfg, err := rt.Config()

@@ -43,7 +43,7 @@ func lbTargets(ctx context.Context, rt *app.Runtime, region string, all bool, ke
 	if rt.Flags.Offline {
 		return nil, fmt.Errorf("%w: load balancers are read live", app.ErrOffline)
 	}
-	scopes, err := gcpScopes(rt)
+	scopes, err := gcpScopes(ctx, rt)
 	if err != nil {
 		return nil, err
 	}

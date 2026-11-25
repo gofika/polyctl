@@ -188,7 +188,7 @@ func resolveLB(ctx context.Context, rt *app.Runtime, ref, region string, all boo
 	}
 	if len(inScope) == 1 {
 		h := inScope[0]
-		c, err := openScope(ctx, rt, scope{h.profile, h.rule.Project})
+		c, err := openScope(ctx, rt, scope{profile: h.profile, project: h.rule.Project})
 		if err != nil {
 			return nil, err
 		}
@@ -203,7 +203,7 @@ func resolveLB(ctx context.Context, rt *app.Runtime, ref, region string, all boo
 	if err != nil {
 		return nil, err
 	}
-	scopes, err := scopesOf(rt, accounts)
+	scopes, err := scopesOf(ctx, rt, accounts)
 	if err != nil {
 		return nil, err
 	}

@@ -79,7 +79,7 @@ func checkProjectID(id string) error {
 }
 
 // inProject returns the client bound to another project: a shallow copy
-// sharing the API services, the selection unchanged.
+// sharing the API services and what is known of the account (cov).
 func (c *client) inProject(project string) *client {
 	if project == "" || project == c.project {
 		return c
@@ -98,17 +98,47 @@ func (c *client) pin(project string) *client {
 	return &cp
 }
 
-// selected reports whether the client's project is one of the selection,
-// that is, one the inventory holds.
-func (c *client) selected() bool { return slices.Contains(c.projects, c.project) }
-
-// listProjects are the projects a list of the client covers: the
-// selection, or the pinned project alone.
-func (c *client) listProjects() []string {
-	if c.pinned || len(c.projects) == 0 {
-		return []string{c.project}
+// enabledProjects are the projects of the account that syncs, lists and
+// lookups cover, the default project first: the selection, or the
+// client's project alone for an account without one. It may ask the
+// network (never more than once per opened account), hence the error.
+func (c *client) enabledProjects(ctx context.Context) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	return c.projects
+	if c.cov == nil || len(c.cov.selected) == 0 {
+		return []string{c.project}, nil
+	}
+	return c.cov.selected, nil
+}
+
+// sweep are the projects a list or lookup of the client reads: the
+// pinned project alone for the client of --project, the enabled projects
+// otherwise.
+func (c *client) sweep(ctx context.Context) ([]string, error) {
+	if c.pinned {
+		return []string{c.project}, nil
+	}
+	return c.enabledProjects(ctx)
+}
+
+// covers reports whether project is one of the enabled projects, that
+// is, one the syncs of the account read.
+func (c *client) covers(ctx context.Context, project string) (bool, error) {
+	projects, err := c.enabledProjects(ctx)
+	if err != nil {
+		return false, err
+	}
+	return slices.Contains(projects, project), nil
+}
+
+// cacheable reports whether what was read of the client's project may be
+// written to the inventory: only a project the syncs cover, since the
+// next sync would not refresh the rows of another. When that cannot be
+// told, nothing is written.
+func (c *client) cacheable(ctx context.Context) bool {
+	ok, err := c.covers(ctx, c.project)
+	return err == nil && ok
 }
 
 // projectOr returns p, or the client's project for the rows stored before
@@ -205,9 +235,9 @@ const projectConcurrency = 4
 //   - when every project fails the result is a plain error wrapping the
 //     first one, so that nothing is replaced and the exit code is kept.
 func (c *client) eachProject(ctx context.Context, api string, fn func(ctx context.Context, pc *client) ([]platform.Resource, error)) ([]platform.Resource, error) {
-	projects := c.projects
-	if len(projects) == 0 {
-		projects = []string{c.project}
+	projects, err := c.enabledProjects(ctx)
+	if err != nil {
+		return nil, err
 	}
 	defer c.flushOff()
 	one := func(ctx context.Context, pc *client) ([]platform.Resource, error) {
@@ -282,11 +312,14 @@ func (c *client) eachProject(ctx context.Context, api string, fn func(ctx contex
 }
 
 // forProjects runs fn with the client of every project the lists of the
-// client cover (listProjects). A project whose API is not enabled is
+// client cover (sweep). A project whose API is not enabled is
 // skipped (noteOff), unless it is the project of --project; any other
 // failure ends the walk, named after its project when there are several.
 func (c *client) forProjects(ctx context.Context, fn func(pc *client) error) error {
-	projects := c.listProjects()
+	projects, err := c.sweep(ctx)
+	if err != nil {
+		return err
+	}
 	defer c.flushOff()
 	for _, p := range projects {
 		if err := ctx.Err(); err != nil {
@@ -306,12 +339,30 @@ func (c *client) forProjects(ctx context.Context, fn func(pc *client) error) err
 	return nil
 }
 
-// projectsLabel names the projects the lists of the client cover:
-// "project p1", or "projects p1, p2".
-func (c *client) projectsLabel() string {
-	projects := c.listProjects()
-	if len(projects) == 1 {
-		return "project " + projects[0]
+// maxProjectsNamed is how many projects a message names before it counts
+// them instead.
+const maxProjectsNamed = 3
+
+// projectNames abbreviates a list of projects for a message: "p1, p2,
+// p3", or "7 projects" beyond three.
+func projectNames(projects []string) string {
+	if len(projects) > maxProjectsNamed {
+		return fmt.Sprintf("%d projects", len(projects))
 	}
-	return "projects " + strings.Join(projects, ", ")
+	return strings.Join(projects, ", ")
+}
+
+// projectsLabel names the projects the lists of the client cover:
+// "project p1", "projects p1, p2", or "7 projects" beyond three.
+func (c *client) projectsLabel(ctx context.Context) string {
+	projects, err := c.sweep(ctx)
+	switch {
+	case err != nil:
+		return "project " + c.project
+	case len(projects) == 1:
+		return "project " + projects[0]
+	case len(projects) > maxProjectsNamed:
+		return projectNames(projects)
+	}
+	return "projects " + projectNames(projects)
 }

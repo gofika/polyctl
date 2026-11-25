@@ -91,8 +91,12 @@ func firewallArg(ctx context.Context, rt *app.Runtime, c *client, profile string
 	}
 	var opts []prompt.Option
 	var clients []*client
-	several := len(c.listProjects()) > 1
-	err := c.forProjects(ctx, func(pc *client) error {
+	projects, err := c.sweep(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	several := len(projects) > 1
+	err = c.forProjects(ctx, func(pc *client) error {
 		po, err := firewallOptions(ctx, pc, several, nil)
 		for _, o := range po {
 			// The value names the project too: two projects may hold a

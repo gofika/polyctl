@@ -247,7 +247,7 @@ func resolveInstance(ctx context.Context, rt *app.Runtime, ref, zone string, all
 	}
 	if len(hits) == 0 && zone != "" && !byIP {
 		// Not cached yet: ask each project of each account in that zone.
-		scopes, err := scopesOf(rt, accounts)
+		scopes, err := scopesOf(ctx, rt, accounts)
 		if err != nil {
 			return nil, err
 		}
@@ -306,7 +306,7 @@ func resolveInstance(ctx context.Context, rt *app.Runtime, ref, zone string, all
 		hits = []instanceHit{h}
 	}
 	h := hits[0]
-	c, err := openScope(ctx, rt, scope{h.profile, h.inst.Project})
+	c, err := openScope(ctx, rt, scope{profile: h.profile, project: h.inst.Project})
 	if err != nil {
 		return nil, err
 	}
@@ -390,7 +390,7 @@ func chooseHit(rt *app.Runtime, what, ref string, hits []instanceHit) (instanceH
 // Nothing of a project outside the selection is stored (--project may name
 // one): the next sync of the account would not cover its rows.
 func storeInstance(ctx context.Context, rt *app.Runtime, c *client, profile string, in *compute.Instance) {
-	if in == nil || in.Id == 0 || !c.selected() {
+	if in == nil || in.Id == 0 || !c.cacheable(ctx) {
 		return
 	}
 	db, err := rt.DB()

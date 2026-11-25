@@ -180,8 +180,7 @@ func (*provider) Open(ctx context.Context, p platform.Profile) (platform.Client,
 	if err != nil {
 		return nil, err
 	}
-	c.projects = selectedProjects(p.Metadata)
-	c.cov.profile = p.Name
+	c.cov.profile, c.cov.selected = p.Name, selectedProjects(p.Metadata)
 	return c, nil
 }
 

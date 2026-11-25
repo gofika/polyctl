@@ -333,9 +333,9 @@ func networkListCmd(rt *app.Runtime) *cobra.Command {
 				return rows[i].Name < rows[j].Name
 			})
 			if len(rows) == 0 {
-				rt.Infof("note: no VPC networks in %s (gcp/%s)", c.projectsLabel(), profile)
+				rt.Infof("note: no VPC networks in %s (gcp/%s)", c.projectsLabel(cmd.Context()), profile)
 			} else {
-				rt.Infof("%d network(s) in %s via gcp/%s", len(rows), c.projectsLabel(), profile)
+				rt.Infof("%d network(s) in %s via gcp/%s", len(rows), c.projectsLabel(cmd.Context()), profile)
 			}
 			return rt.Render(rows, func() output.Grid {
 				g := output.Grid{Headers: []string{"NAME", "PROJECT", "MODE", "ROUTING", "MTU", "SUBNETS"}, Empty: "no networks"}
@@ -367,7 +367,7 @@ func networkGetCmd(rt *app.Runtime) *cobra.Command {
 					return notFoundIs(err)
 				})
 			} else {
-				c, err = chooseListProject(rt, c, profile)
+				c, err = chooseListProject(ctx, rt, c, profile)
 			}
 			if err != nil {
 				return err
@@ -465,9 +465,9 @@ REGIONAL_MANAGED_PROXY, GLOBAL_MANAGED_PROXY or INTERNAL_HTTPS_LOAD_BALANCER).`,
 				return err
 			}
 			if len(rows) == 0 {
-				rt.Infof("note: no matching subnetworks in %s (gcp/%s)", c.projectsLabel(), profile)
+				rt.Infof("note: no matching subnetworks in %s (gcp/%s)", c.projectsLabel(ctx), profile)
 			} else {
-				rt.Infof("%d subnetwork(s) in %s via gcp/%s", len(rows), c.projectsLabel(), profile)
+				rt.Infof("%d subnetwork(s) in %s via gcp/%s", len(rows), c.projectsLabel(ctx), profile)
 			}
 			return rt.Render(rows, func() output.Grid { return subnetGrid(rows) })
 		},

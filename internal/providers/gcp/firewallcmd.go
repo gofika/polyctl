@@ -103,7 +103,7 @@ of that network, matched by its exact name.`,
 				v.Project = r.project
 				rows = append(rows, v)
 			}
-			where := c.projectsLabel()
+			where := c.projectsLabel(cmd.Context())
 			switch {
 			case len(rows) > 0:
 				rt.Infof("%d firewall rule(s) in %s via gcp/%s", len(rows), where, profile)

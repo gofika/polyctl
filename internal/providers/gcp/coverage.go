@@ -21,6 +21,9 @@ import (
 type coverage struct {
 	// profile names the account in notes; def is its default project.
 	profile, def string
+	// selected is the stored selection of the account, the default
+	// project first.
+	selected []string
 
 	mu sync.Mutex
 	// off holds "<project>/<api>" of the projects that answered that the

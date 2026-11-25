@@ -1,6 +1,7 @@
 package gcp
 
 import (
+	"context"
 	"reflect"
 	"strings"
 	"testing"
@@ -184,5 +185,120 @@ func TestUnselectedProjectListToleratesAnUnreachableZone(t *testing.T) {
 	h.jsonOut(&res)
 	if len(res.Instances) != 1 || res.Instances[0].Name != "solo" || !strings.Contains(h.stderr.String(), "p3/europe-west1-b") {
 		t.Errorf("list = %+v, stderr %q", res.Instances, h.stderr.String())
+	}
+}
+
+// The projects a client covers are asked of it: the enabled projects for
+// the client of the account, whatever project it was moved to, and the
+// pinned project alone for the client of --project.
+func TestClientCoverageAccessors(t *testing.T) {
+	h := twoProjects(t)
+	ctx := context.Background()
+	c, err := openAccount(ctx, h.rt, "lab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pc := range []*client{c, c.inProject("p2"), c.inProject("elsewhere")} {
+		if got, err := pc.enabledProjects(ctx); err != nil || strings.Join(got, ",") != "proj,p2" {
+			t.Errorf("enabledProjects of the client in %s = %v, %v", pc.project, got, err)
+		}
+		if got, err := pc.sweep(ctx); err != nil || strings.Join(got, ",") != "proj,p2" {
+			t.Errorf("sweep of the client in %s = %v, %v", pc.project, got, err)
+		}
+	}
+	pinned := c.pin("elsewhere")
+	if got, err := pinned.sweep(ctx); err != nil || strings.Join(got, ",") != "elsewhere" {
+		t.Errorf("sweep of the pinned client = %v, %v", got, err)
+	}
+	if got, err := pinned.enabledProjects(ctx); err != nil || strings.Join(got, ",") != "proj,p2" {
+		t.Errorf("enabledProjects of the pinned client = %v, %v", got, err)
+	}
+	for project, want := range map[string]bool{"proj": true, "p2": true, "elsewhere": false} {
+		if got, err := c.covers(ctx, project); err != nil || got != want {
+			t.Errorf("covers(%s) = %v, %v; want %v", project, got, err, want)
+		}
+		if got := c.inProject(project).cacheable(ctx); got != want {
+			t.Errorf("cacheable in %s = %v, want %v", project, got, want)
+		}
+	}
+	if pinned.cacheable(ctx) {
+		t.Error("a project outside the enabled ones must not be cached")
+	}
+	// A cancelled call does not answer: nothing is cached on a guess.
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := c.enabledProjects(cancelled); err == nil {
+		t.Error("enabledProjects of a cancelled call = nil error")
+	}
+	if c.cacheable(cancelled) {
+		t.Error("cacheable of a cancelled call = true")
+	}
+}
+
+// The scopes of one account share its opened client, and --project is
+// that project alone.
+func TestScopesShareTheClientOfTheirAccount(t *testing.T) {
+	h := twoProjects(t)
+	ctx := context.Background()
+	scopes, err := gcpScopes(ctx, h.rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scopes) != 2 || scopes[0].project != "proj" || scopes[1].project != "p2" || scopes[0].c == nil || scopes[0].c != scopes[1].c {
+		t.Fatalf("scopes = %+v", scopes)
+	}
+	for _, sc := range scopes {
+		c, err := openScope(ctx, h.rt, sc)
+		if err != nil || c.project != sc.project || c.cov != sc.c.cov {
+			t.Errorf("openScope(%s) = %+v, %v", sc, c, err)
+		}
+	}
+	h.rt.Flags.Project = "elsewhere"
+	if scopes, err = gcpScopes(ctx, h.rt); err != nil || len(scopes) != 1 || scopes[0].project != "elsewhere" {
+		t.Fatalf("pinned scopes = %+v, %v", scopes, err)
+	}
+	if c, err := openScope(ctx, h.rt, scopes[0]); err != nil || !c.pinned || c.project != "elsewhere" {
+		t.Errorf("openScope of the pinned scope = %+v, %v", c, err)
+	}
+	// A scope built without a client opens its account.
+	if c, err := openScope(ctx, h.rt, scope{profile: "lab", project: "elsewhere"}); err != nil || c.project != "elsewhere" {
+		t.Errorf("openScope without a client = %+v, %v", c, err)
+	}
+}
+
+// Messages name up to three projects and count them beyond.
+func TestProjectsLabelAbbreviates(t *testing.T) {
+	h := twoProjects(t)
+	ctx := context.Background()
+	for _, tc := range []struct {
+		selected []string
+		label    string
+		names    string
+	}{
+		{[]string{"proj"}, "project proj", "proj"},
+		{[]string{"proj", "p2"}, "projects proj, p2", "proj, p2"},
+		{[]string{"proj", "p2", "p3"}, "projects proj, p2, p3", "proj, p2, p3"},
+		{[]string{"proj", "p2", "p3", "p4"}, "4 projects", "4 projects"},
+	} {
+		h.selectProjects("proj", tc.selected...)
+		c, err := openAccount(ctx, h.rt, "lab")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := c.projectsLabel(ctx); got != tc.label {
+			t.Errorf("projectsLabel of %v = %q, want %q", tc.selected, got, tc.label)
+		}
+		if got := projectNames(tc.selected); got != tc.names {
+			t.Errorf("projectNames(%v) = %q, want %q", tc.selected, got, tc.names)
+		}
+		if got := c.pin("p9").projectsLabel(ctx); got != "project p9" {
+			t.Errorf("projectsLabel of the pinned client = %q", got)
+		}
+	}
+	// A name that is in none of four projects: they are counted.
+	h.rt.Flags.Project = ""
+	err := h.run("compute", "firewall", "get", "nope")
+	if exitClass(err) != "notfound" || !has(err, "in the selected projects of gcp/lab (4 projects)") {
+		t.Errorf("get of a missing rule = %v", err)
 	}
 }

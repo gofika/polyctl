@@ -98,10 +98,13 @@ func keepProject(rt *app.Runtime, profile, project string) bool {
 	return err != nil || slices.Contains(selected, project)
 }
 
-// scope is one account and one of its projects.
+// scope is one account and one of its projects. c, when set, is the
+// opened client of the account: the scopes of one account share it, so
+// that the account is opened, and its projects are asked, once.
 type scope struct {
 	profile string
 	project string
+	c       *client
 }
 
 func (s scope) String() string { return "gcp/" + s.profile + " project " + s.project }
@@ -109,38 +112,43 @@ func (s scope) String() string { return "gcp/" + s.profile + " project " + s.pro
 // gcpScopes returns the scopes of the call: every selected project of
 // every GCP account selected by --profile, or, with --project, that
 // project in each of them.
-func gcpScopes(rt *app.Runtime) ([]scope, error) {
+func gcpScopes(ctx context.Context, rt *app.Runtime) ([]scope, error) {
 	accounts, err := gcpAccounts(rt)
 	if err != nil {
 		return nil, err
 	}
-	return scopesOf(rt, accounts)
+	return scopesOf(ctx, rt, accounts)
 }
 
-func scopesOf(rt *app.Runtime, accounts []config.AccountRef) ([]scope, error) {
-	pin := pinnedProject(rt)
+// scopesOf opens each account once and returns one scope for every
+// project its lists read (sweep).
+func scopesOf(ctx context.Context, rt *app.Runtime, accounts []config.AccountRef) ([]scope, error) {
 	var out []scope
 	for _, a := range accounts {
-		if pin != "" {
-			out = append(out, scope{a.Profile, pin})
-			continue
-		}
-		_, selected, err := accountProjects(rt, a.Profile)
+		c, err := openProfile(ctx, rt, a.Profile)
 		if err != nil {
 			return nil, err
 		}
-		for _, p := range selected {
-			out = append(out, scope{a.Profile, p})
+		projects, err := c.sweep(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range projects {
+			out = append(out, scope{profile: a.Profile, project: p, c: c})
 		}
 	}
 	return out, nil
 }
 
-// openScope opens the client of a scope.
+// openScope returns the client of a scope: the client of its account
+// moved to its project, opened here when the scope does not carry it.
 func openScope(ctx context.Context, rt *app.Runtime, s scope) (*client, error) {
-	c, err := openProfile(ctx, rt, s.profile)
-	if err != nil {
-		return nil, err
+	c := s.c
+	if c == nil {
+		var err error
+		if c, err = openProfile(ctx, rt, s.profile); err != nil {
+			return nil, err
+		}
 	}
 	return c.inProject(s.project), nil
 }
@@ -251,7 +259,10 @@ func ambiguous(what, ref string, cands []cand, locFlag, alt string) *app.Ambiguo
 // interactive flow, exit code 5 otherwise, naming --project), none is not
 // found, naming the projects searched.
 func locateProject(ctx context.Context, rt *app.Runtime, c *client, profile, what, name string, exists func(ctx context.Context, pc *client) (bool, error)) (*client, error) {
-	projects := c.listProjects()
+	projects, err := c.sweep(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if len(projects) == 1 {
 		return c.inProject(projects[0]), nil
 	}
@@ -273,7 +284,7 @@ func locateProject(ctx context.Context, rt *app.Runtime, c *client, profile, wha
 	c.flushOff()
 	switch len(found) {
 	case 0:
-		return nil, fmt.Errorf("%w: %s %q in the selected projects of gcp/%s (%s)", platform.ErrNotFound, what, name, profile, strings.Join(projects, ", "))
+		return nil, fmt.Errorf("%w: %s %q in the selected projects of gcp/%s (%s)", platform.ErrNotFound, what, name, profile, projectNames(projects))
 	case 1:
 		return found[0], nil
 	}
@@ -303,8 +314,11 @@ func notFoundIs(err error) (bool, error) {
 // without a name lists from, when several are selected (the default
 // project proposed). With one project, with --project and in the
 // non-interactive flow nothing is asked: the client's project is used.
-func chooseListProject(rt *app.Runtime, c *client, profile string) (*client, error) {
-	projects := c.listProjects()
+func chooseListProject(ctx context.Context, rt *app.Runtime, c *client, profile string) (*client, error) {
+	projects, err := c.sweep(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if len(projects) < 2 || !rt.Interactive() {
 		return c.inProject(projects[0]), nil
 	}

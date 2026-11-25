@@ -50,15 +50,19 @@ func projectRows(ctx context.Context, c *client) ([]projectRow, error) {
 	if err != nil {
 		return nil, err
 	}
-	def := c.projects[0]
+	selected, err := c.enabledProjects(ctx)
+	if err != nil {
+		return nil, err
+	}
+	def := selected[0]
 	rows := make([]projectRow, 0, len(projects))
 	seen := map[string]bool{}
 	for _, p := range projects {
 		seen[p.ProjectId] = true
 		rows = append(rows, projectRow{ProjectID: p.ProjectId, Name: p.Name, Number: p.ProjectNumber, State: p.LifecycleState,
-			Selected: slices.Contains(c.projects, p.ProjectId), Default: p.ProjectId == def})
+			Selected: slices.Contains(selected, p.ProjectId), Default: p.ProjectId == def})
 	}
-	for _, p := range c.projects {
+	for _, p := range selected {
 		if !seen[p] {
 			rows = append(rows, projectRow{ProjectID: p, Selected: true, Default: p == def})
 		}
@@ -83,7 +87,13 @@ the credentials may not list is shown without name and state.`,
 			if err != nil {
 				return err
 			}
-			rt.Infof("%d project(s) via gcp/%s, %d selected", len(rows), prof.Name, len(c.projects))
+			selected := 0
+			for _, r := range rows {
+				if r.Selected {
+					selected++
+				}
+			}
+			rt.Infof("%d project(s) via gcp/%s, %d selected", len(rows), prof.Name, selected)
 			return rt.Render(rows, func() output.Grid { return projectGrid(rows) })
 		},
 	}

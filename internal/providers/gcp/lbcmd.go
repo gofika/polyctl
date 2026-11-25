@@ -352,9 +352,9 @@ No load balancer is exit code 0 with an empty list and a note.`,
 				return rows[i].Port < rows[j].Port
 			})
 			if len(rows) == 0 {
-				rt.Infof("note: no load balancers in %s (gcp/%s)", c.projectsLabel(), profile)
+				rt.Infof("note: no load balancers in %s (gcp/%s)", c.projectsLabel(ctx), profile)
 			} else {
-				rt.Infof("%d forwarding rule(s) in %s via gcp/%s", len(rows), c.projectsLabel(), profile)
+				rt.Infof("%d forwarding rule(s) in %s via gcp/%s", len(rows), c.projectsLabel(ctx), profile)
 			}
 			return rt.Render(rows, func() output.Grid {
 				g := output.Grid{Headers: []string{"NAME", "PROJECT", "SCOPE", "REGION", "PROTOCOL", "IP", "PORT", "BACKEND", "HEALTH"}, Empty: "no load balancers"}
@@ -401,7 +401,7 @@ func lbScopes(ctx context.Context, rt *app.Runtime, ref string) ([]scope, error)
 	var cached []config.AccountRef
 	for _, a := range accounts {
 		if pinUnselected(rt, a.Profile) {
-			live = append(live, scope{a.Profile, pinnedProject(rt)})
+			live = append(live, scope{profile: a.Profile, project: pinnedProject(rt)})
 		} else {
 			cached = append(cached, a)
 		}
@@ -424,7 +424,7 @@ func lbScopes(ctx context.Context, rt *app.Runtime, ref string) ([]scope, error)
 					continue
 				}
 				_ = r.Decode(&fr)
-				sc := scope{a.Profile, fr.Project}
+				sc := scope{profile: a.Profile, project: fr.Project}
 				if sc.project == "" {
 					sc.project = def
 				}
