@@ -753,9 +753,23 @@ func TestGCPProjectFlag(t *testing.T) {
 	if code, _, stderr := mainExit(t.TempDir(), "gcp", "dns", "zone", "list", "--project", "a/b"); code != ExitUsage || !strings.Contains(stderr, "not a project id") {
 		t.Errorf("--project a/b: exit %d, %s", code, stderr)
 	}
+	// Of the commands that change the projects of an account only use
+	// refuses --dry-run; enable and disable, and add and remove, their
+	// hidden former names, report what would change. Without a project id
+	// they are a usage error away from a terminal.
 	for _, sub := range []string{"use", "enable", "disable", "add", "remove"} {
-		if code, _, stderr := mainExit(t.TempDir(), "gcp", "project", sub, "p1", "--dry-run"); code != ExitUsage || !strings.Contains(stderr, "does not support --dry-run") {
+		code, _, stderr := mainExit(t.TempDir(), "gcp", "project", sub, "p1", "--dry-run")
+		if refused := code == ExitUsage && strings.Contains(stderr, "does not support --dry-run"); refused != (sub == "use") {
 			t.Errorf("gcp project %s --dry-run: exit %d, %s", sub, code, stderr)
+		}
+		if sub == "use" {
+			continue
+		}
+		if code, _, stderr := mainExit(t.TempDir(), "gcp", "project", sub); code != ExitUsage {
+			t.Errorf("gcp project %s without a project id: exit %d, %s", sub, code, stderr)
+		}
+		if c, _, err := root.Find([]string{"gcp", "project", sub}); err != nil || c.Hidden != (sub == "add" || sub == "remove") {
+			t.Errorf("gcp project %s: %v, hidden %v", sub, err, c != nil && c.Hidden)
 		}
 	}
 }

@@ -275,13 +275,11 @@ func saveProjects(ctx context.Context, rt *app.Runtime, profile, def string, dis
 	return db.Expire(ctx, platform.GCP, profile)
 }
 
-// applyProjects stores the default project and the disabled projects a
-// command arrived at, says what changed against cur and prints the
-// account as project current does.
-func applyProjects(ctx context.Context, rt *app.Runtime, profile string, cur currentProject, def string, disabled []string) error {
-	var off, on []string
+// projectDiff tells the projects that def and disabled disable (off) and
+// enable again (on) against cur, each sorted.
+func projectDiff(cur currentProject, def string, disabled []string) (off, on []string) {
 	for _, p := range disabled {
-		if p != def && !slices.Contains(cur.Disabled, p) {
+		if p != def && !slices.Contains(cur.Disabled, p) && !slices.Contains(off, p) {
 			off = append(off, p)
 		}
 	}
@@ -292,6 +290,134 @@ func applyProjects(ctx context.Context, rt *app.Runtime, profile string, cur cur
 	}
 	sort.Strings(off)
 	sort.Strings(on)
+	return off, on
+}
+
+// finishProjects is the common end of enable and disable: nothing to do
+// when def and disabled are what cur holds, the change report with
+// --dry-run (nothing is saved, purged or made due), and applyProjects
+// otherwise.
+func finishProjects(ctx context.Context, rt *app.Runtime, profile string, cur currentProject, def string, disabled []string) error {
+	off, on := projectDiff(cur, def, disabled)
+	if len(off)+len(on) == 0 && def == cur.Project {
+		return app.NothingToDof("the enabled projects and the default project of gcp/%s are unchanged", profile)
+	}
+	var changes []platform.Change
+	for _, p := range off {
+		changes = append(changes, app.ResourceChange("project", p, platform.Updated, "disabled"))
+	}
+	for _, p := range on {
+		changes = append(changes, app.ResourceChange("project", p, platform.Updated, "enabled"))
+	}
+	if def != cur.Project {
+		changes = append(changes, app.ResourceChange("project", def, platform.Updated, "default"))
+	}
+	if done, err := rt.WouldWrite(platform.Target{Platform: platform.GCP, Profile: profile}, changes...); done || err != nil {
+		return err
+	}
+	return applyProjects(ctx, rt, profile, cur, def, disabled)
+}
+
+// newDefaultProject tells the default project of an account whose
+// disabled projects become disabled: the one it has, unless that is among
+// them or --default (newDefault) names another. rest are the projects
+// that stay enabled, as far as the credentials tell. A default that is
+// disabled is replaced by --default, by the only project left or by the
+// answer on a terminal, and is a usage error otherwise, as is disabling
+// every project.
+func newDefaultProject(rt *app.Runtime, profile string, cur currentProject, disabled, rest []string, newDefault string) (string, error) {
+	def := cur.Project
+	newDefault = strings.TrimSpace(newDefault)
+	gone := slices.Contains(disabled, def)
+	needDefault := func() error {
+		if len(rest) == 0 {
+			return app.UsageErrf("%s is the default project of gcp/%s: pass --default <id> to name the one that replaces it", cur.Project, profile)
+		}
+		return app.UsageErrf("%s is the default project of gcp/%s: pass --default <id> to name the one that replaces it (one of: %s)", cur.Project, profile, strings.Join(rest, ", "))
+	}
+	switch {
+	case gone && !rt.Flags.Offline && len(rest) == 0:
+		// Also the answer for credentials that cannot list projects:
+		// their account works on its default alone.
+		return "", app.UsageErrf("this would disable every project of gcp/%s; an account needs one (to drop the account: polyctl auth logout gcp --profile %s)", profile, profile)
+	case newDefault != "":
+		if err := checkProjectID(newDefault); err != nil {
+			return "", app.UsageErrf("--default: %v", err)
+		}
+		// With --offline the enabled projects are not known: any project
+		// that is not disabled is taken.
+		if slices.Contains(disabled, newDefault) || (!rt.Flags.Offline && !slices.Contains(rest, newDefault)) {
+			return "", app.UsageErrf("--default %s: not one of the projects that stay enabled (%s)", newDefault, strings.Join(rest, ", "))
+		}
+		return newDefault, nil
+	case gone && len(rest) == 0:
+		return "", needDefault()
+	case gone && len(rest) == 1 && rt.Interactive():
+		return rest[0], nil
+	case gone:
+		var opts []prompt.Option
+		for _, p := range rest {
+			opts = append(opts, prompt.Option{Label: p, Value: p})
+		}
+		return rt.Choose(app.Choice{Title: "New default project", Options: opts, Arg: "--default", Missing: needDefault})
+	}
+	return def, nil
+}
+
+// pickProjects is enable and disable without arguments on a terminal: one
+// list of every project the credentials see, and of the disabled ones
+// they do not, in which the enabled ones are ticked. What is ticked at
+// the end is enabled and the rest disabled; a default project that was
+// unticked is replaced as newDefaultProject says.
+func pickProjects(ctx context.Context, rt *app.Runtime, profile string, cur currentProject, newDefault string) error {
+	rows, err := visibleRows(ctx, rt, profile)
+	if err != nil {
+		return err
+	}
+	var opts []prompt.Option
+	var ticked []string
+	for _, r := range rows {
+		mark := ""
+		switch {
+		case r.Default:
+			mark = "default"
+		case r.hidden:
+			mark = "not visible"
+		}
+		opts = append(opts, prompt.Option{Label: prompt.Cells(r.ProjectID, r.Name, mark), Value: r.ProjectID})
+		if r.Enabled {
+			ticked = append(ticked, r.ProjectID)
+		}
+	}
+	keep, err := rt.ChooseMany(app.Choice{Title: fmt.Sprintf("Enabled projects of gcp/%s (ticked: synced and searched)", profile),
+		Options: opts, Selected: ticked, Arg: "<project-id>", What: "project visible to gcp/" + profile})
+	if err != nil {
+		return err
+	}
+	// A project the credentials do not list cannot become the default
+	// here: ticking it only forgets that it was disabled.
+	var disabled, rest []string
+	for _, r := range rows {
+		switch {
+		case !slices.Contains(keep, r.ProjectID):
+			disabled = append(disabled, r.ProjectID)
+		case !r.hidden || r.Default:
+			rest = append(rest, r.ProjectID)
+		}
+	}
+	sort.Strings(rest)
+	def, err := newDefaultProject(rt, profile, cur, disabled, rest, newDefault)
+	if err != nil {
+		return err
+	}
+	return finishProjects(ctx, rt, profile, cur, def, disabled)
+}
+
+// applyProjects stores the default project and the disabled projects a
+// command arrived at, says what changed against cur and prints the
+// account as project current does.
+func applyProjects(ctx context.Context, rt *app.Runtime, profile string, cur currentProject, def string, disabled []string) error {
+	off, on := projectDiff(cur, def, disabled)
 	if err := saveProjects(ctx, rt, profile, def, disabled); err != nil {
 		return err
 	}
@@ -325,14 +451,10 @@ func visibleRows(ctx context.Context, rt *app.Runtime, profile string) ([]projec
 }
 
 // projectOptions are project rows as the options of a pick, labelled with
-// the id, the name and what the account says about the project. keep
-// filters them.
-func projectOptions(rows []projectRow, keep func(projectRow) bool) []prompt.Option {
+// the id, the name and what the account says about the project.
+func projectOptions(rows []projectRow) []prompt.Option {
 	var opts []prompt.Option
 	for _, r := range rows {
-		if keep != nil && !keep(r) {
-			continue
-		}
 		mark := ""
 		switch {
 		case r.Default:
@@ -380,7 +502,7 @@ synced again on its next use.`,
 				if err != nil {
 					return err
 				}
-				if id, err = rt.Choose(app.Choice{Title: "Default project", Options: projectOptions(rows, nil), Default: cur.Project, Arg: "<project-id>", What: "project visible to gcp/" + profile}); err != nil {
+				if id, err = rt.Choose(app.Choice{Title: "Default project", Options: projectOptions(rows), Default: cur.Project, Arg: "<project-id>", What: "project visible to gcp/" + profile}); err != nil {
 					return err
 				}
 			}
@@ -440,12 +562,16 @@ A project that is enabled already is left as it is (exit code 0, nothing is
 written). One that is neither disabled nor visible to the credentials is not
 found (exit code 4): name it with --project, or make it the default project
 with "polyctl gcp project use". A disabled project that is no longer visible
-is forgotten. On a terminal, without <project-id> the disabled projects are
-offered (tick several).
+is forgotten.
+
+On a terminal, without <project-id> every project the credentials see is
+listed with the enabled ones ticked, as "polyctl gcp project disable" does:
+what is ticked at the end is enabled, the rest is disabled. The list needs
+Google Cloud (not with --offline).
 
 Only the local configuration changes; the cached inventory of the account is
-synced again on its next use. Works with --offline for projects that are
-disabled.`,
+synced again on its next use. --dry-run reports what would change and writes
+nothing. Works with --offline for projects that are disabled.`,
 		Args: app.RangeArgsOrInteractive(rt, 1, 100, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -462,17 +588,7 @@ disabled.`,
 				return err
 			}
 			if len(ids) == 0 {
-				var opts []prompt.Option
-				if len(cur.Disabled) > 0 {
-					rows, err := visibleRows(ctx, rt, profile)
-					if err != nil {
-						return err
-					}
-					opts = projectOptions(rows, func(r projectRow) bool { return !r.Enabled })
-				}
-				if ids, err = rt.ChooseMany(app.Choice{Title: "Projects to enable", Options: opts, Arg: "<project-id>", What: "disabled project of gcp/" + profile}); err != nil {
-					return err
-				}
+				return pickProjects(ctx, rt, profile, cur, newDefault)
 			}
 			var on, unknown []string
 			for _, id := range ids {
@@ -513,11 +629,10 @@ disabled.`,
 					disabled = append(disabled, p)
 				}
 			}
-			return applyProjects(ctx, rt, profile, cur, cur.Project, disabled)
+			return finishProjects(ctx, rt, profile, cur, cur.Project, disabled)
 		},
 	}
-	cmd.Flags().StringVar(&newDefault, "default", "", "the project that becomes the default when the default project is disabled (enabling projects never needs it)")
-	app.MarkNoDryRun(cmd)
+	cmd.Flags().StringVar(&newDefault, "default", "", "the enabled project that becomes the default, when the default project is unticked in the list (enabling the projects named never needs it)")
 	formerName(cmd, "enable")
 	return cmd
 }
@@ -542,12 +657,18 @@ written). One the credentials do not see is not found (exit code 4).
 The default project can be disabled only together with --default <id>, which
 names the enabled project that becomes the default (on a terminal it is
 asked); without it this is a usage error (exit code 2), as is disabling every
-project (log the account out with "polyctl auth logout gcp" instead). On a
-terminal, without <project-id> the enabled projects are offered.
+project (log the account out with "polyctl auth logout gcp" instead).
+
+On a terminal, without <project-id> every project the credentials see is
+listed with the enabled ones ticked, as "polyctl gcp project enable" does:
+what is ticked at the end is enabled, the rest is disabled, and a default
+project that was unticked is replaced as above. The list needs Google Cloud
+(not with --offline).
 
 No confirmation is asked: only the local configuration and a cache that the
-next sync rebuilds change. With --offline the projects are not checked against
-what the credentials see.`,
+next sync rebuilds change. --dry-run reports what would change and writes
+nothing. With --offline the projects are not checked against what the
+credentials see.`,
 		Args: app.RangeArgsOrInteractive(rt, 1, 100, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -563,14 +684,15 @@ what the credentials see.`,
 			if err != nil {
 				return err
 			}
+			if len(ids) == 0 {
+				return pickProjects(ctx, rt, profile, cur, newDefault)
+			}
 			// enabled are the projects that are enabled now, when the
-			// credentials can tell (listed): the candidates of a pick and
-			// of a new default.
+			// credentials can tell (listed): the candidates of a new
+			// default.
 			var enabled []string
 			listed := false
 			switch {
-			case rt.Flags.Offline && len(ids) == 0:
-				return app.ErrOffline
 			case rt.Flags.Offline:
 				rt.Infof("note: --offline: whether the credentials see %s was not checked", strings.Join(ids, ", "))
 			default:
@@ -585,7 +707,7 @@ what the credentials see.`,
 				if enabled, err = c.enabledProjects(ctx); err != nil {
 					return err
 				}
-				if !listed && len(ids) > 0 {
+				if !listed {
 					rt.Infof("note: the credentials of gcp/%s cannot list projects: whether they see %s was not checked", profile, strings.Join(ids, ", "))
 				}
 				for _, id := range ids {
@@ -594,19 +716,6 @@ what the credentials see.`,
 					if listed && !known {
 						return fmt.Errorf("%w: project %s is not visible to the credentials of gcp/%s", platform.ErrNotFound, id, profile)
 					}
-				}
-			}
-			if len(ids) == 0 {
-				var opts []prompt.Option
-				for _, p := range enabled {
-					mark := ""
-					if p == cur.Project {
-						mark = "default"
-					}
-					opts = append(opts, prompt.Option{Label: prompt.Cells(p, mark), Value: p})
-				}
-				if ids, err = rt.ChooseMany(app.Choice{Title: "Projects to disable", Options: opts, Arg: "<project-id>", What: "enabled project of gcp/" + profile}); err != nil {
-					return err
 				}
 			}
 			disabled := append([]string(nil), cur.Disabled...)
@@ -629,48 +738,14 @@ what the credentials see.`,
 				}
 			}
 			sort.Strings(rest)
-			def := cur.Project
-			newDefault = strings.TrimSpace(newDefault)
-			gone := slices.Contains(disabled, def)
-			needDefault := func() error {
-				if len(rest) == 0 {
-					return app.UsageErrf("%s is the default project of gcp/%s: pass --default <id> to name the one that replaces it", cur.Project, profile)
-				}
-				return app.UsageErrf("%s is the default project of gcp/%s: pass --default <id> to name the one that replaces it (one of: %s)", cur.Project, profile, strings.Join(rest, ", "))
+			def, err := newDefaultProject(rt, profile, cur, disabled, rest, newDefault)
+			if err != nil {
+				return err
 			}
-			switch {
-			case gone && !rt.Flags.Offline && len(rest) == 0:
-				// Also the answer for credentials that cannot list
-				// projects: their account works on its default alone.
-				return app.UsageErrf("this would disable every project of gcp/%s; an account needs one (to drop the account: polyctl auth logout gcp --profile %s)", profile, profile)
-			case newDefault != "":
-				if err := checkProjectID(newDefault); err != nil {
-					return app.UsageErrf("--default: %v", err)
-				}
-				// With --offline the enabled projects are not known: any
-				// project that is not disabled is taken.
-				if slices.Contains(disabled, newDefault) || (!rt.Flags.Offline && !slices.Contains(rest, newDefault)) {
-					return app.UsageErrf("--default %s: not one of the projects that stay enabled (%s)", newDefault, strings.Join(rest, ", "))
-				}
-				def = newDefault
-			case gone && len(rest) == 0:
-				return needDefault()
-			case gone && len(rest) == 1 && rt.Interactive():
-				def = rest[0]
-			case gone:
-				var opts []prompt.Option
-				for _, p := range rest {
-					opts = append(opts, prompt.Option{Label: p, Value: p})
-				}
-				if def, err = rt.Choose(app.Choice{Title: "New default project", Options: opts, Arg: "--default", Missing: needDefault}); err != nil {
-					return err
-				}
-			}
-			return applyProjects(ctx, rt, profile, cur, def, disabled)
+			return finishProjects(ctx, rt, profile, cur, def, disabled)
 		},
 	}
 	cmd.Flags().StringVar(&newDefault, "default", "", "the enabled project that becomes the default, when the default project is disabled")
-	app.MarkNoDryRun(cmd)
 	formerName(cmd, "disable")
 	return cmd
 }

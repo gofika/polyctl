@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -1060,8 +1061,9 @@ func TestProjectUseEnableDisable(t *testing.T) {
 			t.Errorf("project %s: %v, hidden %v, want %v", sub, err, c.Hidden, hidden)
 			continue
 		}
-		if c.Annotations[app.NoDryRunAnnotation] == "" {
-			t.Errorf("project %s must refuse --dry-run", sub)
+		// Only use refuses --dry-run: it has nothing to report but itself.
+		if refuses := c.Annotations[app.NoDryRunAnnotation] != ""; refuses != (sub == "use") {
+			t.Errorf("project %s refuses --dry-run = %v", sub, refuses)
 		}
 		if sub != "use" && c.Flags().Lookup("default") == nil {
 			t.Errorf("project %s has no --default", sub)
@@ -1069,9 +1071,11 @@ func TestProjectUseEnableDisable(t *testing.T) {
 	}
 }
 
-// Without arguments the interactive flow picks from a list: the visible
-// projects for use, the disabled ones for enable, the enabled ones for
-// disable, and the new default when the default goes.
+// Without arguments the interactive flow picks from a list: use the
+// default among the visible projects; enable and disable the same list of
+// every project, the enabled ones ticked, whose result is applied in both
+// directions. A default that was unticked is asked again, or taken when
+// one project is left or --default names it.
 func TestProjectCommandsPick(t *testing.T) {
 	h, g := multiDNS(t)
 	h.enableOn(g, "p1", "p1", "p2", "p3", "p4")
@@ -1086,29 +1090,171 @@ func TestProjectCommandsPick(t *testing.T) {
 		t.Errorf("use asked %+v", a)
 	}
 
-	p = h.answer([]string{"p2"})
-	if err := h.run("project", "enable"); err != nil || h.labProjects() != "p3 []" {
+	// p9 is disabled and not visible to the credentials any more.
+	h.disableProjects("p2", "p9")
+	const title = "Enabled projects of gcp/lab (ticked: synced and searched)"
+	offered := func(sub string, a prompttest.Asked, preset string) {
+		t.Helper()
+		labels := prompttest.Labels(a.Options)
+		if a.Kind != "multi" || a.Title != title || prompttest.Values(a.Options) != "p1 p2 p3 p4 p9" || strings.Join(a.Preset, " ") != preset ||
+			!strings.Contains(labels, "p3  Project p3  default") || !strings.Contains(labels, "not visible") || strings.Contains(labels, "disabled") {
+			t.Errorf("%s offered %+v", sub, a)
+		}
+	}
+	// enable: p2 is ticked and p4 unticked in the same list.
+	p = h.answer([]string{"p1", "p2", "p3"})
+	if err := h.run("project", "enable"); err != nil || h.labProjects() != "p3 [p4,p9]" {
 		t.Fatalf("enable = %v, %s", err, h.labProjects())
 	}
-	if a := p.Asked[0]; a.Kind != "multi" || prompttest.Values(a.Options) != "p2" || !strings.Contains(prompttest.Labels(a.Options), "p2  Project p2  disabled") {
-		t.Errorf("enable offered %+v", a)
-	}
-	// Nothing is disabled: there is nothing to enable.
-	h.answer()
-	if err := h.run("project", "enable"); exitClass(err) != "nothing" || !has(err, "no disabled project of gcp/lab") {
-		t.Errorf("enable with nothing disabled = %v", err)
+	p.Done()
+	offered("enable", p.Asked[0], "p1 p3 p4")
+	for _, want := range []string{"disabled p4 for gcp/lab", "enabled p2 for gcp/lab"} {
+		if !strings.Contains(h.stderr.String(), want) {
+			t.Errorf("enable said %q, want %q", h.stderr.String(), want)
+		}
 	}
 
-	p = h.answer([]string{"p3", "p4"}, "p2")
+	// disable: the default and p4 are unticked, and p9, ticked, is
+	// forgotten without becoming a candidate of the new default.
+	h.disableProjects("p9")
+	p = h.answer([]string{"p1", "p2", "p9"}, "p2")
 	if err := h.run("project", "disable"); err != nil || h.labProjects() != "p2 [p3,p4]" {
 		t.Fatalf("disable = %v, %s", err, h.labProjects())
 	}
 	p.Done()
-	if a := p.Asked[0]; a.Kind != "multi" || prompttest.Values(a.Options) != "p3 p1 p2 p4" || !strings.Contains(prompttest.Labels(a.Options), "p3  default") {
-		t.Errorf("disable offered %+v", a)
-	}
+	offered("disable", p.Asked[0], "p1 p2 p3 p4")
 	if a := p.Asked[1]; a.Title != "New default project" || prompttest.Values(a.Options) != "p1 p2" {
 		t.Errorf("new default asked %+v", a)
+	}
+
+	// What is ticked already: nothing to do, nothing written.
+	before := h.labMeta()
+	p = h.answer([]string{"p1", "p2"})
+	if err := h.run("project", "enable"); exitClass(err) != "nothing" || !has(err, "unchanged") {
+		t.Errorf("unchanged ticks = %v", err)
+	}
+	p.Done()
+	// Nothing ticked is leaving the list, not disabling every project.
+	h.answer([]string{})
+	if err := h.run("project", "disable"); exitClass(err) != "nothing" || !has(err, "nothing was selected") {
+		t.Errorf("nothing ticked = %v", err)
+	}
+	// A list without a visible project left for the default is refused.
+	h.disableProjects("p3", "p4", "p9")
+	h.answer([]string{"p9"})
+	if err := h.run("project", "disable"); exitClass(err) != "usage" || !has(err, "this would disable every project of gcp/lab") {
+		t.Errorf("only an invisible project ticked = %v", err)
+	}
+	h.disableProjects("p3", "p4")
+	if !reflect.DeepEqual(h.labMeta(), before) {
+		t.Errorf("metadata = %v, want %v", h.labMeta(), before)
+	}
+
+	// --default names the new default without a question, and must stay
+	// ticked.
+	h.answer([]string{"p1", "p3"})
+	if err := h.run("project", "disable", "--default", "p4"); exitClass(err) != "usage" || !has(err, "--default p4: not one of the projects that stay enabled (p1, p3)") {
+		t.Errorf("--default of an unticked project = %v", err)
+	}
+	p = h.answer([]string{"p1", "p3"})
+	if err := h.run("project", "enable", "--default", "p3"); err != nil || h.labProjects() != "p3 [p2,p4]" {
+		t.Fatalf("pick with --default = %v, %s", err, h.labProjects())
+	}
+	p.Done()
+	// One project left: it becomes the default without a question.
+	p = h.answer([]string{"p1"})
+	if err := h.run("project", "disable"); err != nil || h.labProjects() != "p1 [p2,p3,p4]" {
+		t.Fatalf("one project left = %v, %s", err, h.labProjects())
+	}
+	p.Done()
+
+	// The non-interactive flow needs the ids.
+	h.nonInteractive()
+	for _, sub := range []string{"enable", "disable", "add", "remove"} {
+		if err := h.run("project", sub); !has(err, "accepts between 1 and 100 arg(s), received 0") {
+			t.Errorf("project %s without an id, non-interactive = %v", sub, err)
+		}
+	}
+}
+
+// --dry-run of enable and disable (and of add and remove, their former
+// names) reports the projects that would be disabled and enabled and the
+// new default, and writes nothing: the configuration and the inventory
+// stay as they are.
+func TestProjectEnableDisableDryRun(t *testing.T) {
+	h, g := multiDNS(t)
+	h.enableOn(g, "p1", "p1", "p2", "p3", "p4")
+	h.disableProjects("p4")
+	g.addZone("p2", "two", "two.example", "public")
+	h.nonInteractive()
+	if err := h.run("dns", "zone", "list"); err != nil {
+		t.Fatal(err)
+	}
+	zones := h.rowsOf(platform.ResZone)
+	listed := func() int {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		n := 0
+		for _, c := range g.calls {
+			if strings.Contains(c, "managedZones") {
+				n++
+			}
+		}
+		return n
+	}
+	synced := listed()
+	h.rt.Flags.DryRun = true
+	check := func(what string, err error, want ...string) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("%s = %v", what, err)
+		}
+		rep := h.report()
+		if got := rows(rep); !rep.DryRun || rep.Target.Platform != platform.GCP || rep.Target.Profile != "lab" || !reflect.DeepEqual(got, want) {
+			t.Errorf("%s reported %+v %v, want %v", what, rep.Target, got, want)
+		}
+		if h.labProjects() != "p1 [p4]" || !reflect.DeepEqual(h.rowsOf(platform.ResZone), zones) {
+			t.Errorf("%s changed the account: %s, zones %v", what, h.labProjects(), h.rowsOf(platform.ResZone))
+		}
+	}
+	for _, sub := range []string{"disable", "remove"} {
+		check(sub, h.run("project", sub, "p2", "p3"), "project/p2 would_update disabled", "project/p3 would_update disabled")
+		check(sub+" of the default", h.run("project", sub, "p1", "p2", "--default", "p3"),
+			"project/p1 would_update disabled", "project/p2 would_update disabled", "project/p3 would_update default")
+	}
+	for _, sub := range []string{"enable", "add"} {
+		check(sub, h.run("project", sub, "p4"), "project/p4 would_update enabled")
+	}
+	if !strings.Contains(h.stderr.String(), "dry run: would update project/p4 (enabled)") {
+		t.Errorf("stderr = %q", h.stderr.String())
+	}
+	// Nothing to do stays nothing to do, and a usage error a usage error.
+	if err := h.run("project", "disable", "p4"); exitClass(err) != "nothing" {
+		t.Errorf("dry run of a disabled project = %v", err)
+	}
+	if err := h.run("project", "disable", "p1"); exitClass(err) != "usage" {
+		t.Errorf("dry run of the default without --default = %v", err)
+	}
+	// The pick reports what its ticks would change, in both directions.
+	h.interactive([]string{"p2", "p4"}, "p4")
+	check("pick", h.run("project", "disable"), "project/p1 would_update disabled", "project/p3 would_update disabled",
+		"project/p4 would_update enabled", "project/p4 would_update default")
+	// The cached sets were not made due: the next list is served by them.
+	h.nonInteractive()
+	h.rt.Flags.DryRun = false
+	if err := h.run("dns", "zone", "list"); err != nil || listed() != synced {
+		t.Errorf("zone list after the dry runs = %v, %d zone listing(s), want %d", err, listed(), synced)
+	}
+
+	// The table of the report.
+	ht := newGCPHarness(t, app.Flags{Output: "table", NonInteractive: true, NonInteractiveSet: true, DryRun: true}, nil)
+	ht.enableProjects("p1", "p1", "p2")
+	if err := ht.run("project", "disable", "p2"); err != nil {
+		t.Fatal(err)
+	}
+	out := strings.Join(strings.Fields(ht.stdout.String()), " ")
+	if !strings.Contains(out, "RESOURCE ACTION DETAIL project/p2 would update disabled") || ht.labProjects() != "p1 []" {
+		t.Errorf("table = %q, account %s", out, ht.labProjects())
 	}
 }
 
