@@ -181,3 +181,38 @@ func TestReloginDropsRowsWithoutAParent(t *testing.T) {
 		t.Errorf("dns list of a zone of the account that left: exit %d, %s%s", code, stdout, stderr)
 	}
 }
+
+// account remove takes the name of a selected account, also of one the
+// profile knows no name of (no zone of it is cached, and it is not the
+// default): the credentials are asked.
+func TestAccountRemoveByNameAsksTheCredentials(t *testing.T) {
+	e := newR2Env(t)
+	e.loginAll()
+	acct := func(args ...string) (int, string) {
+		t.Helper()
+		code, stdout, stderr := e.run(append([]string{"cloudflare", "account", "--profile", "all"}, args...)...)
+		return code, stdout + stderr
+	}
+	if code, out := acct("add", "Beta", "Gamma"); code != cli.ExitOK || e.selection("all") != "acc1|Acme|acc1,acc2,acc3" {
+		t.Fatalf("add: exit %d, %s, %s", code, e.selection("all"), out)
+	}
+	if code, out := acct("remove", "Gamma"); code != cli.ExitOK || e.selection("all") != "acc1|Acme|acc1,acc2" || !strings.Contains(out, "removed acc3 from the accounts of cloudflare/all") {
+		t.Fatalf("remove by name: exit %d, %s, %s", code, e.selection("all"), out)
+	}
+	if code, out := acct("remove", "acc1", "--default", "beta"); code != cli.ExitOK || e.selection("all") != "acc2|Beta|" {
+		t.Fatalf("remove with --default by name: exit %d, %s, %s", code, e.selection("all"), out)
+	}
+	// A name no selected account carries is still "not selected", also when
+	// a visible account carries it.
+	if code, out := acct("remove", "Acme"); code != cli.ExitNotFound || !strings.Contains(out, "Acme is not selected for cloudflare/all (selected: acc2)") {
+		t.Errorf("remove of an unselected name: exit %d, %s", code, out)
+	}
+	// Credentials that fail do not keep an account from being removed by id.
+	if code, out := acct("add", "acc1"); code != cli.ExitOK {
+		t.Fatalf("add: exit %d, %s", code, out)
+	}
+	delete(e.f.tokens, "tok-all")
+	if code, out := acct("remove", "acc1"); code != cli.ExitOK || e.selection("all") != "acc2|Beta|" {
+		t.Errorf("remove with failing credentials: exit %d, %s, %s", code, e.selection("all"), out)
+	}
+}

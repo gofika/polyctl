@@ -245,19 +245,15 @@ func (b *accountBook) list(ctx context.Context) ([]account, error) {
 }
 
 // resolve turns the accounts named on the command line, by id or by name,
-// into ids. A name the profile knows needs no request. With local nothing
-// else is looked up (remove works on the selection, which is local): what
-// the profile does not know is taken as it is. With --offline what is not
-// known is taken as an id.
-func (b *accountBook) resolve(ctx context.Context, args []string, local bool) ([]string, error) {
+// into ids. A name the profile knows needs no request. With --offline what
+// is not known is taken as an id.
+func (b *accountBook) resolve(ctx context.Context, args []string) ([]string, error) {
 	var out []string
 	for _, ref := range args {
 		ref = strings.TrimSpace(ref)
 		id, ok := knownAccount(ctx, b.rt, b.profile, ref)
 		switch {
 		case ok:
-		case local:
-			id = ref
 		case b.rt.Flags.Offline:
 			if err := checkAccountID(ref); err != nil {
 				return nil, fmt.Errorf("%w: account %q is not known to cloudflare/%s and cannot be looked up with --offline: pass the account id", app.ErrOffline, ref, b.profile)
@@ -270,6 +266,47 @@ func (b *accountBook) resolve(ctx context.Context, args []string, local bool) ([
 			}
 			if id, err = matchAccount(b.profile, ref, "", accounts, b.complete); err != nil {
 				return nil, err
+			}
+		}
+		if !slices.Contains(out, id) {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
+// resolveSelected turns the accounts named to remove, by id or by name,
+// into ids of the selection, which is where remove works: a name is one a
+// selected account carries, as the credentials list it (they are not asked
+// with --offline, and credentials that fail keep nothing from being removed
+// by id) or as the profile knows it. A name several selected accounts carry
+// is ambiguous (exit code 5); a reference that names no selected account is
+// returned as it is, for the caller to report it as not selected.
+func (b *accountBook) resolveSelected(ctx context.Context, args []string) ([]string, error) {
+	var out []string
+	for _, ref := range args {
+		ref = strings.TrimSpace(ref)
+		id := ref
+		if !slices.Contains(b.cur.Accounts, ref) {
+			if !b.rt.Flags.Offline {
+				_, _ = b.list(ctx)
+			}
+			var named []string
+			for _, sel := range b.cur.Accounts {
+				if n := b.localName(ctx, sel); n != "" && strings.EqualFold(n, ref) {
+					named = append(named, sel)
+				}
+			}
+			switch len(named) {
+			case 0:
+			case 1:
+				id = named[0]
+			default:
+				cands := make([]string, 0, len(named))
+				for _, sel := range named {
+					cands = append(cands, accountLabel(sel, b.localName(ctx, sel)))
+				}
+				return nil, &app.AmbiguousError{What: fmt.Sprintf("account %q", ref), Candidates: cands, Hint: "pass the account id to choose"}
 			}
 		}
 		if !slices.Contains(out, id) {
@@ -512,7 +549,7 @@ synced again on its next use.`,
 			if err != nil {
 				return err
 			}
-			ids, err := b.resolve(ctx, args, false)
+			ids, err := b.resolve(ctx, args)
 			if err != nil {
 				return err
 			}
@@ -574,7 +611,7 @@ synced again on its next use.`,
 			if err != nil {
 				return err
 			}
-			ids, err := b.resolve(ctx, args, false)
+			ids, err := b.resolve(ctx, args)
 			if err != nil {
 				return err
 			}
@@ -650,7 +687,7 @@ zone).`,
 				return err
 			}
 			cur := b.cur
-			ids, err := b.resolve(ctx, args, true)
+			ids, err := b.resolveSelected(ctx, args)
 			if err != nil {
 				return err
 			}
@@ -694,7 +731,7 @@ zone).`,
 			newDefault = strings.TrimSpace(newDefault)
 			switch {
 			case newDefault != "":
-				picked, err := b.resolve(ctx, []string{newDefault}, true)
+				picked, err := b.resolveSelected(ctx, []string{newDefault})
 				if err != nil {
 					return err
 				}

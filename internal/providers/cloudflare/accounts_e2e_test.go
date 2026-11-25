@@ -1307,6 +1307,7 @@ func TestAccountUseAddRemove(t *testing.T) {
 		t.Errorf("--default of a removed account: exit %d, %s", code, out)
 	}
 	// Works offline, and by a name the cached zones carry.
+	e.f.reset()
 	if code, out = acct("remove", "acc3", "beta", "acc9", "--default", "Acme", "--offline"); code != cli.ExitOK || e.selection("all") != "acc1|Acme|" ||
 		!strings.Contains(out, "removed acc3, acc2, acc9 from the accounts of cloudflare/all") || !strings.Contains(out, "account acc1 is now the default account of cloudflare/all") {
 		t.Fatalf("remove with --default: exit %d, %s, %s", code, e.selection("all"), out)
