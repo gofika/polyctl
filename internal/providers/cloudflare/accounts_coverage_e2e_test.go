@@ -1,14 +1,18 @@
 package cloudflare_test
 
 import (
+	"context"
+	"encoding/json"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gofika/polyctl/internal/cli"
 	"github.com/gofika/polyctl/internal/config"
+	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/platform"
 )
 
@@ -92,5 +96,88 @@ func TestAccountUseNarrowsALoginWithoutAnAccount(t *testing.T) {
 			}
 			e.onlyAcc1("account " + verb)
 		})
+	}
+}
+
+// unparent stores the zone and bucket rows of an account of a profile again
+// as they were stored before the rows had their account as parent: without
+// a parent, the bucket under its bare name.
+func (e *r2Env) unparent(profile, account string) {
+	e.t.Helper()
+	db, err := inventory.Open(filepath.Join(e.dir, "inventory.db"))
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	for _, typ := range []platform.ResourceType{platform.ResZone, platform.ResR2Bucket} {
+		rows, err := db.List(ctx, inventory.Query{Platform: platform.Cloudflare, Profile: profile, Type: typ})
+		if err != nil {
+			e.t.Fatal(err)
+		}
+		var res []platform.Resource
+		for _, r := range rows {
+			pr := platform.Resource{Type: typ, ID: r.ID, Name: r.Name, ParentID: r.ParentID, Domain: r.Domain, Data: json.RawMessage(r.Data)}
+			if r.ParentID == account {
+				pr.ParentID = ""
+				if typ == platform.ResR2Bucket {
+					pr.ID = r.Name
+				}
+			}
+			res = append(res, pr)
+		}
+		if err := db.Replace(ctx, inventory.Set{Platform: platform.Cloudflare, Profile: profile, Type: typ}, res, time.Hour); err != nil {
+			e.t.Fatal(err)
+		}
+	}
+}
+
+// A new login that binds a login without an account to a selection drops
+// what the inventory holds of every account outside it, as account use
+// does.
+func TestReloginNarrowsALoginWithoutAnAccount(t *testing.T) {
+	e := syncedUnbound(t)
+	if code, _, stderr := e.run("auth", "login", "cloudflare", "--profile", "both", "--set", "token=tok-both", "--set", "account_id=acc1"); code != cli.ExitOK || e.selection("both") != "acc1|Acme|" {
+		t.Fatalf("login: exit %d, %s, %s", code, e.selection("both"), stderr)
+	}
+	e.onlyAcc1("login")
+}
+
+// A new login that no longer selects the account an earlier release stored
+// rows for drops those rows too, although they have no parent: the neutral
+// commands would otherwise keep routing the names of its zones to it.
+func TestReloginDropsRowsWithoutAParent(t *testing.T) {
+	e := newR2Env(t)
+	e.f.addRecord("zone-ex", "rec-ex", "www.example.com", "A", "192.0.2.1")
+	e.f.accounts["acc1"].buckets = []string{"assets"}
+	e.loginBoth("acc1")
+	if code, _, stderr := e.run("sync", "--profile", "both", "--platform", "cloudflare"); code != cli.ExitOK {
+		t.Fatalf("sync: exit %d, %s", code, stderr)
+	}
+	e.unparent("both", "acc1")
+	if got := e.rows("both", platform.ResZone); !slices.Contains(got, "zone-ex ") {
+		t.Fatalf("zones: %v", got)
+	}
+	if got := e.rows("both", platform.ResR2Bucket); !reflect.DeepEqual(got, []string{"assets "}) {
+		t.Fatalf("buckets: %v", got)
+	}
+	if got := e.rows("both", platform.ResDNSRecord); !reflect.DeepEqual(got, []string{"rec-ex zone-ex"}) {
+		t.Fatalf("records: %v", got)
+	}
+
+	if code, _, stderr := e.run("auth", "login", "cloudflare", "--profile", "both", "--set", "token=tok-both", "--set", "accounts=acc2", "--set", "account_id=acc2"); code != cli.ExitOK || e.selection("both") != "acc2|Beta|" {
+		t.Fatalf("login: exit %d, %s, %s", code, e.selection("both"), stderr)
+	}
+	for _, typ := range []platform.ResourceType{platform.ResZone, platform.ResDNSRecord, platform.ResR2Bucket} {
+		if got := e.rows("both", typ); len(got) != 0 {
+			t.Errorf("%s rows of the account that left: %v", typ, got)
+		}
+	}
+	if got := e.domains("both"); slices.Contains(got, "example.com") {
+		t.Errorf("domains: %v", got)
+	}
+	e.f.reset()
+	if code, stdout, stderr := e.run("dns", "list", "example.com", "--profile", "both", "-o", "json"); code == cli.ExitOK || e.f.count("GET /zones/zone-ex/") != 0 {
+		t.Errorf("dns list of a zone of the account that left: exit %d, %s%s", code, stdout, stderr)
 	}
 }

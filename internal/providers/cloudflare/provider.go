@@ -162,6 +162,19 @@ func (*provider) CoverageChange(before, after map[string]string) (dropped []stri
 	return dropped, changed || len(dropped) > 0
 }
 
+var _ app.CoverageForgetter = (*provider)(nil)
+
+// ForgetUncovered drops, after a new login, the cached rows of the accounts
+// outside its selection that CoverageChange does not name: see
+// forgetUnselected.
+func (*provider) ForgetUncovered(ctx context.Context, rt *app.Runtime, profile string, before, after map[string]string) error {
+	db, err := rt.DB()
+	if err != nil {
+		return err
+	}
+	return forgetUnselected(ctx, rt, db, profile, selectedAccounts(before), selectedAccounts(after))
+}
+
 var _ platform.OwnerHinter = (*provider)(nil)
 
 // OwnerHint says how to choose among several zones of one login that hold

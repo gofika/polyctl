@@ -135,7 +135,7 @@ A login works on the accounts selected for it, one of which is the default accou
 - Every account named must be visible to the credentials, when they can list their accounts. A token that cannot list them (no `Account:Read`) takes the ids as given, and without them is not bound to an account: it works on every zone it sees. An account-owned token sees its own account only.
 - A selected account the credentials no longer see is left out of the new login, with a note; a token whose default account is gone fails until `--set account_id` names another.
 - The selection is stored as the metadata `account_id`, `account_name` (the default account) and `accounts` (the ids, when there are several). A login stored with `account_id` alone has that one account selected.
-- An account that a new login no longer selects loses its cached zones, records and R2 buckets at once.
+- An account that a new login no longer selects loses its cached zones, records and R2 buckets at once. So does every account outside the selection when the login had no account before.
 - `polyctl cloudflare account use`, `add` and `remove` change the default account and the selection without a new login; `account current` shows them. What the selection covers, and `--account` for one call, is in [Cloudflare: Accounts](platforms/cloudflare.md#accounts).
 
 **Non-interactive:** export `CLOUDFLARE_API_TOKEN`, or `--set token=-` with the token on stdin (`--set token` wins). A token piped without `--set token=-` is ignored.

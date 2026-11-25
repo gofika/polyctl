@@ -1244,3 +1244,13 @@ func (rt *Runtime) AccountsFor(kinds ...platform.ResourceType) ([]config.Account
 func (rt *Runtime) DomainAccounts() ([]config.AccountRef, error) {
 	return rt.AccountsFor(platform.ResZone, platform.ResDomain)
 }
+
+// CoverageForgetter is implemented by providers that hold cached rows of
+// what an account no longer covers which the trees of
+// platform.CoverageChanger do not name (the rows a Cloudflare login without
+// an account cached of every account its credentials saw, and those stored
+// before the rows had their account as parent). After a re-login replaced
+// the metadata before by after, ForgetUncovered drops those rows.
+type CoverageForgetter interface {
+	ForgetUncovered(ctx context.Context, rt *Runtime, profile string, before, after map[string]string) error
+}
