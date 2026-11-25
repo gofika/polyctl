@@ -394,8 +394,8 @@ func (b *accountBook) save(ctx context.Context, def string, selected []string) e
 }
 
 // saveSelection stores a new default account and selection for the
-// profile's Cloudflare login, drops what is cached for the accounts that
-// left the selection and makes every cached set of the login due, so that
+// profile's Cloudflare login, drops what is cached for the accounts outside
+// the new selection and makes every cached set of the login due, so that
 // the next read syncs the new selection.
 func saveSelection(ctx context.Context, rt *app.Runtime, profile string, def account, selected []string) error {
 	cfg, err := rt.ReloadConfig()
@@ -421,7 +421,28 @@ func saveSelection(ctx context.Context, rt *app.Runtime, profile string, def acc
 	if err != nil {
 		return err
 	}
-	after := selectedAccounts(a.Metadata)
+	if err := forgetUnselected(ctx, rt, db, profile, before, selectedAccounts(a.Metadata)); err != nil {
+		return err
+	}
+	return db.Expire(ctx, platform.Cloudflare, profile)
+}
+
+// forgetUnselected drops from the inventory of a profile what it holds of
+// the accounts outside the selection after of its login: the trees of the
+// accounts that left the selection before, and every other zone (with its
+// records) and bucket row of an account that is not selected.
+//
+// Those other rows are the ones of a login that was not bound to an account
+// (it cached whatever its credentials saw, and before is empty), and the
+// ones stored before the rows had their account as parent, which the purge
+// of a tree does not reach: they name the account in their data. A row that
+// names no account at all is of the default account it was stored under.
+// Nothing is dropped for a login that ends up without an account: it covers
+// whatever its credentials see.
+func forgetUnselected(ctx context.Context, rt *app.Runtime, db *inventory.DB, profile string, before, after []string) error {
+	if len(after) == 0 {
+		return nil
+	}
 	for _, id := range before {
 		if slices.Contains(after, id) {
 			continue
@@ -429,23 +450,19 @@ func saveSelection(ctx context.Context, rt *app.Runtime, profile string, def acc
 		if err := db.PurgeTree(ctx, platform.Cloudflare, profile, id); err != nil {
 			return err
 		}
-		if err := forgetAccountRows(ctx, rt, db, profile, id); err != nil {
-			return err
-		}
 	}
-	return db.Expire(ctx, platform.Cloudflare, profile)
-}
-
-// forgetAccountRows drops the zone and bucket rows of an account that were
-// stored before the rows had their account as parent, which the purge of
-// the account's tree does not reach: they name the account in their data.
-func forgetAccountRows(ctx context.Context, rt *app.Runtime, db *inventory.DB, profile, account string) error {
+	gone := func(account string) bool {
+		if account == "" && len(before) > 0 {
+			account = before[0]
+		}
+		return account != "" && !slices.Contains(after, account)
+	}
 	zones, err := db.List(ctx, inventory.Query{Platform: platform.Cloudflare, Profile: profile, Type: platform.ResZone})
 	if err != nil {
 		return err
 	}
 	for _, r := range zones {
-		if r.ParentID == "" && zoneAccount(rowZone(r)) == account {
+		if gone(rowAccount(r)) {
 			dropZone(ctx, rt, profile, r.ID)
 		}
 	}
@@ -454,8 +471,14 @@ func forgetAccountRows(ctx context.Context, rt *app.Runtime, db *inventory.DB, p
 		return err
 	}
 	for _, r := range buckets {
-		var row r2BucketRow
-		if r.ParentID != "" || r.Decode(&row) != nil || row.AccountID != account {
+		account := r.ParentID
+		if account == "" {
+			var row r2BucketRow
+			if r.Decode(&row) == nil {
+				account = row.AccountID
+			}
+		}
+		if !gone(account) {
 			continue
 		}
 		if err := db.Delete(ctx, inventory.Set{Platform: platform.Cloudflare, Profile: profile, Type: platform.ResR2Bucket}, platform.ResR2Bucket, r.ID); err != nil {
@@ -477,7 +500,8 @@ list their accounts). On a terminal, without <account> the visible accounts
 are offered.
 
 A login that is not bound to an account (its credentials could not list their
-accounts when it was made) works on this account alone from then on.
+accounts when it was made) works on this account alone from then on: what the
+inventory cached of every other account is dropped.
 
 Only the local configuration changes; the cached inventory of the login is
 synced again on its next use.`,
