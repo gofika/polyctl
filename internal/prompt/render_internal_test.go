@@ -356,3 +356,42 @@ func TestHuhOptionsEscapeControls(t *testing.T) {
 		t.Errorf("options %+v", opts)
 	}
 }
+
+func TestOptionColumnsAlign(t *testing.T) {
+	opts := huhOptions([]Option{
+		{Label: "fir-rtc-17257  FirebaseRTC", Value: "a"},
+		{Label: "freedom-212311  freedom  default", Value: "b"},
+		{Label: "xake-468005  xake", Value: "c"},
+		{Label: "plain", Value: "d"},
+	}, 80)
+	want := []string{
+		"fir-rtc-17257   FirebaseRTC",
+		"freedom-212311  freedom      default",
+		"xake-468005     xake",
+		"plain",
+	}
+	for i, o := range opts {
+		if o.Key != want[i] {
+			t.Errorf("label %d = %q, want %q", i, o.Key, want[i])
+		}
+	}
+
+	// Labels of one column, and rows that would not fit, stay as they are.
+	for _, labels := range [][]string{
+		{"one", "two words", "three"},
+		{"a  " + strings.Repeat("x", 30), strings.Repeat("y", 30) + "  b"},
+	} {
+		got := alignColumns(labels, 40)
+		for i := range labels {
+			if got[i] != labels[i] {
+				t.Errorf("alignColumns(%q)[%d] = %q, want it unchanged", labels, i, got[i])
+			}
+		}
+	}
+
+	// Wide characters count as the columns they take.
+	got := alignColumns([]string{"\u65e5\u672c  x", "ab  y"}, 40)
+	if got[0] != "\u65e5\u672c  x" || got[1] != "ab    y" {
+		t.Errorf("wide characters: %q", got)
+	}
+}

@@ -4,7 +4,9 @@ import (
 	"errors"
 	"io"
 	"os"
+	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -682,9 +684,54 @@ func mapAbort(err error) error {
 }
 
 func huhOptions(opts []Option, width int) []huh.Option[string] {
+	labels := make([]string, len(opts))
+	for i, o := range opts {
+		labels[i] = output.Clean(o.Label)
+	}
+	labels = alignColumns(labels, width)
 	out := make([]huh.Option[string], 0, len(opts))
-	for _, o := range opts {
-		out = append(out, huh.NewOption(truncate(output.Clean(o.Label), width), o.Value))
+	for i, o := range opts {
+		out = append(out, huh.NewOption(truncate(labels[i], width), o.Value))
+	}
+	return out
+}
+
+// columnGap separates the columns of an option label: two or more spaces.
+var columnGap = regexp.MustCompile(` {2,}`)
+
+// alignColumns pads the columns of the labels (parts separated by two or
+// more spaces) so that each column starts at the same position in every
+// row. The labels are returned as they are when none has a second column,
+// or when the widest aligned row would not fit width: padding must not push
+// what tells two rows apart out of sight.
+func alignColumns(labels []string, width int) []string {
+	rows := make([][]string, len(labels))
+	var widths []int
+	for i, l := range labels {
+		rows[i] = columnGap.Split(strings.TrimSpace(l), -1)
+		for c, cell := range rows[i] {
+			if c == len(widths) {
+				widths = append(widths, 0)
+			}
+			widths[c] = max(widths[c], lipgloss.Width(cell))
+		}
+	}
+	if len(widths) < 2 {
+		return labels
+	}
+	out := make([]string, len(labels))
+	for i, cells := range rows {
+		var b strings.Builder
+		for c, cell := range cells {
+			b.WriteString(cell)
+			if c < len(cells)-1 {
+				b.WriteString(strings.Repeat(" ", widths[c]-lipgloss.Width(cell)+2))
+			}
+		}
+		out[i] = b.String()
+		if lipgloss.Width(out[i]) > width {
+			return labels
+		}
 	}
 	return out
 }
