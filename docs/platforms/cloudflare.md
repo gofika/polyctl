@@ -113,7 +113,7 @@ polyctl cf zone list --account "Acme Lab"     # one account for this call
 
 - On a terminal polyctl asks which one this call means; the list shows the account of each candidate.
 - In the non-interactive flow the command fails with exit code 5. The error lists every candidate (a zone as `cloudflare/<profile> account <id> (<name>) zone <zone id> <status>`, a bucket as `cloudflare/<profile> account <id>`) and names what chooses: `--account <id or name>`, the zone id for a zone, and `--profile <name>` when the candidates are of different logins.
-- The platform-neutral commands (`dns`, `domain`, `cert`) route by domain: a domain that two selected accounts of one login hold a zone of is ambiguous there too, and the error points to `polyctl cloudflare ... --account <id or name>` or the zone id.
+- The platform-neutral commands (`dns`, `domain`, `cert`) route by domain: a domain that two selected accounts of one login hold a zone of is ambiguous there too. The candidates name the account and the status of each zone, as above, and the error points to the `polyctl cloudflare` commands, which take `--account <id or name>` or the zone id (the platform-neutral commands take neither).
 - `zone ensure` reuses a zone in whichever selected account holds it; `zone create` fails naming that account.
 
 **Ids.** Zone ids and DNS record ids are Cloudflare's own and unique across accounts; a zone row of the inventory carries its account as parent. An `r2_bucket` row has the id `<account id>/<bucket>`.

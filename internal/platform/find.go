@@ -319,6 +319,16 @@ type OwnerHinter interface {
 	OwnerHint(kind ResourceType, ids []string) string
 }
 
+// OwnerDescriber is implemented by providers that can say more about one
+// of several resources of an account that hold the same name than its id
+// (the account and the status of a Cloudflare zone), from the resource as
+// the inventory stores it: its id, its parent and its data. The
+// description stands for "<type> <id>" in the candidates of the ambiguity
+// error of domain routing and in its question; "" keeps that default.
+type OwnerDescriber interface {
+	DescribeOwner(kind ResourceType, id, parentID string, data []byte) string
+}
+
 // CoverageChanger is implemented by providers whose account covers a set
 // of inventory trees named in its metadata (the selected projects of a
 // Google Cloud account). After a re-login replaced the metadata before by

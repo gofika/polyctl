@@ -99,10 +99,11 @@ func (rt *Runtime) ResolveDomain(ctx context.Context, domain string, kind platfo
 			}
 		}
 		if len(owners) > 1 {
-			var names []string
+			var names, labels []string
 			profiles, platforms := map[string]bool{}, map[platform.ID]bool{}
 			for _, o := range owners {
 				names = append(names, fmt.Sprintf("%s/%s (%s %s)", o.Platform, o.Profile, o.Type, o.ResourceID))
+				labels = append(labels, fmt.Sprintf("%s/%s  %s %s  id %s", o.Platform, o.Profile, o.Type, o.Domain, o.ResourceID))
 				profiles[o.Profile], platforms[o.Platform] = true, true
 			}
 			// Name only the flags that actually narrow the candidates down.
@@ -128,11 +129,25 @@ func (rt *Runtime) ResolveDomain(ctx context.Context, domain string, kind platfo
 							hint = v
 						}
 					}
+					// And what each of them is, beyond its id (the account
+					// of a Cloudflare zone).
+					if d, ok := prov.(platform.OwnerDescriber); ok {
+						for i, o := range owners {
+							row, err := db.Get(ctx, inventory.Set{Platform: o.Platform, Profile: o.Profile, Type: o.Type}, o.Type, o.ResourceID)
+							if err != nil {
+								continue
+							}
+							if v := d.DescribeOwner(o.Type, row.ID, row.ParentID, row.Data); v != "" {
+								names[i] = fmt.Sprintf("%s/%s %s", o.Platform, o.Profile, v)
+								labels[i] = fmt.Sprintf("%s/%s  %s", o.Platform, o.Profile, v)
+							}
+						}
+					}
 				}
 			}
 			amb := &AmbiguousError{What: fmt.Sprintf("owner of %s %q", kind, best), Candidates: names, Hint: hint}
-			for i, o := range owners {
-				amb.Options = append(amb.Options, prompt.Option{Label: fmt.Sprintf("%s/%s  %s %s  id %s", o.Platform, o.Profile, o.Type, o.Domain, o.ResourceID), Value: strconv.Itoa(i)})
+			for i := range owners {
+				amb.Options = append(amb.Options, prompt.Option{Label: labels[i], Value: strconv.Itoa(i)})
 			}
 			// The interactive flow asks which owner; the non-interactive
 			// flow keeps the error (exit code 5).

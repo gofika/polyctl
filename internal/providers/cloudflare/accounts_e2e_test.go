@@ -219,13 +219,23 @@ func TestDomainRoutingAmbiguousAccounts(t *testing.T) {
 	if code != cli.ExitAmbiguous {
 		t.Fatalf("exit %d, %s", code, stderr)
 	}
-	for _, want := range []string{"zone-ex", "zone-dup", "--account <id or name>", "zone id"} {
+	for _, want := range []string{"cloudflare/both account acc1 (Acme) zone zone-ex active", "cloudflare/both account acc2 (Beta) zone zone-dup pending",
+		"`polyctl cloudflare` commands", "--account <id or name>", "zone id"} {
 		if !strings.Contains(stderr, want) {
 			t.Errorf("the ambiguity lacks %q: %s", want, stderr)
 		}
 	}
 	if strings.Contains(stderr, "--profile <name>") {
 		t.Errorf("--profile does not tell the zones apart: %s", stderr)
+	}
+	// On a terminal the question shows the account and the status of each.
+	p := prompttest.New(t, "1")
+	if code, stdout, stderr := e.runPick(p, "dns", "list", "example.com", "--profile", "both", "-o", "json"); code != cli.ExitOK || !strings.Contains(stdout, `"resource_id": "zone-ex"`) {
+		t.Fatalf("pick: exit %d, %s%s", code, stdout, stderr)
+	}
+	p.Done()
+	if got, want := prompttest.Labels(p.Asked[0].Options), "cloudflare/both  account acc2 (Beta) zone zone-dup pending\ncloudflare/both  account acc1 (Acme) zone zone-ex active"; got != want {
+		t.Errorf("options:\n%s", got)
 	}
 }
 

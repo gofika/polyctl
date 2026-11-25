@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/gofika/polyctl/internal/app"
+	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/output"
 	"github.com/gofika/polyctl/internal/platform"
 	"github.com/gofika/polyctl/internal/prompt"
@@ -180,12 +181,30 @@ var _ platform.OwnerHinter = (*provider)(nil)
 // OwnerHint says how to choose among several zones of one login that hold
 // the same name: they are zones of different accounts of its selection
 // (Cloudflare holds a name once per account), told apart by --account of
-// the cloudflare commands, or by their zone id.
+// the cloudflare commands, or by their zone id, which those commands take
+// in place of the name (the platform-neutral ones do not).
 func (*provider) OwnerHint(kind platform.ResourceType, _ []string) string {
 	if kind != platform.ResZone {
 		return ""
 	}
-	return "the login holds zones of this name in several of its Cloudflare accounts: use `polyctl cloudflare ... --account <id or name>`, or the zone id, to choose"
+	return "the login holds zones of this name in several of its Cloudflare accounts: use the `polyctl cloudflare` commands, which take --account <id or name> or the zone id, to choose"
+}
+
+var _ platform.OwnerDescriber = (*provider)(nil)
+
+// DescribeOwner says which account a cached zone is of and what its status
+// is, as the candidates of the cloudflare commands do: the zones of one
+// name in several accounts differ in nothing else a person can read.
+func (*provider) DescribeOwner(kind platform.ResourceType, id, parentID string, data []byte) string {
+	if kind != platform.ResZone {
+		return ""
+	}
+	r := inventory.Resource{ID: id, ParentID: parentID, Data: data}
+	c := candOfZone("", rowZone(r))
+	if c.account == "" {
+		c.account = parentID
+	}
+	return strings.TrimPrefix(c.String(), "cloudflare/ ")
 }
 
 // isOAuthMethod reads the method metadata of a stored account.
