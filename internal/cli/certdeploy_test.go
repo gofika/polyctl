@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -305,5 +306,51 @@ func TestCertDeployDNSAccountsPicksTheDNSAccount(t *testing.T) {
 	}
 	if _, _, err := run(t, cfgPath, "cert", "deploy", zoneName, "--deployer", "fake-lb"); ExitCodeFor(err) != ExitUsage || !strings.Contains(err.Error(), "is not a root domain") {
 		t.Errorf("bad key: %v", err)
+	}
+}
+
+// cert deploy asks the ACME registration questions once per run: the
+// address given is reused for the next root domain, and a "no" to the
+// terms or a left e-mail prompt answers the later roots without asking.
+func TestCertDeployAsksRegistrationOnce(t *testing.T) {
+	asked := map[string]int{}
+	env := &cert.Env{
+		AskEmail: func(ctx context.Context) (string, error) {
+			asked["email"]++
+			return "ops@example.net", nil
+		},
+		ConfirmTOS: func(ctx context.Context, directory string) (bool, error) {
+			asked["tos"]++
+			return false, nil
+		},
+	}
+	askOnce(env)
+	for range 3 {
+		if v, err := env.AskEmail(context.Background()); v != "ops@example.net" || err != nil {
+			t.Fatalf("email = %q, %v", v, err)
+		}
+		if ok, err := env.ConfirmTOS(context.Background(), "dir"); ok || err != nil {
+			t.Fatalf("tos = %v, %v", ok, err)
+		}
+	}
+	if asked["email"] != 1 || asked["tos"] != 1 {
+		t.Errorf("asked = %v", asked)
+	}
+
+	// A left e-mail prompt is the answer of the later roots too.
+	left := fmt.Errorf("%w: no e-mail address given; no certificate was issued", platform.ErrNothingToDo)
+	asked = map[string]int{}
+	env = &cert.Env{AskEmail: func(ctx context.Context) (string, error) {
+		asked["email"]++
+		return "", left
+	}}
+	askOnce(env)
+	for range 2 {
+		if _, err := env.AskEmail(context.Background()); !errors.Is(err, platform.ErrNothingToDo) {
+			t.Fatalf("email = %v", err)
+		}
+	}
+	if asked["email"] != 1 {
+		t.Errorf("asked = %v", asked)
 	}
 }

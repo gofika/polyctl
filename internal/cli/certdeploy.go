@@ -64,8 +64,9 @@ a certificate of it: an unexpired one is deployed with a warning, an expired
 one fails the domain. The first certificate needs an ACME account: --email
 and --agree-tos (or cert.email and cert.agree_tos: true) register it; the
 interactive flow asks for whichever is missing, and the non-interactive flow
-fails each root domain that needs one (exit code 1). Declining the terms or
-leaving the e-mail prompt skips the targets of that domain.
+fails each root domain that needs one (exit code 1). The questions are asked
+once per run: declining the terms or leaving the e-mail prompt skips the
+targets of every root domain that needs the account.
 
 Every account of the platforms with a deployer is scanned, narrowed by
 --profile, --platform and --deployer; cert.skip_accounts leaves out a profile
@@ -283,6 +284,7 @@ func certDeployEnv(rt *app.Runtime, cfg *config.Config, accounts []config.Accoun
 	if err != nil {
 		return nil, err
 	}
+	askOnce(certEnv)
 	s := cfg.CertSettings()
 	base := cert.EnsureOptions{KeyType: s.KeyType, Email: acct.Email, AgreeTOS: acct.AgreeTOS, ReuseKey: s.ReuseKey, DryRun: rt.DryRun()}
 	env := &cert.DeployEnv{
@@ -341,6 +343,42 @@ func certDeployEnv(rt *app.Runtime, cfg *config.Config, accounts []config.Accoun
 		}
 	}
 	return env, nil
+}
+
+// askOnce makes the ACME registration questions of env asked once per run:
+// cert deploy ensures one certificate per root domain, and each root that
+// needs the account would otherwise ask again. The e-mail address given is
+// reused, and a "no" to the terms (or leaving the e-mail prompt) answers
+// the later roots the same way, so their targets are skipped too.
+func askOnce(env *cert.Env) {
+	if ask := env.AskEmail; ask != nil {
+		var email string
+		var stop error
+		env.AskEmail = func(ctx context.Context) (string, error) {
+			if email != "" || stop != nil {
+				return email, stop
+			}
+			v, err := ask(ctx)
+			switch {
+			case err == nil:
+				email = v
+			case errors.Is(err, platform.ErrNothingToDo):
+				stop = err
+			}
+			return v, err
+		}
+	}
+	if confirm := env.ConfirmTOS; confirm != nil {
+		declined := false
+		env.ConfirmTOS = func(ctx context.Context, directory string) (bool, error) {
+			if declined {
+				return false, nil
+			}
+			ok, err := confirm(ctx, directory)
+			declined = err == nil && !ok
+			return ok, err
+		}
+	}
 }
 
 // deployDNSHint points an ambiguous DNS account of root at

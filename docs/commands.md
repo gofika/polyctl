@@ -229,7 +229,7 @@ Replacements are atomic. A private key readable by others is reported and fixed 
 
 ## Deploying certificates
 
-`cert deploy` finds, live, every place in your cloud accounts that serves a certificate and puts the store's certificate on those that need it. It renews the local certificate first when needed. The first certificate registers the ACME account: pass `--email` and `--agree-tos` once, or set `cert.email` and `cert.agree_tos: true` for cron. On a terminal the missing one is asked for; in the non-interactive flow each root domain that needs the account fails (exit code 1).
+`cert deploy` finds, live, every place in your cloud accounts that serves a certificate and puts the store's certificate on those that need it. It renews the local certificate first when needed. The first certificate registers the ACME account: pass `--email` and `--agree-tos` once, or set `cert.email` and `cert.agree_tos: true` for cron. On a terminal the missing one is asked for, once per run (declining the terms or leaving the e-mail prompt skips the targets of every root domain that needs the account); in the non-interactive flow each root domain that needs the account fails (exit code 1).
 
 ```cron
 17 3 * * *  /usr/local/bin/polyctl cert deploy --all --prune-expired --yes -o json >> /var/log/polyctl-cert.log 2>&1
