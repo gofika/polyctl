@@ -1,26 +1,28 @@
 # Cloudflare
 
-Commands of `polyctl cloudflare` (alias `polyctl cf`): zones and their settings, DNS records, cache, cache and redirect rules, and R2 custom domains.
+Commands of `polyctl cloudflare` (alias `polyctl cf`): zones and their settings, DNS records, cache, cache and redirect rules, R2 custom domains, and the Cloudflare accounts a login works on.
 
 - [Commands](#commands)
 - [Login and permissions](#login-and-permissions)
+- [Accounts](#accounts)
 - [Zones](#zones)
 - [Zone settings](#zone-settings)
 - [DNS records](#dns-records)
 - [Cache and redirect rules](#cache-and-redirect-rules)
 - [R2 custom domains](#r2-custom-domains)
 
-Every command can be written with `cf` in place of `cloudflare` (`polyctl cf zone list`). Profile selection: `--profile` (must have a Cloudflare account, else exit code 3) > `current_profile` (if it has one) > the only profile that has one > an error listing the candidates (exit code 5). Inventory types: `zone`, `dns_record`, `r2_bucket`.
+Every command can be written with `cf` in place of `cloudflare` (`polyctl cf zone list`). Profile selection: `--profile` (must have a Cloudflare account, else exit code 3) > `current_profile` (if it has one) > the only profile that has one > an error listing the candidates (exit code 5). One login works on several Cloudflare accounts, the ones selected for it: see [Accounts](#accounts). Inventory types: `zone`, `dns_record`, `r2_bucket`.
 
 ## Commands
 
 ```text
 cloudflare whoami                 # verifies the API token (id, status, expiry) or the browser authorization (granted scopes)
-cloudflare account list
-cloudflare account current
-cloudflare account use <account>
+cloudflare account list            # visible accounts; SELECTED marks the selection, * the default
+cloudflare account current         # the default account and the selection (works offline)
+cloudflare account use <account>   # <account> is an account id or name
 cloudflare account add <account>...
 cloudflare account remove <account>... [--default <account>]
+# every command below: [--account <id|name>]
 cloudflare zone list              cloudflare zone get <zone|id>
 cloudflare zone create <domain> [--foundation-dns[=false]]
 cloudflare zone ensure <domain> [--preset optimized] [--ssl flexible|strict] [--foundation-dns[=false]]
@@ -39,7 +41,7 @@ cloudflare redirect rule list <zone> [--wide]
 cloudflare redirect rule set  <zone> --file rules.yaml [--replace] [--first] [-y]
 cloudflare dev-mode <zone> [on|off]       # Development Mode (bypasses the cache for 3 hours)
 cloudflare ssl-mode <zone> [off|flexible|full|strict]
-cloudflare r2 bucket list [--wide] [--jurisdiction eu|fedramp]      # every r2 command: [--account <id|name>]
+cloudflare r2 bucket list [--wide] [--jurisdiction eu|fedramp]
 cloudflare r2 domain list   <bucket>
 cloudflare r2 domain get    <bucket> <domain>
 cloudflare r2 domain attach <bucket> <domain> [--zone <zone>] [--disabled] [--min-tls 1.0|1.1|1.2|1.3]
@@ -57,7 +59,7 @@ Log in with `polyctl auth login cloudflare` (an API token, or `--set method=oaut
 | Commands | Permission |
 |---|---|
 | everything | `Zone:Read`, `DNS:Edit` |
-| `account list` | `Account:Read` |
+| `account list`; `account use` / `add` and `--account` to check an account or look its name up | `Account:Read` (without it `account list` fails with exit code 3, and `use` / `add` / `--account` take an account id unchecked) |
 | `whoami` showing your email | `User:Read` |
 | `cache purge`, `dev-mode`, `ssl-mode`, `zone create` / `ensure` / `delete` | `Zone:Edit` (at the account level to create a zone) |
 | `zone ensure`, `zone setting` | zone settings edit |
@@ -66,6 +68,63 @@ Log in with `polyctl auth login cloudflare` (an API token, or `--set method=oaut
 | `r2` | R2 read and write; `r2 domain attach` / `ensure` also DNS edit on the domain's zone |
 
 A browser login (`method=oauth`) does not cover R2: the `r2` commands need an API token.
+
+## Accounts
+
+One Cloudflare login of a profile works on the accounts **selected** for it. One of them is the **default account**.
+
+| | Covers |
+| --- | --- |
+| Inventory sync (`polyctl sync`, automatic refreshes), `find`, `inventory list` | every selected account |
+| Looking a zone up by name or id (`zone get`, `dns`, `cache`, `redirect`, `dev-mode`, `ssl-mode`, `zone setting`, `zone delete`) | every selected account |
+| Domain routing of the platform-neutral `dns`, `domain` and `cert` commands (DNS-01 validation included) | every selected account |
+| `zone list`, `r2 bucket list` | every selected account; an `ACCOUNT` column appears when the rows are of several |
+| Finding the account of an R2 bucket (`r2 domain ...`) | every selected account, of every Cloudflare profile unless `--profile` is given |
+| Creating a zone (`zone create`, `zone ensure` of a zone that does not exist) | the default account |
+
+```sh
+polyctl cf account list                       # visible accounts; SELECTED marks the selection, * the default
+polyctl cf account current                    # the default account and the selection
+polyctl cf account use "Acme Ltd"             # make it the default (selects it if needed)
+polyctl cf account add 0123456789abcdef0123456789abcdef "Acme Lab"   # select more accounts
+polyctl cf account remove "Acme Lab"          # take an account out of the selection
+polyctl cf account remove "Acme Ltd" --default "Acme Lab"   # removing the default names its successor
+polyctl cf zone list --account "Acme Lab"     # one account for this call
+```
+
+- The login selects the accounts (see [Accounts: Cloudflare](../accounts.md#cloudflare)); `use`, `add` and `remove` change the selection without a new login. A login stored with one account (every login made before the selection existed) has exactly that account selected and works as before.
+- An account is named by its id or its name (case-insensitive), in the `account` commands, in `--default` and in `--account`. Two visible accounts of one name are exit code 5: pass the id.
+- `account list` needs the network and the permission to list accounts. It marks the selected accounts (`SELECTED`) and the default one (`*` after its name); JSON is `{"profile", "accounts": [{"id", "name", "type", "selected", "default"}]}`. A selected account the credentials do not list is shown without a type, with a note.
+- `account current` reads the local configuration only (works with `--offline`): `{"profile", "account_id", "account_name", "accounts", "method", "email"}`.
+- `use` and `add` check that the credentials see the account (exit code 4 otherwise). Nothing is checked, with a note, with `--offline` or when the credentials cannot list their accounts; a name can then only be one the profile already knows. On a terminal, without an argument `use` offers the visible accounts and `add` those not selected yet (tick several). `add` of accounts that are all selected already is exit code 0 (nothing to do). The first account given to a login without an account becomes its default.
+- `remove` changes nothing at Cloudflare and keeps the credentials. It works with `--offline`. An account that is not selected is exit code 4. Removing the default account needs `--default <account>`, naming an account that stays selected (exit code 2 without it; on a terminal it is asked, and the only account that stays becomes the default without a question); removing every account is exit code 2 (use `polyctl auth logout cloudflare`). No confirmation is asked.
+- `use`, `add` and `remove` change `config.yaml` only and do not support `--dry-run` (exit code 2).
+- **Deselecting drops the cache.** An account that leaves the selection, by `account remove` or by a new login, loses what the inventory cached of it at once: its zones, their DNS records, its R2 buckets and its domains in the index. The cached sets of the login are synced again on their next use. Whatever changed the selection (also an edited `config.yaml`), the `cloudflare` commands never find or change a zone or bucket through a cached row of an account that is no longer selected; `--account` still reaches it.
+- **A failing account keeps its rows.** When a sync cannot read one of several selected accounts, the others are synced, the rows cached for the failing account (its zones with their records, its buckets) are kept, a warning names `polyctl cloudflare account remove <id>`, and the set is synced again on its next use. When every selected account fails, the sync fails. An account without R2 counts as holding no buckets. An account the credentials no longer see usually lists no zones, so its rows simply go with the next sync.
+
+**`--account <id or name>`** on the `zone`, `dns`, `cache`, `redirect`, `dev-mode`, `ssl-mode` and `r2` commands names the account of that one call:
+
+- Lookups and lists read only that account; a new zone goes to it instead of the default account.
+- The account need not be selected: an account outside the selection is read live and nothing of it is written to the inventory (so `--offline` cannot serve it: exit code 6). Without the flag, a zone of an unselected account is not found (exit code 4; the error names the account, `account add` and `--account`).
+- A zone id given with the `--account` of another account is exit code 2, and nothing is written.
+- An account the credentials do not see is exit code 4 when they can list their accounts. `cloudflare account ...`, `whoami` and the platform-neutral commands do not take the flag.
+
+**The same name in several accounts.** Cloudflare lets a second account add a zone for a domain another account holds (it stays `pending`), and the name of an R2 bucket is unique in its account only.
+
+- On a terminal polyctl asks which one this call means; the list shows the account of each candidate.
+- In the non-interactive flow the command fails with exit code 5. The error lists every candidate (a zone as `cloudflare/<profile> account <id> (<name>) zone <zone id> <status>`, a bucket as `cloudflare/<profile> account <id>`) and names what chooses: `--account <id or name>`, the zone id for a zone, and `--profile <name>` when the candidates are of different logins.
+- The platform-neutral commands (`dns`, `domain`, `cert`) route by domain: a domain that two selected accounts of one login hold a zone of is ambiguous there too, and the error points to `polyctl cloudflare ... --account <id or name>` or the zone id.
+- `zone ensure` reuses a zone in whichever selected account holds it; `zone create` fails naming that account.
+
+**Ids.** Zone ids and DNS record ids are Cloudflare's own and unique across accounts; a zone row of the inventory carries its account as parent. An `r2_bucket` row has the id `<account id>/<bucket>`.
+
+**Kinds of credentials.**
+
+- An account-owned API token belongs to one account and sees only it: its login works on that account, and another account cannot be added.
+- A user token without `Account:Read` cannot list accounts. Its login takes `--set account_id` / `--set accounts` as given; without them it is not bound to an account and works on every zone it sees (for a new zone see [Zones](#zones)). `account use <id>` binds such a login to an account later.
+- A browser login (`method=oauth`) without the `account-settings.read` scope reads the accounts off its zones, so an account without a zone is not listed; a selected account that list does not show is kept.
+
+**Upgrading.** Nothing is migrated: `config.yaml` is read as before, and rows cached by an older polyctl are replaced by the next sync of their type (R2 bucket rows get their new id then).
 
 ## Zones
 
@@ -76,9 +135,7 @@ polyctl cf zone ensure example.com --preset optimized --dry-run -o json
 polyctl cf zone delete example.com --yes
 ```
 
-A login works on its selected accounts, one of them the default account. The login selects them ([Accounts](../accounts.md#cloudflare)); `account use <account>` makes an account (id or name) the default, `account add` and `account remove` change the selection without a new login (local configuration only, no confirmation, no `--dry-run`), and `account current` shows it. `account list` marks the selected accounts (`SELECTED`) and the default one (`*`; `selected` and `default` in JSON). An account that leaves the selection, by `account remove` or by a new login, loses its cached zones, records and R2 buckets at once; removing the default account needs `--default <account>` (asked on a terminal), and removing every account is a usage error. `--account <id or name>` on the `zone`, `dns`, `cache`, `redirect`, `dev-mode`, `ssl-mode` and `r2` commands names one account for the call: lookups and lists cover that account instead of every selected one, and a new zone goes to it instead of the default account. An account outside the selection is read live with `--account` and nothing of it is stored in the inventory; without the flag its zones are not found (exit code 4, naming the account). A zone id given with the `--account` of another account is a usage error (exit code 2).
-
-A zone name that two accounts in the scope of the call hold a zone of (an active zone in one, a pending one in the other) is asked about on a terminal and exit code 5 otherwise, listing each zone with its account: `--account`, `--profile` when the zones are in different logins, or the zone id choose. `zone list` shows an `ACCOUNT` column when its zones are of several accounts.
+A zone command covers every selected account of the login, or the one of `--account`; a new zone goes to `--account`, else to the default account. A zone name that two accounts in the scope of the call hold a zone of is asked about on a terminal and exit code 5 otherwise (see [Accounts](#accounts)). `zone list` shows an `ACCOUNT` column when its zones are of several accounts.
 
 A login without an account (its credentials could not list accounts) uses the only account the credentials see for a new zone; when they see several, the account is asked for on a terminal and a usage error otherwise (pass `--account`). The zone lifecycle commands read the platform, so `--offline` is refused (exit code 6).
 
@@ -191,7 +248,7 @@ polyctl cf r2 domain detach assets cdn.example.com --yes
 - The R2 commands cover every selected account of every Cloudflare profile. `--profile` narrows them to the selected accounts of that profile, and `--account <id or name>` to one account; an account the login does not select is read live with `--account` and nothing of it is cached. The same account in two profiles counts once. Messages name the account next to the profile (`account <id> of cloudflare/<profile>`) when the profile works on several.
 - An account without R2 is exit code 7 when it is the only one asked; among several it is skipped (of a profile with several selected accounts, the listing fails only when none of them can be used for R2). A login without an account uses the only account its credentials see; when they see several it is exit code 5: pass `--account`, or select the accounts with `polyctl cloudflare account use <id>`.
 - `bucket list` without `--profile` lists the buckets of every Cloudflare profile; accounts without R2 are skipped, a failing profile is a warning, and the command fails only when no account could be read. A profile that lists the buckets of several accounts adds an `ACCOUNT` column.
-- Buckets of the default jurisdiction are cached as `r2_bucket`, one row per account and bucket (id `<account>/<bucket>`; fresh for an hour; `polyctl sync --type r2_bucket` fills it). `--offline` lists only the inventory; `--wide`, `--jurisdiction` and an unselected `--account` read live (exit code 6 with `--offline`).
+- Buckets of the default jurisdiction are cached as `r2_bucket`, one row per account and bucket (id `<account id>/<bucket>`; fresh for an hour; `polyctl sync --type r2_bucket` fills it). `--offline` lists only the inventory; `--wide`, `--jurisdiction` and an unselected `--account` read live (exit code 6 with `--offline`).
 - The `r2 domain` commands find the account that holds `<bucket>`. One account to look in (`--account`, or `--profile` with a login of one account) is used as it is. Otherwise the inventory answers when it names exactly one account for the bucket; failing that (and with `--refresh` or `--jurisdiction`) every account is asked live. A bucket found nowhere is exit code 4. The name of a bucket is unique in its account only: a name held by several accounts is asked about on a terminal and exit code 5 otherwise, listing each as `cloudflare/<profile> account <id>`; pass `--account`, or `--profile` when the accounts are of different profiles. Without `<bucket>` a terminal offers the buckets, each with its account when a profile has several.
 - `--jurisdiction eu|fedramp` addresses that R2 jurisdiction instead of the default one.
 
