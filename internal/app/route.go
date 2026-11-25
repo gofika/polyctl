@@ -131,16 +131,35 @@ func (rt *Runtime) ResolveDomain(ctx context.Context, domain string, kind platfo
 					}
 					// And what each of them is, beyond its id (the account
 					// of a Cloudflare zone).
+					// The options show those facts in cells of their own,
+					// and only when every owner has them: a list mixing
+					// them with the default cells would put different
+					// facts in one column.
 					if d, ok := prov.(platform.OwnerDescriber); ok {
+						cd, _ := prov.(platform.OwnerCellDescriber)
+						described := make([]string, len(owners))
+						complete := true
 						for i, o := range owners {
 							row, err := db.Get(ctx, inventory.Set{Platform: o.Platform, Profile: o.Profile, Type: o.Type}, o.Type, o.ResourceID)
 							if err != nil {
+								complete = false
 								continue
 							}
-							if v := d.DescribeOwner(o.Type, row.ID, row.ParentID, row.Data); v != "" {
-								names[i] = fmt.Sprintf("%s/%s %s", o.Platform, o.Profile, v)
-								labels[i] = prompt.Cells(string(o.Platform)+"/"+o.Profile, v)
+							v := d.DescribeOwner(o.Type, row.ID, row.ParentID, row.Data)
+							if v == "" {
+								complete = false
+								continue
 							}
+							names[i] = fmt.Sprintf("%s/%s %s", o.Platform, o.Profile, v)
+							described[i] = prompt.Cells(string(o.Platform)+"/"+o.Profile, v)
+							if cd != nil {
+								if cells := cd.OwnerCells(o.Type, row.ID, row.ParentID, row.Data); len(cells) > 0 {
+									described[i] = prompt.Cells(append([]string{string(o.Platform) + "/" + o.Profile}, cells...)...)
+								}
+							}
+						}
+						if complete {
+							labels = described
 						}
 					}
 				}

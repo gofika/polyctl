@@ -460,11 +460,17 @@ func (c zoneCand) String() string {
 // "<zone id>  active  account acc1  Acme  cloudflare/work". A fact the
 // candidate does not have shows "-" in its cell.
 func (c zoneCand) cells() string {
+	return prompt.Cells(append(c.factCells(), "cloudflare/"+c.profile)...)
+}
+
+// factCells are the cells of the candidate other than its profile: the
+// zone id, the status, the account and the name of the account.
+func (c zoneCand) factCells() []string {
 	account := ""
 	if c.account != "" {
 		account = "account " + c.account
 	}
-	return prompt.Cells(c.id, c.status, account, c.accountName, "cloudflare/"+c.profile)
+	return []string{c.id, c.status, account, c.accountName}
 }
 
 func candOfZone(profile string, z platform.Zone) zoneCand {

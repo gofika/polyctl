@@ -208,6 +208,23 @@ func (*provider) DescribeOwner(kind platform.ResourceType, id, parentID string, 
 	return strings.TrimPrefix(c.String(), "cloudflare/ ")
 }
 
+var _ platform.OwnerCellDescriber = (*provider)(nil)
+
+// OwnerCells gives the same facts as the cells of an option, in the order
+// of the zone pick of the cloudflare commands: "<zone id>  active  account
+// acc1  Acme".
+func (*provider) OwnerCells(kind platform.ResourceType, id, parentID string, data []byte) []string {
+	if kind != platform.ResZone {
+		return nil
+	}
+	r := inventory.Resource{ID: id, ParentID: parentID, Data: data}
+	c := candOfZone("", rowZone(r))
+	if c.account == "" {
+		c.account = parentID
+	}
+	return c.factCells()
+}
+
 // isOAuthMethod reads the method metadata of a stored account.
 func isOAuthMethod(stored string) bool {
 	return strings.EqualFold(strings.TrimSpace(stored), methodOAuth)

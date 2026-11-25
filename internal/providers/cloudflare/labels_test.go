@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt"
 )
 
 // TestOptionLabelsKeepTheirCells pins the cells of the selection lists: a
@@ -22,6 +23,9 @@ func TestOptionLabelsKeepTheirCells(t *testing.T) {
 			"z1  active  account acc1  Acme  cloudflare/work"},
 		{"ambiguous zone without a status or an account name", zoneCand{profile: "work", account: "acc1", id: "z1"}.cells(),
 			"z1  -  account acc1  -  cloudflare/work"},
+		{"owner of a domain without a status or an account name",
+			prompt.Cells(append([]string{"cloudflare/work"}, (&provider{}).OwnerCells(platform.ResZone, "z1", "acc1", []byte(`{}`))...)...),
+			"cloudflare/work  z1  -  account acc1"},
 		{"ambiguous bucket", (&r2Acct{profile: "work", account: "acc1"}).candCells(), "cloudflare/work  account acc1"},
 		{"custom domain", bucketDomainLabel(r2CustomDomain{Domain: "cdn.example.com", Enabled: true, MinTLS: "1.2", ZoneName: "example.com"}),
 			"cdn.example.com  enabled  tls 1.2  zone example.com"},

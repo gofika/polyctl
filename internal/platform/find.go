@@ -324,9 +324,18 @@ type OwnerHinter interface {
 // (the account and the status of a Cloudflare zone), from the resource as
 // the inventory stores it: its id, its parent and its data. The
 // description stands for "<type> <id>" in the candidates of the ambiguity
-// error of domain routing and in its question; "" keeps that default.
+// error of domain routing and, unless the provider is an OwnerCellDescriber
+// too, in the options of its question; "" keeps that default.
 type OwnerDescriber interface {
 	DescribeOwner(kind ResourceType, id, parentID string, data []byte) string
+}
+
+// OwnerCellDescriber is implemented by an OwnerDescriber that can give the
+// same facts as the cells of an option of that question, each kind of fact
+// in its own position ("" for one the resource does not have), so that the
+// candidates line up. No cells keep the default cells of the question.
+type OwnerCellDescriber interface {
+	OwnerCells(kind ResourceType, id, parentID string, data []byte) []string
 }
 
 // CoverageChanger is implemented by providers whose account covers a set

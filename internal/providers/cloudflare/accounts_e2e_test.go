@@ -234,7 +234,7 @@ func TestDomainRoutingAmbiguousAccounts(t *testing.T) {
 		t.Fatalf("pick: exit %d, %s%s", code, stdout, stderr)
 	}
 	p.Done()
-	if got, want := prompttest.Labels(p.Asked[0].Options), "cloudflare/both  account acc2 (Beta) zone zone-dup pending\ncloudflare/both  account acc1 (Acme) zone zone-ex active"; got != want {
+	if got, want := prompttest.Labels(p.Asked[0].Options), "cloudflare/both  zone-dup  pending  account acc2  Beta\ncloudflare/both  zone-ex  active  account acc1  Acme"; got != want {
 		t.Errorf("options:\n%s", got)
 	}
 }
