@@ -89,8 +89,17 @@ func Open(path string) (*DB, error) {
 // Version 3 drops everything cached for Google Cloud, whose rows did not
 // carry their project before (see forgetGCPRows). Version 4 makes the sets
 // cached for Google Cloud due, whose accounts cover every project their
-// credentials see since then (see expireGCPSets).
-const dataVersion = 4
+// credentials see since then (see expireGCPSets). Version 5 does the same
+// for Cloudflare, whose logins cover every account their credentials see
+// since then (see expireCloudflareSets).
+const dataVersion = 5
+
+// expireCloudflareSets makes every set cached for Cloudflare due, keeping
+// its rows: a login used to cover the accounts selected for it and covers
+// every account its credentials see now, so a set that is still fresh would
+// hide the accounts that were not selected. The next read of a set syncs
+// it; until then, and with --offline, its rows are served.
+const expireCloudflareSets = `UPDATE sync_state SET expires_at = 0 WHERE platform = 'cloudflare'`
 
 // expireGCPSets makes every set cached for Google Cloud due, keeping its
 // rows: an account used to cover the projects selected for it and covers
@@ -187,6 +196,11 @@ func migrateData(db *sql.DB) error {
 	}
 	if v < 4 {
 		if _, err := tx.Exec(expireGCPSets); err != nil {
+			return err
+		}
+	}
+	if v < 5 {
+		if _, err := tx.Exec(expireCloudflareSets); err != nil {
 			return err
 		}
 	}

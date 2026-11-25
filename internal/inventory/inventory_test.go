@@ -907,3 +907,64 @@ func TestOpenExpiresGCPSetsOfVersion3(t *testing.T) {
 		t.Errorf("a set synced after the upgrade must stay fresh: %+v, %v", st, err)
 	}
 }
+
+// A Cloudflare login covers every account its credentials see since data
+// version 5, and no longer the accounts selected for it. Opening an older
+// database keeps what is cached for cloudflare and makes its sets due, so
+// that the next read syncs the accounts that were not selected; the other
+// platforms stay fresh.
+func TestOpenExpiresCloudflareSetsOfVersion4(t *testing.T) {
+	db, path := openDB(t)
+	zones := inventory.Set{Platform: platform.Cloudflare, Profile: "p", Type: platform.ResZone}
+	mustReplace(t, db, zones, time.Hour, zoneRes("z1", "example.com"))
+	recs := scoped("p", platform.ResDNSRecord, "z1")
+	recs.Platform = platform.Cloudflare
+	mustReplace(t, db, recs, time.Hour, recRes("r1", "z1", "example.com", "www.example.com", "5.6.7.8"))
+	buckets := inventory.Set{Platform: platform.Cloudflare, Profile: "p", Type: platform.ResR2Bucket}
+	mustReplace(t, db, buckets, time.Hour, platform.Resource{Type: platform.ResR2Bucket, ID: "acc1/assets", Name: "assets", ParentID: "acc1"})
+	other := inventory.Set{Platform: platform.GCP, Profile: "p", Type: platform.ResZone}
+	mustReplace(t, db, other, time.Hour, zoneRes("p1/example-zone", "example.org"))
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`PRAGMA user_version = 4`); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if db, err = inventory.Open(path); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if rows, err := db.List(ctx, inventory.Query{Platform: platform.Cloudflare}); err != nil || len(rows) != 3 {
+		t.Errorf("cloudflare rows after the upgrade: %+v, %v", rows, err)
+	}
+	if es, err := db.LookupDomain(ctx, []string{"example.com"}, ""); err != nil || len(es) == 0 {
+		t.Errorf("cloudflare domain index after the upgrade: %+v, %v", es, err)
+	}
+	for _, s := range []inventory.Set{zones, recs, buckets} {
+		if st, err := db.GetState(ctx, s); err != nil || st == nil || st.Fresh(now) {
+			t.Errorf("cloudflare set %s %q must be due after the upgrade: %+v, %v", s.Type, s.Scope, st, err)
+		}
+	}
+	if st, err := db.GetState(ctx, other); err != nil || !st.Fresh(now) {
+		t.Errorf("the sets of other platforms must stay fresh: %+v, %v", st, err)
+	}
+	// The step runs once: a set synced after it stays fresh at the next open.
+	mustReplace(t, db, zones, time.Hour, zoneRes("z1", "example.com"))
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if db, err = inventory.Open(path); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if st, err := db.GetState(ctx, zones); err != nil || !st.Fresh(now) {
+		t.Errorf("a set synced after the upgrade must stay fresh: %+v, %v", st, err)
+	}
+}
