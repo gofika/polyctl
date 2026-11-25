@@ -173,14 +173,15 @@ func bucketArgs(ctx context.Context, rt *app.Runtime, args []string) ([]string, 
 	if len(args) > 0 {
 		return args, nil
 	}
-	names, _, err := r2Profiles(rt)
+	scopes, _, err := r2Scopes(ctx, rt)
 	if err != nil {
 		return nil, err
 	}
 	var opts []prompt.Option
 	seen := map[string]bool{}
-	for _, name := range names {
-		rows, _, err := cachedBuckets(ctx, rt, name)
+	for _, sc := range scopes {
+		name := sc.profile
+		rows, _, err := scopeBuckets(ctx, rt, sc, "")
 		if err != nil {
 			rt.Infof("warning: buckets of cloudflare/%s: %v", name, err)
 			continue

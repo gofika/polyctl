@@ -767,7 +767,7 @@ func TestCloudflareAccountFlag(t *testing.T) {
 		"cloudflare zone list": true, "cloudflare zone get": true, "cloudflare zone create": true, "cloudflare zone ensure": true,
 		"cloudflare zone delete": true, "cloudflare zone setting set": true, "cloudflare dns list": true, "cloudflare dns create": true,
 		"cloudflare cache purge": true, "cloudflare cache rule set": true, "cloudflare redirect rule list": true,
-		"cloudflare dev-mode": true, "cloudflare ssl-mode": true,
+		"cloudflare dev-mode": true, "cloudflare ssl-mode": true, "cloudflare r2 bucket list": true, "cloudflare r2 domain ensure": true,
 		"cloudflare account list": false, "cloudflare whoami": false, "gcp dns zone list": false, "dns list": false, "sync": false,
 	} {
 		c, _, err := root.Find(strings.Fields(path))

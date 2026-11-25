@@ -227,7 +227,7 @@ func (c *Client) r2Account(ctx context.Context) (string, error) {
 	}
 	accounts, err := c.api.listAccounts(ctx)
 	if err != nil {
-		return "", fmt.Errorf("cloudflare profile %q pins no account and cannot list its accounts: %w", c.profile.Name, err)
+		return "", fmt.Errorf("cloudflare profile %q has no selected account and cannot list its accounts: %w", c.profile.Name, err)
 	}
 	switch len(accounts) {
 	case 0:
@@ -236,8 +236,8 @@ func (c *Client) r2Account(ctx context.Context) (string, error) {
 		c.r2AccountID = accounts[0].ID
 		return c.r2AccountID, nil
 	}
-	return "", fmt.Errorf("%w: cloudflare profile %q sees %d accounts (%s); pin one with `polyctl auth login cloudflare --profile %s --set account_id=<id>`",
-		platform.ErrAmbiguous, c.profile.Name, len(accounts), accountNames(accounts), c.profile.Name)
+	return "", fmt.Errorf("%w: cloudflare profile %q sees %d accounts (%s): pass --account <id or name>, or select the accounts of the login with \"polyctl cloudflare account use <id>\"",
+		platform.ErrAmbiguous, c.profile.Name, len(accounts), accountNames(accounts))
 }
 
 // r2Accounts returns the accounts the R2 listings of the client cover: the

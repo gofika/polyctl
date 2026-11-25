@@ -680,8 +680,20 @@ func TestR2DomainRouting(t *testing.T) {
 	e.f.accounts["acc1"].r2Disabled = false
 	e.f.accounts["acc1"].buckets = []string{"assets"}
 	code, _, stderr = e.run("--refresh", "cloudflare", "r2", "domain", "list", "assets")
-	if code != cli.ExitAmbiguous || !strings.Contains(stderr, "--profile") {
+	if code != cli.ExitAmbiguous {
 		t.Errorf("ambiguous: exit %d, %s", code, stderr)
+	}
+	for _, want := range []string{"cloudflare/acme account acc1", "cloudflare/beta account acc2", "pass --profile <name> or --account <id or name> to choose"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("the ambiguity lacks %q: %s", want, stderr)
+		}
+	}
+	// --account chooses as --profile does, by id or by name.
+	for _, account := range []string{"acc2", "Beta"} {
+		code, stdout, stderr = e.run("--refresh", "cloudflare", "r2", "domain", "list", "assets", "--account", account, "-o", "json")
+		if code != cli.ExitOK || !strings.Contains(stdout, `"profile": "beta"`) || !strings.Contains(stdout, `"account_id": "acc2"`) {
+			t.Errorf("--account %s: exit %d, %s%s", account, code, stdout, stderr)
+		}
 	}
 	if code, _, _ := e.run("cloudflare", "r2", "domain", "list", "assets", "--profile", "acme"); code != cli.ExitOK {
 		t.Errorf("--profile acme: exit %d", code)

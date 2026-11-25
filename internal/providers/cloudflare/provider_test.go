@@ -1072,8 +1072,9 @@ func TestCommandTree(t *testing.T) {
 			t.Errorf("command %q resolved to %q", w, c.Name())
 		}
 	}
-	// --account is on the commands that work on zones, and only there.
-	for path, has := range map[string]bool{"zone list": true, "zone setting get": true, "dns create": true, "cache purge": true, "cache rule list": true,
+	// --account is on the commands that work on zones and on R2, and only
+	// there.
+	for path, has := range map[string]bool{"r2 bucket list": true, "r2 domain attach": true, "zone list": true, "zone setting get": true, "dns create": true, "cache purge": true, "cache rule list": true,
 		"redirect rule set": true, "dev-mode": true, "ssl-mode": true, "account list": false, "whoami": false} {
 		c, _, err := cmd.Find(strings.Fields(path))
 		if err != nil {

@@ -718,3 +718,264 @@ func TestZoneCreateOutsideTheSelection(t *testing.T) {
 		t.Errorf("the zone of a login without an account was not stored")
 	}
 }
+
+// The R2 buckets of a login with several accounts: the listing shows those
+// of every selected account with their account, --account narrows it, and
+// an account outside the selection is read live and not cached.
+func TestR2BucketListSeveralAccounts(t *testing.T) {
+	e := newR2Env(t)
+	e.f.accounts["acc1"].buckets = []string{"assets", "logs"}
+	e.f.accounts["acc2"].buckets = []string{"assets", "media"}
+	e.loginBoth("acc1", "acc1", "acc2")
+
+	code, stdout, stderr := e.run("cloudflare", "r2", "bucket", "list", "--profile", "both")
+	if code != cli.ExitOK || !strings.Contains(stdout, "ACCOUNT") || !strings.Contains(stderr, "4 bucket(s) in 2 account(s)") {
+		t.Fatalf("bucket list: exit %d, %s%s", code, stdout, stderr)
+	}
+	for _, want := range [][]string{{"both", "acc1", "assets"}, {"both", "acc2", "assets"}, {"both", "acc1", "logs"}, {"both", "acc2", "media"}} {
+		found := false
+		for _, line := range strings.Split(stdout, "\n") {
+			found = found || reflect.DeepEqual(strings.Fields(line)[:min(3, len(strings.Fields(line)))], want)
+		}
+		if !found {
+			t.Errorf("no line %v in %s", want, stdout)
+		}
+	}
+	if got, want := e.rows("both", platform.ResR2Bucket), []string{"acc1/assets acc1", "acc1/logs acc1", "acc2/assets acc2", "acc2/media acc2"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("cached buckets: %v", got)
+	}
+	// --account narrows the cached listing, by id or by name, and --wide
+	// reads each bucket in its own account.
+	e.f.reset()
+	code, stdout, stderr = e.run("cloudflare", "r2", "bucket", "list", "--profile", "both", "--account", "acc2")
+	if code != cli.ExitOK || strings.Contains(stdout, "ACCOUNT") || strings.Contains(stdout, "logs") || !strings.Contains(stdout, "media") || len(e.f.requests) != 0 {
+		t.Errorf("--account acc2: exit %d, %s%s, requests %v", code, stdout, stderr, e.f.requests)
+	}
+	code, stdout, stderr = e.run("cloudflare", "r2", "bucket", "list", "--profile", "both", "--account", "Beta", "--wide", "-o", "json")
+	if code != cli.ExitOK || strings.Contains(stdout, `"account_id": "acc1"`) || strings.Count(stdout, `"location": "APAC"`) != 2 ||
+		e.f.count("GET /accounts/acc2/r2/buckets/media") != 1 || e.f.count("GET /accounts/acc1/r2/buckets/") != 0 {
+		t.Errorf("--account Beta --wide: exit %d, %s%s, requests %v", code, stdout, stderr, e.f.requests)
+	}
+	// A profile of one account says nothing of accounts; an account one
+	// profile listed is not listed again by another.
+	code, stdout, stderr = e.run("cloudflare", "r2", "bucket", "list")
+	if code != cli.ExitOK || strings.Contains(stdout, "ACCOUNT") || strings.Contains(stdout, "both") || !strings.Contains(stderr, "4 bucket(s) in 2 account(s)") {
+		t.Errorf("every profile: exit %d, %s%s", code, stdout, stderr)
+	}
+	// Another jurisdiction is read live in every selected account.
+	e.f.reset()
+	if code, _, stderr := e.run("cloudflare", "r2", "bucket", "list", "--profile", "both", "--jurisdiction", "eu"); code != cli.ExitOK ||
+		e.f.count("GET /accounts/acc1/r2/buckets?") != 1 || e.f.count("GET /accounts/acc2/r2/buckets?") != 1 {
+		t.Errorf("--jurisdiction: exit %d, %s, requests %v", code, stderr, e.f.requests)
+	}
+
+	// An account outside the selection is read live and not cached.
+	e.loginBoth("acc1")
+	if code, _, stderr := e.run("--refresh", "cloudflare", "r2", "bucket", "list", "--profile", "both"); code != cli.ExitOK {
+		t.Fatalf("list of one account: exit %d, %s", code, stderr)
+	}
+	for range 2 {
+		e.f.reset()
+		code, stdout, stderr = e.run("cloudflare", "r2", "bucket", "list", "--profile", "both", "--account", "acc2")
+		if code != cli.ExitOK || !strings.Contains(stdout, "media") || strings.Contains(stdout, "logs") || e.f.count("GET /accounts/acc2/r2/buckets?") != 1 {
+			t.Errorf("unselected account: exit %d, %s%s, requests %v", code, stdout, stderr, e.f.requests)
+		}
+	}
+	if got, want := e.rows("both", platform.ResR2Bucket), []string{"acc1/assets acc1", "acc1/logs acc1"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("an unselected account was cached: %v", got)
+	}
+	if code, _, _ := e.run("--offline", "cloudflare", "r2", "bucket", "list", "--profile", "both", "--account", "acc2"); code != cli.ExitOffline {
+		t.Errorf("unselected account offline: exit %d", code)
+	}
+	if w := e.f.writes(); len(w) != 0 {
+		t.Errorf("listings wrote: %v", w)
+	}
+}
+
+// A bucket name two selected accounts of one login hold a bucket of is
+// ambiguous (exit code 5) with the flag that chooses, --account settles
+// it, and a terminal asks.
+func TestR2BucketNameInTwoAccounts(t *testing.T) {
+	e := newR2Env(t)
+	e.f.accounts["acc1"].buckets = []string{"assets"}
+	e.f.accounts["acc2"].buckets = []string{"assets"}
+	e.f.bind("acc2", "assets", "cdn.example.net", "zone-beta", true, "")
+	e.loginBoth("acc1", "acc1", "acc2")
+
+	// With and without the inventory knowing the buckets.
+	for _, sync := range []bool{false, true} {
+		if sync {
+			if code, _, stderr := e.run("sync", "--profile", "both", "--platform", "cloudflare", "--type", "r2_bucket"); code != cli.ExitOK {
+				t.Fatalf("sync: exit %d, %s", code, stderr)
+			}
+		}
+		code, _, stderr := e.run("cloudflare", "r2", "domain", "list", "assets", "--profile", "both")
+		if code != cli.ExitAmbiguous {
+			t.Fatalf("synced %t: exit %d, %s", sync, code, stderr)
+		}
+		for _, want := range []string{"cloudflare/both account acc1", "cloudflare/both account acc2", "pass --account <id or name> to choose"} {
+			if !strings.Contains(stderr, want) {
+				t.Errorf("synced %t: the ambiguity lacks %q: %s", sync, want, stderr)
+			}
+		}
+		if strings.Contains(stderr, "--profile <name>") {
+			t.Errorf("synced %t: --profile does not tell the buckets apart: %s", sync, stderr)
+		}
+	}
+	// --account names the one: no bucket is listed for it.
+	e.f.reset()
+	code, stdout, stderr := e.run("cloudflare", "r2", "domain", "list", "assets", "--profile", "both", "--account", "acc2", "-o", "json")
+	if code != cli.ExitOK || !strings.Contains(stdout, "cdn.example.net") || !strings.Contains(stdout, `"account_id": "acc2"`) ||
+		!strings.Contains(stderr, "bucket assets via account acc2 of cloudflare/both") || e.f.count("GET /accounts/acc2/r2/buckets?") != 0 {
+		t.Errorf("--account acc2: exit %d, %s%s, requests %v", code, stdout, stderr, e.f.requests)
+	}
+	code, stdout, stderr = e.run("cloudflare", "r2", "domain", "list", "assets", "--profile", "both", "--account", "acc1", "-o", "json")
+	if code != cli.ExitOK || strings.Contains(stdout, "cdn.example.net") {
+		t.Errorf("--account acc1: exit %d, %s%s", code, stdout, stderr)
+	}
+	// A write does not go out for an ambiguous bucket.
+	if code, _, _ := e.run("cloudflare", "r2", "domain", "detach", "assets", "cdn.example.net", "--profile", "both", "--yes"); code != cli.ExitAmbiguous || len(e.f.writes()) != 0 {
+		t.Errorf("ambiguous detach: exit %d, writes %v", code, e.f.writes())
+	}
+
+	// On a terminal the accounts are offered.
+	p := prompttest.New(t, prompttest.Label("account acc2"))
+	code, stdout, stderr = e.runPick(p, "cloudflare", "r2", "domain", "list", "assets", "--profile", "both", "-o", "json")
+	if code != cli.ExitOK || !strings.Contains(stdout, "cdn.example.net") {
+		t.Errorf("pick: exit %d, %s%s", code, stdout, stderr)
+	}
+	if a := p.Find(`Ambiguous R2 bucket "assets" (several accounts hold a bucket of that name); use which one?`); a == nil || len(a.Options) != 2 ||
+		!strings.Contains(prompttest.Labels(a.Options), "cloudflare/both account acc1") {
+		t.Errorf("questions asked: %v", p.Titles())
+	}
+	p.Done()
+}
+
+// A bucket of the second selected account of a login is found live and
+// through the inventory, and a custom domain is bound in its account.
+func TestR2DomainInTheSecondAccount(t *testing.T) {
+	e := newR2Env(t)
+	e.f.accounts["acc1"].buckets = []string{"assets"}
+	e.f.accounts["acc2"].buckets = []string{"media"}
+	e.loginBoth("acc1", "acc1", "acc2")
+
+	code, _, stderr := e.run("cloudflare", "r2", "domain", "list", "media", "--profile", "both")
+	if code != cli.ExitOK || !strings.Contains(stderr, "bucket media via account acc2 of cloudflare/both") || e.f.count("GET /accounts/acc2/r2/buckets?") != 1 {
+		t.Fatalf("live: exit %d, %s, requests %v", code, stderr, e.f.requests)
+	}
+	if code, _, stderr := e.run("sync", "--profile", "both", "--platform", "cloudflare", "--type", "r2_bucket"); code != cli.ExitOK {
+		t.Fatalf("sync: exit %d, %s", code, stderr)
+	}
+	e.f.reset()
+	code, _, stderr = e.run("cloudflare", "r2", "domain", "list", "media", "--profile", "both")
+	if code != cli.ExitOK || !strings.Contains(stderr, "bucket media via account acc2 of cloudflare/both (local inventory)") || e.f.count("GET /accounts/acc1/r2/buckets?")+e.f.count("GET /accounts/acc2/r2/buckets?") != 0 {
+		t.Errorf("inventory: exit %d, %s, requests %v", code, stderr, e.f.requests)
+	}
+	// A bucket of neither account: the accounts searched are named.
+	code, _, stderr = e.run("cloudflare", "r2", "domain", "list", "nosuch", "--profile", "both")
+	if code != cli.ExitNotFound || !strings.Contains(stderr, "bucket nosuch not found in the selected accounts of cloudflare/both (acc1, acc2)") {
+		t.Errorf("missing bucket: exit %d, %s", code, stderr)
+	}
+	// An account without R2 is skipped and named.
+	e.f.accounts["acc1"].r2Disabled = true
+	code, _, stderr = e.run("cloudflare", "r2", "domain", "list", "nosuch", "--profile", "both")
+	if code != cli.ExitNotFound || !strings.Contains(stderr, "these accounts were skipped: both account acc1 (R2 is not enabled)") {
+		t.Errorf("missing bucket, acc1 without R2: exit %d, %s", code, stderr)
+	}
+	e.f.accounts["acc1"].r2Disabled = false
+
+	// The zone of a binding is one of the account of the bucket.
+	code, stdout, stderr := e.run("cloudflare", "r2", "domain", "attach", "media", "cdn.example.net", "--profile", "both", "-o", "json")
+	if code != cli.ExitOK || !strings.Contains(stderr, "bound cdn.example.net to bucket media via account acc2 of cloudflare/both") {
+		t.Fatalf("attach: exit %d, %s%s", code, stdout, stderr)
+	}
+	if body := e.f.body("POST /accounts/acc2/r2/buckets/media/domains/custom"); body["zoneId"] != "zone-beta" {
+		t.Errorf("attach body: %v", body)
+	}
+	if rows := e.cachedRecords("cdn.example.net"); len(rows) != 1 || rows[0].Profile != "both" {
+		t.Errorf("the CNAME record of the binding is not cached: %v", rows)
+	}
+	// A zone of the other account does not hold the domain of the bucket.
+	code, _, stderr = e.run("cloudflare", "r2", "domain", "attach", "media", "cdn.example.com", "--profile", "both")
+	if code != cli.ExitNotFound || !strings.Contains(stderr, "no zone for cdn.example.com found in account acc2 of cloudflare/both") {
+		t.Errorf("zone of the other account: exit %d, %s", code, stderr)
+	}
+	code, _, stderr = e.run("cloudflare", "r2", "domain", "detach", "media", "cdn.example.net", "--profile", "both", "--yes")
+	if w := e.f.writes(); code != cli.ExitOK || w[len(w)-1] != "DELETE /accounts/acc2/r2/buckets/media/domains/custom/cdn.example.net" {
+		t.Errorf("detach: exit %d, %s, writes %v", code, stderr, w)
+	}
+
+	// A bucket of an account outside the selection: --account reaches it,
+	// and nothing of the binding is cached.
+	e.loginBoth("acc1")
+	if code, _, stderr := e.run("cloudflare", "r2", "domain", "list", "media", "--profile", "both"); code != cli.ExitNotFound {
+		t.Errorf("unselected account without --account: exit %d, %s", code, stderr)
+	}
+	code, _, stderr = e.run("cloudflare", "r2", "domain", "attach", "media", "cdn.example.net", "--profile", "both", "--account", "acc2")
+	if code != cli.ExitOK || !strings.Contains(stderr, "via account acc2 of cloudflare/both") {
+		t.Fatalf("attach in an unselected account: exit %d, %s", code, stderr)
+	}
+	for _, r := range e.cachedRecords("cdn.example.net") {
+		if r.Profile == "both" {
+			t.Errorf("a record of an unselected account was cached: %v", r)
+		}
+	}
+}
+
+// Deleting the CNAME record of an R2 custom domain unbinds it from a
+// bucket in another selected account of the same login, without the other
+// logins being asked.
+func TestDNSDeleteUnbindsInAnotherSelectedAccount(t *testing.T) {
+	e := newR2Env(t)
+	e.f.accounts["acc2"].buckets = []string{"assets"}
+	e.f.bind("acc2", "assets", "cdn.example.com", "zone-ex", true, "")
+	recID := e.f.records["zone-ex"][0]["id"].(string)
+	e.loginBoth("acc1", "acc1", "acc2")
+
+	code, _, stderr := e.run("cloudflare", "dns", "delete", "example.com", recID, "--profile", "both")
+	if code != cli.ExitOK {
+		t.Fatalf("delete: exit %d, %s", code, stderr)
+	}
+	want := []string{"DELETE /accounts/acc1/r2/buckets/assets/domains/custom/cdn.example.com", "DELETE /accounts/acc2/r2/buckets/assets/domains/custom/cdn.example.com"}
+	if w := e.f.writes(); !reflect.DeepEqual(w, want) {
+		t.Errorf("writes = %v", w)
+	}
+	if n := len(e.f.accounts["acc2"].domains["assets"]); n != 0 {
+		t.Errorf("the domain is still bound: %v", e.f.accounts["acc2"].domains["assets"])
+	}
+}
+
+// A login without an account whose credentials see several accounts names
+// --account as the way to say which one an R2 command works on.
+func TestR2LoginWithoutAnAccount(t *testing.T) {
+	e := newR2Env(t)
+	e.f.accounts["acc1"].buckets = []string{"logs"}
+	e.f.accounts["acc2"].buckets = []string{"media"}
+	e.f.bind("acc2", "media", "cdn.example.net", "zone-beta", true, "")
+	e.loginBoth("acc1")
+	cfg, err := config.Load(filepath.Join(e.dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := cfg.Profiles["both"].Platforms[platform.Cloudflare].Metadata
+	delete(meta, "account_id")
+	delete(meta, "account_name")
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, args := range [][]string{{"r2", "bucket", "list"}, {"r2", "domain", "list", "media"}} {
+		code, _, stderr := e.run(append(append([]string{"cloudflare"}, args...), "--profile", "both")...)
+		if code != cli.ExitAmbiguous || !strings.Contains(stderr, `sees 2 accounts (acc1=Acme, acc2=Beta): pass --account <id or name>, or select the accounts of the login with "polyctl cloudflare account use <id>"`) {
+			t.Errorf("%v: exit %d, %s", args, code, stderr)
+		}
+	}
+	code, stdout, stderr := e.run("cloudflare", "r2", "bucket", "list", "--profile", "both", "--account", "Beta")
+	if code != cli.ExitOK || !strings.Contains(stdout, "media") || strings.Contains(stdout, "logs") {
+		t.Errorf("bucket list --account: exit %d, %s%s", code, stdout, stderr)
+	}
+	code, stdout, stderr = e.run("cloudflare", "r2", "domain", "list", "media", "--profile", "both", "--account", "acc2")
+	if code != cli.ExitOK || !strings.Contains(stdout, "cdn.example.net") {
+		t.Errorf("domain list --account: exit %d, %s%s", code, stdout, stderr)
+	}
+}

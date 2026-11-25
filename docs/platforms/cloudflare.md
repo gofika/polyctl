@@ -35,7 +35,7 @@ cloudflare redirect rule list <zone> [--wide]
 cloudflare redirect rule set  <zone> --file rules.yaml [--replace] [--first] [-y]
 cloudflare dev-mode <zone> [on|off]       # Development Mode (bypasses the cache for 3 hours)
 cloudflare ssl-mode <zone> [off|flexible|full|strict]
-cloudflare r2 bucket list [--wide] [--jurisdiction eu|fedramp]
+cloudflare r2 bucket list [--wide] [--jurisdiction eu|fedramp]      # every r2 command: [--account <id|name>]
 cloudflare r2 domain list   <bucket>
 cloudflare r2 domain get    <bucket> <domain>
 cloudflare r2 domain attach <bucket> <domain> [--zone <zone>] [--disabled] [--min-tls 1.0|1.1|1.2|1.3]
@@ -72,7 +72,7 @@ polyctl cf zone ensure example.com --preset optimized --dry-run -o json
 polyctl cf zone delete example.com --yes
 ```
 
-A login works on its selected accounts, one of them the default account. `--account <id or name>` on the `zone`, `dns`, `cache`, `redirect`, `dev-mode` and `ssl-mode` commands names one account for the call: lookups and lists cover that account instead of every selected one, and a new zone goes to it instead of the default account. An account outside the selection is read live with `--account` and nothing of it is stored in the inventory; without the flag its zones are not found (exit code 4, naming the account). A zone id given with the `--account` of another account is a usage error (exit code 2).
+A login works on its selected accounts, one of them the default account. `--account <id or name>` on the `zone`, `dns`, `cache`, `redirect`, `dev-mode`, `ssl-mode` and `r2` commands names one account for the call: lookups and lists cover that account instead of every selected one, and a new zone goes to it instead of the default account. An account outside the selection is read live with `--account` and nothing of it is stored in the inventory; without the flag its zones are not found (exit code 4, naming the account). A zone id given with the `--account` of another account is a usage error (exit code 2).
 
 A zone name that two accounts in the scope of the call hold a zone of (an active zone in one, a pending one in the other) is asked about on a terminal and exit code 5 otherwise, listing each zone with its account: `--account`, `--profile` when the zones are in different logins, or the zone id choose. `zone list` shows an `ACCOUNT` column when its zones are of several accounts.
 
@@ -184,15 +184,16 @@ polyctl cf r2 domain detach assets cdn.example.com --yes
 
 **Accounts and inventory**
 
-- With `--profile`, the profile's account is used (an account without R2 is exit code 7; several accounts and none pinned is exit code 5).
-- `bucket list` without `--profile` lists the buckets of every Cloudflare profile; accounts without R2 are skipped, a failing one is a warning, and the command fails only when no account could be read.
-- Buckets of the default jurisdiction are cached as `r2_bucket` (fresh for an hour; `polyctl sync --type r2_bucket` fills it). `--offline` lists only the inventory; `--wide` and `--jurisdiction` read live (exit code 6 with `--offline`).
-- `r2 domain` commands without `--profile` use the inventory when it names exactly one account for the bucket; otherwise (and with `--refresh` or `--jurisdiction`) they search all Cloudflare profiles live. A bucket found nowhere is exit code 4; one held by several accounts is exit code 5 (pass `--profile`).
+- The R2 commands cover every selected account of every Cloudflare profile. `--profile` narrows them to the selected accounts of that profile, and `--account <id or name>` to one account; an account the login does not select is read live with `--account` and nothing of it is cached. The same account in two profiles counts once. Messages name the account next to the profile (`account <id> of cloudflare/<profile>`) when the profile works on several.
+- An account without R2 is exit code 7 when it is the only one asked; among several it is skipped (of a profile with several selected accounts, the listing fails only when none of them can be used for R2). A login without an account uses the only account its credentials see; when they see several it is exit code 5: pass `--account`, or select the accounts with `polyctl cloudflare account use <id>`.
+- `bucket list` without `--profile` lists the buckets of every Cloudflare profile; accounts without R2 are skipped, a failing profile is a warning, and the command fails only when no account could be read. A profile that lists the buckets of several accounts adds an `ACCOUNT` column.
+- Buckets of the default jurisdiction are cached as `r2_bucket`, one row per account and bucket (id `<account>/<bucket>`; fresh for an hour; `polyctl sync --type r2_bucket` fills it). `--offline` lists only the inventory; `--wide`, `--jurisdiction` and an unselected `--account` read live (exit code 6 with `--offline`).
+- The `r2 domain` commands find the account that holds `<bucket>`. One account to look in (`--account`, or `--profile` with a login of one account) is used as it is. Otherwise the inventory answers when it names exactly one account for the bucket; failing that (and with `--refresh` or `--jurisdiction`) every account is asked live. A bucket found nowhere is exit code 4. The name of a bucket is unique in its account only: a name held by several accounts is asked about on a terminal and exit code 5 otherwise, listing each as `cloudflare/<profile> account <id>`; pass `--account`, or `--profile` when the accounts are of different profiles. Without `<bucket>` a terminal offers the buckets, each with its account when a profile has several.
 - `--jurisdiction eu|fedramp` addresses that R2 jurisdiction instead of the default one.
 
 **Commands**
 
-- `bucket list`: profile, name, creation date; `--wide` adds location, storage class and jurisdiction (one request per bucket).
+- `bucket list`: profile, account (when a profile lists several), name, creation date; `--wide` adds location, storage class and jurisdiction (one request per bucket).
 - `domain list` / `get`: enabled state, zone, minimum TLS (`-` when never set), ownership and SSL status (`pending` / `initializing` right after binding is normal). A domain not bound to the bucket is exit code 4.
 - `domain attach`: binds `<domain>` (no wildcards). The zone is `--zone` (name or id) or the longest zone name the domain ends in, within the bucket's account; it must be active. Cloudflare creates the proxied CNAME `<domain> -> public.r2.dev`. A domain already bound (to any bucket), or an existing A, AAAA or CNAME record of that name, is exit code 1 (a TXT record is fine). `--disabled` binds it disabled; `--min-tls` sets the minimum TLS version (not set by default).
 - `domain update`: changes `--enabled` / `--enabled=false` and/or `--min-tls` (at least one).
