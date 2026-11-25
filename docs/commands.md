@@ -76,7 +76,7 @@ records:
 - `--record` / `-r` (repeatable) and `--file` / `-f` can be combined. Each record is matched on name + type: already as desired is `unchanged` (not written), different is updated in place, missing is created. Records you do not name are never touched.
 - Names are relative (`www`, `@`, `a.b`) or full names in the zone (`www.example.com`, with or without the trailing dot). A name outside the zone (`www.other.com`) is a usage error.
 - TTL (seconds or `auto`) and proxied (`true` / `false`) are optional. Left out, an existing record keeps its value and a new one gets the platform default (Cloudflare: automatic TTL, not proxied). `auto` and `0` mean automatic on Cloudflare; elsewhere `auto` equals leaving the TTL out and `0` is refused.
-- Values are compared as the platform stores them (host names without case or trailing dot, compressed IPv6, TXT unquoted and joined), so an equivalent value is `unchanged`.
+- Values are compared as the platform stores them (host names without case or trailing dot, compressed IPv6, TXT and SPF unquoted and joined), so an equivalent value is `unchanged`.
 - MX: put the priority in front of the value (`@:MX:10 mail.example.com`) or in `priority`. A new MX record needs one. SRV values are `<priority> <weight> <port> <target>`.
 - Inline, a value ending in `:<number>` or an IPv6 address that could be read with a TTL is refused as ambiguous: use the file.
 - Several records with the same name and type form a set: missing values are created, nothing is updated.

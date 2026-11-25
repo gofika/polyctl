@@ -246,10 +246,30 @@ func (f *fakeGoogle) applyChange(zone string, ch *dns.Change) error {
 		if !strings.HasSuffix(a.Name, ".") {
 			return fmt.Errorf("rrset name %q lacks trailing dot", a.Name)
 		}
-		sets = append(sets, &dns.ResourceRecordSet{Name: a.Name, Type: a.Type, Ttl: a.Ttl, Rrdatas: append([]string(nil), a.Rrdatas...)})
+		sets = append(sets, &dns.ResourceRecordSet{Name: a.Name, Type: a.Type, Ttl: a.Ttl, Rrdatas: cloudDNSRRData(a.Type, a.Rrdatas)})
 	}
 	f.rrsets[zone] = sets
 	return nil
+}
+
+// cloudDNSRRData stores rrdatas as Cloud DNS does: an unquoted TXT or SPF
+// value is split at white space into several character-strings.
+func cloudDNSRRData(typ string, in []string) []string {
+	out := append([]string(nil), in...)
+	if typ != "TXT" && typ != "SPF" {
+		return out
+	}
+	for i, v := range out {
+		if strings.HasPrefix(v, `"`) {
+			continue
+		}
+		var parts []string
+		for _, w := range strings.Fields(v) {
+			parts = append(parts, `"`+w+`"`)
+		}
+		out[i] = strings.Join(parts, " ")
+	}
+	return out
 }
 
 func (f *fakeGoogle) countRequests(substr string) int {
@@ -558,6 +578,33 @@ func TestCreateUpdateDeleteRecord(t *testing.T) {
 	}
 	if err := c.DeleteRRSet(ctx, "example-zone", "example.com", "TXT"); !errors.Is(err, platform.ErrNotFound) {
 		t.Errorf("delete missing set: %v", err)
+	}
+}
+
+// An SPF value with spaces is written as one quoted string, so it is not
+// split, the record is found again after the write, and reading it back
+// gives the value that was asked for (a second ensure is unchanged).
+func TestCreateSPFRecordKeepsSpaces(t *testing.T) {
+	f := newFake(t)
+	c := f.client(t)
+	ctx := context.Background()
+	const v = "v=spf1 include:_spf.google.com ~all"
+	created, err := c.CreateRecord(ctx, "example-zone", platform.Record{Name: "example.com", Type: "SPF", Value: v})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Value != v {
+		t.Errorf("created value %q", created.Value)
+	}
+	if rs := f.rrset("example-zone", "example.com.", "SPF"); rs == nil || len(rs.Rrdatas) != 1 || rs.Rrdatas[0] != `"`+v+`"` {
+		t.Errorf("stored rrset: %+v", rs)
+	}
+	recs, err := c.RRSetRecords(ctx, "example-zone", "example.com", "SPF")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 1 || recs[0].Value != v || recs[0].ID != created.ID {
+		t.Errorf("read back: %+v", recs)
 	}
 }
 

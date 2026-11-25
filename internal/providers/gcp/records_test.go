@@ -73,6 +73,7 @@ func TestRecordsFromRRSet(t *testing.T) {
 		{"TXT", `"say \"hi\""`, `say "hi"`, nil},
 		{"TXT", `"a" "b"`, `"a" "b"`, nil},
 		{"TXT", `unquoted`, `unquoted`, nil},
+		{"SPF", `"v=spf1 include:_spf.google.com ~all"`, `v=spf1 include:_spf.google.com ~all`, nil},
 		{"SRV", "10 5 5060 sip.example.com.", "5 5060 sip.example.com", intp(10)},
 		{"MX", "garbage", "garbage", nil},
 	}
@@ -145,6 +146,7 @@ func TestRRDataFromRecord(t *testing.T) {
 		{"SRV bad", platform.Record{Type: "SRV", Value: "5060 sip.example.com", Priority: intp(10)}, "", true},
 		{"TXT quotes", platform.Record{Type: "TXT", Value: `v=spf1 "x" ~all`}, `"v=spf1 \"x\" ~all"`, false},
 		{"TXT already quoted", platform.Record{Type: "TXT", Value: `"a" "b"`}, `"a" "b"`, false},
+		{"SPF quotes", platform.Record{Type: "SPF", Value: `v=spf1 include:_spf.google.com ~all`}, `"v=spf1 include:_spf.google.com ~all"`, false},
 		{"empty", platform.Record{Type: "A", Value: "  "}, "", true},
 	}
 	for _, c := range cases {

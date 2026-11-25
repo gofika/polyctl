@@ -123,7 +123,7 @@ func splitRRData(typ, v string) (string, *int) {
 			}
 		}
 		return strings.TrimSuffix(v, "."), nil
-	case "TXT":
+	case "TXT", "SPF":
 		if u, ok := unquoteTXT(v); ok {
 			return u, nil
 		}
@@ -202,7 +202,9 @@ func rrdataFromRecord(r platform.Record) (string, error) {
 		}
 		fields[len(fields)-1] = ensureDot(fields[len(fields)-1])
 		return fmt.Sprintf("%d %s", *prio, strings.Join(fields, " ")), nil
-	case "TXT":
+	case "TXT", "SPF":
+		// SPF rrdata is TXT-shaped: unquoted, Cloud DNS would split it at
+		// white space.
 		return quoteTXT(content), nil
 	}
 	if isHostType(typ) {
