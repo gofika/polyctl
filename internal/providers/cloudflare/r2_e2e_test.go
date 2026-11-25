@@ -59,6 +59,10 @@ type r2Fake struct {
 	// failZones answers this status to the zone listing of an account
 	// (GET /zones?account.id=<account>).
 	failZones map[string]int
+	// accountsStatus, when set, is the status the account listing
+	// (GET /accounts) answers: 403 as a token without Account:Read gets it
+	// (code 10000), anything else as a request that failed.
+	accountsStatus int
 }
 
 // sees reports whether a token of the accounts in list (comma-separated)
@@ -223,6 +227,10 @@ func (f *r2Fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.ok(w, map[string]any{"id": "tok-id", "status": "active"}, nil)
 	case p == "/user":
 		f.ok(w, map[string]any{"id": "user", "email": "ops@example.com"}, nil)
+	case p == "/accounts" && f.accountsStatus == http.StatusForbidden:
+		f.fail(w, http.StatusForbidden, 10000, "Authentication error")
+	case p == "/accounts" && f.accountsStatus != 0:
+		f.fail(w, f.accountsStatus, 1000, "the accounts cannot be listed")
 	case p == "/accounts":
 		var out []any
 		for _, id := range strings.Split(acc, ",") {

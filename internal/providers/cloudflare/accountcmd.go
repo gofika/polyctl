@@ -215,6 +215,7 @@ type accountBook struct {
 	fetched  bool
 	visible  []account
 	complete bool
+	listErr  error
 }
 
 func openAccountBook(rt *app.Runtime) (*accountBook, error) {
@@ -230,18 +231,22 @@ func openAccountBook(rt *app.Runtime) (*accountBook, error) {
 }
 
 // list reads the accounts the credentials see. An empty list is that of
-// credentials that cannot list their accounts.
+// credentials that cannot list their accounts; a listing that failed is an
+// error (see visibleAccounts).
 func (b *accountBook) list(ctx context.Context) ([]account, error) {
 	if b.fetched {
-		return b.visible, nil
+		return b.visible, b.listErr
 	}
 	c, err := openProfile(ctx, b.rt, b.profile)
 	if err != nil {
 		return nil, err
 	}
-	b.visible, b.complete, _ = visibleAccounts(ctx, c.api)
+	b.visible, b.complete, err = visibleAccounts(ctx, c.api)
+	if err != nil {
+		b.listErr = fmt.Errorf("list the accounts of cloudflare/%s: %w", b.profile, err)
+	}
 	b.fetched = true
-	return b.visible, nil
+	return b.visible, b.listErr
 }
 
 // resolve turns the accounts named on the command line, by id or by name,

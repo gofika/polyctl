@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -142,22 +143,55 @@ func knownAccount(ctx context.Context, rt *app.Runtime, profile, ref string) (st
 	return "", false
 }
 
+// invalidCredentialCodes are the Cloudflare error codes of credentials
+// that are refused altogether, whatever they ask for.
+var invalidCredentialCodes = map[int]bool{
+	9109: true, // Invalid access token
+	9106: true, // Missing X-Auth-Key, X-Auth-Email or Authorization headers
+	9103: true, // Unknown X-Auth-Key or X-Auth-Email
+	6003: true, // Invalid request headers
+	6111: true, // Invalid format for Authorization header
+}
+
+// notPermitted reports whether err is the answer to credentials that work
+// but may not make this request (HTTP 403 without a code of refused
+// credentials): a token without the permission, a browser login without
+// the scope.
+func notPermitted(err error) bool {
+	var e *Error
+	if !errors.As(err, &e) || e.Status != http.StatusForbidden {
+		return false
+	}
+	for _, m := range e.Errors {
+		if invalidCredentialCodes[m.Code] {
+			return false
+		}
+	}
+	return true
+}
+
 // visibleAccounts lists the accounts the credentials see. Credentials that
 // may not list accounts have them read off their zones: that list holds
-// the accounts with a zone only, and complete is false.
+// the accounts with a zone only, and complete is false. It is empty,
+// without an error, for credentials that may list neither, or that see no
+// zone: they cannot list their accounts.
+//
+// A listing that fails for another reason (the network, a server error,
+// credentials that are refused altogether) is an error: it says nothing
+// about what the credentials may list.
 func visibleAccounts(ctx context.Context, a *api) (accounts []account, complete bool, err error) {
 	accounts, err = a.listAccounts(ctx)
-	if err == nil && len(accounts) > 0 {
+	switch {
+	case err == nil && len(accounts) > 0:
 		return accounts, true, nil
+	case err != nil && !notPermitted(err):
+		return nil, false, err
 	}
-	byZone, zerr := a.accountsOfZones(ctx)
-	if zerr == nil && len(byZone) > 0 {
-		return byZone, false, nil
+	byZone, err := a.accountsOfZones(ctx)
+	if err != nil && !notPermitted(err) {
+		return nil, false, err
 	}
-	if err == nil {
-		err = zerr
-	}
-	return nil, false, err
+	return byZone, false, nil
 }
 
 // resolveAccountRef turns the account a user names for a profile, by id or
@@ -185,7 +219,10 @@ func resolveAccountRef(ctx context.Context, rt *app.Runtime, profile, ref string
 	if err != nil {
 		return "", err
 	}
-	accounts, complete, _ := visibleAccounts(ctx, c.api)
+	accounts, complete, err := visibleAccounts(ctx, c.api)
+	if err != nil {
+		return "", fmt.Errorf("look up account %q: %w", ref, err)
+	}
 	return matchAccount(profile, ref, "--account: ", accounts, complete)
 }
 

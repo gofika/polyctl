@@ -3,6 +3,7 @@ package cloudflare_test
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -214,5 +215,37 @@ func TestAccountRemoveByNameAsksTheCredentials(t *testing.T) {
 	delete(e.f.tokens, "tok-all")
 	if code, out := acct("remove", "acc1"); code != cli.ExitOK || e.selection("all") != "acc2|Beta|" {
 		t.Errorf("remove with failing credentials: exit %d, %s, %s", code, e.selection("all"), out)
+	}
+}
+
+// An account listing that fails is an error of the command, not the sign
+// of credentials that cannot list their accounts: nothing is selected
+// unchecked, and the failure keeps its exit code.
+func TestAccountListingThatFails(t *testing.T) {
+	e := newR2Env(t)
+	e.loginAll()
+	acct := func(args ...string) (int, string) {
+		t.Helper()
+		code, stdout, stderr := e.run(append([]string{"cloudflare", "account", "--profile", "all"}, args...)...)
+		return code, stdout + stderr
+	}
+	e.f.accountsStatus = http.StatusBadRequest
+	for _, verb := range []string{"add", "use"} {
+		if code, out := acct(verb, "acc-typo"); code != cli.ExitError || strings.Contains(out, "was not checked") || e.selection("all") != "acc1|Acme|" {
+			t.Errorf("account %s while the listing fails: exit %d, %s, %s", verb, code, e.selection("all"), out)
+		}
+	}
+	code, stdout, stderr := e.run("cloudflare", "zone", "list", "--profile", "all", "--account", "Beta Inc")
+	if code != cli.ExitError || strings.Contains(stderr, "cannot list accounts") {
+		t.Errorf("--account while the listing fails: exit %d, %s%s", code, stdout, stderr)
+	}
+	// Credentials that are refused altogether are an authentication error.
+	e.f.accountsStatus = 0
+	delete(e.f.tokens, "tok-all")
+	if code, out := acct("add", "acc-typo"); code != cli.ExitAuth || e.selection("all") != "acc1|Acme|" {
+		t.Errorf("account add with refused credentials: exit %d, %s, %s", code, e.selection("all"), out)
+	}
+	if code, stdout, stderr = e.run("cloudflare", "zone", "list", "--profile", "all", "--account", "Beta Inc"); code != cli.ExitAuth {
+		t.Errorf("--account with refused credentials: exit %d, %s%s", code, stdout, stderr)
 	}
 }
