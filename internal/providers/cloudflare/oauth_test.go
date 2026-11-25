@@ -821,6 +821,30 @@ func TestOAuthLoginSeveralAccounts(t *testing.T) {
 	}
 }
 
+// What --set says of the accounts is refused before the browser is opened:
+// an id that cannot be one, and a default account that is named as
+// disabled.
+func TestOAuthLoginChecksAccountOptionsBeforeTheBrowser(t *testing.T) {
+	e := newOAuthEnv(t)
+	for opts, want := range map[*map[string]string]string{
+		{"account_id": "acc1", "disabled_accounts": "acc1,acc2"}: "--set disabled_accounts names acc1, the default account",
+		{"account_id": "acc1", "disabled_accounts": "not an id"}: "--set disabled_accounts=<id>,<id>,...",
+		{"account_id": "not an id"}:                              "--set account_id=<id>",
+	} {
+		(*opts)["method"] = "oauth"
+		opened := false
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_, stderr, err := e.login(t, ctx, *opts, nil, func(string) error {
+			opened = true
+			return errors.New("the browser must not be opened")
+		})
+		cancel()
+		if !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), want) || opened || strings.Contains(stderr, "http") {
+			t.Errorf("%v: %v, browser opened %v, stderr %q", *opts, err, opened, stderr)
+		}
+	}
+}
+
 // Without the scope that lists accounts they are read off the zones, which
 // shows the accounts with a zone only: the default account of the previous
 // login stays when that list shows it, and so do the disabled accounts it

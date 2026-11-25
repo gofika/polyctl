@@ -385,6 +385,11 @@ func (p *provider) loginOAuth(ctx context.Context, in platform.LoginInput, io *p
 		// that nobody will answer.
 		return nil, app.UsageErrf("cloudflare login with method=%s runs in the interactive flow only", methodOAuth)
 	}
+	// What the options say of the accounts is checked before the browser
+	// is opened, so that nobody goes through it for nothing.
+	if err := checkAccountOptions(in); err != nil {
+		return nil, err
+	}
 	tok, err := authorize(ctx, in, io)
 	if err != nil {
 		return nil, err
@@ -515,6 +520,21 @@ func optDisabledAccounts(in platform.LoginInput, def string) ([]string, error) {
 		return nil, app.UsageErrf("--set disabled_accounts names %s, the default account, which is always enabled (pass --set account_id=<id> to make another one the default)", def)
 	}
 	return list, nil
+}
+
+// checkAccountOptions reports what is wrong with --set account_id and
+// disabled_accounts as far as the options alone tell, without a request:
+// an id that cannot be one, and a default account that is named as
+// disabled. chooseDefault checks again with the default it arrives at.
+func checkAccountOptions(in platform.LoginInput) error {
+	def := strings.TrimSpace(in.Opt(metaAccountID, ""))
+	if def != "" {
+		if err := checkAccountID(def); err != nil {
+			return app.UsageErrf("%v (--set account_id=<id>)", err)
+		}
+	}
+	_, err := optDisabledAccounts(in, def)
+	return err
 }
 
 // chooseDefault resolves the default account of a login, the one new zones
