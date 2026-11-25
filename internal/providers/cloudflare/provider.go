@@ -136,6 +136,19 @@ func (*provider) ResourceTypes() []platform.ResourceType {
 	return []platform.ResourceType{platform.ResZone, platform.ResDNSRecord, platform.ResR2Bucket}
 }
 
+var _ platform.OwnerHinter = (*provider)(nil)
+
+// OwnerHint says how to choose among several zones of one login that hold
+// the same name: they are zones of different accounts of its selection
+// (Cloudflare holds a name once per account), told apart by --account of
+// the cloudflare commands, or by their zone id.
+func (*provider) OwnerHint(kind platform.ResourceType, _ []string) string {
+	if kind != platform.ResZone {
+		return ""
+	}
+	return "the login holds zones of this name in several of its Cloudflare accounts: use `polyctl cloudflare ... --account <id or name>`, or the zone id, to choose"
+}
+
 // isOAuthMethod reads the method metadata of a stored account.
 func isOAuthMethod(stored string) bool {
 	return strings.EqualFold(strings.TrimSpace(stored), methodOAuth)

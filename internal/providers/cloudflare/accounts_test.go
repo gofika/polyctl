@@ -416,3 +416,13 @@ func TestVerifyReportsTheSelection(t *testing.T) {
 		t.Fatalf("no account: %+v %v", id, err)
 	}
 }
+
+func TestOwnerHint(t *testing.T) {
+	p := &provider{}
+	if h := p.OwnerHint(platform.ResZone, []string{"zone1", "zone3"}); !strings.Contains(h, "--account <id or name>") || !strings.Contains(h, "zone id") {
+		t.Fatalf("zone hint: %q", h)
+	}
+	if h := p.OwnerHint(platform.ResR2Bucket, nil); h != "" {
+		t.Fatalf("another type: %q", h)
+	}
+}

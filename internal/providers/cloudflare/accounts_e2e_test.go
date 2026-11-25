@@ -202,3 +202,24 @@ func TestSyncBucketsSeveralAccounts(t *testing.T) {
 		t.Fatalf("sync without R2 at all: exit %d, %s", code, out)
 	}
 }
+
+// A domain two selected accounts of one login hold a zone of is ambiguous
+// for the neutral commands (exit code 5), and the hint names what tells
+// the zones apart.
+func TestDomainRoutingAmbiguousAccounts(t *testing.T) {
+	e := newR2Env(t)
+	e.f.zones = append(e.f.zones, r2Zone{"zone-dup", "example.com", "pending", "acc2"})
+	e.loginBoth("acc1", "acc1", "acc2")
+	code, _, stderr := e.run("dns", "list", "example.com", "--profile", "both")
+	if code != cli.ExitAmbiguous {
+		t.Fatalf("exit %d, %s", code, stderr)
+	}
+	for _, want := range []string{"zone-ex", "zone-dup", "--account <id or name>", "zone id"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("the ambiguity lacks %q: %s", want, stderr)
+		}
+	}
+	if strings.Contains(stderr, "--profile <name>") {
+		t.Errorf("--profile does not tell the zones apart: %s", stderr)
+	}
+}
