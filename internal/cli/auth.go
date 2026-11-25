@@ -406,10 +406,15 @@ func metaSummary(m map[string]string) string {
 	var parts []string
 	for _, k := range keys {
 		if v, ok := m[k]; ok && v != "" {
-			if k == "project" {
+			switch k {
+			case "project":
 				// A Google Cloud account names its default project and
 				// how many more are selected.
 				v += moreProjects(m["projects"], v)
+			case "account_id":
+				// A Cloudflare login names its default account and how
+				// many more are selected.
+				v += moreProjects(m["accounts"], v)
 			}
 			parts = append(parts, k+"="+v)
 		}
@@ -417,8 +422,8 @@ func metaSummary(m map[string]string) string {
 	return strings.Join(parts, " ")
 }
 
-// moreProjects is " (+N more)" for the N projects of a comma-separated
-// list other than def, "" for none.
+// moreProjects is " (+N more)" for the N projects (or Cloudflare accounts)
+// of a comma-separated list other than def, "" for none.
 func moreProjects(list, def string) string {
 	n := 0
 	seen := map[string]bool{def: true}
@@ -623,8 +628,13 @@ func identitySummary(id *platform.Identity) string {
 	var parts []string
 	if id.Account != "" {
 		// Extra["projects"] is the selection of a Google Cloud account,
-		// whose Account is the default project.
-		parts = append(parts, id.Account+moreProjects(id.Extra["projects"], id.Account))
+		// whose Account is the default project; Extra["accounts"] that of
+		// a Cloudflare login, whose Account is the default account.
+		list := id.Extra["projects"]
+		if list == "" {
+			list = id.Extra["accounts"]
+		}
+		parts = append(parts, id.Account+moreProjects(list, id.Account))
 	}
 	if id.User != "" {
 		parts = append(parts, id.User)

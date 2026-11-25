@@ -783,4 +783,16 @@ func TestMetaSummaryCountsProjects(t *testing.T) {
 	if got := identitySummary(&platform.Identity{Account: "p1", User: "a@b"}); got != "p1 a@b" {
 		t.Errorf("identitySummary of one project = %q", got)
 	}
+	// A Cloudflare login counts its selected accounts the same way.
+	cf := map[string]string{"account_id": "acc1", "accounts": "acc1,acc2,acc3", "method": "api_token"}
+	if got := metaSummary(cf); got != "account_id=acc1 (+2 more) method=api_token" {
+		t.Errorf("metaSummary(%v) = %q", cf, got)
+	}
+	if got := metaSummary(map[string]string{"account_id": "acc1", "method": "api_token"}); got != "account_id=acc1 method=api_token" {
+		t.Errorf("metaSummary of one account = %q", got)
+	}
+	id = &platform.Identity{Account: "acc1", User: "a@b", Extra: map[string]string{"accounts": "acc1,acc2"}}
+	if got := identitySummary(id); got != "acc1 (+1 more) a@b" {
+		t.Errorf("identitySummary of two accounts = %q", got)
+	}
 }

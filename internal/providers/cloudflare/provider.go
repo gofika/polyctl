@@ -529,13 +529,11 @@ func (c *Client) Verify(ctx context.Context) (*platform.Identity, error) {
 		return nil, err
 	}
 	id := &platform.Identity{
-		Account: c.profile.Meta(metaAccountID),
+		Account: c.api.accountID,
 		User:    c.profile.Meta(metaEmail),
 		Extra:   map[string]string{"token_id": tok.ID, "token_status": tok.Status},
 	}
-	if n := c.profile.Meta(metaAccountName); n != "" {
-		id.Extra["account_name"] = n
-	}
+	c.identifyAccounts(id)
 	if tok.ExpiresOn != "" {
 		id.Extra["token_expires_on"] = tok.ExpiresOn
 	}
@@ -543,6 +541,17 @@ func (c *Client) Verify(ctx context.Context) (*platform.Identity, error) {
 		return id, fmt.Errorf("%w: token status is %q", platform.ErrUnauthorized, tok.Status)
 	}
 	return id, nil
+}
+
+// identifyAccounts adds the name of the default account and, when the
+// login works on several accounts, its selection to an identity.
+func (c *Client) identifyAccounts(id *platform.Identity) {
+	if n := c.profile.Meta(metaAccountName); n != "" {
+		id.Extra["account_name"] = n
+	}
+	if len(c.api.accounts) > 1 {
+		id.Extra[metaAccounts] = strings.Join(c.api.accounts, ",")
+	}
 }
 
 // verifyOAuth checks a browser login. The token verify endpoint is for API
@@ -556,13 +565,11 @@ func (c *Client) verifyOAuth(ctx context.Context) (*platform.Identity, error) {
 	}
 	tok := c.api.oauth.token()
 	id := &platform.Identity{
-		Account: c.profile.Meta(metaAccountID),
+		Account: c.api.accountID,
 		User:    c.profile.Meta(metaEmail),
 		Extra:   map[string]string{"method": methodOAuth},
 	}
-	if n := c.profile.Meta(metaAccountName); n != "" {
-		id.Extra["account_name"] = n
-	}
+	c.identifyAccounts(id)
 	if len(tok.Scopes) > 0 {
 		id.Extra["scopes"] = strings.Join(tok.Scopes, " ")
 	}

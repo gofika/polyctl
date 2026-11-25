@@ -392,3 +392,27 @@ func TestSyncRecordsSkipsAcrossAccounts(t *testing.T) {
 		t.Fatalf("no readable zone at all: %v", err)
 	}
 }
+
+// whoami reports the default account, and the selection when the login
+// works on several accounts.
+func TestVerifyReportsTheSelection(t *testing.T) {
+	_, srv := newFake(t)
+	ctx := context.Background()
+	id, err := openSelection(t, srv, map[string]string{metaAccountID: "acc2", metaAccountName: "Beta", metaAccounts: "acc1,acc2"}).Verify(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id.Account != "acc2" || id.Extra["account_name"] != "Beta" || id.Extra["accounts"] != "acc2,acc1" {
+		t.Fatalf("identity: %+v", id)
+	}
+	id, err = openClient(t, srv, "good-token", "acc1").Verify(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, has := id.Extra["accounts"]; has || id.Account != "acc1" {
+		t.Fatalf("one account: %+v", id)
+	}
+	if id, err = openClient(t, srv, "good-token", "").Verify(ctx); err != nil || id.Account != "" {
+		t.Fatalf("no account: %+v %v", id, err)
+	}
+}
