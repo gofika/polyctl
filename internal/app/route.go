@@ -318,8 +318,6 @@ func (rt *Runtime) IndexForLookup(ctx context.Context, kind platform.ResourceTyp
 	return rt.indexKind(ctx, kind, profiles)
 }
 
-// indexCandidates returns the accounts able to hold kind, restricted to
-// --profile and --platform when they are set.
 // ConfiguredEntries keeps the index entries of accounts that are still in
 // the config. Rows of an account that was logged out with --keep-inventory,
 // or removed from the config by hand, stay in the index but take no part in
@@ -343,6 +341,8 @@ func (rt *Runtime) ConfiguredEntries(entries []inventory.IndexEntry) ([]inventor
 	return out, nil
 }
 
+// indexCandidates returns the accounts able to hold kind, restricted to
+// --profile and --platform when they are set.
 func (rt *Runtime) indexCandidates(ctx context.Context, kind platform.ResourceType) ([]config.AccountRef, error) {
 	return rt.AccountsFor(kind)
 }
