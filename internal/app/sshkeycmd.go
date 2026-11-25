@@ -875,6 +875,9 @@ func (s *sshKeySession) noteKeysFile(ak *sshremote.AuthorizedKeys) {
 	if ak.AuthorizedKeysFileMatch {
 		s.note("warning: a Match block of sshd_config on the instance sets AuthorizedKeysFile, which may apply to this user instead of " + ak.AuthorizedKeysFile)
 	}
+	if len(ak.AuthorizedKeysFileUnread) > 0 {
+		s.note(fmt.Sprintf("note: polyctl could not read %s on the instance (sshd_config includes it), which may set another AuthorizedKeysFile than %s", strings.Join(ak.AuthorizedKeysFileUnread, ", "), ak.AuthorizedKeysFile))
+	}
 	if ak.AuthorizedKeysFileFrom == "unknown" {
 		s.note("note: the sshd configuration on the instance could not be read; polyctl assumes sshd reads ~/.ssh/authorized_keys and authorized_keys2")
 	}

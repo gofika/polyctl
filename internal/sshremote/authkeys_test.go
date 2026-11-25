@@ -594,3 +594,27 @@ func TestRemoveKeysCountsLinesOfEveryAttempt(t *testing.T) {
 		t.Fatalf("remove: %d %v, applied %v", n, err, r.applied)
 	}
 }
+
+// An included file the user cannot read (Ubuntu's sshd_config.d files
+// may be root's only) is named, since it may set the AuthorizedKeysFile.
+func TestAuthorizedKeysFileUnreadInclude(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads every file")
+	}
+	k := newKey(t)
+	srv, sys := scriptServer(t, k, "alice")
+	c := login(t, srv, k, "alice")
+	inc := filepath.Join(sys.Dir, "sshd_config.d")
+	_ = os.MkdirAll(inc, 0o755)
+	_ = os.WriteFile(SSHDConfig, []byte("Include sshd_config.d/*.conf\n"), 0o644)
+	hidden := filepath.Join(inc, "50-cloud-init.conf")
+	_ = os.WriteFile(hidden, []byte("AuthorizedKeysFile /etc/ssh/keys/%u\n"), 0o000)
+	_ = os.WriteFile(filepath.Join(inc, "60-other.conf"), []byte("PasswordAuthentication no\n"), 0o644)
+	ak, err := c.ListKeys(t.Context(), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ak.AuthorizedKeysFileFrom != "default" || len(ak.AuthorizedKeysFileUnread) != 1 || ak.AuthorizedKeysFileUnread[0] != hidden {
+		t.Errorf("listing %+v", ak)
+	}
+}

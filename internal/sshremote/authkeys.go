@@ -78,7 +78,8 @@ sum() { if [ -f "$f" ]; then cksum < "$f" | awk '{ print $1 "-" $2 }'; else echo
 cfg=@SSHD_CONFIG@
 cfgdir=$(dirname "$cfg")
 # akf_scan <file> <depth> prints "V <value>" for an AuthorizedKeysFile
-# outside a Match block, "M" for one inside, following Include in place.
+# outside a Match block, "M" for one inside, following Include in place,
+# and "U <file>" for an included file it cannot read.
 akf_scan() {
 	[ "$2" -lt 8 ] && [ -r "$1" ] || return 0
 	awk '{ sub(/\r$/, ""); l = $0; sub(/^[ \t]+/, "", l)
@@ -95,7 +96,10 @@ akf_scan() {
 			for p in ${l#I }; do
 				set +f
 				case $p in /*) ;; *) p=$cfgdir/$p ;; esac
-				for g in $p; do [ -f "$g" ] && akf_scan "$g" $(($2 + 1)); done
+				for g in $p; do
+					if [ -f "$g" ] && [ -r "$g" ]; then akf_scan "$g" $(($2 + 1))
+					elif [ -f "$g" ]; then echo "U $g"; fi
+				done
 				set -f
 			done
 			set +f
@@ -106,7 +110,7 @@ akf_scan() {
 }
 case $op in
 list)
-	akf=; from=unknown; match=
+	akf=; from=unknown; match=; unread=
 	sshd=$(command -v sshd 2>/dev/null) || sshd=/usr/sbin/sshd
 	if [ -x "$sshd" ] && t=$("$sshd" -T -C "user=$user,host=localhost,addr=127.0.0.1" 2>/dev/null); then
 		akf=$(printf '%s\n' "$t" | awk 'tolower($1) == "authorizedkeysfile" { $1 = ""; sub(/^ +/, ""); print; exit }')
@@ -118,6 +122,7 @@ list)
 		from=config
 		[ -n "$akf" ] || { akf=".ssh/authorized_keys .ssh/authorized_keys2"; from=default; }
 		printf '%s\n' "$scan" | grep -q '^M' && match=1
+		unread=$(printf '%s\n' "$scan" | awk '$1 == "U" { sub(/^U /, ""); printf "%s%s", s, $0; s = " " }')
 	fi
 	f2=$dir/authorized_keys2
 	echo @HEADER@
@@ -126,6 +131,7 @@ list)
 	[ -n "$akf" ] && echo "authorizedkeysfile $akf"
 	echo "authorizedkeysfilefrom $from"
 	[ -n "$match" ] && echo "authorizedkeysfilematch"
+	[ -n "$unread" ] && echo "authorizedkeysfileunread $unread"
 	[ -L "$f" ] && echo "symlink"
 	echo "sum $(sum)"
 	[ -f "$f" ] && echo "size $(wc -c < "$f" | awk '{ print $1 }')"
@@ -272,6 +278,10 @@ type AuthorizedKeys struct {
 	// AuthorizedKeysFileMatch says a Match block of sshd_config sets
 	// AuthorizedKeysFile too, which may apply to the user instead.
 	AuthorizedKeysFileMatch bool
+	// AuthorizedKeysFileUnread are files sshd_config includes that could
+	// not be read (as the user, they may be root's only): one of them may
+	// set another AuthorizedKeysFile.
+	AuthorizedKeysFileUnread []string
 }
 
 // Has returns the entries that hold key (compared by type and key data;
@@ -487,6 +497,8 @@ func parseList(user string, out []byte) (*AuthorizedKeys, error) {
 			ak.AuthorizedKeysFileFrom = v
 		case "authorizedkeysfilematch":
 			ak.AuthorizedKeysFileMatch = true
+		case "authorizedkeysfileunread":
+			ak.AuthorizedKeysFileUnread = strings.Fields(v)
 		case "size":
 			n, err := strconv.Atoi(v)
 			if err != nil || n < 0 {
