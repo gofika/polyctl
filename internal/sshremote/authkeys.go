@@ -615,35 +615,38 @@ func addKey(ctx context.Context, r keyRunner, user string, key ssh.PublicKey, co
 }
 
 func removeKeys(ctx context.Context, r keyRunner, user string, keys []ssh.PublicKey, guard func(*AuthorizedKeys, []Entry) error) (int, error) {
+	// total counts the lines deleted by every attempt: a retry after
+	// authorized_keys2 changed must not forget the lines already deleted
+	// from authorized_keys.
+	total := 0
 	for attempt := 0; ; attempt++ {
 		ak, err := listKeys(ctx, r, user)
 		if err != nil {
-			return 0, err
+			return total, err
 		}
 		var del []Entry
 		for _, k := range keys {
 			del = append(del, ak.Has(k)...)
 		}
 		if len(del) == 0 {
-			return 0, nil
+			return total, nil
 		}
 		lines := map[string][]int{}
 		for _, e := range del {
 			lines[e.File] = append(lines[e.File], e.Line)
 		}
 		if ak.Symlink && len(lines[KeysFile]) > 0 {
-			return 0, fmt.Errorf("%s is a symbolic link; polyctl does not replace it", ak.Path)
+			return total, fmt.Errorf("%s is a symbolic link; polyctl does not replace it", ak.Path)
 		}
 		if ak.Symlink2 && len(lines[KeysFile2]) > 0 {
-			return 0, fmt.Errorf("%s is a symbolic link; polyctl does not replace it", ak.Path2)
+			return total, fmt.Errorf("%s is a symbolic link; polyctl does not replace it", ak.Path2)
 		}
 		if guard != nil {
 			if err := guard(ak, del); err != nil {
-				return 0, err
+				return total, err
 			}
 		}
 		// Both files: a key left in authorized_keys2 still logs in.
-		n := 0
 		for _, file := range []string{KeysFile, KeysFile2} {
 			if len(lines[file]) == 0 {
 				continue
@@ -652,14 +655,14 @@ func removeKeys(ctx context.Context, r keyRunner, user string, keys []ssh.Public
 			if err != nil {
 				break
 			}
-			n += len(lines[file])
+			total += len(lines[file])
 		}
 		if errors.Is(err, ErrChanged) && attempt == 0 {
 			continue
 		}
-		if err != nil {
-			return n, err
+		if err != nil && total > 0 {
+			return total, fmt.Errorf("%d line(s) holding the key were deleted, but not all: %w", total, err)
 		}
-		return n, nil
+		return total, err
 	}
 }

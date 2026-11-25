@@ -1,7 +1,9 @@
 package sshremote
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -535,5 +537,60 @@ func TestParseListRefusesTruncatedKeys2(t *testing.T) {
 	}
 	if _, err := parseList("u", []byte(head+two+"extra\n---\n")); err == nil {
 		t.Error("a file that grew was accepted")
+	}
+}
+
+// fakeKeyRunner answers the key script with canned listings, one per list
+// call, and fails the write of the files named in changed (once each) as
+// a file that changed since it was read.
+type fakeKeyRunner struct {
+	lists   []string
+	changed map[string]bool
+	applied []string
+}
+
+func (f *fakeKeyRunner) runScript(_ context.Context, _ string, args ...string) ([]byte, []byte, int, error) {
+	switch args[0] {
+	case "list":
+		out := f.lists[0]
+		if len(f.lists) > 1 {
+			f.lists = f.lists[1:]
+		}
+		return []byte(out), nil, 0, nil
+	case "apply":
+		if f.changed[args[2]] {
+			delete(f.changed, args[2])
+			return nil, []byte("polyctl-error: " + args[2] + " changed while polyctl was reading it\n"), exitChanged, nil
+		}
+		f.applied = append(f.applied, args[2])
+		return []byte(header + "\n"), nil, 0, nil
+	}
+	return nil, nil, 8, nil
+}
+
+func (f *fakeKeyRunner) scriptError(_ string, _, stderr []byte, code int) error {
+	if code == exitChanged {
+		return fmt.Errorf("%w: %s", ErrChanged, scriptMessage(stderr))
+	}
+	return fmt.Errorf("script failed (%d): %s", code, stderr)
+}
+
+// keysListing is the output of the key script's list for the two files.
+func keysListing(one, two string) string {
+	return header + "\nuser u\npath /h/.ssh/authorized_keys\nsum 1-" + itoa(len(one)) + "\nsize " + itoa(len(one)) +
+		"\npath2 /h/.ssh/authorized_keys2\nsum2 2-" + itoa(len(two)) + "\nsize2 " + itoa(len(two)) + "\n---\n" + two + "\n---\n" + one
+}
+
+// The key is deleted from authorized_keys, then authorized_keys2 turns out
+// to have changed and the files are read again, where the key is gone
+// (someone else removed it): the count still says a line was deleted, so
+// the removal is not reported as "not present".
+func TestRemoveKeysCountsLinesOfEveryAttempt(t *testing.T) {
+	k := newKey(t)
+	l := line(k.pub, "k") + "\n"
+	r := &fakeKeyRunner{lists: []string{keysListing(l, l), keysListing("", "")}, changed: map[string]bool{KeysFile2: true}}
+	n, err := removeKeys(t.Context(), r, "u", []ssh.PublicKey{k.pub}, nil)
+	if err != nil || n != 1 || len(r.applied) != 1 || r.applied[0] != KeysFile {
+		t.Fatalf("remove: %d %v, applied %v", n, err, r.applied)
 	}
 }
