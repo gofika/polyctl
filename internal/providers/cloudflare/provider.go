@@ -474,22 +474,32 @@ func (a *api) accountsOfZones(ctx context.Context) ([]account, error) {
 	return out, nil
 }
 
-// Open returns a client bound to the profile's credentials and pinned
-// account. Nothing is requested here: an expired access token of a browser
-// login is renewed by the first request that needs it.
+// Open returns a client bound to the profile's credentials, its selected
+// accounts and its default account. Nothing is requested here: an expired
+// access token of a browser login is renewed by the first request that
+// needs it.
 func (p *provider) Open(ctx context.Context, prof platform.Profile) (platform.Client, error) {
+	sel := selectedAccounts(prof.Metadata)
+	def := ""
+	if len(sel) > 0 {
+		def = sel[0]
+	}
 	if isOAuth(prof) {
 		sess := newOAuthSession(prof)
 		if sess.tok.Access == "" && sess.tok.Refresh == "" {
 			return nil, fmt.Errorf("%w: profile %q holds no Cloudflare authorization; run `%s`", platform.ErrUnauthorized, prof.Name, sess.loginAgain())
 		}
-		return &Client{api: newOAuthAPI(p.base(), sess, prof.Meta(metaAccountID)), profile: prof}, nil
+		a := newOAuthAPI(p.base(), sess, def)
+		a.accounts = sel
+		return &Client{api: a, profile: prof}, nil
 	}
 	token := strings.TrimSpace(prof.Secret[secretToken])
 	if token == "" {
 		return nil, fmt.Errorf("%w: profile %q has no %s", platform.ErrUnauthorized, prof.Name, secretToken)
 	}
-	return &Client{api: newAPI(p.base(), token, prof.Meta(metaAccountID)), profile: prof}, nil
+	a := newAPI(p.base(), token, def)
+	a.accounts = sel
+	return &Client{api: a, profile: prof}, nil
 }
 
 // Client is an authenticated Cloudflare session. It implements
@@ -638,21 +648,17 @@ func (c *Client) syncRecords(ctx context.Context) ([]platform.Resource, error) {
 	return out, nil
 }
 
-// ListZones returns all zones visible to the token (restricted to the pinned
-// account when one is configured).
+// ListZones returns the zones of every selected account of the login (all
+// the zones the credentials see when it has none).
 func (c *Client) ListZones(ctx context.Context) ([]platform.Zone, error) {
 	zs, err := c.api.listZones(ctx)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]platform.Zone, 0, len(zs))
-	for _, z := range zs {
-		out = append(out, toZone(z))
-	}
-	return out, nil
+	return toZones(zs), nil
 }
 
-// GetZone returns one zone by id or name.
+// GetZone returns one zone by id or name, among the selected accounts.
 func (c *Client) GetZone(ctx context.Context, idOrName string) (*platform.Zone, error) {
 	z, err := c.api.findZone(ctx, idOrName)
 	if err != nil {

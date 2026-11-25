@@ -1,0 +1,259 @@
+package cloudflare
+
+import (
+	"context"
+	"errors"
+	"net/http/httptest"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/gofika/polyctl/internal/platform"
+)
+
+// openSelection opens an API-token profile whose metadata is meta.
+func openSelection(t *testing.T, srv *httptest.Server, meta map[string]string) *Client {
+	t.Helper()
+	p := &provider{baseURL: srv.URL}
+	m := map[string]string{metaMethod: storedToken}
+	for k, v := range meta {
+		m[k] = v
+	}
+	c, err := p.Open(context.Background(), platform.Profile{Name: "cf", Platform: platform.Cloudflare, Metadata: m, Secret: map[string]string{secretToken: "good-token"}})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	return c.(*Client)
+}
+
+// addZone adds a zone to the fake.
+func (f *fakeCF) addZone(id, name, status, account, accountName string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.zones = append(f.zones, map[string]any{"id": id, "name": name, "status": status, "paused": false,
+		"name_servers": []string{"a.ns.cloudflare.com"},
+		"account":      map[string]any{"id": account, "name": accountName}, "plan": map[string]any{"name": "Free Website"}})
+}
+
+// reqs returns the requests made so far and forgets them.
+func (f *fakeCF) reqs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := f.requests
+	f.requests = nil
+	return out
+}
+
+func TestSelectedAccounts(t *testing.T) {
+	cases := []struct {
+		name string
+		meta map[string]string
+		want []string
+	}{
+		{"unscoped", map[string]string{}, nil},
+		{"a login before the selection", map[string]string{metaAccountID: "acc1"}, []string{"acc1"}},
+		{"the default account first", map[string]string{metaAccountID: "acc2", metaAccounts: "acc1,acc2,acc3"}, []string{"acc2", "acc1", "acc3"}},
+		{"a default account outside the list", map[string]string{metaAccountID: "acc9", metaAccounts: "acc1"}, []string{"acc9", "acc1"}},
+		{"blanks and repeats", map[string]string{metaAccountID: " acc1 ", metaAccounts: " acc2, ,acc2,acc1,"}, []string{"acc1", "acc2"}},
+		{"a selection without a default", map[string]string{metaAccounts: "acc2,acc1"}, []string{"acc2", "acc1"}},
+	}
+	for _, c := range cases {
+		if got := selectedAccounts(c.meta); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestSetSelection(t *testing.T) {
+	meta := map[string]string{metaMethod: storedToken, metaAccountID: "acc1", metaAccountName: "Acme"}
+	setSelection(meta, account{ID: "acc2", Name: "Beta"}, []string{"acc1", "acc2", "acc1"})
+	if meta[metaAccountID] != "acc2" || meta[metaAccountName] != "Beta" || meta[metaAccounts] != "acc2,acc1" || meta[metaMethod] != storedToken {
+		t.Fatalf("several: %v", meta)
+	}
+	// The default account alone is stored as a login before the selection
+	// existed stored it; an unknown name does not keep the old one.
+	setSelection(meta, account{ID: "acc1"}, []string{"acc1"})
+	if _, ok := meta[metaAccounts]; ok || meta[metaAccountID] != "acc1" {
+		t.Fatalf("one: %v", meta)
+	}
+	if _, ok := meta[metaAccountName]; ok {
+		t.Fatalf("the name of another account was kept: %v", meta)
+	}
+	// The default account is part of the selection also when it is not
+	// named in it.
+	setSelection(meta, account{ID: "acc3", Name: "Gamma"}, []string{"acc1"})
+	if meta[metaAccounts] != "acc3,acc1" {
+		t.Fatalf("default outside: %v", meta)
+	}
+}
+
+func TestCheckAccountID(t *testing.T) {
+	for _, id := range []string{"acc1", "0123456789abcdef0123456789abcdef"} {
+		if err := checkAccountID(id); err != nil {
+			t.Errorf("%q: %v", id, err)
+		}
+	}
+	for _, id := range []string{"", "a,b", "a b", "a/b", "a|b", "a\n"} {
+		if err := checkAccountID(id); err == nil || !strings.Contains(err.Error(), "is not an account id") {
+			t.Errorf("%q: %v", id, err)
+		}
+	}
+}
+
+func TestAPIScope(t *testing.T) {
+	a := newAPI("http://unused", "tok", "")
+	if !a.unscoped() || !reflect.DeepEqual(a.scopeIDs(), []string{""}) || !a.covers("anything") {
+		t.Fatalf("unscoped: %v", a.scopeIDs())
+	}
+	a = newAPI("http://unused", "tok", "acc1")
+	a.accounts = []string{"acc1", "acc2"}
+	if a.unscoped() || !reflect.DeepEqual(a.scopeIDs(), []string{"acc1", "acc2"}) || !a.covers("acc2") || a.covers("acc3") || !a.covers("") {
+		t.Fatalf("selection: %v", a.scopeIDs())
+	}
+	in := a.inAccount("acc2")
+	if in.accountID != "acc2" || !reflect.DeepEqual(in.scopeIDs(), []string{"acc1", "acc2"}) || a.accountID != "acc1" {
+		t.Fatalf("inAccount: %+v", in)
+	}
+	pin := a.pin("acc3")
+	if !reflect.DeepEqual(pin.scopeIDs(), []string{"acc3"}) || !pin.covers("acc3") || pin.covers("acc1") || a.pinned {
+		t.Fatalf("pin: %+v", pin)
+	}
+	// A pin on a login without an account is a scope all the same.
+	if p := newAPI("http://unused", "tok", "").pin("acc1"); p.unscoped() || p.covers("acc2") {
+		t.Fatalf("pin of an unscoped login: %+v", p)
+	}
+}
+
+// A login stored before the selection existed sends the requests it always
+// sent.
+func TestLegacyLoginRequests(t *testing.T) {
+	f, srv := newFake(t)
+	c := openClient(t, srv, "good-token", "acc2")
+	ctx := context.Background()
+	if _, err := c.ListZones(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if z, err := c.GetZone(ctx, "Example.ORG."); err != nil || z.ID != "zone2" {
+		t.Fatalf("by name: %v %v", z, err)
+	}
+	if z, err := c.GetZone(ctx, "zone2"); err != nil || z.ID != "zone2" {
+		t.Fatalf("by id: %v %v", z, err)
+	}
+	want := []string{
+		"GET /zones?account.id=acc2&page=1&per_page=50",
+		"GET /zones?account.id=acc2&name=example.org&page=1&per_page=50",
+		"GET /zones/zone2",
+	}
+	if got := f.reqs(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("requests:\n got %q\nwant %q", got, want)
+	}
+	// A login without an account filters nothing.
+	c = openClient(t, srv, "good-token", "")
+	if _, err := c.ListZones(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := f.reqs(), []string{"GET /zones?page=1&per_page=50"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unscoped requests: %q", got)
+	}
+}
+
+func TestListZonesOfTheSelection(t *testing.T) {
+	f, srv := newFake(t)
+	f.addZone("zone3", "example.net", "active", "acc3", "Gamma")
+	c := openSelection(t, srv, map[string]string{metaAccountID: "acc2", metaAccounts: "acc1,acc2"})
+	zones, err := c.ListZones(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The default account first, no zone of an account that is not selected.
+	if len(zones) != 2 || zones[0].ID != "zone2" || zones[1].ID != "zone1" {
+		t.Fatalf("zones: %+v", zones)
+	}
+	want := []string{"GET /zones?account.id=acc2&page=1&per_page=50", "GET /zones?account.id=acc1&page=1&per_page=50"}
+	if got := f.reqs(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("requests: %q", got)
+	}
+	// --account reads that account alone, selected or not.
+	zones, err = c.pin("acc3").ListZones(context.Background())
+	if err != nil || len(zones) != 1 || zones[0].ID != "zone3" {
+		t.Fatalf("pinned: %+v %v", zones, err)
+	}
+}
+
+func TestGetZoneAmongTheSelection(t *testing.T) {
+	f, srv := newFake(t)
+	f.addZone("zone3", "example.com", "pending", "acc2", "Beta")
+	f.addZone("zone4", "example.net", "active", "acc3", "Gamma")
+	ctx := context.Background()
+	c := openSelection(t, srv, map[string]string{metaAccountID: "acc1", metaAccounts: "acc1,acc2"})
+
+	// A name of the second account is found.
+	if z, err := c.GetZone(ctx, "example.org"); err != nil || z.ID != "zone2" {
+		t.Fatalf("second account: %v %v", z, err)
+	}
+	// A name held by two selected accounts is ambiguous (exit code 5).
+	_, err := c.GetZone(ctx, "example.com")
+	if !errors.Is(err, platform.ErrAmbiguous) {
+		t.Fatalf("want ErrAmbiguous, got %v", err)
+	}
+	for _, want := range []string{"zone example.com is held by 2 of the selected accounts", "zone1 in account acc1 (Acme)", "zone3 in account acc2 (Beta)", "zone id", "--account <id or name>"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("ambiguity %q lacks %q", err, want)
+		}
+	}
+	// ... and one zone with --account, or by its id.
+	if z, err := c.pin("acc2").GetZone(ctx, "example.com"); err != nil || z.ID != "zone3" {
+		t.Fatalf("pinned: %v %v", z, err)
+	}
+	if z, err := c.GetZone(ctx, "zone3"); err != nil || z.ID != "zone3" {
+		t.Fatalf("by id: %v %v", z, err)
+	}
+
+	// A zone of an account that is not selected is not found (exit code
+	// 4), by name and by id, and the id says where it is.
+	if _, err := c.GetZone(ctx, "example.net"); !errors.Is(err, platform.ErrNotFound) {
+		t.Fatalf("unselected by name: %v", err)
+	}
+	_, err = c.GetZone(ctx, "zone4")
+	if !errors.Is(err, platform.ErrNotFound) {
+		t.Fatalf("unselected by id: %v", err)
+	}
+	for _, want := range []string{"zone example.net (zone4) is in account acc3, which is not selected", "polyctl cloudflare account add acc3", "--account acc3"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("not found %q lacks %q", err, want)
+		}
+	}
+	if z, err := c.pin("acc3").GetZone(ctx, "zone4"); err != nil || z.ID != "zone4" {
+		t.Fatalf("pinned by id: %v %v", z, err)
+	}
+	// --account does not take the zone of another account by its id.
+	if _, err := c.pin("acc3").GetZone(ctx, "zone1"); !errors.Is(err, platform.ErrNotFound) {
+		t.Fatalf("pinned elsewhere: %v", err)
+	}
+
+	// A login without an account takes any zone by id; a name two of its
+	// accounts hold is ambiguous as well.
+	u := openClient(t, srv, "good-token", "")
+	if z, err := u.GetZone(ctx, "zone4"); err != nil || z.ID != "zone4" {
+		t.Fatalf("unscoped by id: %v %v", z, err)
+	}
+	if _, err := u.GetZone(ctx, "example.com"); !errors.Is(err, platform.ErrAmbiguous) || !strings.Contains(err.Error(), "2 of the accounts of this login") {
+		t.Fatalf("unscoped by name: %v", err)
+	}
+}
+
+// An account-owned token verifies at the account that owns it, also when
+// that is not the default account of the selection.
+func TestVerifyTokenTriesTheSelection(t *testing.T) {
+	f, srv := newFake(t)
+	f.accountOwned = "acc2"
+	c := openSelection(t, srv, map[string]string{metaAccountID: "acc1", metaAccounts: "acc1,acc2"})
+	tok, err := c.api.verifyToken(context.Background())
+	if err != nil || tok.AccountID != "acc2" {
+		t.Fatalf("verify: %+v %v", tok, err)
+	}
+	want := []string{"GET /user/tokens/verify", "GET /accounts/acc1/tokens/verify", "GET /accounts/acc2/tokens/verify"}
+	if got := f.reqs(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("requests: %q", got)
+	}
+}
