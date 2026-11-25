@@ -69,7 +69,8 @@ func errNoProfiles() error {
 	return nothingToDo("no profiles configured (run `polyctl auth login <platform> [--profile <name>]`)")
 }
 
-// profileOptions lists the profiles with their platforms.
+// profileOptions lists the profiles as "name  platforms  [current]": the
+// platforms separated by ", ", "-" for the current profile when it has none.
 func profileOptions(cfg *config.Config) []prompt.Option {
 	var opts []prompt.Option
 	for _, n := range cfg.ProfileNames() {
@@ -77,14 +78,11 @@ func profileOptions(cfg *config.Config) []prompt.Option {
 		for _, id := range cfg.Profiles[n].PlatformIDs() {
 			ids = append(ids, string(id))
 		}
-		label := n
-		if len(ids) > 0 {
-			label += "  (" + strings.Join(ids, ", ") + ")"
-		}
+		current := ""
 		if n == cfg.CurrentProfile {
-			label += "  [current]"
+			current = "[current]"
 		}
-		opts = append(opts, prompt.Option{Label: label, Value: n})
+		opts = append(opts, prompt.Option{Label: prompt.Cells(n, strings.Join(ids, ", "), current), Value: n})
 	}
 	return opts
 }
@@ -106,7 +104,17 @@ func pickProfile(rt *app.Runtime, title string) (string, error) {
 	return rt.Pick().Select(title, opts, cfg.CurrentProfile)
 }
 
-// accountLabel renders "profile / platform  details" for selection lists.
+// accountCells renders "profile  platform  details" for selection lists.
+func accountCells(cfg *config.Config, ref config.AccountRef) string {
+	details := ""
+	if a := cfg.Profiles[ref.Profile].Platforms[ref.Platform]; a != nil {
+		details = metaSummary(a.Metadata)
+	}
+	return prompt.Cells(ref.Profile, string(ref.Platform), details)
+}
+
+// accountLabel renders "profile / platform  details" for the lines of a
+// message.
 func accountLabel(cfg *config.Config, ref config.AccountRef) string {
 	label := ref.Profile + " / " + string(ref.Platform)
 	if a := cfg.Profiles[ref.Profile].Platforms[ref.Platform]; a != nil {
@@ -123,7 +131,7 @@ func accountOptions(cfg *config.Config, refs []config.AccountRef) ([]prompt.Opti
 	byValue := map[string]config.AccountRef{}
 	var opts []prompt.Option
 	for _, ref := range refs {
-		opts = append(opts, prompt.Option{Label: accountLabel(cfg, ref), Value: ref.String()})
+		opts = append(opts, prompt.Option{Label: accountCells(cfg, ref), Value: ref.String()})
 		byValue[ref.String()] = ref
 	}
 	return opts, byValue
@@ -166,7 +174,7 @@ func removeInteractive(ctx context.Context, rt *app.Runtime, only platform.ID, k
 		for _, n := range cfg.ProfileNames() {
 			if len(cfg.Profiles[n].Platforms) == 0 {
 				emptyProfiles[n+"/"] = n
-				opts = append(opts, prompt.Option{Label: n + " / " + noAccounts, Value: n + "/"})
+				opts = append(opts, prompt.Option{Label: prompt.Cells(n, noAccounts), Value: n + "/"})
 			}
 		}
 	}

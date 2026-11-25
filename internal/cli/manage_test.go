@@ -313,7 +313,7 @@ func TestAuthLogoutPicksAccounts(t *testing.T) {
 	if q.Kind != "multi" || values(q.Options) != "a/"+p1+" a/"+p2+" b/"+p2 {
 		t.Errorf("prompt = %+v", q)
 	}
-	if want := "a / " + p2 + "  account=acct-a2"; q.Options[1].Label != want {
+	if want := "a  " + p2 + "  account=acct-a2"; q.Options[1].Label != want {
 		t.Errorf("label = %q, want %q", q.Options[1].Label, want)
 	}
 	if c := p.Asked[1]; c.Kind != "confirm" || c.Title != "Remove 1 entry?" || c.Default != "false" {
@@ -1342,5 +1342,36 @@ func TestAuthRenameAsks(t *testing.T) {
 	_, stderr, err, _ := runPick(t, cfgPath, []any{abort{}}, "auth", "rename", "acme")
 	if err != nil || stderr != "cancelled\n" {
 		t.Errorf("abort: %v, %q", err, stderr)
+	}
+}
+
+// The profile and account lists keep every fact in its cell: the current
+// marker and the details do not slide left in a row without platforms.
+func TestProfileAndAccountLabelsKeepTheirCells(t *testing.T) {
+	cfg := &config.Config{CurrentProfile: "hollow", Profiles: map[string]*config.Profile{
+		"a":      {Platforms: map[platform.ID]*config.Account{"godaddy": {Metadata: map[string]string{"account": "acct-a"}}, "namecom": {}}},
+		"hollow": {},
+	}}
+	var got []string
+	for _, o := range profileOptions(cfg) {
+		got = append(got, o.Label)
+	}
+	if want := "a  godaddy, namecom\nhollow  -  [current]"; strings.Join(got, "\n") != want {
+		t.Errorf("profile labels:\n%s\nwant:\n%s", strings.Join(got, "\n"), want)
+	}
+	cfg.CurrentProfile = "a"
+	if l := profileOptions(cfg); l[0].Label != "a  godaddy, namecom  [current]" || l[1].Label != "hollow" {
+		t.Errorf("profile labels with a current: %+v", l)
+	}
+	for ref, want := range map[config.AccountRef]string{
+		{Profile: "a", Platform: "godaddy"}: "a  godaddy  account=acct-a",
+		{Profile: "a", Platform: "namecom"}: "a  namecom",
+	} {
+		if got := accountCells(cfg, ref); got != want {
+			t.Errorf("account label = %q, want %q", got, want)
+		}
+	}
+	if got := accountLabel(cfg, config.AccountRef{Profile: "a", Platform: "godaddy"}); got != "a / godaddy  account=acct-a" {
+		t.Errorf("account line of a message = %q", got)
 	}
 }
