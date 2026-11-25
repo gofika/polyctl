@@ -137,7 +137,7 @@ polyctl cf zone delete example.com --yes
 
 A zone command covers every selected account of the login, or the one of `--account`; a new zone goes to `--account`, else to the default account. A zone name that two accounts in the scope of the call hold a zone of is asked about on a terminal and exit code 5 otherwise (see [Accounts](#accounts)). `zone list` shows an `ACCOUNT` column when its zones are of several accounts.
 
-A login without an account (its credentials could not list accounts) uses the only account the credentials see for a new zone; when they see several, the account is asked for on a terminal and a usage error otherwise (pass `--account`). The zone lifecycle commands read the platform, so `--offline` is refused (exit code 6).
+A login without an account (its credentials could not list accounts) needs `--account <id>` for a new zone, or `account use <id>` before: while the credentials cannot list accounts the command fails without it (exit code 3). When they can by now, the only account they see is used; when they see several, the account is asked for on a terminal and it is a usage error otherwise (pass `--account`). The zone lifecycle commands read the platform, so `--offline` is refused (exit code 6).
 
 **`zone create <domain>`** adds a full zone to the account of `--account`, else to the default account.
 

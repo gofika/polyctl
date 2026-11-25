@@ -319,7 +319,19 @@ func TestAccountsOfCredentialsThatSeeNone(t *testing.T) {
 	if code, stdout, stderr = e.run("cloudflare", "zone", "list", "--profile", "none", "--account", "acc4"); code != cli.ExitOK {
 		t.Errorf("--account by id: exit %d, %s%s", code, stdout, stderr)
 	}
+	// A new zone needs its account named: there is none to default to, and
+	// none can be listed to choose from.
+	e.f.reset()
+	if code, _, stderr = e.run("cloudflare", "zone", "create", "new.example", "--profile", "none", "--dry-run"); code != cli.ExitAuth ||
+		!strings.Contains(stderr, "profile none has no selected account and its accounts cannot be listed (pass --account <id>)") || len(e.f.writes()) != 0 {
+		t.Errorf("zone create without an account: exit %d, %s", code, stderr)
+	}
 	p := prompttest.New(t)
+	if code, _, stderr = e.runPick(p, "cloudflare", "zone", "create", "new.example", "--profile", "none", "--dry-run"); code != cli.ExitAuth {
+		t.Errorf("zone create without an account on a terminal: exit %d, %s", code, stderr)
+	}
+	p.Done()
+	p = prompttest.New(t)
 	if code, _, stderr = e.runPick(p, "cloudflare", "account", "use", "--profile", "none"); code != cli.ExitUsage ||
 		!strings.Contains(stderr, "the credentials of cloudflare/none cannot list accounts: pass the account id") {
 		t.Errorf("use on a terminal: exit %d, %s", code, stderr)

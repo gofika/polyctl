@@ -299,8 +299,10 @@ func (s *zoneScope) gone(ctx context.Context, rt *app.Runtime, err error) error 
 // was named for this call, so an existing zone is looked for in it alone.
 //
 // A login without an account (its credentials could not list accounts when
-// it was made) uses the only account the credentials see now; several are
-// asked for in the interactive flow and a usage error otherwise.
+// it was made) needs --account while they still cannot (the error of the
+// listing otherwise). When they can by now, the only account they see is
+// used; several are asked for in the interactive flow and a usage error
+// otherwise.
 func openAccount(ctx context.Context, rt *app.Runtime) (s *session, account string, only bool, err error) {
 	if rt.Flags.Offline {
 		return nil, "", false, app.ErrOffline
