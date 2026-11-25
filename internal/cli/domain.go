@@ -478,7 +478,10 @@ func newDomainNSCheckCmd(rt *app.Runtime) *cobra.Command {
 			"selected account is listed), and the ones public resolvers return now. A name\n" +
 			"below a registered domain is checked as that registered domain. The status is\n" +
 			"ok, partial, mismatch, no-zone, no-live or unknown; it is a report, so the exit\n" +
-			"code is 0 whatever the status (read status from -o json in scripts).",
+			"code is 0 whatever the status (read status from -o json in scripts). The\n" +
+			"exception: when every requested side (registrar, zone, live lookup) failed,\n" +
+			"the report is still printed and the exit code is 1, or 3 when a side failed\n" +
+			"for credentials or permissions.",
 		Example: "  polyctl domain ns check example.com\n" +
 			"  polyctl domain ns check www.example.com -o json\n" +
 			"  polyctl domain ns check example.com --resolver 223.5.5.5,114.114.114.114\n" +

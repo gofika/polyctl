@@ -167,7 +167,7 @@ polyctl domain ns check example.com --resolver 223.5.5.5,114.114.114.114
   - `no-live`: resolvers return NXDOMAIN, NODATA or SERVFAIL (SERVFAIL comes with a DNSSEC / DS hint)
   - `unknown`: a needed side was skipped or unreadable
 - JSON also has `match` (pairwise comparisons), `provider_guess` (`cloudflare`, `aliyun`, `aws`, `gcp`, `mixed`, `unknown`; a hint), `message` (what to do) and, for an unavailable side, `available: false` with a `reason`.
-- It is a report: every status exits with code 0, so scripts read `status` from `-o json`. Exit code 1 only when every requested side failed, 3 when the selected accounts cannot authenticate, 4 when `--platform` holds the domain neither as registration nor as zone, 7 when that platform cannot read the requested sides, 6 under `--offline`.
+- It is a report: every status exits with code 0, so scripts read `status` from `-o json`. Exit code 1 only when every requested side failed (the report is still printed; 3 instead when one of those failures is a credential or permission error), 3 when the selected accounts cannot authenticate, 4 when `--platform` holds the domain neither as registration nor as zone, 7 when that platform cannot read the requested sides, 6 under `--offline`.
 
 ## Certificates
 
