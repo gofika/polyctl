@@ -852,6 +852,31 @@ func TestLoginServiceAccount(t *testing.T) {
 		t.Errorf("denied login: %v", err)
 	}
 
+	// A key file under the home directory, written ~/ or (as Windows users
+	// type it) ~\.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	data, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"sa.json", `\sa.json`} {
+		// ~\sa.json is home\sa.json on Windows and a file named \sa.json elsewhere.
+		if err := os.WriteFile(filepath.Join(home, name), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.mu.Lock()
+	f.status = map[string]int{}
+	f.mu.Unlock()
+	for _, kf := range []string{"~/sa.json", `~\sa.json`} {
+		in, _ = loginInput("", map[string]string{"method": "service_account", "key_file": kf})
+		if _, err := p.Login(context.Background(), in); err != nil {
+			t.Errorf("key_file=%s: %v", kf, err)
+		}
+	}
+
 	// Bad key file.
 	bad := filepath.Join(t.TempDir(), "bad.json")
 	_ = os.WriteFile(bad, []byte(`{"type":"authorized_user"}`), 0o600)

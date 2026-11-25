@@ -205,7 +205,7 @@ Keys: `method`, `project`, `key_file`, `client_id`, `client_secret`.
 | `method` | Flow |
 | --- | --- |
 | `adc` (default) | Application Default Credentials. If none exist, polyctl prints the `gcloud auth application-default login` command and exits with code 3; run it, then log in again. |
-| `service_account` | `key_file=<path>`: the JSON key's contents are stored. `project` defaults to the key's `project_id`. |
+| `service_account` | `key_file=<path>`: the JSON key's contents are stored. A leading `~`, `~/` or `~\` is the home directory, also in the interactive prompt. `project` defaults to the key's `project_id`. |
 | `oauth` | Your own Desktop-app OAuth client (`client_id`, `client_secret`). Opens the consent screen, receives the code on a loopback listener (waits up to 5 minutes) and stores the refresh token. |
 
 `project` sets the default project; without it polyctl lists visible projects and asks.

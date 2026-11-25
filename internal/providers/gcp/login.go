@@ -130,7 +130,7 @@ func loginServiceAccount(ctx context.Context, in platform.LoginInput, pio *promp
 			return nil, err
 		}
 	}
-	path = expandHome(path)
+	path = platform.ExpandHome(path)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read key file: %w", err)
@@ -182,15 +182,6 @@ func parseServiceAccountKey(data []byte) (*serviceAccountKey, error) {
 		return nil, errors.New("key file has no client_email")
 	}
 	return &key, nil
-}
-
-func expandHome(p string) string {
-	if strings.HasPrefix(p, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
-			return home + p[1:]
-		}
-	}
-	return p
 }
 
 // loginOAuth runs an installed-app OAuth flow with a user-supplied client.
