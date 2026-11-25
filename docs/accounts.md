@@ -58,7 +58,7 @@ Runs the platform's login flow, verifies the credentials, stores the secret and 
 
 ### auth list
 
-One row per account: profile, platform, current marker (`*`), credential backend, metadata summary. A profile without accounts shows as `(no accounts)` (in JSON/YAML: `name` and `current` only).
+One row per account: profile, platform, current marker (`*`), credential backend, metadata summary. A GCP account shows its default project and how many more projects are selected (`project=acme-prod (+2 more)`). A profile without accounts shows as `(no accounts)` (in JSON/YAML: `name` and `current` only).
 
 ### auth use
 
@@ -66,7 +66,7 @@ Sets `current_profile`. An unknown profile exits with code 4. Interactively, wit
 
 ### auth status
 
-Verifies the stored credentials of every account (or of `--profile`) against the platform and prints the resolved identity (account, user, email, ARN, project...). Exits with code 3 when every failing account failed for its credentials or permissions, and with code 1 when one failed for another reason (network, timeout, platform outage); each row keeps its own error. Ctrl-C stops it before the accounts left. With `--offline` it only checks that credentials are present.
+Verifies the stored credentials of every account (or of `--profile`) against the platform and prints the resolved identity (account, user, email, ARN, project...; for GCP the default project, with `(+N more)` when more projects are selected). Exits with code 3 when every failing account failed for its credentials or permissions, and with code 1 when one failed for another reason (network, timeout, platform outage); each row keeps its own error. Ctrl-C stops it before the accounts left. With `--offline` it only checks that credentials are present.
 
 ### auth rename
 
@@ -200,7 +200,7 @@ polyctl auth login aws --profile legacy --set method=profile --set aws_profile=d
 
 ### GCP
 
-Keys: `method`, `project`, `key_file`, `client_id`, `client_secret`.
+Keys: `method`, `project`, `projects`, `key_file`, `client_id`, `client_secret`.
 
 `polyctl auth login gcp` on a terminal opens the browser and signs in with your Google account. gcloud is not needed.
 
@@ -223,15 +223,23 @@ The built-in client:
 - Its id and secret are part of the program (Google does not treat the secret of a desktop client as confidential) and are never stored: the account records `oauth_client: builtin` in `config.yaml` and its refresh token in the credential store, and takes the client from the polyctl binary in use.
 - A polyctl build without a built-in client behaves as follows instead: on a terminal, `adc` when Application Default Credentials exist, else polyctl asks which way to log in (a service account key file, your own OAuth client, or instructions for creating the credentials with gcloud; the last one adds no account and exits with code 0). `method=oauth` then needs `client_id` and `client_secret`, and an account of the built-in client cannot be used (exit code 3) until you log in again.
 
-`project` sets the default project; without it polyctl lists visible projects and asks.
+Projects. One account works on several projects: the selected ones, of which one is the default project (where new resources are created). See [GCP: Projects](platforms/gcp.md#projects).
 
-**Non-interactive:** nothing is asked, no browser is opened, and the default method is `adc`. `service_account` needs `key_file` (and `project` if the key names none). `oauth` needs `project` (and `client_id`, `client_secret=-` for your own client, or in a build without a built-in one); it prints the consent URL and waits up to 5 minutes for the browser to return. The project otherwise falls back to the previous login's, the ADC project, or the only visible one; several and no default is a usage error.
+- On a terminal, without `project` and `projects`, polyctl lists the visible projects for ticking. A re-login ticks what was selected before; a first login ticks the project of the Application Default Credentials, or the only visible project, and never all of them. When several are ticked it then asks which one is the default (the previous default proposed). When the projects cannot be listed, the id of one project is asked. A service account login asks nothing about projects: it uses the key's `project_id`.
+- `project=<id>` sets the default project without a question; the projects selected before stay selected, with it.
+- `projects=<id>,<id>,...` sets the selected projects; the default project is always one of them. Without `project`, the default stays the previous one when it is still selected, else it is the first project listed (said on stderr).
+- The default project must be reachable (exit code 3 otherwise). Another selected project that cannot be reached is a warning and stays selected; take it out with `polyctl gcp project remove <id>`.
+- The selection is stored in `config.yaml` as `project` (the default) and `projects` (comma-separated; absent when only the default is selected). An account stored without `projects`, as every login before the selection existed stored it, has exactly its one project selected.
+- `polyctl gcp project use`, `add` and `remove` change the default project and the selection without a new login.
+
+**Non-interactive:** nothing is asked, no browser is opened, and the default method is `adc`. `service_account` needs `key_file` (and `project` if the key names none). `oauth` needs `project` or `projects` (and `client_id`, `client_secret=-` for your own client, or in a build without a built-in one); it prints the consent URL and waits up to 5 minutes for the browser to return. The default project otherwise falls back to the previous login's, the ADC project, or the only visible one; several and no default is a usage error. The projects selected before stay selected.
 
 `--no-browser` prints the consent URL instead of opening a browser; open it in a browser on the same machine, as the code returns to `127.0.0.1`.
 
 ```sh
 polyctl auth login gcp --profile acme                                          # browser login
 polyctl auth login gcp --profile acme --set method=adc --set project=acme-prod
+polyctl auth login gcp --profile acme --set project=acme-prod --set projects=acme-prod,acme-dns,acme-lab
 polyctl auth login gcp --profile acme-ci --set method=service_account --set key_file=./sa.json --set project=acme-ci
 printf '%s\n' "$CLIENT_SECRET" | polyctl auth login gcp --profile me --set method=oauth --set client_id=<id> --set client_secret=- --set project=acme-prod
 ```

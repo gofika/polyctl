@@ -7,7 +7,7 @@ Platform-neutral commands (`dns`, `domain`, `cert`, `find`) find the account tha
 ## Features
 
 - Six platforms: Cloudflare, name.com, GoDaddy, AWS, GCP, Alibaba Cloud.
-- Profiles: one profile holds one account per platform a project uses; keep as many profiles as you have projects or customers.
+- Profiles: one profile holds one account per platform a project uses; keep as many profiles as you have projects or customers. One GCP account covers several Google Cloud projects (`polyctl gcp project add`, `--project`).
 - Secrets in the OS keyring (macOS Keychain, Windows Credential Manager, Secret Service), falling back to a `0600` file; `config.yaml` never holds a secret.
 - Domain routing: `polyctl dns list example.com` picks the right zone and account. A domain found in two accounts is reported, not guessed; `--profile` and `--platform` pick one.
 - Reverse lookup: `polyctl find 203.0.113.10` lists the instances, load balancers, elastic / static IPs and database endpoints holding an address or DNS name, in every account.

@@ -3,6 +3,7 @@
 Commands under `polyctl gcp`: Cloud DNS, Compute Engine instances, firewall rules, networks, SSL certificates and load balancers.
 
 - [Login and permissions](#login-and-permissions)
+- [Projects](#projects)
 - [Common behaviour](#common-behaviour)
 - [Command summary](#command-summary)
 - [Cloud DNS](#cloud-dns)
@@ -18,15 +19,60 @@ Commands under `polyctl gcp`: Cloud DNS, Compute Engine instances, firewall rule
 polyctl auth login gcp --profile acme                                             # browser login, gcloud not needed
 polyctl auth login gcp --profile ci --set method=service_account --set key_file=./sa.json
 polyctl auth login gcp --profile adc --set method=adc --set project=acme-prod     # Application Default Credentials
+polyctl auth login gcp --profile adc --set project=acme-prod --set projects=acme-prod,acme-dns   # several projects
 polyctl auth login gcp --profile me --set method=oauth --set client_id=<id> --set client_secret=-
 ```
 
 - `method` is `oauth` (default on a terminal: consent in the browser with polyctl's built-in OAuth client, or your own with `client_id` / `client_secret`; refresh token stored), `service_account` (JSON key file, stored in the credential store) or `adc` (default without a terminal: Application Default Credentials from `gcloud auth application-default login`). Details, including what the consent screen shows and builds without a built-in client, in [Accounts](../accounts.md#gcp).
-- `--set project=` is the default project. Without it polyctl lists the visible projects and asks; non-interactively it uses the previous login's project, then the ADC project, then the only visible project.
-- `polyctl gcp whoami` checks the credentials and shows project, account and login method. `gcp project list` / `gcp project current` show the projects.
-- The Compute Engine API must be enabled in the project. A disabled API or a missing permission (`compute.instances.*`, `compute.addresses.*`, `compute.firewalls.*`, `compute.sslCertificates.*`, `compute.targetHttpsProxies.setSslCertificates`, ...) is exit code 3 and names what is missing.
+- One account works on several projects ([Projects](#projects)). On a terminal the login lists the visible projects for ticking (what was selected before is ticked; a first login ticks one project at most) and, when several are ticked, asks which one is the default. `--set project=` is the default project and `--set projects=a,b,c` the selected ones; non-interactively, without them, the default is the previous login's project, then the ADC project, then the only visible project, and the selection of the previous login is kept.
+- `polyctl gcp whoami` checks the credentials and shows the default project, the selected projects, the account and the login method. `gcp project list` / `gcp project current` show the projects.
+- The Compute Engine API must be enabled in a project whose Compute Engine resources are used. A disabled API or a missing permission (`compute.instances.*`, `compute.addresses.*`, `compute.firewalls.*`, `compute.sslCertificates.*`, `compute.targetHttpsProxies.setSslCertificates`, ...) is exit code 3 and names what is missing.
 
 See [Accounts](../accounts.md) for profiles and all login options.
+
+## Projects
+
+One GCP account of a profile works on the projects **selected** for it. One of them is the **default project**.
+
+| | Covers |
+| --- | --- |
+| Inventory sync (`polyctl sync`, automatic refreshes), `find`, `inventory list` | every selected project |
+| Looking up a resource by name (instance, load balancer and its components, firewall rule, certificate, network, managed zone) | every selected project |
+| Domain routing of the platform-neutral `dns` commands, `cert deploy` | every selected project |
+| List commands (`instance list`, `firewall list`, `dns zone list`, ...) | every selected project; each row names its project |
+| Creating a resource (`instance create`, `firewall create` / `ensure`, `ssl-certificate create`) | the default project |
+| A command that takes an instance (`load-balancer ensure <instance>`, `firewall ensure --instance`) | the project of the instance |
+
+```sh
+polyctl gcp project list                      # visible projects; SELECTED marks the selection, * the default
+polyctl gcp project current                   # the default project and the selection
+polyctl gcp project use acme-dns              # make it the default (selects it if needed)
+polyctl gcp project add acme-dns acme-lab     # select more projects
+polyctl gcp project remove acme-lab           # take a project out of the selection
+polyctl gcp project remove acme-prod --default acme-dns   # removing the default names its successor
+```
+
+- The login selects the projects (see [Login and permissions](#login-and-permissions)); `use`, `add` and `remove` change the selection without a new login. An account logged in before the selection existed has exactly its one project selected and works as before.
+- `use` and `add` check that the credentials reach the project (Cloud DNS, Compute Engine or Resource Manager; exit code 3 otherwise; not checked with `--offline`). On a terminal, without an argument they offer the visible projects. `add` of projects that are all selected already is exit code 0 (nothing to do).
+- `remove` changes nothing in Google Cloud. It drops what the inventory cached of the project (stored instance passwords stay) and works with `--offline`. A project that is not selected is exit code 4. Removing the default project needs `--default <id>`, naming a project that stays selected (exit code 2 without it; on a terminal it is asked); removing every project is exit code 2 (use `polyctl auth logout gcp`). No confirmation is asked.
+- `use`, `add` and `remove` change `config.yaml` only and do not support `--dry-run` (exit code 2). The cached inventory of the account is synced again on its next use.
+- Do not select every visible project by habit: a project without the API a type needs fails that part of every sync. A selected project in which the API of a type is not enabled counts as holding nothing of that type when several projects are selected (a DNS-only project does not fail the instance sync). Any other failure of one project (a removed permission) is reported as a warning naming `polyctl gcp project remove <id>`; the rows cached for that project are kept, the other projects are synced, and the set is synced again on its next use. When every selected project fails, the sync fails and replaces nothing.
+
+**`--project <id>`** on every `gcp dns` and `gcp compute` command names the project of that one call:
+
+- Lookups and lists read only that project; a create goes to it instead of the default project.
+- The project need not be selected: a project outside the selection is read live and nothing of it is written to the inventory (so `--offline` cannot serve it, the pick lists of the interactive flow, which read the inventory, do not offer its instances, and a load balancer there is found by its URL map name, not by a forwarding rule name).
+- A value that cannot be a project id (empty, or with a slash, comma or space) is exit code 2. `gcp project ...` and the platform-neutral commands do not take the flag.
+
+**Ids.** A managed zone id is `<project>/<managed zone>` (`acme-prod/example-zone`), a DNS record id starts with it (`acme-prod/example-zone|A|www.example.com|203.0.113.10`), and a certificate's inventory id is `<project>/<region or global>/<name>`. Instance, forwarding rule and address ids are the numeric ids of Compute Engine. Where a command takes a zone or a record id, a bare managed zone name (`example-zone`, `example-zone|A|...`) is still accepted and means the zone of that name: in the project of `--project` when given, else in the selected projects.
+
+**The same name in several projects** (or zones, regions, accounts):
+
+- On a terminal polyctl asks which one this call means. The list shows the project and the zone or region of each candidate, and what else tells them apart (id, status, addresses, DNS name).
+- In the non-interactive flow the command fails with exit code 5. The error lists every candidate as `gcp/<profile> project <project> <zone or region> (<id>, <status>)` and names the flags that choose among them, only those whose value differs: `--profile`, `--project`, and `--zone` (or `--region` / `--global`), plus the numeric id or the zone id where there is one.
+- Read-only commands that answer for every owner (`domain which`, `find`, the lists) ask nothing and report all of them.
+
+**Upgrading.** Rows cached by a polyctl older than the project selection did not carry their project. The first run of this version drops the cached GCP rows once (stored instance passwords are kept) and the next command that needs them syncs them again; with `--offline` right after the upgrade, GCP data is "not in the local inventory" until one online run. `config.yaml` and the credential store are unchanged, and an older polyctl still reads them (it sees the default project only). Should an older polyctl sync into the same directory again, run `polyctl sync --platform gcp` with the new one afterwards.
 
 ## Common behaviour
 
@@ -39,7 +85,8 @@ See [Accounts](../accounts.md) for profiles and all login options.
 - Names of Compute Engine resources: a lower-case letter first, then lower-case letters, digits and hyphens, at most 63 characters (otherwise exit code 2).
 - Quota and capacity errors (`QUOTA_EXCEEDED`, `ZONE_RESOURCE_POOL_EXHAUSTED`) are exit code 1 with a hint to try another zone or machine type. Quota and rate limit errors of the other APIs (a Cloud DNS managed zone that holds its maximum of records answers 403 `quotaExceeded`) are exit code 1 too, not 3: they are not a credentials problem.
 - Failures of `firewall ensure` and `load-balancer ensure` are also sent to `hooks.on_failure` (`gcp.compute.firewall.ensure.failed`, `gcp.compute.load-balancer.ensure.failed`).
-- Lists across every zone and region (instances, addresses, forwarding rules, certificates, load balancer components) ask the API for partial results. A zone or region the API cannot reach is reported as a region failure: a sync keeps that region's inventory rows from the previous sync instead of dropping them (when the global scope itself cannot be reached, the sync of that type fails and keeps all its rows), list commands print a warning naming the scopes, and lookups that must see every scope (subnetworks, URL maps, the proxies using a certificate, `cert deploy` targets) fail with exit code 1.
+- Lists across every zone and region (instances, addresses, forwarding rules, certificates, load balancer components) ask the API for partial results. A zone or region the API cannot reach is reported as a failure of `<project>/<zone or region>`: a sync keeps that scope's inventory rows from the previous sync instead of dropping them (when the global scope of a project cannot be reached, the sync of that type fails for the project and keeps all its rows), list commands print a warning naming the scopes, and lookups that must see every scope (subnetworks, URL maps, the proxies using a certificate, `cert deploy` targets) fail with exit code 1.
+- Every command works on the selected projects of the account, or on the project of `--project`; see [Projects](#projects). Rows and change reports name the project (`project` in JSON, a PROJECT column in tables, `target.project` in reports).
 - Inventory types: `zone`, `dns_record`, `instance`, `load_balancer`, `eip` (static addresses), `certificate`. Firewall rules, networks and subnetworks are always read live.
 
 ## Command summary
@@ -47,10 +94,13 @@ See [Accounts](../accounts.md) for profiles and all login options.
 ```text
 gcp whoami
 gcp project list | current
+gcp project use <project-id> | add <project-id>... | remove <project-id>... [--default <project-id>]
+
+# every gcp dns and gcp compute command also takes --project <id>
 gcp dns zone list | get <zone>
 gcp dns record list <zone> [--type] [--name]
 gcp dns record upsert <zone> --type A --name www --value 203.0.113.10 [--value ...] [--ttl 300] [--priority <n>]
-gcp dns record delete <zone> (--type A --name www [--value <v>] [--priority <n>] | --id <zone|TYPE|name|value>) [--yes]
+gcp dns record delete <zone> (--type A --name www [--value <v>] [--priority <n>] | --id <project/zone|TYPE|name|value>) [--yes]
 
 gcp compute instance list
 gcp compute instance get <name|id> [--zone <z>] [--field external-ip|internal-ip|status|zone|machine-type]
@@ -86,19 +136,22 @@ gcp compute instance-group list | get <name> | delete <name> [--zone <z>]
 
 ## Cloud DNS
 
+- `<zone>` is a managed zone id (`<project>/<managed zone>`), a managed zone name or a DNS name. A managed zone name wins over a DNS name. A name several zones answer to (one managed zone name in two projects, or a public and a private zone of one DNS name) is a pick on a terminal and exit code 5 otherwise; `--project` or the zone id chooses. Until this version a DNS name of such a public and private pair silently meant the first of the two.
+- `zone list` shows the zones of every selected project with their project; in JSON a zone's `id` is the zone id and `extra.project` / `extra.managed_zone` are its two parts.
 - Record sets are shown one record per value; `upsert` sets the whole record set, `delete` removes the set or, with `--value`, one value. Deleting a whole set lists its values and asks first ([Confirmations](../interactive.md#confirmations)); the non-interactive flow needs `--yes`, and a set that does not exist is exit code 4 and asks nothing. One value (`--value`, `--id`) is removed without a question. Writes are applied as one atomic change.
 - `--name` is relative to the zone (`www`, `@`) or an FQDN; default is the zone apex.
 - `--ttl 0` keeps the existing TTL; a new set gets 300.
-- `--id` (`zone|TYPE|name|value`, as shown by `list`) picks one record instead of `--name` / `--type`, and cannot be combined with `--name`, `--type`, `--value` or `--priority` (exit code 2).
+- `--id` (`project/zone|TYPE|name|value`, as shown by `list`) picks one record instead of `--name` / `--type`, and cannot be combined with `--name`, `--type`, `--value` or `--priority` (exit code 2).
 
 ## Instances
 
 ### Finding an instance
 
-`get`, `start`, `stop`, `delete`, `resize`, `reboot`, `update`, `password` and `ssh-key` take the name or numeric id. polyctl finds the project and zone from the inventory of every selected GCP account (synced once when the instance is unknown, always with `--refresh`), then reads it live.
+`get`, `start`, `stop`, `delete`, `resize`, `reboot`, `update`, `password` and `ssh-key` take the name or numeric id. polyctl finds the project and zone from the inventory of every selected project of every selected GCP account (synced once when the instance is unknown, always with `--refresh`), then reads it live.
 
-- One name in several zones or projects is exit code 5: pass `--zone`, `--profile` or the id.
+- One name in several zones, projects or accounts: on a terminal polyctl asks which instance is meant (the list shows id, status, zone, addresses, project and account). In the non-interactive flow it is exit code 5; the error lists the candidates and names what chooses: `--project`, `--zone`, `--profile` (those that differ) or the instance id.
 - `--zone` pins the instance: only an instance in that zone is used (instance names are unique only within a zone). It also finds an instance the inventory does not know. A name held only in other zones is exit code 4, and the error names those zones.
+- `--project` pins it in the same way: only an instance of that project is used. With both flags the instance must be in that zone of that project. A project outside the selection is searched live.
 - Not found is exit code 4.
 - `reboot` also takes an internal or external IP.
 
@@ -221,8 +274,9 @@ polyctl gcp compute firewall update allow-ssh-internal --allow tcp:22,2222
 polyctl gcp compute firewall ensure --preset lb-health-check --network default --region us-central1 --instance web-1
 ```
 
-- `list` shows the rules of every network, or of `--network` (exact name), sorted by priority.
-- `create` fails when the rule exists (exit code 1).
+- `list` shows the rules of every network, or of `--network` (exact name), of every selected project, each project's rules sorted by priority.
+- `get`, `update` and `delete` find `<name>` in the selected projects: one project holding it is used; several are a pick on a terminal and exit code 5 otherwise (pass `--project`); none is exit code 4, naming the projects searched. With one project selected, or with `--project`, the rule is read in that project straight away.
+- `create` fails when the rule exists (exit code 1). The rule is created in the default project, or in the project of `--project`.
   - `--allow` (required, repeatable): `tcp`, `udp`, `icmp` or `all`; only `tcp`/`udp` take ports, such as `tcp:80,443,8000-8100` or aliases (`ssh`, `http`, `https`, `mysql`, ...).
   - An ingress rule requires `--source-range` (use `0.0.0.0/0` to mean everyone; polyctl will not open it implicitly). `--direction egress` requires `--destination-range` instead.
   - No `--target-tag` means every instance of the network. `--network` defaults to `defaults.gcp.network`, else `default`. `--priority` 0-65535, default 1000.
@@ -238,6 +292,7 @@ Read-only, always live.
 
 - `network list` shows mode (`auto`, `custom`, `legacy`), routing mode, MTU and subnetwork count. `network get <name>` adds the subnetworks with their ranges.
 - `subnet list` lists every region (or `--region`), optionally of one `--network` (exact name). `--proxy-only` keeps only proxy-only subnetworks.
+- Both lists cover every selected project. `network get <name>` looks for the name in each of them (several holders: a pick on a terminal, exit code 5 otherwise, `--project` chooses); without `<name>` on a terminal it asks for the project first when several are selected.
 
 ## SSL certificates
 
@@ -248,7 +303,8 @@ polyctl gcp compute ssl-certificate create web-example-com-cert-20261117 --cert-
 polyctl gcp compute ssl-certificate list --expiring-in 30
 ```
 
-- `list` shows domains, expiry (UTC), days left and the HTTPS proxies using each certificate. An unused self-managed certificate is marked `*` (an orphan to delete by hand). `--expiring-in <days>` filters.
+- `list` shows domains, expiry (UTC), days left and the HTTPS proxies using each certificate, for every selected project. An unused self-managed certificate is marked `*` (an orphan to delete by hand). `--expiring-in <days>` filters.
+- `update` and `delete` find `<name>` (in its scope) in the selected projects, like the firewall commands: several holders are a pick on a terminal and exit code 5 otherwise (pass `--project`). On a terminal, without `<name>`, the project is asked first when several are selected. `create` goes to the default project, or to the project of `--project`.
 - `create` uploads `--cert-file` (full chain, leaf first) and `--key-file` (unencrypted PEM key). `@-` reads stdin. polyctl checks before upload that the key matches the leaf and that the leaf has not expired (exit code 2 otherwise). An existing name is exit code 1.
 - `update <name>` replaces a certificate in use: it uploads a new one named `{slug}-cert-{YYYYMMDD}` (`naming.gcp_ssl_certificate`), switches every HTTPS proxy of the scope from `<name>` to it, then deletes `<name>` unless `--keep-old`. A certificate already holding the same leaf is `unchanged`; a re-run after a failed switch reuses the uploaded one.
 - `delete` asks for confirmation. A certificate still used by a proxy is exit code 1.
@@ -304,10 +360,10 @@ Components: the health check firewall rule and instance tag (as `firewall ensure
 
 ### list, get, delete
 
-- `list`: one row per forwarding rule with protocol, IP, port, backend and health. `--region` / `--global` narrow it.
-- `get <name>` (load balancer or forwarding rule name) shows the whole chain with backend health. A regional match wins over a global one; several matches are exit code 5.
+- `list`: one row per forwarding rule with its project, protocol, IP, port, backend and health, for every selected project. `--region` / `--global` narrow it.
+- `get <name>` (load balancer or forwarding rule name) shows the whole chain with backend health. A regional match wins over a global one. Several matches (in several projects, regions or accounts) are a pick on a terminal and exit code 5 otherwise; the error names `--project`, `--region` / `--global` or `--profile`, whichever differ.
 - `delete <name>` deletes the forwarding rules, then the proxies, URL maps and backend services only they use. Instance groups, health checks, firewall rules and static addresses are never deleted. Asks for confirmation.
 
 ### Components
 
-`backend-service`, `forwarding-rule`, `health-check` (`--region` / `--global`) and `instance-group` (`--zone`) each have `list`, `get` and `delete`, for troubleshooting and clean-up. `delete` asks for confirmation; a component still used by another is exit code 1 naming the user.
+`backend-service`, `forwarding-rule`, `health-check` (`--region` / `--global`) and `instance-group` (`--zone`) each have `list`, `get` and `delete`, for troubleshooting and clean-up. They cover every selected project; a name several projects or scopes hold is a pick on a terminal and exit code 5 otherwise (`--project`, `--region` / `--global` or `--zone` choose). `delete` asks for confirmation; a component still used by another is exit code 1 naming the user.

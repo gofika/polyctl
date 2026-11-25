@@ -269,7 +269,7 @@ polyctl cert deploy example.com --deployer gcp-lb --region asia-east2
 
 **Failures** are handled per target and the run goes on. Each is sent to `hooks.on_failure` as `{"event": "cert.deploy.failed", "platform", "profile", "deployer", "target", "domain", "error", "time"}`. Exit code 1 when anything failed, 3 when every failure was a credential or permission error, 0 otherwise (no targets at all is 0). Nothing is rolled back; the next run finishes the job.
 
-**Report rows**: `<deployer>/<profile>/<target>` (for example `aliyun-alb/acme/lb-example(HTTPS:443)`, `gcp-lb/acme/global/proxy-web`, `aws-acm/acme/us-east-1/<arn>`). Each JSON row's `attrs` holds `deployer`, `platform`, `profile`, `region`, `domain`, `old_cert_id`, `old_days_left`, `new_not_after` and `cert_name`.
+**Report rows**: `<deployer>/<profile>/<target>` (for example `aliyun-alb/acme/lb-example(HTTPS:443)`, `gcp-lb/acme/acme-prod/global/proxy-web`, `aws-acm/acme/us-east-1/<arn>`). A `gcp-lb` target starts with its project: the deployer covers every selected project of the account ([GCP: Projects](platforms/gcp.md#projects)); until this version the target had no project part. Each JSON row's `attrs` holds `deployer`, `platform`, `profile`, `region`, `domain`, `old_cert_id`, `old_days_left`, `new_not_after` and `cert_name`.
 
 ## Finding resources by IP or DNS name
 
@@ -297,7 +297,7 @@ matched 2 resource(s) (local inventory, synced 4m ago)
 Platform coverage:
 
 - **AWS**: EC2 instances, ELBv2 load balancers, elastic IPs and unattached network interfaces (NAT gateways, ...), RDS instances. Every enabled region is synced.
-- **GCP**: instances, forwarding rules (regional and global), reserved addresses.
+- **GCP**: instances, forwarding rules (regional and global), reserved addresses, of every selected project of an account. JSON matches carry `project`, and the console link opens the resource in its own project.
 - **Alibaba Cloud**: ECS instances, ALB load balancers, EIPs. Every region is synced; a failing region is reported and the others are kept.
 
 `-o json` fields: `query`, `kind` (`ip` / `dns`), `cached`, `synced_at`, `matches` and `errors`. Each match has `platform`, `profile`, `type`, `id`, `name`, `region`, `zone`, `state`, `matched_field`, `internal_ips`, `external_ips`, `network`, `url` and, where they apply, `dns_names`, `subnet`, `note`, `addresses` and `detail`.
@@ -306,7 +306,7 @@ Platform coverage:
 
 1. Without `--profile` / `--platform`, every account is searched. Each flag narrows the search; together they name one account.
 2. polyctl looks up the domain and its parents (`a.b.example.com`, `b.example.com`, `example.com`) in the domain index, for the kind the command needs (`zone` for `dns`, `domain` for registrar operations). **The longest match wins**, so a delegated sub-zone beats its parent. Index rows of accounts no longer in the config (kept by `auth logout --keep-inventory`, or left by a hand edit) are ignored, here and everywhere the index is read: the domain and nameserver pickers, `domain which`, `domain list` and shell completion leave them out. `inventory list` still shows them.
-3. A match held by several accounts is exit code 5. The error lists the candidates as `platform/profile` and names the flag that tells them apart.
+3. A match held by several accounts is exit code 5. The error lists the candidates as `platform/profile` and names the flag that tells them apart. Two zones of one account holding the same name are as ambiguous: for GCP, where one account spans several projects, the candidates show the zone ids (`<project>/<managed zone>`) and the error points to `polyctl gcp dns ... --project <id>`. On a terminal polyctl asks which owner is meant instead.
 4. `--refresh` re-indexes the selected accounts before the lookup (once per run), so a zone moved to another account or deleted is not routed to its old owner. Without it, a match in the index is used as is.
 5. No match: polyctl indexes the accounts automatically the first time, then retries. Otherwise: "domain not found in local index" (exit code 4); run `polyctl domain index` or pass `--refresh`. When indexing (automatic or `--refresh`) could sync none of the candidate accounts and the domain is still not found, the error is that failure, not exit code 4: exit code 3 when every account failed for credentials or permissions, 1 otherwise. `cert deploy` then fails the domain instead of skipping it as managed elsewhere.
 6. With `--offline` nothing is indexed; an unknown domain is an error.
