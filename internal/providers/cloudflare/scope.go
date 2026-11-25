@@ -465,7 +465,9 @@ func candOfAPIZone(profile string, z apiZone) zoneCand {
 }
 
 // zoneHint is the hint of an ambiguous zone: the flags whose value differs
-// among the candidates, and the zone id, which always tells them apart.
+// among the candidates, and the zone id when the ids differ. They do not
+// when the candidates are one zone seen through two logins: only --profile
+// chooses then.
 func zoneHint(cands []zoneCand) string {
 	distinct := func(get func(zoneCand) string) bool {
 		for _, c := range cands[1:] {
@@ -482,8 +484,14 @@ func zoneHint(cands []zoneCand) string {
 	if distinct(func(c zoneCand) string { return c.account }) {
 		flags = append(flags, "--account <id or name>")
 	}
-	if len(flags) == 0 {
+	byID := distinct(func(c zoneCand) string { return c.id })
+	switch {
+	case len(flags) == 0 && byID:
 		return "pass the zone id to choose"
+	case len(flags) == 0:
+		return "name the account or the login of the zone to choose"
+	case !byID:
+		return "pass " + strings.Join(flags, " or ") + " to choose"
 	}
 	return "pass " + strings.Join(flags, " or ") + ", or the zone id, to choose"
 }

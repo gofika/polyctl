@@ -461,3 +461,27 @@ func TestCoverageChange(t *testing.T) {
 		}
 	}
 }
+
+// The hint of an ambiguous zone names what tells the candidates apart: the
+// flags whose value differs among them, and the zone id only when the ids
+// differ (the same zone seen through two logins has one id).
+func TestZoneHint(t *testing.T) {
+	a := zoneCand{profile: "both", account: "acc1", id: "z1"}
+	b := zoneCand{profile: "both", account: "acc2", id: "z2"}
+	c := zoneCand{profile: "beta", account: "acc2", id: "z2"}
+	d := zoneCand{profile: "beta", account: "acc3", id: "z3"}
+	for _, tc := range []struct {
+		name  string
+		cands []zoneCand
+		want  string
+	}{
+		{"two accounts of one login", []zoneCand{a, b}, "pass --account <id or name>, or the zone id, to choose"},
+		{"one zone through two logins", []zoneCand{b, c}, "pass --profile <name> to choose"},
+		{"two logins and two accounts", []zoneCand{a, d}, "pass --profile <name> or --account <id or name>, or the zone id, to choose"},
+		{"nothing but the id differs", []zoneCand{a, {profile: "both", account: "acc1", id: "z9"}}, "pass the zone id to choose"},
+	} {
+		if got := zoneHint(tc.cands); got != tc.want {
+			t.Errorf("%s: %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}

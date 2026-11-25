@@ -420,3 +420,23 @@ func TestRoutedZoneAfterAccountAdd(t *testing.T) {
 		t.Errorf("zone delete of a fresh set: exit %d, %d listing(s), %s", code, e.f.count("GET /zones?"), stderr)
 	}
 }
+
+// One zone seen through two logins has one id: only --profile chooses, and
+// the hint does not offer the zone id, which would be ambiguous again.
+func TestRoutedZoneOfTwoLoginsIsNotChosenByItsID(t *testing.T) {
+	e := newR2Env(t)
+	e.loginBoth("acc1", "acc1", "acc2")
+	if code, _, stderr := e.run("sync", "--platform", "cloudflare"); code != cli.ExitOK {
+		t.Fatalf("sync: exit %d, %s", code, stderr)
+	}
+	for _, ref := range []string{"example.net", "zone-beta"} {
+		code, _, stderr := e.run("cloudflare", "zone", "delete", ref, "--yes")
+		if code != cli.ExitAmbiguous || !strings.Contains(stderr, "cloudflare/beta") || !strings.Contains(stderr, "cloudflare/both") ||
+			!strings.Contains(stderr, "pass --profile <name> to choose") || strings.Contains(stderr, "zone id") {
+			t.Errorf("zone delete %s: exit %d, %s", ref, code, stderr)
+		}
+	}
+	if w := e.f.writes(); len(w) != 0 {
+		t.Errorf("wrote %v", w)
+	}
+}
