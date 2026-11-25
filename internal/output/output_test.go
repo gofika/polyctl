@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -61,6 +62,64 @@ func TestRenderJSON(t *testing.T) {
 	}
 	if !strings.HasSuffix(buf.String(), "\n") {
 		t.Errorf("json output must end with a newline")
+	}
+}
+
+type Embedded struct {
+	Tags []string `json:"tags"`
+}
+
+type nested struct {
+	Embedded
+	Records []item         `json:"records"`
+	Ptr     *nested        `json:"ptr,omitempty"`
+	Meta    map[string]any `json:"meta"`
+	Arr     [1][]int       `json:"arr"`
+	Raw     []byte         `json:"raw"`
+	When    time.Time      `json:"when"`
+	hidden  []int
+}
+
+// Nil slices inside structs, embedded structs, pointers, maps and arrays
+// print as [] in JSON, and the value rendered is not modified.
+func TestRenderJSONNestedNilSlices(t *testing.T) {
+	when := time.Date(2026, 11, 25, 0, 0, 0, 0, time.UTC)
+	v := &nested{Ptr: &nested{}, Meta: map[string]any{"nameservers": []string(nil), "n": 1}, When: when}
+	var buf bytes.Buffer
+	if err := output.Render(&buf, output.JSON, v, nil); err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), ": null") && !strings.Contains(buf.String(), `"raw": null`) {
+		t.Errorf("null left in:\n%s", buf.String())
+	}
+	for _, k := range []string{"tags", "records"} {
+		if l, ok := got[k].([]any); !ok || len(l) != 0 {
+			t.Errorf("%s = %#v", k, got[k])
+		}
+	}
+	if l, ok := got["ptr"].(map[string]any)["records"].([]any); !ok || len(l) != 0 {
+		t.Errorf("ptr = %#v", got["ptr"])
+	}
+	if l, ok := got["meta"].(map[string]any)["nameservers"].([]any); !ok || len(l) != 0 {
+		t.Errorf("meta = %#v", got["meta"])
+	}
+	if a, ok := got["arr"].([]any); !ok || len(a) != 1 || a[0] == nil {
+		t.Errorf("arr = %#v", got["arr"])
+	}
+	if got["when"] != "2026-11-25T00:00:00Z" {
+		t.Errorf("when = %#v", got["when"])
+	}
+	if v.Records != nil || v.Tags != nil || v.Ptr.Records != nil || v.Meta["nameservers"].([]string) != nil {
+		t.Error("the rendered value was modified")
+	}
+	// An empty value at the top level, as before.
+	buf.Reset()
+	if err := output.Render(&buf, output.JSON, []item(nil), nil); err != nil || strings.TrimSpace(buf.String()) != "[]" {
+		t.Errorf("top level = %q, %v", buf.String(), err)
 	}
 }
 

@@ -526,7 +526,7 @@ func TestZoneEnsureCreatesAndConverges(t *testing.T) {
 	if rep.Target.Profile != "acme" || rep.Target.AccountID != "acc1" || rep.DryRun || rep.Zone == nil || rep.Zone.ID != z.id || rep.Zone.Plan != "free" || rep.Zone.Status != "pending" {
 		t.Errorf("report = %+v", rep)
 	}
-	if len(rep.Zone.NameServers) != 3 || !strings.Contains(rep.Zone.NameServers[0], "foundationdns") || rep.Zone.OriginalNameServers != nil {
+	if len(rep.Zone.NameServers) != 3 || !strings.Contains(rep.Zone.NameServers[0], "foundationdns") || len(rep.Zone.OriginalNameServers) != 0 {
 		t.Errorf("nameservers = %v / %v (the ones after Foundation DNS)", rep.Zone.NameServers, rep.Zone.OriginalNameServers)
 	}
 	m := changeMap(rep.Changes)

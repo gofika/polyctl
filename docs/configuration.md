@@ -315,6 +315,8 @@ Tables show the most useful columns. JSON and YAML contain the full result, incl
 }
 ```
 
+A list in the result is `[]` when empty, never `null`, at any depth (`"records": []` when a `dns list` filter matches nothing, `"nameservers": []` for a domain without nameservers).
+
 Progress and notes go to stderr, so stdout is safe to pipe.
 
 ## Dry runs and change reports

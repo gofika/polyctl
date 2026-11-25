@@ -215,3 +215,13 @@ func TestDNSDeleteAllReadsFirst(t *testing.T) {
 		t.Errorf("%v, %q: %d lists, %d deletes", err, stderr, fc.count("ListRecords"), fc.count("DeleteRecord"))
 	}
 }
+
+// A dns list filter that matches nothing prints "records": [] with -o
+// json, not null.
+func TestDNSListEmptyFilterPrintsEmptyArray(t *testing.T) {
+	_, cfgPath, _ := ensureZone(t, fiveRecords()...)
+	out, stderr, err := run(t, cfgPath, "dns", "list", "example.com", "--type", "CAA", "-o", "json")
+	if err != nil || !strings.Contains(out, `"records": []`) || strings.Contains(out, "null") {
+		t.Errorf("dns list = %q, %q, %v", out, stderr, err)
+	}
+}

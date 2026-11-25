@@ -2,6 +2,7 @@
 package output
 
 import (
+	"encoding"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -61,13 +62,161 @@ func Render(w io.Writer, f Format, value any, grid func() Grid) error {
 	}
 }
 
-// nonNilSlice turns a nil slice into an empty one so JSON prints [] not null.
+// nonNilSlice returns v with every nil slice turned into an empty one, at
+// the top level and inside structs (embedded ones included), pointers,
+// interfaces, maps, arrays and slices, so JSON prints [] not null. v itself
+// is not modified: what holds a nil slice is copied. Values that marshal
+// themselves (json, yaml or text marshalers) and byte slices are left
+// alone.
 func nonNilSlice(v any) any {
-	rv := reflect.ValueOf(v)
-	if rv.Kind() == reflect.Slice && rv.IsNil() {
-		return reflect.MakeSlice(rv.Type(), 0, 0).Interface()
+	if v == nil {
+		return nil
 	}
-	return v
+	rv, changed := fillSlices(reflect.ValueOf(v), 0)
+	if !changed {
+		return v
+	}
+	return rv.Interface()
+}
+
+var (
+	jsonMarshaler = reflect.TypeFor[json.Marshaler]()
+	yamlMarshaler = reflect.TypeFor[yaml.Marshaler]()
+	textMarshaler = reflect.TypeFor[encoding.TextMarshaler]()
+)
+
+// marshalsItself reports whether values of t encode themselves.
+func marshalsItself(t reflect.Type) bool {
+	for _, m := range []reflect.Type{jsonMarshaler, yamlMarshaler, textMarshaler} {
+		if t.Implements(m) || reflect.PointerTo(t).Implements(m) {
+			return true
+		}
+	}
+	return false
+}
+
+// maxFillDepth bounds the recursion of fillSlices (a cyclic value).
+const maxFillDepth = 64
+
+// fillSlices returns v with its nil slices made empty, and whether
+// anything changed; v is returned as is when nothing did.
+func fillSlices(v reflect.Value, depth int) (reflect.Value, bool) {
+	if !v.IsValid() || depth > maxFillDepth {
+		return v, false
+	}
+	t := v.Type()
+	if t.Kind() != reflect.Interface && t.Kind() != reflect.Pointer && marshalsItself(t) {
+		return v, false
+	}
+	switch t.Kind() {
+	case reflect.Slice:
+		if t.Elem().Kind() == reflect.Uint8 {
+			return v, false
+		}
+		if v.IsNil() {
+			return reflect.MakeSlice(t, 0, 0), true
+		}
+		var out reflect.Value
+		for i := 0; i < v.Len(); i++ {
+			e, ok := fillSlices(v.Index(i), depth+1)
+			if !ok {
+				continue
+			}
+			if !out.IsValid() {
+				out = reflect.MakeSlice(t, v.Len(), v.Len())
+				reflect.Copy(out, v)
+			}
+			out.Index(i).Set(e)
+		}
+		if out.IsValid() {
+			return out, true
+		}
+	case reflect.Array:
+		var out reflect.Value
+		for i := 0; i < v.Len(); i++ {
+			e, ok := fillSlices(v.Index(i), depth+1)
+			if !ok {
+				continue
+			}
+			if !out.IsValid() {
+				out = reflect.New(t).Elem()
+				out.Set(v)
+			}
+			out.Index(i).Set(e)
+		}
+		if out.IsValid() {
+			return out, true
+		}
+	case reflect.Pointer:
+		if v.IsNil() || marshalsItself(t.Elem()) {
+			return v, false
+		}
+		e, ok := fillSlices(v.Elem(), depth+1)
+		if ok {
+			p := reflect.New(t.Elem())
+			p.Elem().Set(e)
+			return p, true
+		}
+	case reflect.Interface:
+		if v.IsNil() {
+			return v, false
+		}
+		e, ok := fillSlices(v.Elem(), depth+1)
+		if ok {
+			out := reflect.New(t).Elem()
+			out.Set(e)
+			return out, true
+		}
+	case reflect.Map:
+		if v.IsNil() {
+			return v, false
+		}
+		var out reflect.Value
+		iter := v.MapRange()
+		for iter.Next() {
+			e, ok := fillSlices(iter.Value(), depth+1)
+			if !ok {
+				continue
+			}
+			if !out.IsValid() {
+				out = reflect.MakeMapWithSize(t, v.Len())
+				all := v.MapRange()
+				for all.Next() {
+					out.SetMapIndex(all.Key(), all.Value())
+				}
+			}
+			out.SetMapIndex(iter.Key(), e)
+		}
+		if out.IsValid() {
+			return out, true
+		}
+	case reflect.Struct:
+		var out reflect.Value
+		for i := 0; i < t.NumField(); i++ {
+			f := t.Field(i)
+			if !f.IsExported() {
+				// An unexported field cannot be set; its exported fields
+				// promoted by embedding are left as they are.
+				continue
+			}
+			if tag, _, _ := strings.Cut(f.Tag.Get("json"), ","); tag == "-" {
+				continue
+			}
+			e, ok := fillSlices(v.Field(i), depth+1)
+			if !ok {
+				continue
+			}
+			if !out.IsValid() {
+				out = reflect.New(t).Elem()
+				out.Set(v)
+			}
+			out.Field(i).Set(e)
+		}
+		if out.IsValid() {
+			return out, true
+		}
+	}
+	return v, false
 }
 
 // RenderGrid prints a grid with aligned columns.
