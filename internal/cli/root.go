@@ -480,6 +480,9 @@ func completeDomains(rt *app.Runtime) func(*cobra.Command, []string, string) ([]
 		if err != nil {
 			return nil, cobra.ShellCompDirectiveError
 		}
+		if entries, err = rt.ConfiguredEntries(entries); err != nil {
+			return nil, cobra.ShellCompDirectiveError
+		}
 		seen := map[string]bool{}
 		var out []string
 		for _, e := range entries {

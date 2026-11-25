@@ -273,7 +273,11 @@ func newZoneDomain(ctx context.Context, rt *app.Runtime, args []string) (string,
 	}
 	var opts []prompt.Option
 	if db, err := rt.DB(); err == nil {
-		if entries, err := db.IndexEntries(ctx); err == nil {
+		entries, err := db.IndexEntries(ctx)
+		if err == nil {
+			entries, err = rt.ConfiguredEntries(entries)
+		}
+		if err == nil {
 			zoned := map[string]bool{}
 			for _, e := range entries {
 				if e.Type == platform.ResZone && e.Platform == platform.Cloudflare {

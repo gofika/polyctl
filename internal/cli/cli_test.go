@@ -806,3 +806,33 @@ func TestConfigIOErrorsAreNotUsageErrors(t *testing.T) {
 		}
 	}
 }
+
+// domain which, domain list and completion leave out index rows of an
+// account that is no longer in the config, as routing does.
+func TestDomainCommandsIgnoreRowsOfRemovedAccounts(t *testing.T) {
+	dir, cfgPath := setup(t, true)
+	seed(t, dir, []platform.Zone{{ID: "z1", Name: "example.com"}}, nil)
+	db := openInventory(t, dir)
+	if err := db.Replace(context.Background(), inventory.Set{Platform: fakePlatform, Profile: "old", Type: platform.ResZone},
+		app.ZoneResources([]platform.Zone{{ID: "z-old", Name: "example.com"}, {ID: "z-gone", Name: "gone.com"}}), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	stdout, _, err := run(t, cfgPath, "domain", "which", "www.example.com", "--offline", "-o", "json")
+	if err != nil || strings.Contains(stdout, "old") || !strings.Contains(stdout, "z1") {
+		t.Errorf("which example.com = %q, %v", stdout, err)
+	}
+	if _, _, err := run(t, cfgPath, "domain", "which", "gone.com", "--offline"); !errors.Is(err, app.ErrDomainUnknown) {
+		t.Errorf("which gone.com = %v, want ErrDomainUnknown", err)
+	}
+	stdout, _, err = run(t, cfgPath, "domain", "list", "-o", "json")
+	var entries []inventory.IndexEntry
+	if err != nil || json.Unmarshal([]byte(stdout), &entries) != nil || len(entries) != 1 || entries[0].Profile != "a" {
+		t.Errorf("domain list = %q, %v", stdout, err)
+	}
+	stdout, _, err = run(t, cfgPath, "__complete", "domain", "which", "")
+	if err != nil || strings.Contains(stdout, "gone.com") || !strings.Contains(stdout, "example.com") {
+		t.Errorf("completion = %q, %v", stdout, err)
+	}
+}

@@ -297,6 +297,9 @@ func newDomainWhichCmd(rt *app.Runtime) *cobra.Command {
 			}
 			lookup := func() ([]inventory.IndexEntry, error) {
 				entries, err := db.LookupDomain(cmd.Context(), cands, "")
+				if err == nil {
+					entries, err = rt.ConfiguredEntries(entries)
+				}
 				if err != nil || !filtered {
 					return entries, err
 				}
@@ -437,6 +440,9 @@ func newDomainListCmd(rt *app.Runtime) *cobra.Command {
 			}
 			entries, err := db.IndexEntries(cmd.Context())
 			if err != nil {
+				return err
+			}
+			if entries, err = rt.ConfiguredEntries(entries); err != nil {
 				return err
 			}
 			empty := "index is empty; run `polyctl domain index`"

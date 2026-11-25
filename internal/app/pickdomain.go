@@ -57,6 +57,9 @@ func (rt *Runtime) PickDomain(ctx context.Context, p DomainPick) (string, error)
 	if err != nil {
 		return "", err
 	}
+	if entries, err = rt.ConfiguredEntries(entries); err != nil {
+		return "", err
+	}
 	byDomain := map[string][]inventory.IndexEntry{}
 	var order []string
 	for _, e := range entries {
@@ -132,6 +135,9 @@ func (rt *Runtime) PickNameservers(ctx context.Context, domain string) ([]string
 	if db, err := rt.DB(); err == nil {
 		entries, err := db.LookupDomain(ctx, []string{domain}, platform.ResZone)
 		if err != nil {
+			return nil, err
+		}
+		if entries, err = rt.ConfiguredEntries(entries); err != nil {
 			return nil, err
 		}
 		seen := map[string]bool{}

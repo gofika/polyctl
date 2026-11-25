@@ -14,6 +14,7 @@ import (
 	"github.com/gofika/polyctl/internal/creds"
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt/prompttest"
 )
 
 var ctx = context.Background()
@@ -937,4 +938,50 @@ func TestResolveDomainRefreshFixesAStaleHit(t *testing.T) {
 			t.Errorf("profile %s zone sync count = %d, want 1", p, n)
 		}
 	}
+}
+
+// The domain picker and the nameserver picker leave out index rows of an
+// account that is no longer in the config, as routing does: picking one
+// would only end in "domain not found".
+func TestPickersIgnoreRowsOfRemovedAccounts(t *testing.T) {
+	t.Setenv(app.EnvNonInteractive, "")
+	h := newHarness(t, app.Flags{}, func(c *config.Config) {
+		c.Profiles["old"] = profileOn(platform.NameCom)
+	})
+	h.seedStandard()
+	h.seedZones("old", zone("z-only", "only.com"),
+		platform.Zone{ID: "z-old-example", Name: "example.com", Nameservers: []string{"ns1.old.example", "ns2.old.example"}})
+	cfg, _ := h.rt.Config()
+	delete(cfg.Profiles, "old")
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	p := prompttest.New(t, "example.com")
+	h.rt.Picker = p
+	if got, err := h.rt.PickDomain(ctx, app.DomainPick{Arg: "<domain>"}); err != nil || got != "example.com" {
+		t.Fatalf("PickDomain = %q, %v", got, err)
+	}
+	a := p.Find("Domain")
+	if prompttest.HasValue(a.Options, "only.com") {
+		t.Errorf("domain options offer a removed account's zone: %+v", a.Options)
+	}
+	for _, o := range a.Options {
+		if strings.Contains(o.Label, "/old") {
+			t.Errorf("domain option names the removed account: %q", o.Label)
+		}
+	}
+	p.Done()
+
+	p = prompttest.New(t, prompttest.Label("Enter nameservers..."), "ns1.new.example ns2.new.example")
+	h.rt.Picker = p
+	if _, err := h.rt.PickNameservers(ctx, "example.com"); err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range p.Find("Nameservers for example.com").Options {
+		if strings.Contains(o.Label, "/old") {
+			t.Errorf("nameserver option of the removed account: %q", o.Label)
+		}
+	}
+	p.Done()
 }

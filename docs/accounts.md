@@ -76,7 +76,7 @@ It is refused, with nothing changed, when an account's secret cannot be moved: i
 
 ### auth logout
 
-- `auth logout --profile <name>` removes the whole profile: all accounts, their secrets from every backend, and their cached resources (keep those with `--keep-inventory`; kept rows no longer take part in domain routing).
+- `auth logout --profile <name>` removes the whole profile: all accounts, their secrets from every backend, and their cached resources (keep those with `--keep-inventory`; kept rows no longer take part in domain routing, the domain pickers, `domain which`, `domain list` or completion; `inventory list` still shows them).
 - `auth logout <platform> --profile <name>` removes one account; the profile goes with its last account. A platform the profile has no account on: exit code 4.
 - Stored Windows instance passwords are kept but detached from the profile, so a different account logged in later under the same name does not inherit them; see [Instances](instances.md).
 - Interactively, without `--profile`, it opens a list of accounts to tick, then confirms; `--yes` skips the confirmations (inventory removed unless `--keep-inventory`). Nothing to offer: `nothing to do`, exit 0.
