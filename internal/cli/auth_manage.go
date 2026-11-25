@@ -311,7 +311,7 @@ func newAuthRenameCmd(rt *app.Runtime) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				newName, err := rt.AskInput("<new>", fmt.Sprintf("New name for profile %q", args[0]), "", func(s string) error { return checkNewProfileName(cfg, s) })
+				newName, err := rt.AskInput("<new>", fmt.Sprintf("New name for profile %q", args[0]), "", func(s string) error { return checkRenameTarget(cfg, args[0], s) })
 				if err != nil {
 					return err
 				}
@@ -325,13 +325,36 @@ func newAuthRenameCmd(rt *app.Runtime) *cobra.Command {
 // checkNewProfileName validates the name of a profile that must not exist
 // yet.
 func checkNewProfileName(cfg *config.Config, name string) error {
+	return checkRenameTarget(cfg, "", name)
+}
+
+// checkRenameTarget validates the new name of profile old ("" for a new
+// profile): a valid name no profile has yet, nor one that differs from an
+// existing profile's only in letter case, other than old itself. Windows
+// Credential Manager matches entry names regardless of case, so two such
+// profiles would share (and overwrite or delete) one entry.
+func checkRenameTarget(cfg *config.Config, old, name string) error {
 	if err := validateProfileName(name); err != nil {
 		return err
 	}
 	if _, exists := cfg.Profiles[name]; exists {
 		return fmt.Errorf("profile %q already exists", name)
 	}
+	if twin := caseTwin(cfg, name); twin != "" && twin != old {
+		return fmt.Errorf("profile %q already exists; profile names that differ only in letter case are not allowed", twin)
+	}
 	return nil
+}
+
+// caseTwin returns the profile whose name differs from name only in letter
+// case, "" when there is none.
+func caseTwin(cfg *config.Config, name string) string {
+	for p := range cfg.Profiles {
+		if p != name && strings.EqualFold(p, name) {
+			return p
+		}
+	}
+	return ""
 }
 
 // renameProfile renames a profile. Nothing is lost when a step fails: the
@@ -347,7 +370,7 @@ func renameProfile(ctx context.Context, rt *app.Runtime, oldName, newName string
 	if err != nil {
 		return fmt.Errorf("%w: %v", platform.ErrNotFound, err)
 	}
-	if err := checkNewProfileName(cfg, newName); err != nil {
+	if err := checkRenameTarget(cfg, oldName, newName); err != nil {
 		return usageErr("%v", err)
 	}
 	// Opening the store moves secrets still stored in the pre-0.2 layout.
@@ -382,9 +405,16 @@ func renameProfile(ctx context.Context, rt *app.Runtime, oldName, newName string
 	undoCtx := context.WithoutCancel(ctx)
 
 	var copied []platform.ID
+	moving := map[platform.ID]map[string]string{}
 	undoSecrets := func() {
 		for _, id := range copied {
 			_ = store.Delete(creds.Key(newName, string(id)))
+			// A keyring that matches entry names regardless of case
+			// holds one entry for both keys of a case-only rename.
+			oldKey := creds.Key(oldName, string(id))
+			if _, err := store.Get(oldKey); errors.Is(err, creds.ErrNotFound) && moving[id] != nil {
+				_ = store.Set(oldKey, moving[id])
+			}
 		}
 	}
 	for _, id := range ids {
@@ -405,6 +435,7 @@ func renameProfile(ctx context.Context, rt *app.Runtime, oldName, newName string
 		}
 		// Recorded before Set: a failing Set may have written already.
 		copied = append(copied, id)
+		moving[id] = secret
 		if err := store.Set(newKey, secret); err != nil {
 			undoSecrets()
 			return fmt.Errorf("copy %s credentials to profile %q: %w", id, newName, err)
@@ -463,6 +494,17 @@ func renameProfile(ctx context.Context, rt *app.Runtime, oldName, newName string
 		key := creds.Key(oldName, string(id))
 		if err := store.Delete(key); err != nil && !errors.Is(err, creds.ErrNotFound) {
 			rt.Infof("warning: the old credentials entry %q could not be removed: %v", key, err)
+		}
+		if strings.EqualFold(oldName, newName) {
+			// A keyring that matches entry names regardless of case
+			// (Windows Credential Manager) held one entry for both keys,
+			// and the removal took the new one along: write it again.
+			newKey := creds.Key(newName, string(id))
+			if _, err := store.Get(newKey); errors.Is(err, creds.ErrNotFound) {
+				if err := store.Set(newKey, moving[id]); err != nil {
+					return fmt.Errorf("store the %s credentials of profile %q: %w", id, newName, err)
+				}
+			}
 		}
 	}
 	rt.Infof("profile %q renamed to %q", oldName, newName)
@@ -779,7 +821,7 @@ func manageRename(ctx context.Context, rt *app.Runtime) error {
 	if err != nil {
 		return err
 	}
-	newName, err := rt.Pick().Input(fmt.Sprintf("New name for profile %q", oldName), "", func(s string) error { return checkNewProfileName(cfg, s) })
+	newName, err := rt.Pick().Input(fmt.Sprintf("New name for profile %q", oldName), "", func(s string) error { return checkRenameTarget(cfg, oldName, s) })
 	if err != nil {
 		return err
 	}

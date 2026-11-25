@@ -144,6 +144,11 @@ func newAuthLoginCmd(rt *app.Runtime) *cobra.Command {
 			if err := validateProfileName(name); err != nil {
 				return usageErr("%v", err)
 			}
+			if _, exists := cfg.Profiles[name]; !exists {
+				if twin := caseTwin(cfg, name); twin != "" {
+					return usageErr("profile %q already exists; profile names that differ only in letter case are not allowed (use --profile %s)", twin, twin)
+				}
+			}
 			opts := map[string]string{}
 			for _, s := range sets {
 				k, v, ok := strings.Cut(s, "=")

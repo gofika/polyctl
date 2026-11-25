@@ -133,12 +133,21 @@ func (k Keyring) service() string {
 	return k.Service
 }
 
-// The keyring functions, replaced by tests that need a size limit.
+// The keyring functions, replaced by tests (UseKeyring).
 var (
 	keyringGet    = keyring.Get
 	keyringSet    = keyring.Set
 	keyringDelete = keyring.Delete
 )
+
+// UseKeyring replaces the system keyring functions Keyring calls, for tests
+// that need the behaviour of another platform's keyring (case-insensitive
+// entry names, a size limit). It returns a function that restores them.
+func UseKeyring(get func(service, user string) (string, error), set func(service, user, password string) error, del func(service, user string) error) (restore func()) {
+	g, st, d := keyringGet, keyringSet, keyringDelete
+	keyringGet, keyringSet, keyringDelete = get, set, del
+	return func() { keyringGet, keyringSet, keyringDelete = g, st, d }
+}
 
 // partsField is the only field of the entry of a secret too big for one
 // keyring entry (Windows Credential Manager takes at most 2560 bytes, the

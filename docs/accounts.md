@@ -46,7 +46,7 @@ polyctl auth manage [--no-browser]
 
 Runs the platform's login flow, verifies the credentials, stores the secret and writes the account's metadata to `config.yaml`.
 
-- **Target profile:** `--profile`, else the current profile, else `default`. A missing profile is created; it becomes current if no profile was.
+- **Target profile:** `--profile`, else the current profile, else `default`. A missing profile is created; it becomes current if no profile was. A new name that differs from an existing profile's only in letter case (`Prod` next to `prod`) is a usage error (exit code 2): Windows Credential Manager matches entry names regardless of case, so the two profiles would share one secret. Profiles that already differ only in case keep working where the keyring is case-sensitive; rename one of them before using them on Windows.
 - Logging in to a platform the profile already has re-authenticates that account; its other accounts are untouched.
 - Without `--profile`, if the target profile has no account on the platform but another profile does, the interactive flow asks whether to re-authenticate there, add a second account, or use a new profile. The non-interactive flow fails with exit code 2 listing those profiles: pass `--profile <name>`.
 - `--set key=value` (repeatable) passes platform options; `--set key=-` reads that value from stdin, one line per key in the order given. Use it for secrets, so they stay out of shell history and the process list. An unknown key is a usage error listing the valid ones.
@@ -70,7 +70,7 @@ Verifies the stored credentials of every account (or of `--profile`) against the
 
 ### auth rename
 
-Renames a profile with its accounts, secrets and cached resources; `current_profile` follows. Unknown `<old>`: exit code 4. A `<new>` that exists, is empty or contains spaces or slashes: exit code 2. If it fails part way, the profile keeps its old name.
+Renames a profile with its accounts, secrets and cached resources; `current_profile` follows. Unknown `<old>`: exit code 4. A `<new>` that exists, differs from another profile's name only in letter case, is empty or contains spaces or slashes: exit code 2. A rename that changes only the letter case (`prod` to `Prod`) is allowed and keeps the secrets, also in a keyring that matches entry names regardless of case. If it fails part way, the profile keeps its old name.
 
 It is refused, with nothing changed, when an account's secret cannot be moved: its `credential_backend` is not available in this run (e.g. `keyring` while only the file store is in use), or it is still marked `legacy_secret` from 0.1.x and the old backend is unreachable. The message says which backend is needed, or to log in again.
 
