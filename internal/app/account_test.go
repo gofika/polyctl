@@ -21,6 +21,7 @@ import (
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/platform"
 	"github.com/gofika/polyctl/internal/prompt"
+	"github.com/gofika/polyctl/internal/secrets"
 )
 
 // withProj adds a profile "proj" holding an account on both fake platforms
@@ -1424,8 +1425,18 @@ func writeKeyringDirConfig(t *testing.T, dir string) {
 	}
 }
 
-// A moved directory keeps the keyring service its marker records (also a
-// marker of an earlier release, which records the service alone), so its
+// moveDir moves the configuration directory from to to.
+func moveDir(t *testing.T, from, to string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(to), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(from, to); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A moved directory keeps the keyring service its marker records, so its
 // accounts and the data key of its instance passwords stay in reach.
 func TestMovedConfigDirKeepsItsKeyringService(t *testing.T) {
 	parent := keyringDirSetup(t)
@@ -1435,16 +1446,12 @@ func TestMovedConfigDirKeepsItsKeyringService(t *testing.T) {
 	if err := (creds.Keyring{Service: svc}).Set("p/namecom", map[string]string{"token": "t"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(old, app.KeyringMarker), []byte(svc+"\n"), 0o600); err != nil {
+	marker := svc + "\n" + creds.CanonicalDir(old) + "\n"
+	if err := os.WriteFile(filepath.Join(old, app.KeyringMarker), []byte(marker), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	moved := filepath.Join(parent, "clients", "polyctl")
-	if err := os.MkdirAll(filepath.Dir(moved), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(old, moved); err != nil {
-		t.Fatal(err)
-	}
+	moveDir(t, old, moved)
 	if p, err := keyringDirRun(t, moved); err != nil || p.Secret["token"] != "t" {
 		t.Fatalf("LoadProfile after the move = %+v, %v", p, err)
 	}
@@ -1452,6 +1459,99 @@ func TestMovedConfigDirKeepsItsKeyringService(t *testing.T) {
 	if want := svc + "\n" + creds.CanonicalDir(moved) + "\n"; string(b) != want {
 		t.Errorf("marker = %q, want %q", b, want)
 	}
+}
+
+// A marker of an earlier release records the service alone, and those
+// releases used the service of the path the directory was reached by. A
+// directory moved since keeps that path's service, where a login again
+// after the move stored its entries, and copies what it lacks (a data key)
+// from the marker's service, which stays readable for other data keys.
+func TestMovedConfigDirWithAnEarlierMarker(t *testing.T) {
+	parent := keyringDirSetup(t)
+	old := filepath.Join(parent, "work", "polyctl")
+	writeKeyringDirConfig(t, old)
+	oldSvc := creds.ServiceFor(old, "")
+	oldKr := creds.Keyring{Service: oldSvc}
+	if err := oldKr.Set("p/namecom", map[string]string{"token": "stale"}); err != nil {
+		t.Fatal(err)
+	}
+	dataKey := map[string]string{"key": "k"}
+	if err := oldKr.Set(secrets.DataKeyName, dataKey); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(old, app.KeyringMarker), []byte(oldSvc+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	moved := filepath.Join(parent, "clients", "polyctl")
+	moveDir(t, old, moved)
+	newSvc := creds.ServiceFor(moved, "")
+	newKr := creds.Keyring{Service: newSvc}
+	// The earlier release's login again after the move.
+	if err := newKr.Set("p/namecom", map[string]string{"token": "fresh"}); err != nil {
+		t.Fatal(err)
+	}
+	if p, err := keyringDirRun(t, moved); err != nil || p.Secret["token"] != "fresh" {
+		t.Fatalf("LoadProfile after the move = %+v, %v", p, err)
+	}
+	if got, err := newKr.Get(secrets.DataKeyName); err != nil || got["key"] != "k" {
+		t.Errorf("data key under the path's service = %v, %v", got, err)
+	}
+	b, _ := os.ReadFile(filepath.Join(moved, app.KeyringMarker))
+	if want := newSvc + "\n" + creds.CanonicalDir(moved) + "\n" + oldSvc + "\n"; string(b) != want {
+		t.Errorf("marker = %q, want %q", b, want)
+	}
+	// The marker's service stays a source: the next run still reads it.
+	st := keyringDirStore(t, moved)
+	if kr, ok := st.Keyring(); !ok || kr.Service != newSvc || len(kr.SourceValues(secrets.DataKeyName)) != 1 {
+		t.Errorf("keyring of the next run = %+v", kr)
+	}
+}
+
+// A copy made by an earlier release carries the original's marker but kept
+// its entries under the service of its own path: it keeps using them, and
+// a logout in the copy leaves the original alone.
+func TestCopiedConfigDirWithAnEarlierMarker(t *testing.T) {
+	parent := keyringDirSetup(t)
+	orig := filepath.Join(parent, "a")
+	writeKeyringDirConfig(t, orig)
+	origSvc := creds.ServiceFor(orig, "")
+	if err := (creds.Keyring{Service: origSvc}).Set("p/namecom", map[string]string{"token": "orig"}); err != nil {
+		t.Fatal(err)
+	}
+	cp := filepath.Join(parent, "b")
+	writeKeyringDirConfig(t, cp)
+	if err := os.WriteFile(filepath.Join(cp, app.KeyringMarker), []byte(origSvc+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cpKr := creds.Keyring{Service: creds.ServiceFor(cp, "")}
+	if err := cpKr.Set("p/namecom", map[string]string{"token": "copy"}); err != nil {
+		t.Fatal(err)
+	}
+	if p, err := keyringDirRun(t, cp); err != nil || p.Secret["token"] != "copy" {
+		t.Fatalf("LoadProfile in the copy = %+v, %v", p, err)
+	}
+	if err := keyringDirStore(t, cp).Delete("p/namecom"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := (creds.Keyring{Service: origSvc}).Get("p/namecom"); err != nil || got["token"] != "orig" {
+		t.Errorf("original's entry after a logout in the copy = %v, %v", got, err)
+	}
+}
+
+// keyringDirStore opens the credential store of the configuration
+// directory dir.
+func keyringDirStore(t *testing.T, dir string) *creds.Multi {
+	t.Helper()
+	t.Setenv(config.EnvConfigDir, dir)
+	rt := app.New(app.Flags{}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{})
+	if err := rt.Init(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := rt.Creds()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st
 }
 
 // A copy of a directory that still exists gets a service of its own,

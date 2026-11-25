@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -385,13 +386,13 @@ func (rt *Runtime) Creds() (*creds.Multi, error) {
 	// An unknown home directory leaves "" as the default directory: every
 	// directory then gets a keyring service of its own.
 	def, _ := config.DefaultDir()
-	kr, adopt, record := rt.keyringFor(dir, def)
+	kr, adopt, record, next := rt.keyringFor(dir, def)
 	st, err := creds.OpenKeyring(mode, dir, kr)
 	if err != nil {
 		return nil, err
 	}
 	if _, ok := st.Keyring(); ok && record {
-		rt.writeKeyringMarker(dir, kr.Service)
+		rt.writeKeyringMarker(dir, next)
 	}
 	if st.Warning != "" && !rt.warned {
 		rt.warned = true
@@ -399,7 +400,7 @@ func (rt *Runtime) Creds() (*creds.Multi, error) {
 	}
 	rt.store = st
 	if adopt {
-		rt.adoptSharedKeyring(cfg, st, dir)
+		rt.adoptSharedKeyring(cfg, st, dir, next)
 	}
 	rt.migrateSecrets(cfg, st)
 	return st, nil
@@ -407,72 +408,121 @@ func (rt *Runtime) Creds() (*creds.Multi, error) {
 
 // KeyringMarker is the file in a configuration directory other than the
 // default one that records the keyring service of the directory (first
-// line) and the canonical path it had when the service was chosen (second
-// line; markers written by earlier releases have the first line only). It is
-// written once the entries this directory had under the shared service of
-// earlier releases were copied to its own service.
+// line), the canonical path it had when the service was chosen (second
+// line) and the services its entries were stored under before, if any
+// (further lines). Markers written by earlier releases have the first line
+// only. It is written once the entries this directory had under an earlier
+// service were copied to its own service.
 const KeyringMarker = "keyring-service"
 
-type keyringMarker struct{ service, path string }
+type keyringMarker struct {
+	service, path string
+	// former are services the directory's entries were stored under
+	// before: an earlier release used the service of the path the
+	// directory is reached by, which changes when it moves or is spelled
+	// another way. They are read for a data key (and adopted from) but
+	// never written.
+	former []string
+}
 
 func readKeyringMarker(dir string) (keyringMarker, bool) {
 	b, err := os.ReadFile(filepath.Join(dir, KeyringMarker))
 	if err != nil {
 		return keyringMarker{}, false
 	}
-	service, path, _ := strings.Cut(string(b), "\n")
-	m := keyringMarker{service: strings.TrimSpace(service), path: strings.TrimRight(path, "\r\n")}
+	lines := strings.Split(strings.ReplaceAll(string(b), "\r\n", "\n"), "\n")
+	m := keyringMarker{service: strings.TrimSpace(lines[0])}
 	if !creds.IsDirService(m.service) {
 		return keyringMarker{}, false
+	}
+	if len(lines) > 1 {
+		m.path = lines[1]
+	}
+	for _, l := range lines[min(2, len(lines)):] {
+		if l = strings.TrimSpace(l); creds.IsDirService(l) && l != m.service && !slices.Contains(m.former, l) {
+			m.former = append(m.former, l)
+		}
 	}
 	return m, true
 }
 
-func (rt *Runtime) writeKeyringMarker(dir, service string) {
+func (rt *Runtime) writeKeyringMarker(dir string, m keyringMarker) {
 	marker := filepath.Join(dir, KeyringMarker)
-	if err := os.WriteFile(marker, []byte(service+"\n"+creds.CanonicalDir(dir)+"\n"), 0o600); err != nil {
+	body := m.service + "\n" + m.path + "\n"
+	for _, f := range m.former {
+		body += f + "\n"
+	}
+	if err := os.WriteFile(marker, []byte(body), 0o600); err != nil {
 		rt.Verbosef("write %s: %v", marker, err)
 	}
 }
 
+// sourcesAfter returns the services a keyring adopts entries from (and
+// reads other data keys from): the former services of the directory, then
+// the shared service of earlier releases. nil (the default, the shared
+// service only) when there are no former services.
+func sourcesAfter(former ...string) []string {
+	if len(former) == 0 {
+		return nil
+	}
+	return append(slices.Clone(former), creds.Service)
+}
+
 // keyringFor returns the keyring backend of the configuration directory
 // dir, whether its entries must still be adopted from where they were
-// stored before (adoptSharedKeyring), and whether the marker should record
-// the directory's current path.
+// stored before (adoptSharedKeyring), whether the marker should be
+// rewritten now, and the marker to write (now, or once the adoption
+// succeeded).
 //
 // The marker is the record of the directory's service: the service it
 // names is kept when the directory is reached by another spelling (another
 // case on a case-insensitive file system, another symbolic link) or was
 // moved, so its entries and the data key of its instance passwords stay in
-// reach. Only a copy of a directory that still exists at the recorded path
-// gets a service of its own, starting with copies of the original's
-// entries.
-func (rt *Runtime) keyringFor(dir, def string) (kr creds.Keyring, adopt, record bool) {
+// reach. A copy of a directory that still exists at the recorded path gets a
+// service of its own, starting with copies of the original's entries.
+//
+// A marker of an earlier release records no path. Those releases used the
+// service of whatever path the directory was reached by, so a mismatch
+// means the directory moved, is spelled another way or is a copy, and the
+// path's own service is where that release kept the entries it wrote
+// since (a login again after a move, the entries of a copy): it stays in
+// use, the marker's service becomes a former one, and the entries the
+// path's service lacks are copied from it.
+func (rt *Runtime) keyringFor(dir, def string) (kr creds.Keyring, adopt, record bool, next keyringMarker) {
 	svc := creds.ServiceFor(dir, def)
 	if svc == creds.Service {
-		return creds.Keyring{}, false, false
-	}
-	m, ok := readKeyringMarker(dir)
-	if !ok {
-		return creds.Keyring{Service: svc}, true, false
+		return creds.Keyring{}, false, false, keyringMarker{}
 	}
 	here := creds.CanonicalDir(dir)
-	if m.service == svc {
-		return creds.Keyring{Service: svc}, false, m.path != here
+	m, ok := readKeyringMarker(dir)
+	if !ok {
+		return creds.Keyring{Service: svc}, true, false, keyringMarker{service: svc, path: here}
 	}
-	if m.path != "" && m.path != here {
+	keep := func() (creds.Keyring, bool, bool, keyringMarker) {
+		return creds.Keyring{Service: m.service, Sources: sourcesAfter(m.former...)}, false, m.path != here, keyringMarker{service: m.service, path: here, former: m.former}
+	}
+	switch {
+	case m.service == svc:
+		return keep()
+	case m.path == "":
+		rt.Verbosef("%s was marked by an earlier release with the keyring service %q: it keeps the service of its path, %q", dir, m.service, svc)
+		former := append([]string{m.service}, m.former...)
+		return creds.Keyring{Service: svc, Sources: sourcesAfter(former...)}, true, false, keyringMarker{service: svc, path: here, former: former}
+	case m.path != here:
 		fi, err := os.Stat(m.path)
-		if err == nil {
-			if di, err := os.Stat(dir); err == nil && os.SameFile(fi, di) {
-				// The same directory, spelled another way.
-				return creds.Keyring{Service: m.service}, false, false
-			}
-			rt.Verbosef("%s is a copy of %s: it gets the keyring service %q", dir, m.path, svc)
-			return creds.Keyring{Service: svc, Sources: []string{m.service, creds.Service}}, true, false
+		if err != nil {
+			rt.Verbosef("%s moved from %s: it keeps the keyring service %q", dir, m.path, m.service)
+			return keep()
 		}
-		rt.Verbosef("%s moved from %s: it keeps the keyring service %q", dir, m.path, m.service)
+		if di, err := os.Stat(dir); err == nil && os.SameFile(fi, di) {
+			// The same directory, spelled another way.
+			kr, _, _, next := keep()
+			return kr, false, false, next
+		}
+		rt.Verbosef("%s is a copy of %s: it gets the keyring service %q", dir, m.path, svc)
+		return creds.Keyring{Service: svc, Sources: sourcesAfter(append([]string{m.service}, m.former...)...)}, true, false, keyringMarker{service: svc, path: here}
 	}
-	return creds.Keyring{Service: m.service}, false, m.path != here
+	return keep()
 }
 
 // adoptSharedKeyring copies, once per configuration directory other than
@@ -482,7 +532,7 @@ func (rt *Runtime) keyringFor(dir, def string) (kr creds.Keyring, adopt, record 
 // its service), to the directory's own service. The source entries are
 // left in place: they may belong to the default directory. It retries on a
 // later run while the keyring is out of reach or a copy fails.
-func (rt *Runtime) adoptSharedKeyring(cfg *config.Config, st *creds.Multi, dir string) {
+func (rt *Runtime) adoptSharedKeyring(cfg *config.Config, st *creds.Multi, dir string, next keyringMarker) {
 	kr, ok := st.Keyring()
 	if !ok || kr.Shared() {
 		return
@@ -512,7 +562,7 @@ func (rt *Runtime) adoptSharedKeyring(cfg *config.Config, st *creds.Multi, dir s
 		rt.Verbosef("copy keyring entries from an earlier service: %v", err)
 		return
 	}
-	rt.writeKeyringMarker(dir, kr.Service)
+	rt.writeKeyringMarker(dir, next)
 }
 
 // migrateSecrets moves the secrets of accounts converted from the legacy
