@@ -121,8 +121,9 @@ func (*provider) LoginHelp() string {
 		tokenEnv + " or pass --set token=- with the token on stdin.\n" +
 		browser + "\n" +
 		"--set account_id=<id> names the default account and --set accounts=<id>,<id>,...\n" +
-		"the accounts the login works on, when the credentials see several; the\n" +
-		"non-interactive flow requires one of them then."
+		"the accounts the login works on, when the credentials see several. A first\n" +
+		"non-interactive login requires one of them then; a later one that names\n" +
+		"neither keeps the stored selection."
 }
 
 // LoginOptions lists the --set keys of the login (see LoginHelp).

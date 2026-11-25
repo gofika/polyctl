@@ -488,3 +488,18 @@ func TestZoneHint(t *testing.T) {
 		}
 	}
 }
+
+// The login help states the rule of TestLoginSetAccounts: only a first
+// non-interactive login of credentials that see several accounts has to
+// name them; a later one keeps the stored selection.
+func TestLoginHelpNamesTheAccountRule(t *testing.T) {
+	h := strings.Join(strings.Fields((&provider{}).LoginHelp()), " ")
+	for _, want := range []string{"A first non-interactive login requires one of them then", "a later one that names neither keeps the stored selection"} {
+		if !strings.Contains(h, want) {
+			t.Errorf("the login help lacks %q: %s", want, h)
+		}
+	}
+	if strings.Contains(h, "the non-interactive flow requires one of them") {
+		t.Errorf("the login help requires the keys of every non-interactive login: %s", h)
+	}
+}
