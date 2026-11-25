@@ -104,13 +104,15 @@ func pickProfile(rt *app.Runtime, title string) (string, error) {
 	return rt.Pick().Select(title, opts, cfg.CurrentProfile)
 }
 
-// accountCells renders "profile  platform  details" for selection lists.
+// accountCells renders "profile  platform  account  user  scope  method
+// site" for selection lists: every kind of fact of an account has its own
+// cell, so that a fact one account lacks ("-") does not move the others.
 func accountCells(cfg *config.Config, ref config.AccountRef) string {
-	details := ""
+	cells := []string{ref.Profile, string(ref.Platform)}
 	if a := cfg.Profiles[ref.Profile].Platforms[ref.Platform]; a != nil {
-		details = metaSummary(a.Metadata)
+		cells = append(cells, metaCells(a.Metadata)...)
 	}
-	return prompt.Cells(ref.Profile, string(ref.Platform), details)
+	return prompt.Cells(cells...)
 }
 
 // accountLabel renders "profile / platform  details" for the lines of a

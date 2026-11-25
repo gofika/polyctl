@@ -1352,6 +1352,13 @@ func TestProfileAndAccountLabelsKeepTheirCells(t *testing.T) {
 		"a":      {Platforms: map[platform.ID]*config.Account{"godaddy": {Metadata: map[string]string{"account": "acct-a"}}, "namecom": {}}},
 		"hollow": {},
 	}}
+	cells := &config.Profile{Platforms: map[platform.ID]*config.Account{
+		"cloudflare": {Metadata: map[string]string{"account_id": "acc1", "accounts": "acc1,acc2,acc3", "email": "a@example.com", "method": "api_token"}},
+		"aws":        {Metadata: map[string]string{"account_id": "123456789012", "region": "us-east-1", "method": "sso"}},
+		"gcp":        {Metadata: map[string]string{"email": "a@b.c", "project": "p1", "projects": "p1,p2", "method": "oauth"}},
+		"namecom":    {Metadata: map[string]string{"username": "bob", "method": "token"}},
+		"aliyun":     {Metadata: map[string]string{"account_id": "77", "region": "cn-hangzhou", "site": "intl", "method": "ak"}},
+	}}
 	var got []string
 	for _, o := range profileOptions(cfg) {
 		got = append(got, o.Label)
@@ -1363,9 +1370,17 @@ func TestProfileAndAccountLabelsKeepTheirCells(t *testing.T) {
 	if l := profileOptions(cfg); l[0].Label != "a  godaddy, namecom  [current]" || l[1].Label != "hollow" {
 		t.Errorf("profile labels with a current: %+v", l)
 	}
+	cfg.Profiles["cells"] = cells
 	for ref, want := range map[config.AccountRef]string{
 		{Profile: "a", Platform: "godaddy"}: "a  godaddy  account=acct-a",
 		{Profile: "a", Platform: "namecom"}: "a  namecom",
+		// Every kind of fact keeps its cell: a login without an e-mail or
+		// a region shows "-" there, and the method stays in its column.
+		{Profile: "cells", Platform: "cloudflare"}: "cells  cloudflare  account_id=acc1 (+2 more)  email=a@example.com  -  method=api_token",
+		{Profile: "cells", Platform: "aws"}:        "cells  aws  account_id=123456789012  -  region=us-east-1  method=sso",
+		{Profile: "cells", Platform: "gcp"}:        "cells  gcp  -  email=a@b.c  project=p1 (+1 more)  method=oauth",
+		{Profile: "cells", Platform: "namecom"}:    "cells  namecom  -  username=bob  -  method=token",
+		{Profile: "cells", Platform: "aliyun"}:     "cells  aliyun  account_id=77  -  region=cn-hangzhou  method=ak  site=intl",
 	} {
 		if got := accountCells(cfg, ref); got != want {
 			t.Errorf("account label = %q, want %q", got, want)

@@ -411,21 +411,55 @@ func metaSummary(m map[string]string) string {
 	keys := []string{"account", "account_id", "email", "user", "username", "project", "region", "site", "method"}
 	var parts []string
 	for _, k := range keys {
-		if v, ok := m[k]; ok && v != "" {
-			switch k {
-			case "project":
-				// A Google Cloud account names its default project and
-				// how many more are selected.
-				v += moreProjects(m["projects"], v)
-			case "account_id":
-				// A Cloudflare login names its default account and how
-				// many more are selected.
-				v += moreProjects(m["accounts"], v)
-			}
-			parts = append(parts, k+"="+v)
+		if v := metaFact(m, k); v != "" {
+			parts = append(parts, v)
 		}
 	}
 	return strings.Join(parts, " ")
+}
+
+// metaFact is "key=value" for a key of the metadata of an account, "" when
+// the account does not have it.
+func metaFact(m map[string]string, k string) string {
+	v := m[k]
+	if v == "" {
+		return ""
+	}
+	switch k {
+	case "project":
+		// A Google Cloud account names its default project and how many
+		// more are selected.
+		v += moreProjects(m["projects"], v)
+	case "account_id":
+		// A Cloudflare login names its default account and how many more
+		// are selected.
+		v += moreProjects(m["accounts"], v)
+	}
+	return k + "=" + v
+}
+
+// metaCells is the summary of the metadata of an account as the cells of a
+// selection list, one per kind of fact whatever the platform calls it: the
+// account, the user, the project or region, the method and the site. A
+// kind the account does not have is an empty cell.
+func metaCells(m map[string]string) []string {
+	var cells []string
+	for _, kind := range [][]string{
+		{"account", "account_id"},
+		{"email", "user", "username"},
+		{"project", "region"},
+		{"method"},
+		{"site"},
+	} {
+		var facts []string
+		for _, k := range kind {
+			if v := metaFact(m, k); v != "" {
+				facts = append(facts, v)
+			}
+		}
+		cells = append(cells, strings.Join(facts, " "))
+	}
+	return cells
 }
 
 // moreProjects is " (+N more)" for the N projects (or Cloudflare accounts)
