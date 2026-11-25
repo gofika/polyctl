@@ -670,9 +670,20 @@ func (c *Client) ListRecords(ctx context.Context, zoneID string) ([]platform.Rec
 	}
 	out := make([]platform.Record, 0, len(rs))
 	for _, r := range rs {
-		out = append(out, toRecord(r))
+		out = append(out, recordIn(zoneID, r))
 	}
 	return out, nil
+}
+
+// recordIn converts a record of zoneID. Cloudflare no longer returns zone_id
+// in DNS record responses (deprecated 2024-11-30), so the zone the request
+// named fills it in.
+func recordIn(zoneID string, r apiRecord) platform.Record {
+	out := toRecord(r)
+	if out.ZoneID == "" {
+		out.ZoneID = zoneID
+	}
+	return out
 }
 
 // CreateRecord creates a record; r.Name is the FQDN.
@@ -681,7 +692,7 @@ func (c *Client) CreateRecord(ctx context.Context, zoneID string, r platform.Rec
 	if err != nil {
 		return nil, err
 	}
-	out := toRecord(*res)
+	out := recordIn(zoneID, *res)
 	return &out, nil
 }
 
@@ -694,7 +705,7 @@ func (c *Client) UpdateRecord(ctx context.Context, zoneID string, r platform.Rec
 	if err != nil {
 		return nil, err
 	}
-	out := toRecord(*res)
+	out := recordIn(zoneID, *res)
 	return &out, nil
 }
 
@@ -737,7 +748,7 @@ func (c *Client) PatchRecord(ctx context.Context, zoneID string, cur platform.Re
 	if err != nil {
 		return nil, err
 	}
-	out := toRecord(*res)
+	out := recordIn(zoneID, *res)
 	return &out, nil
 }
 

@@ -243,7 +243,7 @@ func (f *fakeCF) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				rec["proxied"] = false
 			}
 			f.records[zoneID] = append(f.records[zoneID], rec)
-			f.ok(w, rec)
+			f.ok(w, withoutZone(rec))
 		case parts[1] == "dns_records" && len(parts) == 3:
 			idx := -1
 			for i, rec := range f.records[zoneID] {
@@ -268,7 +268,7 @@ func (f *fakeCF) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					rec["proxied"] = false
 				}
 				f.records[zoneID][idx] = rec
-				f.ok(w, rec)
+				f.ok(w, withoutZone(rec))
 			case http.MethodPatch:
 				// "Update DNS Record": only the fields in the body change.
 				rec := map[string]any{}
@@ -279,7 +279,7 @@ func (f *fakeCF) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					rec[k] = v
 				}
 				f.records[zoneID][idx] = rec
-				f.ok(w, rec)
+				f.ok(w, withoutZone(rec))
 			case http.MethodDelete:
 				f.records[zoneID] = append(f.records[zoneID][:idx], f.records[zoneID][idx+1:]...)
 				f.ok(w, map[string]any{"id": parts[2]})
@@ -1326,3 +1326,46 @@ func TestListRecordsReadsEveryPage(t *testing.T) {
 }
 
 func intp(n int) *int { return &n }
+
+// withoutZone is a record as a single-record response returns it: Cloudflare
+// dropped zone_id and zone_name from DNS record responses on 2024-11-30.
+func withoutZone(rec map[string]any) map[string]any {
+	out := make(map[string]any, len(rec))
+	for k, v := range rec {
+		if k != "zone_id" && k != "zone_name" {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// The records Create, Update and Patch return carry the zone the request
+// named, though the response no longer has zone_id.
+func TestWrittenRecordsCarryZoneID(t *testing.T) {
+	_, srv := newFake(t)
+	c := openClient(t, srv, "good-token", "")
+	ctx := context.Background()
+	created, err := c.CreateRecord(ctx, "zone1", platform.Record{Name: "new.example.com", Type: "A", Value: "203.0.113.10", TTL: 300})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.ZoneID != "zone1" {
+		t.Errorf("create zone_id = %q, want zone1", created.ZoneID)
+	}
+	created.Value = "203.0.113.11"
+	updated, err := c.UpdateRecord(ctx, "zone1", *created)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.ZoneID != "zone1" {
+		t.Errorf("update zone_id = %q, want zone1", updated.ZoneID)
+	}
+	v := "203.0.113.12"
+	patched, err := c.PatchRecord(ctx, "zone1", *updated, platform.RecordPatch{Value: &v})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if patched.ZoneID != "zone1" {
+		t.Errorf("patch zone_id = %q, want zone1", patched.ZoneID)
+	}
+}
