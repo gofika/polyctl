@@ -120,7 +120,7 @@ CREATE TABLE profile_renames (         -- auth rename under way (moved, config n
 );
 ```
 
-- `resources.data` keeps the platform-native object, so `-o json` on a cached read shows the same fields as a live read. The JSON version is SQLite's `user_version`; DNS records written by 0.1.x have their `content` field renamed to `value` when the database is opened.
+- `resources.data` keeps the platform-native object, so `-o json` on a cached read shows the same fields as a live read. The JSON version is SQLite's `user_version`; DNS records written by 0.1.x have their `content` field renamed to `value` when the database is opened. Versions 4 and 5 change no row: opening an older database marks the cached sets of GCP (4) and of Cloudflare (5) as due once, because an account now covers every project or account its credentials see and a set that is still fresh would hide the new ones.
 - `domain_index` is rebuilt from `zone` and `domain` resources on every sync. DNS records are not indexed; they are looked up through their zone.
 - `ip_index` is written with every resource that carries addresses (all interface, secondary and alias addresses of an instance, load balancer addresses and DNS names, elastic / static addresses, database endpoints). A prefix matches every address it contains. Older databases get the table on first use and fill it on the next sync.
 - Everything except `instance_secrets` is a cache: deleting the file is safe, polyctl re-fetches on demand.
