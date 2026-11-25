@@ -284,7 +284,9 @@ func (x *lbIndex) entries() []lbEntry {
 
 // lbRow is a row of load-balancer list: one forwarding rule.
 type lbRow struct {
-	Name           string   `json:"name" yaml:"name"`
+	Name string `json:"name" yaml:"name"`
+	// Project is the project the row was read from.
+	Project        string   `json:"project,omitempty" yaml:"project,omitempty"`
 	Scope          string   `json:"scope" yaml:"scope"`
 	Region         string   `json:"region,omitempty" yaml:"region,omitempty"`
 	Protocol       string   `json:"protocol" yaml:"protocol"`
@@ -348,8 +350,8 @@ func (c *client) healthOf(ctx context.Context, x *lbIndex, keys []string) string
 	return strconv.Itoa(healthy) + "/" + strconv.Itoa(total) + " HEALTHY"
 }
 
-func (x *lbIndex) row(e lbEntry, profile, health string) lbRow {
-	r := lbRow{Name: e.name, Scope: e.scope(), Region: e.region, Protocol: e.protocol(), IPAddress: e.rule.IPAddress,
+func (x *lbIndex) row(e lbEntry, profile, project, health string) lbRow {
+	r := lbRow{Name: e.name, Project: project, Scope: e.scope(), Region: e.region, Protocol: e.protocol(), IPAddress: e.rule.IPAddress,
 		Port: portLabel(e.rule.PortRange), ForwardingRule: e.rule.Name, Health: health, Profile: profile, Backends: []string{}}
 	if e.proxyName != "" {
 		r.Target = string(e.proxyKind) + "/" + e.proxyName
@@ -375,7 +377,9 @@ type backendGroupView struct {
 }
 
 type backendView struct {
-	Name         string             `json:"name" yaml:"name"`
+	Name string `json:"name" yaml:"name"`
+	// Project is the project the row was read from.
+	Project      string             `json:"project,omitempty" yaml:"project,omitempty"`
 	Scope        string             `json:"scope" yaml:"scope"`
 	Region       string             `json:"region,omitempty" yaml:"region,omitempty"`
 	Protocol     string             `json:"protocol" yaml:"protocol"`
@@ -437,7 +441,9 @@ func (v *backendView) withHealth(ctx context.Context, c *client, bs *compute.Bac
 }
 
 type healthCheckRow struct {
-	Name     string `json:"name" yaml:"name"`
+	Name string `json:"name" yaml:"name"`
+	// Project is the project the row was read from.
+	Project  string `json:"project,omitempty" yaml:"project,omitempty"`
 	Scope    string `json:"scope" yaml:"scope"`
 	Region   string `json:"region,omitempty" yaml:"region,omitempty"`
 	Type     string `json:"type" yaml:"type"`
@@ -484,7 +490,9 @@ func healthCheckRowOf(hc *compute.HealthCheck) healthCheckRow {
 }
 
 type groupRow struct {
-	Name       string   `json:"name" yaml:"name"`
+	Name string `json:"name" yaml:"name"`
+	// Project is the project the row was read from.
+	Project    string   `json:"project,omitempty" yaml:"project,omitempty"`
 	Zone       string   `json:"zone" yaml:"zone"`
 	Size       int64    `json:"size" yaml:"size"`
 	NamedPorts []string `json:"named_ports" yaml:"named_ports"`
@@ -521,7 +529,9 @@ func groupDetailOf(ctx context.Context, c *client, g *compute.InstanceGroup) gro
 }
 
 type ruleRow struct {
-	Name         string `json:"name" yaml:"name"`
+	Name string `json:"name" yaml:"name"`
+	// Project is the project the row was read from.
+	Project      string `json:"project,omitempty" yaml:"project,omitempty"`
 	Scope        string `json:"scope" yaml:"scope"`
 	Region       string `json:"region,omitempty" yaml:"region,omitempty"`
 	IPAddress    string `json:"ip_address" yaml:"ip_address"`

@@ -61,21 +61,52 @@ func firewallOptions(ctx context.Context, c *client, keep func(*compute.Firewall
 	return opts, nil
 }
 
-// firewallArg fills in a missing <name> of firewall get, update and delete
-// in the interactive flow with a rule of the project; none is nothing to
-// do. With the argument given, it is returned.
-func firewallArg(ctx context.Context, rt *app.Runtime, c *client, profile string, args []string) (string, error) {
+// firewallArg settles the rule of firewall get, update and delete and the
+// client of its project. A <name> is looked for in every selected project
+// (locateProject: a pick in the interactive flow and exit code 5 otherwise
+// when several hold it). Without it the interactive flow offers the rules
+// of those projects; none is nothing to do.
+func firewallArg(ctx context.Context, rt *app.Runtime, c *client, profile string, args []string) (*client, string, error) {
 	if len(args) > 0 {
-		return args[0], nil
+		name := args[0]
+		pc, err := locateProject(ctx, rt, c, profile, "firewall rule", name, func(ctx context.Context, pc *client) (bool, error) {
+			_, err := pc.getFirewall(ctx, name)
+			return notFoundIs(err)
+		})
+		return pc, name, err
 	}
 	if !rt.Interactive() {
-		return "", app.UsageErrf("<name> is required")
+		return nil, "", app.UsageErrf("<name> is required")
 	}
-	opts, err := firewallOptions(ctx, c, nil)
+	var opts []prompt.Option
+	var clients []*client
+	several := len(c.listProjects()) > 1
+	err := c.forProjects(ctx, func(pc *client) error {
+		po, err := firewallOptions(ctx, pc, nil)
+		for _, o := range po {
+			// The value names the project too: two projects may hold a
+			// rule of one name.
+			if several {
+				o = prompt.Option{Label: joinLabel(o.Label, "project "+pc.project), Value: strconv.Itoa(len(clients)) + "/" + o.Value}
+			}
+			opts = append(opts, o)
+		}
+		clients = append(clients, pc)
+		return err
+	})
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
-	return rt.Choose(app.Choice{Title: "Firewall rule", Options: opts, Arg: "<name>", What: "firewall rule in gcp/" + profile})
+	v, err := rt.Choose(app.Choice{Title: "Firewall rule", Options: opts, Arg: "<name>", What: "firewall rule in gcp/" + profile})
+	if err != nil {
+		return nil, "", err
+	}
+	if !several {
+		return clients[0], v, nil
+	}
+	i, name, _ := strings.Cut(v, "/")
+	n, _ := strconv.Atoi(i)
+	return clients[n], name, nil
 }
 
 // askFirewallName asks the name of a new rule, checked as it is typed

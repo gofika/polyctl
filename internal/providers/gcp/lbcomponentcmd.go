@@ -3,6 +3,7 @@ package gcp
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -149,9 +150,9 @@ type located struct {
 	c       *client
 }
 
-// componentsOf lists the components of kind in every selected GCP
-// account that fit q (those named name, when it is given), and the
-// accounts searched.
+// componentsOf lists the components of kind in every selected project of
+// every selected GCP account (in the project of --project) that fit q
+// (those named name, when it is given), and the scopes searched.
 func componentsOf(ctx context.Context, rt *app.Runtime, kind lbKind, name string, q componentQuery) ([]located, []string, error) {
 	if rt.Flags.Offline {
 		return nil, nil, fmt.Errorf("%w: %ss are read live", app.ErrOffline, kind)
@@ -161,35 +162,39 @@ func componentsOf(ctx context.Context, rt *app.Runtime, kind lbKind, name string
 			return nil, nil, err
 		}
 	}
-	accounts, err := gcpAccounts(rt)
+	scopes, err := gcpScopes(rt)
 	if err != nil {
 		return nil, nil, err
 	}
 	var hits []located
 	var searched []string
-	for _, a := range accounts {
-		searched = append(searched, "gcp/"+a.Profile)
-		c, err := openProfile(ctx, rt, a.Profile)
+	for _, sc := range scopes {
+		searched = append(searched, sc.String())
+		c, err := openScope(ctx, rt, sc)
 		if err != nil {
 			return nil, nil, err
 		}
 		list, unreachable, err := c.listComponents(ctx, kind)
 		if err != nil {
-			return nil, nil, fmt.Errorf("%w (gcp/%s)", err, a.Profile)
+			if len(scopes) > 1 && isAPIDisabled(err) {
+				continue
+			}
+			return nil, nil, fmt.Errorf("%w (%s)", err, sc)
 		}
 		if len(unreachable) > 0 {
-			rt.Infof("warning: gcp/%s: unreachable scopes: %s", a.Profile, strings.Join(unreachable, ", "))
+			rt.Infof("warning: %s: unreachable scopes: %s", sc, strings.Join(unreachable, ", "))
 		}
 		for _, x := range list {
 			if (name == "" || x.name == name) && q.fits(x) {
-				hits = append(hits, located{component: x, profile: a.Profile, c: c})
+				hits = append(hits, located{component: x, profile: sc.profile, c: c})
 			}
 		}
 	}
 	return hits, searched, nil
 }
 
-// locateComponent finds a component by name in every selected GCP account.
+// locateComponent finds a component by name in every selected project of
+// every selected GCP account.
 // Without --region or --global a regional match wins over a global one.
 // Several matches are a pick in the interactive flow and ambiguous (exit
 // code 5) otherwise; none is exit code 4.
@@ -215,16 +220,17 @@ func locateComponent(ctx context.Context, rt *app.Runtime, kind lbKind, name str
 	case 1:
 		return &hits[0], nil
 	}
-	var names []string
+	cands := make([]cand, 0, len(hits))
 	for _, h := range hits {
-		names = append(names, fmt.Sprintf("gcp/%s (%s)", h.profile, h.where()))
+		cands = append(cands, cand{profile: h.profile, project: h.c.project, where: h.where()})
 	}
-	hint := "pass --profile <name>, --region <r> or --global to choose"
+	locFlag := regionFlags
 	if kind == kindInstanceGroup {
-		hint = "pass --profile <name> or --zone <z> to choose"
+		locFlag = "--zone <z>"
 	}
-	amb := &app.AmbiguousError{What: fmt.Sprintf("%s %q", kind, name), Candidates: names, Hint: hint}
-	h, err := disambiguate(rt, amb, hits, func(h located) string { return joinLabel(h.name, h.where(), "gcp/"+h.profile) })
+	h, err := disambiguate(rt, ambiguous(string(kind), name, cands, locFlag, ""), hits, func(h located) string {
+		return joinLabel(h.name, h.where(), "project "+h.c.project, "gcp/"+h.profile)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -318,30 +324,39 @@ narrows it). No match is exit code 0 with an empty list and a note.`,
 			if err != nil {
 				return err
 			}
-			list, unreachable, err := c.listComponents(ctx, spec.kind)
-			if err != nil {
-				return fmt.Errorf("%w (gcp/%s)", err, profile)
-			}
-			if len(unreachable) > 0 {
-				rt.Infof("warning: unreachable scopes: %s", strings.Join(unreachable, ", "))
-			}
 			values := []any{}
 			var cells [][]string
-			for _, x := range list {
-				if !q.fits(x) {
-					continue
+			// Every selected project (--project: that one alone); the
+			// project is the second column and a field of each row.
+			err = c.forProjects(ctx, func(c *client) error {
+				list, unreachable, err := c.listComponents(ctx, spec.kind)
+				if err != nil {
+					return fmt.Errorf("%w (gcp/%s)", err, profile)
 				}
-				v, row := spec.row(x)
-				values = append(values, v)
-				cells = append(cells, row)
+				if len(unreachable) > 0 {
+					rt.Infof("warning: project %s: unreachable scopes: %s", c.project, strings.Join(unreachable, ", "))
+				}
+				for _, x := range list {
+					if !q.fits(x) {
+						continue
+					}
+					v, row := spec.row(x)
+					values = append(values, withProject(v, c.project))
+					cells = append(cells, append([]string{row[0], c.project}, row[1:]...))
+				}
+				return nil
+			})
+			if err != nil {
+				return err
 			}
 			if len(values) == 0 {
-				rt.Infof("note: no %s in project %s (gcp/%s)", spec.plural, c.project, profile)
+				rt.Infof("note: no %s in %s (gcp/%s)", spec.plural, c.projectsLabel(), profile)
 			} else {
-				rt.Infof("%d %s in project %s via gcp/%s", len(values), spec.plural, c.project, profile)
+				rt.Infof("%d %s in %s via gcp/%s", len(values), spec.plural, c.projectsLabel(), profile)
 			}
+			headers := append([]string{spec.headers[0], "PROJECT"}, spec.headers[1:]...)
 			return rt.Render(values, func() output.Grid {
-				return output.Grid{Headers: spec.headers, Rows: cells, Empty: "no " + spec.plural}
+				return output.Grid{Headers: headers, Rows: cells, Empty: "no " + spec.plural}
 			})
 		},
 	}
@@ -395,7 +410,8 @@ the selected accounts are offered.`,
 				return err
 			}
 			v, g := spec.detail(ctx, l)
-			return rt.Render(v, func() output.Grid { return g })
+			g.Rows = append(g.Rows, []string{"project", l.c.project})
+			return rt.Render(withProject(v, l.c.project), func() output.Grid { return g })
 		},
 	}
 	query = queryFlags(cmd, spec, string(spec.kind))
@@ -430,7 +446,7 @@ func componentDeleteCmd(rt *app.Runtime, spec componentSpec) *cobra.Command {
 					rt.Infof("  %s", strings.Join(r, "  "))
 				}
 			}
-			target := platform.Target{Platform: platform.GCP, Profile: l.profile, Region: l.region, Zone: l.zone}
+			target := platform.Target{Platform: platform.GCP, Profile: l.profile, Project: l.c.project, Region: l.region, Zone: l.zone}
 			change := platform.Change{Resource: res, Action: platform.Deleted, Detail: l.where()}
 			if done, err := rt.WouldWrite(target, change); done || err != nil {
 				return err
@@ -559,4 +575,18 @@ func newInstanceGroupCmd(rt *app.Runtime) *cobra.Command {
 				"network", dash(d.Network), "members", dash(strings.Join(members, ", ")))
 		},
 	})
+}
+
+// withProject returns the row v (a struct) with its Project field set.
+func withProject(v any, project string) any {
+	rv := reflect.ValueOf(v)
+	if rv.Kind() != reflect.Struct {
+		return v
+	}
+	cp := reflect.New(rv.Type()).Elem()
+	cp.Set(rv)
+	if f := cp.FieldByName("Project"); f.IsValid() && f.Kind() == reflect.String && f.CanSet() {
+		f.SetString(project)
+	}
+	return cp.Interface()
 }

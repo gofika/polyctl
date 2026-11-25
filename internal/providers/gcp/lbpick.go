@@ -18,7 +18,7 @@ import (
 // The interactive picks of the load balancer commands.
 
 // lbTargetLabel: "lb-web-1  us-central1  HTTP,HTTPS  203.0.113.5:80,
-// 203.0.113.5:443  gcp/lab".
+// 203.0.113.5:443  project p1  gcp/lab".
 func lbTargetLabel(t *lbTarget) string {
 	var protos, fronts []string
 	for _, e := range t.entries {
@@ -33,7 +33,7 @@ func lbTargetLabel(t *lbTarget) string {
 	if scope == "" {
 		scope = "global"
 	}
-	return joinLabel(t.name, scope, strings.Join(protos, ","), strings.Join(fronts, ", "), "gcp/"+t.profile)
+	return joinLabel(t.name, scope, strings.Join(protos, ","), strings.Join(fronts, ", "), "project "+t.c.project, "gcp/"+t.profile)
 }
 
 // lbTargets lists the load balancers of every selected GCP account, read
@@ -43,22 +43,26 @@ func lbTargets(ctx context.Context, rt *app.Runtime, region string, all bool, ke
 	if rt.Flags.Offline {
 		return nil, fmt.Errorf("%w: load balancers are read live", app.ErrOffline)
 	}
-	accounts, err := gcpAccounts(rt)
+	scopes, err := gcpScopes(rt)
 	if err != nil {
 		return nil, err
 	}
 	var out []*lbTarget
-	for _, a := range accounts {
-		c, err := openProfile(ctx, rt, a.Profile)
+	for _, sc := range scopes {
+		a := struct{ Profile string }{sc.profile}
+		c, err := openScope(ctx, rt, sc)
 		if err != nil {
 			return nil, err
 		}
 		x, err := c.loadLBIndex(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("%w (gcp/%s)", err, a.Profile)
+			if len(scopes) > 1 && isAPIDisabled(err) {
+				continue
+			}
+			return nil, fmt.Errorf("%w (%s)", err, sc)
 		}
 		if len(x.unreachable) > 0 {
-			rt.Infof("warning: gcp/%s: unreachable scopes: %s", a.Profile, strings.Join(x.unreachable, ", "))
+			rt.Infof("warning: %s: unreachable scopes: %s", sc, strings.Join(x.unreachable, ", "))
 		}
 		byKey := map[string]*lbTarget{}
 		var order []string
@@ -84,6 +88,9 @@ func lbTargets(ctx context.Context, rt *app.Runtime, region string, all bool, ke
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].profile != out[j].profile {
 			return out[i].profile < out[j].profile
+		}
+		if out[i].c.project != out[j].c.project {
+			return out[i].c.project < out[j].c.project
 		}
 		if out[i].name != out[j].name {
 			return out[i].name < out[j].name

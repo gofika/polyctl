@@ -98,8 +98,8 @@ func loadCertMaterial(rt *app.Runtime, certFile, keyFile string) (*platform.Cert
 	return platform.ParseCertMaterial(c, k, instanceClock.Now())
 }
 
-func sslTarget(profile, region string) platform.Target {
-	return platform.Target{Platform: platform.GCP, Profile: profile, Region: region}
+func sslTarget(c *client, profile, region string) platform.Target {
+	return platform.Target{Platform: platform.GCP, Profile: profile, Project: c.project, Region: region}
 }
 
 // storeSSLCert upserts a certificate into the inventory.
@@ -132,7 +132,9 @@ func dropSSLCert(ctx context.Context, rt *app.Runtime, c *client, profile, regio
 
 // sslCertView is a row of ssl-certificate list.
 type sslCertView struct {
-	Name              string   `json:"name" yaml:"name"`
+	Name string `json:"name" yaml:"name"`
+	// Project is the project of the certificate.
+	Project           string   `json:"project,omitempty" yaml:"project,omitempty"`
 	Scope             string   `json:"scope" yaml:"scope"`
 	Region            string   `json:"region" yaml:"region"`
 	Type              string   `json:"type" yaml:"type"`
@@ -176,49 +178,57 @@ left. No certificate is exit code 0 with an empty list and a note.`,
 			if err != nil {
 				return err
 			}
-			var certs []*compute.SslCertificate
-			if all {
-				var unreachable []string
-				if certs, unreachable, err = c.listAllCerts(ctx); err != nil {
-					return err
-				}
-				if len(unreachable) > 0 {
-					rt.Infof("warning: unreachable scopes: %s", strings.Join(unreachable, ", "))
-				}
-			} else if certs, err = (certScope{c: c, region: region}).listCerts(ctx); err != nil {
-				return fmt.Errorf("%w (gcp/%s)", err, profile)
-			}
-			users, err := c.proxyUsers(ctx)
-			if err != nil {
-				return err
-			}
 			now := instanceClock.Now()
 			rows := []sslCertView{}
 			orphans := 0
-			for _, sc := range certs {
-				inv := sslCertificateFrom(sc)
-				v := sslCertView{Name: inv.Name, Scope: inv.Scope, Region: inv.Region, Type: inv.Type, Domains: inv.Domains,
-					ExpireTime: inv.ExpireTime, Description: inv.Description, CreationTimestamp: inv.CreationTimestamp,
-					UsedBy: users[resourceKey(sc.SelfLink)]}
-				if v.Domains == nil {
-					v.Domains = []string{}
+			// Every selected project (--project: that one alone).
+			err = c.forProjects(ctx, func(c *client) error {
+				var certs []*compute.SslCertificate
+				var err error
+				if all {
+					var unreachable []string
+					if certs, unreachable, err = c.listAllCerts(ctx); err != nil {
+						return err
+					}
+					if len(unreachable) > 0 {
+						rt.Infof("warning: project %s: unreachable scopes: %s", c.project, strings.Join(unreachable, ", "))
+					}
+				} else if certs, err = (certScope{c: c, region: region}).listCerts(ctx); err != nil {
+					return fmt.Errorf("%w (gcp/%s)", err, profile)
 				}
-				if v.UsedBy == nil {
-					v.UsedBy = []string{}
+				users, err := c.proxyUsers(ctx)
+				if err != nil {
+					return err
 				}
-				if f := factsOf(sc); !f.Expire.IsZero() {
-					d := daysLeft(f.Expire, now)
-					v.DaysRemaining = &d
+				for _, sc := range certs {
+					inv := sslCertificateFrom(sc)
+					v := sslCertView{Name: inv.Name, Project: c.project, Scope: inv.Scope, Region: inv.Region, Type: inv.Type, Domains: inv.Domains,
+						ExpireTime: inv.ExpireTime, Description: inv.Description, CreationTimestamp: inv.CreationTimestamp,
+						UsedBy: users[resourceKey(sc.SelfLink)]}
+					if v.Domains == nil {
+						v.Domains = []string{}
+					}
+					if v.UsedBy == nil {
+						v.UsedBy = []string{}
+					}
+					if f := factsOf(sc); !f.Expire.IsZero() {
+						d := daysLeft(f.Expire, now)
+						v.DaysRemaining = &d
+					}
+					if filter && (v.DaysRemaining == nil || *v.DaysRemaining > expiring) {
+						continue
+					}
+					if v.Type == certSelfManaged && len(v.UsedBy) == 0 {
+						orphans++
+					}
+					rows = append(rows, v)
 				}
-				if filter && (v.DaysRemaining == nil || *v.DaysRemaining > expiring) {
-					continue
-				}
-				if v.Type == certSelfManaged && len(v.UsedBy) == 0 {
-					orphans++
-				}
-				rows = append(rows, v)
+				return nil
+			})
+			if err != nil {
+				return err
 			}
-			where := "project " + c.project
+			where := c.projectsLabel()
 			if !all {
 				where = (certScope{region: region}).label() + " certificates of " + where
 			}
@@ -234,7 +244,7 @@ left. No certificate is exit code 0 with an empty list and a note.`,
 				}
 			}
 			return rt.Render(rows, func() output.Grid {
-				g := output.Grid{Headers: []string{"NAME", "SCOPE", "REGION", "TYPE", "DOMAINS", "EXPIRES", "DAYS", "USED-BY"}, Empty: "no SSL certificates"}
+				g := output.Grid{Headers: []string{"NAME", "PROJECT", "SCOPE", "REGION", "TYPE", "DOMAINS", "EXPIRES", "DAYS", "USED-BY"}, Empty: "no SSL certificates"}
 				for _, v := range rows {
 					name := v.Name
 					if v.Type == certSelfManaged && len(v.UsedBy) == 0 {
@@ -247,7 +257,7 @@ left. No certificate is exit code 0 with an empty list and a note.`,
 					if v.ExpireTime != "" {
 						expires = v.ExpireTime
 					}
-					g.Rows = append(g.Rows, []string{name, v.Scope, dash(v.Region), v.Type, strings.Join(v.Domains, ","), expires, days, dash(strings.Join(v.UsedBy, ","))})
+					g.Rows = append(g.Rows, []string{name, v.Project, v.Scope, dash(v.Region), v.Type, strings.Join(v.Domains, ","), expires, days, dash(strings.Join(v.UsedBy, ","))})
 				}
 				return g
 			})
@@ -343,7 +353,7 @@ as it is typed against the certificates of the scope.`,
 			}
 			change := platform.Change{Resource: "ssl-certificate/" + name, Action: platform.Created, ID: s.certURL(name),
 				Detail: fmt.Sprintf("%s, %s, expires %s", s.label(), strings.Join(mat.Names(), ","), mat.Leaf.NotAfter.UTC().Format("2006-01-02"))}
-			if done, err := rt.WouldWrite(sslTarget(profile, region), change); done || err != nil {
+			if done, err := rt.WouldWrite(sslTarget(c, profile, region), change); done || err != nil {
 				return err
 			}
 			if err := s.insertCert(ctx, name, description, mat); err != nil {
@@ -353,7 +363,7 @@ as it is typed against the certificates of the scope.`,
 				storeSSLCert(ctx, rt, c, profile, sc)
 			}
 			rt.Infof("created certificate %s (%s) in project %s via gcp/%s", name, s.label(), c.project, profile)
-			return rt.RenderReport(platform.Report{Target: sslTarget(profile, region), Changes: []platform.Change{change}})
+			return rt.RenderReport(platform.Report{Target: sslTarget(c, profile, region), Changes: []platform.Change{change}})
 		},
 	}
 	sf.register(cmd, "certificate")
@@ -411,6 +421,9 @@ covering the certificate's domain preselected.`,
 			if err != nil {
 				return err
 			}
+			if c, err = certProject(ctx, rt, c, profile, name, region, all); err != nil {
+				return err
+			}
 			if name == "" || all {
 				t, err := pickCert(ctx, rt, c, profile, name, func(sc *compute.SslCertificate, _ []string) bool { return sc.Type != certManaged },
 					"Google-managed certificates are renewed by Google")
@@ -424,7 +437,7 @@ covering the certificate's domain preselected.`,
 				return err
 			}
 			s := certScope{c: c, region: region}
-			target := sslTarget(profile, region)
+			target := sslTarget(c, profile, region)
 			old, err := s.getCert(ctx, name)
 			if err != nil {
 				return fmt.Errorf("certificate %s (%s, gcp/%s): %w", name, s.label(), profile, err)
@@ -531,6 +544,9 @@ without --region / --global is looked up in every scope.`,
 			if err != nil {
 				return err
 			}
+			if c, err = certProject(ctx, rt, c, profile, name, region, all); err != nil {
+				return err
+			}
 			if name == "" || all {
 				t, err := pickCert(ctx, rt, c, profile, name, func(_ *compute.SslCertificate, users []string) bool { return len(users) == 0 },
 					"a target HTTPS proxy uses them")
@@ -563,7 +579,7 @@ without --region / --global is looked up in every scope.`,
 			rt.Infof("  domains   %s", strings.Join(f.Domains, ", "))
 			rt.Infof("  expires   %s", expires)
 			change := platform.Change{Resource: "ssl-certificate/" + name, Action: platform.Deleted, ID: s.certURL(name), Detail: s.label()}
-			if done, err := rt.WouldWrite(sslTarget(profile, region), change); done || err != nil {
+			if done, err := rt.WouldWrite(sslTarget(c, profile, region), change); done || err != nil {
 				return err
 			}
 			ok, err := rt.Confirm(ctx, fmt.Sprintf("Delete certificate %s (%s, project %s)?", name, s.label(), c.project), false)
@@ -581,9 +597,38 @@ without --region / --global is looked up in every scope.`,
 			}
 			dropSSLCert(ctx, rt, c, profile, region, name)
 			rt.Infof("deleted certificate %s in project %s via gcp/%s", name, c.project, profile)
-			return rt.RenderReport(platform.Report{Target: sslTarget(profile, region), Changes: []platform.Change{change}})
+			return rt.RenderReport(platform.Report{Target: sslTarget(c, profile, region), Changes: []platform.Change{change}})
 		},
 	}
 	sf.register(cmd, "certificate")
 	return cmd
+}
+
+// certProject settles the project of the certificate that update and
+// delete act on, when several projects are selected: a certificate named
+// with its scope is looked for in each (locateProject), one named without
+// a scope in every scope of each, and without a name the interactive flow
+// asks for the project first, then offers its certificates.
+func certProject(ctx context.Context, rt *app.Runtime, c *client, profile, name, region string, all bool) (*client, error) {
+	switch {
+	case name == "":
+		return chooseListProject(rt, c, profile)
+	case all:
+		return locateProject(ctx, rt, c, profile, "certificate", name, func(ctx context.Context, pc *client) (bool, error) {
+			certs, _, err := pc.listAllCerts(ctx)
+			if err != nil {
+				return false, err
+			}
+			for _, sc := range certs {
+				if sc.Name == name {
+					return true, nil
+				}
+			}
+			return false, nil
+		})
+	}
+	return locateProject(ctx, rt, c, profile, "certificate", name, func(ctx context.Context, pc *client) (bool, error) {
+		_, err := (certScope{c: pc, region: region}).getCert(ctx, name)
+		return notFoundIs(err)
+	})
 }

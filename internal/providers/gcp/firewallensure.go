@@ -647,7 +647,7 @@ submits them.`,
 				l := located
 				plan.Add(c.EnsureInstanceTag(l.zone, l.inst, tag, wait, timeout, func(in *compute.Instance) { storeInstance(ctx, rt, l.c, l.profile, in) }))
 			}
-			return rt.Ensure(ctx, "gcp.compute.firewall.ensure", platform.Target{Platform: platform.GCP, Profile: profile, Region: region}, &plan)
+			return rt.Ensure(ctx, "gcp.compute.firewall.ensure", platform.Target{Platform: platform.GCP, Profile: profile, Project: c.project, Region: region}, &plan)
 		},
 	}
 	rf.register(cmd, true)
@@ -747,5 +747,5 @@ func runFirewallEnsure(cmd *cobra.Command, rt *app.Runtime, rf *ruleFlags, name 
 	}
 	var plan platform.Plan
 	plan.Add(step)
-	return rt.Ensure(ctx, "gcp.compute.firewall.ensure", firewallTarget(profile), &plan)
+	return rt.Ensure(ctx, "gcp.compute.firewall.ensure", firewallTarget(c, profile), &plan)
 }

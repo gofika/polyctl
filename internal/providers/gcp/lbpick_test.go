@@ -75,7 +75,7 @@ func TestLBPicks(t *testing.T) {
 	if err := h.run("compute", "load-balancer", "get"); err != nil || !strings.Contains(h.stdout.String(), `"lb-web-1"`) {
 		t.Fatalf("get = %v", err)
 	}
-	if l := prompttest.Labels(p.Find("Load balancer").Options); !strings.Contains(l, "lb-web-1  us-central1  HTTP,HTTPS  34.1.2.3:443, 34.1.2.3:80  gcp/lab") || !strings.Contains(l, "lb-tcp-db") {
+	if l := prompttest.Labels(p.Find("Load balancer").Options); !strings.Contains(l, "lb-web-1  us-central1  HTTP,HTTPS  34.1.2.3:443, 34.1.2.3:80  project proj  gcp/lab") || !strings.Contains(l, "lb-tcp-db") {
 		t.Errorf("load balancers offered:\n%s", l)
 	}
 

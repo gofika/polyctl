@@ -13,6 +13,7 @@ import (
 	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/config"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt"
 )
 
 // A GCP command works on the selected projects of its account, or on the
@@ -148,6 +149,10 @@ func scopeLabels(scopes []scope) string {
 	return strings.Join(names, ", ")
 }
 
+// regionFlags are the flags that choose among the scopes of a regional or
+// global resource.
+const regionFlags = "--region <r> or --global"
+
 // cand is one candidate of an ambiguous lookup: where it is and what tells
 // it from the others.
 type cand struct {
@@ -276,4 +281,28 @@ func notFoundIs(err error) (bool, error) {
 		return false, nil
 	}
 	return false, err
+}
+
+// chooseListProject asks, in the interactive flow, which project a pick
+// without a name lists from, when several are selected (the default
+// project proposed). With one project, with --project and in the
+// non-interactive flow nothing is asked: the client's project is used.
+func chooseListProject(rt *app.Runtime, c *client, profile string) (*client, error) {
+	projects := c.listProjects()
+	if len(projects) < 2 || !rt.Interactive() {
+		return c.inProject(projects[0]), nil
+	}
+	opts := make([]prompt.Option, 0, len(projects))
+	for i, p := range projects {
+		mark := ""
+		if i == 0 {
+			mark = "default"
+		}
+		opts = append(opts, prompt.Option{Label: joinLabel(p, mark), Value: p})
+	}
+	p, err := rt.Choose(app.Choice{Title: "Project", Options: opts, Default: projects[0], Arg: "--project", What: "selected project of gcp/" + profile})
+	if err != nil {
+		return nil, err
+	}
+	return c.inProject(p), nil
 }

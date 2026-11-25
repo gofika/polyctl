@@ -234,3 +234,36 @@ func (c *client) eachProject(ctx context.Context, fn func(ctx context.Context, p
 	}
 	return out, e
 }
+
+// forProjects runs fn with the client of every project the lists of the
+// client cover (listProjects). A project whose API is not enabled is
+// skipped when there are several; any other failure ends the walk, named
+// after its project.
+func (c *client) forProjects(ctx context.Context, fn func(pc *client) error) error {
+	projects := c.listProjects()
+	for _, p := range projects {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := fn(c.inProject(p)); err != nil {
+			if len(projects) == 1 {
+				return err
+			}
+			if isAPIDisabled(err) {
+				continue
+			}
+			return fmt.Errorf("project %s: %w", p, err)
+		}
+	}
+	return nil
+}
+
+// projectsLabel names the projects the lists of the client cover:
+// "project p1", or "projects p1, p2".
+func (c *client) projectsLabel() string {
+	projects := c.listProjects()
+	if len(projects) == 1 {
+		return "project " + projects[0]
+	}
+	return "projects " + strings.Join(projects, ", ")
+}

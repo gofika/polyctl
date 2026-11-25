@@ -55,7 +55,9 @@ func networkMode(n *compute.Network) string {
 
 // networkView is the output shape of a VPC network.
 type networkView struct {
-	Name        string `json:"name" yaml:"name"`
+	Name string `json:"name" yaml:"name"`
+	// Project is the project of the network.
+	Project     string `json:"project,omitempty" yaml:"project,omitempty"`
 	Mode        string `json:"mode" yaml:"mode"`
 	RoutingMode string `json:"routing_mode" yaml:"routing_mode"`
 	// MTU is 0 when the network never set one (it then uses 1460).
@@ -106,7 +108,9 @@ type secondaryRange struct {
 
 // subnetView is the output shape of a subnetwork.
 type subnetView struct {
-	Name            string           `json:"name" yaml:"name"`
+	Name string `json:"name" yaml:"name"`
+	// Project is the project of the subnetwork (set by subnet list).
+	Project         string           `json:"project,omitempty" yaml:"project,omitempty"`
 	Region          string           `json:"region" yaml:"region"`
 	Network         string           `json:"network" yaml:"network"`
 	Range           string           `json:"ip_cidr_range" yaml:"ip_cidr_range"`
@@ -148,13 +152,13 @@ func sortSubnets(list []subnetView) {
 }
 
 func subnetGrid(list []subnetView) output.Grid {
-	g := output.Grid{Headers: []string{"NAME", "REGION", "NETWORK", "RANGE", "SECONDARY-RANGES", "PURPOSE", "ROLE"}, Empty: "no subnetworks"}
+	g := output.Grid{Headers: []string{"NAME", "PROJECT", "REGION", "NETWORK", "RANGE", "SECONDARY-RANGES", "PURPOSE", "ROLE"}, Empty: "no subnetworks"}
 	for _, s := range list {
 		var sec []string
 		for _, r := range s.SecondaryRanges {
 			sec = append(sec, r.Name+"="+r.Range)
 		}
-		g.Rows = append(g.Rows, []string{s.Name, s.Region, s.Network, s.Range, strings.Join(sec, ","), s.Purpose, s.Role})
+		g.Rows = append(g.Rows, []string{s.Name, s.Project, s.Region, s.Network, s.Range, strings.Join(sec, ","), s.Purpose, s.Role})
 	}
 	return g
 }
@@ -306,24 +310,37 @@ func networkListCmd(rt *app.Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			nets, err := c.listNetworks(cmd.Context())
+			rows := []networkView{}
+			err = c.forProjects(cmd.Context(), func(pc *client) error {
+				nets, err := pc.listNetworks(cmd.Context())
+				if err != nil {
+					return err
+				}
+				for _, n := range nets {
+					v := networkFromAPI(n)
+					v.Project = pc.project
+					rows = append(rows, v)
+				}
+				return nil
+			})
 			if err != nil {
 				return err
 			}
-			rows := make([]networkView, 0, len(nets))
-			for _, n := range nets {
-				rows = append(rows, networkFromAPI(n))
-			}
-			sort.Slice(rows, func(i, j int) bool { return rows[i].Name < rows[j].Name })
+			sort.Slice(rows, func(i, j int) bool {
+				if rows[i].Project != rows[j].Project {
+					return rows[i].Project < rows[j].Project
+				}
+				return rows[i].Name < rows[j].Name
+			})
 			if len(rows) == 0 {
-				rt.Infof("note: project %s has no VPC networks (gcp/%s)", c.project, profile)
+				rt.Infof("note: no VPC networks in %s (gcp/%s)", c.projectsLabel(), profile)
 			} else {
-				rt.Infof("%d network(s) in project %s via gcp/%s", len(rows), c.project, profile)
+				rt.Infof("%d network(s) in %s via gcp/%s", len(rows), c.projectsLabel(), profile)
 			}
 			return rt.Render(rows, func() output.Grid {
-				g := output.Grid{Headers: []string{"NAME", "MODE", "ROUTING", "MTU", "SUBNETS"}, Empty: "no networks"}
+				g := output.Grid{Headers: []string{"NAME", "PROJECT", "MODE", "ROUTING", "MTU", "SUBNETS"}, Empty: "no networks"}
 				for _, n := range rows {
-					g.Rows = append(g.Rows, []string{n.Name, n.Mode, n.RoutingMode, mtuLabel(n.MTU), strconv.Itoa(len(n.Subnetworks))})
+					g.Rows = append(g.Rows, []string{n.Name, n.Project, n.Mode, n.RoutingMode, mtuLabel(n.MTU), strconv.Itoa(len(n.Subnetworks))})
 				}
 				return g
 			})
@@ -344,6 +361,17 @@ func networkGetCmd(rt *app.Runtime) *cobra.Command {
 				return err
 			}
 			name := app.Arg(args, 0)
+			if name != "" {
+				c, err = locateProject(ctx, rt, c, profile, "VPC network", name, func(ctx context.Context, pc *client) (bool, error) {
+					_, err := pc.network(ctx, name)
+					return notFoundIs(err)
+				})
+			} else {
+				c, err = chooseListProject(rt, c, profile)
+			}
+			if err != nil {
+				return err
+			}
 			if name == "" {
 				nets, err := c.listNetworks(ctx)
 				if err != nil {
@@ -363,6 +391,7 @@ func networkGetCmd(rt *app.Runtime) *cobra.Command {
 				return fmt.Errorf("%w (gcp/%s)", err, profile)
 			}
 			v := networkFromAPI(n)
+			v.Project = c.project
 			subnets, err := c.listSubnets(ctx, "", n.Name)
 			if err != nil {
 				return err
@@ -373,7 +402,7 @@ func networkGetCmd(rt *app.Runtime) *cobra.Command {
 			sortSubnets(v.Subnets)
 			rt.Infof("network %s in project %s via gcp/%s", v.Name, c.project, profile)
 			return rt.Render(v, func() output.Grid {
-				g := output.KV("name", v.Name, "mode", v.Mode, "routing", v.RoutingMode, "mtu", mtuLabel(v.MTU),
+				g := output.KV("name", v.Name, "project", v.Project, "mode", v.Mode, "routing", v.RoutingMode, "mtu", mtuLabel(v.MTU),
 					"description", v.Description, "created", v.CreationTimestamp)
 				if v.IPv4Range != "" {
 					g.Rows = append(g.Rows, []string{"ipv4 range", v.IPv4Range})
@@ -413,22 +442,32 @@ REGIONAL_MANAGED_PROXY, GLOBAL_MANAGED_PROXY or INTERNAL_HTTPS_LOAD_BALANCER).`,
 			if err != nil {
 				return err
 			}
-			subnets, err := c.listSubnets(ctx, region, lastSegment(network))
+			rows := []subnetView{}
+			err = c.forProjects(ctx, func(pc *client) error {
+				subnets, err := pc.listSubnets(ctx, region, lastSegment(network))
+				if err != nil {
+					return err
+				}
+				var own []subnetView
+				for _, s := range subnets {
+					if proxyOnly && !isProxyOnly(s) {
+						continue
+					}
+					v := subnetFromAPI(s)
+					v.Project = pc.project
+					own = append(own, v)
+				}
+				sortSubnets(own)
+				rows = append(rows, own...)
+				return nil
+			})
 			if err != nil {
 				return err
 			}
-			rows := make([]subnetView, 0, len(subnets))
-			for _, s := range subnets {
-				if proxyOnly && !isProxyOnly(s) {
-					continue
-				}
-				rows = append(rows, subnetFromAPI(s))
-			}
-			sortSubnets(rows)
 			if len(rows) == 0 {
-				rt.Infof("note: no matching subnetworks in project %s (gcp/%s)", c.project, profile)
+				rt.Infof("note: no matching subnetworks in %s (gcp/%s)", c.projectsLabel(), profile)
 			} else {
-				rt.Infof("%d subnetwork(s) in project %s via gcp/%s", len(rows), c.project, profile)
+				rt.Infof("%d subnetwork(s) in %s via gcp/%s", len(rows), c.projectsLabel(), profile)
 			}
 			return rt.Render(rows, func() output.Grid { return subnetGrid(rows) })
 		},

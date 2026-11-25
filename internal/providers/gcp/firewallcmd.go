@@ -45,8 +45,8 @@ func ruleNetwork(ctx context.Context, rt *app.Runtime, c *client, profile, flag 
 	return builtinNetwork(ctx, rt, c)
 }
 
-func firewallTarget(profile string) platform.Target {
-	return platform.Target{Platform: platform.GCP, Profile: profile}
+func firewallTarget(c *client, profile string) platform.Target {
+	return platform.Target{Platform: platform.GCP, Profile: profile, Project: c.project}
 }
 
 func firewallListCmd(rt *app.Runtime) *cobra.Command {
@@ -65,43 +65,62 @@ of that network, matched by its exact name.`,
 			if err != nil {
 				return err
 			}
-			all, err := c.listFirewalls(cmd.Context())
+			network := lastSegment(network)
+			// The rules of every selected project (of --project alone),
+			// each project's own by priority.
+			type projectRule struct {
+				project string
+				fw      *compute.Firewall
+			}
+			var list []projectRule
+			err = c.forProjects(cmd.Context(), func(pc *client) error {
+				all, err := pc.listFirewalls(cmd.Context())
+				if err != nil {
+					return err
+				}
+				for _, fw := range all {
+					if network == "" || lastSegment(fw.Network) == network {
+						list = append(list, projectRule{pc.project, fw})
+					}
+				}
+				return nil
+			})
 			if err != nil {
 				return err
 			}
-			network := lastSegment(network)
-			var list []*compute.Firewall
-			for _, fw := range all {
-				if network == "" || lastSegment(fw.Network) == network {
-					list = append(list, fw)
+			sort.SliceStable(list, func(i, j int) bool {
+				if list[i].project != list[j].project {
+					return list[i].project < list[j].project
 				}
-			}
-			sort.Slice(list, func(i, j int) bool {
-				if list[i].Priority != list[j].Priority {
-					return list[i].Priority < list[j].Priority
+				if list[i].fw.Priority != list[j].fw.Priority {
+					return list[i].fw.Priority < list[j].fw.Priority
 				}
-				return list[i].Name < list[j].Name
+				return list[i].fw.Name < list[j].fw.Name
 			})
 			rows := make([]firewallView, 0, len(list))
-			for _, fw := range list {
-				rows = append(rows, firewallFromAPI(fw))
+			for _, r := range list {
+				v := firewallFromAPI(r.fw)
+				v.Project = r.project
+				rows = append(rows, v)
 			}
+			where := c.projectsLabel()
 			switch {
 			case len(rows) > 0:
-				rt.Infof("%d firewall rule(s) in project %s via gcp/%s", len(rows), c.project, profile)
+				rt.Infof("%d firewall rule(s) in %s via gcp/%s", len(rows), where, profile)
 			case network != "":
-				rt.Infof("note: no firewall rules on network %s in project %s (gcp/%s)", network, c.project, profile)
+				rt.Infof("note: no firewall rules on network %s in %s (gcp/%s)", network, where, profile)
 			default:
-				rt.Infof("note: no firewall rules in project %s (gcp/%s)", c.project, profile)
+				rt.Infof("note: no firewall rules in %s (gcp/%s)", where, profile)
 			}
 			return rt.Render(rows, func() output.Grid {
-				g := output.Grid{Headers: []string{"NAME", "NETWORK", "DIR", "PRI", "ALLOW", "SOURCES", "TARGET-TAGS"}, Empty: "no firewall rules"}
-				for _, fw := range list {
+				g := output.Grid{Headers: []string{"NAME", "PROJECT", "NETWORK", "DIR", "PRI", "ALLOW", "SOURCES", "TARGET-TAGS"}, Empty: "no firewall rules"}
+				for _, r := range list {
+					fw := r.fw
 					name := fw.Name
 					if fw.Disabled {
 						name += " (disabled)"
 					}
-					g.Rows = append(g.Rows, []string{name, lastSegment(fw.Network), fw.Direction, strconv.FormatInt(fw.Priority, 10),
+					g.Rows = append(g.Rows, []string{name, r.project, lastSegment(fw.Network), fw.Direction, strconv.FormatInt(fw.Priority, 10),
 						ruleLabel(fw), strconv.Itoa(rangeCount(fw)), strings.Join(fw.TargetTags, ",")})
 				}
 				return g
@@ -124,7 +143,7 @@ func firewallGrid(v firewallView) output.Grid {
 		}
 		return strings.Join(parts, " ")
 	}
-	g := output.KV("name", v.Name, "network", v.Network, "direction", v.Direction, "priority", strconv.FormatInt(v.Priority, 10))
+	g := output.KV("name", v.Name, "project", v.Project, "network", v.Network, "direction", v.Direction, "priority", strconv.FormatInt(v.Priority, 10))
 	if len(v.Denied) > 0 {
 		g.Rows = append(g.Rows, []string{"denied", label(v.Denied)})
 	} else {
@@ -158,7 +177,7 @@ func firewallGetCmd(rt *app.Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			name, err := firewallArg(cmd.Context(), rt, c, profile, args)
+			c, name, err := firewallArg(cmd.Context(), rt, c, profile, args)
 			if err != nil {
 				return err
 			}
@@ -167,6 +186,7 @@ func firewallGetCmd(rt *app.Runtime) *cobra.Command {
 				return fmt.Errorf("%w (gcp/%s)", err, profile)
 			}
 			v := firewallFromAPI(fw)
+			v.Project = c.project
 			return rt.Render(v, func() output.Grid { return firewallGrid(v) })
 		},
 	}
@@ -358,7 +378,7 @@ the creation was accepted.`,
 				return fmt.Errorf("%w (gcp/%s)", err, profile)
 			}
 			change := platform.Change{Resource: "firewall/" + name, Action: platform.Created, Detail: ruleDesc(network, spec)}
-			if done, err := rt.WouldWrite(firewallTarget(profile), change); done || err != nil {
+			if done, err := rt.WouldWrite(firewallTarget(c, profile), change); done || err != nil {
 				return err
 			}
 			wctx, cancel, conv := deadline(ctx, timeout, change.Resource, "created")
@@ -370,7 +390,7 @@ the creation was accepted.`,
 				change.Detail += " (requested)"
 			}
 			rt.Infof("created firewall rule %s on network %s in project %s via gcp/%s", name, network, c.project, profile)
-			return rt.RenderReport(platform.Report{Target: firewallTarget(profile), Changes: []platform.Change{change}})
+			return rt.RenderReport(platform.Report{Target: firewallTarget(c, profile), Changes: []platform.Change{change}})
 		},
 	}
 	rf.register(cmd, true)
@@ -475,7 +495,7 @@ the change was accepted.`,
 			if err != nil {
 				return err
 			}
-			name, err := firewallArg(ctx, rt, c, profile, args)
+			c, name, err := firewallArg(ctx, rt, c, profile, args)
 			if err != nil {
 				return err
 			}
@@ -550,7 +570,7 @@ the change was accepted.`,
 				patch.ForceSendFields = append(patch.ForceSendFields, "Priority")
 				details = append(details, fmt.Sprintf("priority %d -> %d", fw.Priority, rf.priority))
 			}
-			target := firewallTarget(profile)
+			target := firewallTarget(c, profile)
 			res := "firewall/" + name
 			if len(details) == 0 {
 				rt.Infof("firewall rule %s already is as requested; nothing sent", name)
@@ -646,7 +666,7 @@ rules of the project are offered.`,
 			if err != nil {
 				return err
 			}
-			name, err := firewallArg(ctx, rt, c, profile, args)
+			c, name, err := firewallArg(ctx, rt, c, profile, args)
 			if err != nil {
 				return err
 			}
@@ -669,7 +689,7 @@ rules of the project are offered.`,
 			rt.Infof("  ranges        %s", strings.Join(ranges, ", "))
 			rt.Infof("  target tags   %s", tags)
 			change := platform.Change{Resource: "firewall/" + name, Action: platform.Deleted, Detail: "network " + lastSegment(fw.Network)}
-			if done, err := rt.WouldWrite(firewallTarget(profile), change); done || err != nil {
+			if done, err := rt.WouldWrite(firewallTarget(c, profile), change); done || err != nil {
 				return err
 			}
 			ok, err := rt.Confirm(ctx, fmt.Sprintf("Delete firewall rule %s (network %s, project %s)?", name, lastSegment(fw.Network), c.project), false)
@@ -688,7 +708,7 @@ rules of the project are offered.`,
 				change.Detail += " (requested)"
 			}
 			rt.Infof("deleted firewall rule %s in project %s via gcp/%s", name, c.project, profile)
-			return rt.RenderReport(platform.Report{Target: firewallTarget(profile), Changes: []platform.Change{change}})
+			return rt.RenderReport(platform.Report{Target: firewallTarget(c, profile), Changes: []platform.Change{change}})
 		},
 	}
 	app.AddWaitFlags(cmd, &wf, true, app.DefaultWaitTimeout)

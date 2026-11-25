@@ -1068,7 +1068,7 @@ func runCreate(cmd *cobra.Command, rt *app.Runtime, o *createOptions, name strin
 		}
 	}
 	zone, region := o.zone, regionOf(o.zone)
-	target := platform.Target{Platform: platform.GCP, Profile: profile, Zone: zone}
+	target := platform.Target{Platform: platform.GCP, Profile: profile, Project: c.project, Zone: zone}
 	warn := func(s string) { rt.Infof("%s", s) }
 
 	// Observe (read-only, in a dry run too).

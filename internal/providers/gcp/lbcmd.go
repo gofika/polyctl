@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/gofika/polyctl/internal/app"
+	"github.com/gofika/polyctl/internal/config"
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/output"
 	"github.com/gofika/polyctl/internal/platform"
@@ -258,7 +260,7 @@ step of the plan.`,
 // runLBEnsure runs the plan, prints the report with the load balancer and
 // keeps the inventory up to date.
 func runLBEnsure(ctx context.Context, rt *app.Runtime, e *lbEnsure, plan *platform.Plan) error {
-	target := platform.Target{Platform: platform.GCP, Profile: e.profile, Region: e.scope.region, Zone: e.zone}
+	target := platform.Target{Platform: platform.GCP, Profile: e.profile, Project: e.c.project, Region: e.scope.region, Zone: e.zone}
 	rep, err := rt.RunPlan(ctx, target, plan)
 	if rep.Changes == nil {
 		rep.Changes = []platform.Change{}
@@ -319,35 +321,45 @@ No load balancer is exit code 0 with an empty list and a note.`,
 			if err != nil {
 				return err
 			}
-			x, err := c.loadLBIndex(ctx)
-			if err != nil {
-				return fmt.Errorf("%w (gcp/%s)", err, profile)
-			}
-			if len(x.unreachable) > 0 {
-				rt.Infof("warning: unreachable scopes: %s", strings.Join(x.unreachable, ", "))
-			}
 			rows := []lbRow{}
-			for _, e := range x.entries() {
-				if !all && e.region != region {
-					continue
+			// Every selected project (--project: that one alone).
+			err = c.forProjects(ctx, func(c *client) error {
+				x, err := c.loadLBIndex(ctx)
+				if err != nil {
+					return fmt.Errorf("%w (gcp/%s)", err, profile)
 				}
-				rows = append(rows, x.row(e, profile, c.healthOf(ctx, x, e.backendKeys)))
+				if len(x.unreachable) > 0 {
+					rt.Infof("warning: project %s: unreachable scopes: %s", c.project, strings.Join(x.unreachable, ", "))
+				}
+				for _, e := range x.entries() {
+					if !all && e.region != region {
+						continue
+					}
+					rows = append(rows, x.row(e, profile, c.project, c.healthOf(ctx, x, e.backendKeys)))
+				}
+				return nil
+			})
+			if err != nil {
+				return err
 			}
 			sort.SliceStable(rows, func(i, j int) bool {
+				if rows[i].Project != rows[j].Project {
+					return rows[i].Project < rows[j].Project
+				}
 				if rows[i].Name != rows[j].Name {
 					return rows[i].Name < rows[j].Name
 				}
 				return rows[i].Port < rows[j].Port
 			})
 			if len(rows) == 0 {
-				rt.Infof("note: no load balancers in project %s (gcp/%s)", c.project, profile)
+				rt.Infof("note: no load balancers in %s (gcp/%s)", c.projectsLabel(), profile)
 			} else {
-				rt.Infof("%d forwarding rule(s) in project %s via gcp/%s", len(rows), c.project, profile)
+				rt.Infof("%d forwarding rule(s) in %s via gcp/%s", len(rows), c.projectsLabel(), profile)
 			}
 			return rt.Render(rows, func() output.Grid {
-				g := output.Grid{Headers: []string{"NAME", "SCOPE", "REGION", "PROTOCOL", "IP", "PORT", "BACKEND", "HEALTH"}, Empty: "no load balancers"}
+				g := output.Grid{Headers: []string{"NAME", "PROJECT", "SCOPE", "REGION", "PROTOCOL", "IP", "PORT", "BACKEND", "HEALTH"}, Empty: "no load balancers"}
 				for _, r := range rows {
-					g.Rows = append(g.Rows, []string{r.Name, r.Scope, dash(r.Region), r.Protocol, r.IPAddress, r.Port, dash(strings.Join(r.Backends, ",")), r.Health})
+					g.Rows = append(g.Rows, []string{r.Name, r.Project, r.Scope, dash(r.Region), r.Protocol, r.IPAddress, r.Port, dash(strings.Join(r.Backends, ",")), r.Health})
 				}
 				return g
 			})
@@ -371,10 +383,12 @@ type lbTarget struct {
 
 func (t *lbTarget) scope() certScope { return certScope{c: t.c, region: t.region} }
 
-// lbProfiles returns the GCP profiles whose inventory has a forwarding
-// rule of that name or of that load balancer, syncing the forwarding rules
-// of the selected accounts once when none does.
-func lbProfiles(ctx context.Context, rt *app.Runtime, ref string) ([]string, error) {
+// lbScopes returns the accounts and projects whose inventory has a
+// forwarding rule of that name or of that load balancer, syncing the
+// forwarding rules of the selected accounts once when none does. With
+// --project only that project counts; an account in whose selection it is
+// not is not in the inventory and is returned to be read live.
+func lbScopes(ctx context.Context, rt *app.Runtime, ref string) ([]scope, error) {
 	accounts, err := gcpAccounts(rt)
 	if err != nil {
 		return nil, err
@@ -383,25 +397,46 @@ func lbProfiles(ctx context.Context, rt *app.Runtime, ref string) ([]string, err
 	if err != nil {
 		return nil, err
 	}
-	lookup := func() ([]string, error) {
-		var out []string
+	var live []scope
+	var cached []config.AccountRef
+	for _, a := range accounts {
+		if pinUnselected(rt, a.Profile) {
+			live = append(live, scope{a.Profile, pinnedProject(rt)})
+		} else {
+			cached = append(cached, a)
+		}
+	}
+	accounts = cached
+	if len(accounts) == 0 {
+		return live, nil
+	}
+	lookup := func() ([]scope, error) {
+		out := live
 		for _, a := range accounts {
 			rows, err := db.List(ctx, inventory.Query{Platform: platform.GCP, Profile: a.Profile, Type: platform.ResLoadBalancer})
 			if err != nil {
 				return nil, err
 			}
+			def, _, _ := accountProjects(rt, a.Profile)
 			for _, r := range rows {
 				var fr ForwardingRule
-				if r.Name == ref || r.Decode(&fr) == nil && fr.LoadBalancer == ref {
-					out = append(out, a.Profile)
-					break
+				if r.Name != ref && (r.Decode(&fr) != nil || fr.LoadBalancer != ref) {
+					continue
+				}
+				_ = r.Decode(&fr)
+				sc := scope{a.Profile, fr.Project}
+				if sc.project == "" {
+					sc.project = def
+				}
+				if keepProject(rt, a.Profile, sc.project) && !slices.Contains(out, sc) {
+					out = append(out, sc)
 				}
 			}
 		}
 		return out, nil
 	}
 	if !rt.Flags.Refresh {
-		if found, err := lookup(); err != nil || len(found) > 0 {
+		if found, err := lookup(); err != nil || len(found) > len(live) {
 			return found, err
 		}
 	}
@@ -433,6 +468,9 @@ func lbProfiles(ctx context.Context, rt *app.Runtime, ref string) ([]string, err
 		for _, a := range accounts {
 			names = append(names, "gcp/"+a.Profile)
 		}
+		if pin := pinnedProject(rt); pin != "" {
+			names[len(names)-1] += " (project " + pin + ")"
+		}
 		if syncErr != nil {
 			return nil, fmt.Errorf("cannot tell where load balancer %q is: %w", ref, syncErr)
 		}
@@ -444,8 +482,9 @@ func lbProfiles(ctx context.Context, rt *app.Runtime, ref string) ([]string, err
 // resolveLBTarget finds the load balancer ref names: the inventory tells
 // which accounts hold it, and their components are then read live. ref is
 // a load balancer name, or the name of one of its forwarding rules. Load
-// balancers of one name in several accounts or scopes are ambiguous
-// (exit code 5) unless --profile, --region or --global choose.
+// balancers of one name in several accounts, projects or scopes are a pick
+// in the interactive flow and ambiguous (exit code 5) otherwise, unless
+// --profile, --project, --region or --global choose.
 func resolveLBTarget(ctx context.Context, rt *app.Runtime, ref, region string, all bool) (*lbTarget, error) {
 	if rt.Flags.Offline {
 		return nil, fmt.Errorf("%w: load balancers are read live", app.ErrOffline)
@@ -455,19 +494,20 @@ func resolveLBTarget(ctx context.Context, rt *app.Runtime, ref, region string, a
 			return nil, err
 		}
 	}
-	profiles, err := lbProfiles(ctx, rt, ref)
+	scopes, err := lbScopes(ctx, rt, ref)
 	if err != nil {
 		return nil, err
 	}
 	var hits []*lbTarget
-	for _, p := range profiles {
-		c, err := openProfile(ctx, rt, p)
+	for _, sc := range scopes {
+		p := sc.profile
+		c, err := openScope(ctx, rt, sc)
 		if err != nil {
 			return nil, err
 		}
 		x, err := c.loadLBIndex(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("%w (gcp/%s)", err, p)
+			return nil, fmt.Errorf("%w (%s)", err, sc)
 		}
 		entries := x.entries()
 		byScope := map[string][]lbEntry{}
@@ -518,17 +558,18 @@ func resolveLBTarget(ctx context.Context, rt *app.Runtime, ref, region string, a
 		if !all {
 			where = " in the " + (certScope{region: region}).label() + " scope"
 		}
-		return nil, fmt.Errorf("%w: load balancer %q%s of gcp/%s (the local inventory may be stale: retry with --refresh)", platform.ErrNotFound, ref, where, strings.Join(profiles, ", gcp/"))
+		return nil, fmt.Errorf("%w: load balancer %q%s of %s (the local inventory may be stale: retry with --refresh)", platform.ErrNotFound, ref, where, scopeLabels(scopes))
 	case 1:
 		return hits[0], nil
 	}
-	sort.Slice(hits, func(i, j int) bool { return hits[i].profile+"/"+hits[i].region < hits[j].profile+"/"+hits[j].region })
-	var names []string
+	sort.Slice(hits, func(i, j int) bool {
+		return hits[i].profile+"/"+hits[i].c.project+"/"+hits[i].region < hits[j].profile+"/"+hits[j].c.project+"/"+hits[j].region
+	})
+	cands := make([]cand, 0, len(hits))
 	for _, h := range hits {
-		names = append(names, fmt.Sprintf("gcp/%s (%s)", h.profile, (certScope{region: h.region}).label()))
+		cands = append(cands, cand{profile: h.profile, project: h.c.project, where: (certScope{region: h.region}).label()})
 	}
-	amb := &app.AmbiguousError{What: fmt.Sprintf("load balancer %q", ref), Candidates: names, Hint: "pass --profile <name>, --region <r> or --global to choose"}
-	return disambiguate(rt, amb, hits, lbTargetLabel)
+	return disambiguate(rt, ambiguous("load balancer", ref, cands, regionFlags, ""), hits, lbTargetLabel)
 }
 
 // ---------------------------------------------------------------- get
@@ -918,7 +959,7 @@ the selected accounts are offered.`,
 					}})
 			}
 			rt.Infof("  kept: instance groups, health checks, firewall rules and static addresses")
-			target := platform.Target{Platform: platform.GCP, Profile: t.profile, Region: t.region}
+			target := platform.Target{Platform: platform.GCP, Profile: t.profile, Project: t.c.project, Region: t.region}
 			if !rt.DryRun() {
 				ok, err := rt.Confirm(ctx, fmt.Sprintf("Delete load balancer %s (%s, project %s)?", t.name, s.label(), t.c.project), false)
 				if err != nil {

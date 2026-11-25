@@ -13,6 +13,7 @@ import (
 
 	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/cert"
+	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/platform"
 )
 
@@ -161,35 +162,47 @@ func resolveLB(ctx context.Context, rt *app.Runtime, ref, region string, all boo
 			return nil, err
 		}
 	}
-	res, err := rt.ResolveResource(ctx, platform.GCP, platform.ResLoadBalancer, ref)
-	switch {
-	case err == nil:
-		var fr ForwardingRule
-		if err := res.Decode(&fr); err != nil {
-			return nil, fmt.Errorf("decode cached forwarding rule %s: %w", res.ID, err)
-		}
-		if fits(fr.Region) {
-			c, err := openProfile(ctx, rt, res.Profile)
-			if err != nil {
-				return nil, err
-			}
-			s := certScope{c: c, region: fr.Region, timeout: timeout}
-			m, err := s.urlMapOfTarget(ctx, fr.Target)
-			if err != nil {
-				return nil, fmt.Errorf("forwarding rule %s (%s, gcp/%s): %w", fr.Name, s.label(), res.Profile, err)
-			}
-			return &lbRef{profile: res.Profile, scope: s, urlMap: m}, nil
-		}
-	case !errors.Is(err, platform.ErrNotFound):
-		var amb *app.AmbiguousError
-		if !errors.As(err, &amb) {
-			return nil, err
-		}
-		if all {
-			return nil, err
+	rules, err := cachedRuleHits(ctx, rt, ref)
+	if err != nil {
+		return nil, err
+	}
+	var inScope []ruleHit
+	for _, h := range rules {
+		if fits(h.rule.Region) {
+			inScope = append(inScope, h)
 		}
 	}
-	cfg, err := rt.Config()
+	if len(inScope) > 1 {
+		cands := make([]cand, 0, len(inScope))
+		for _, h := range inScope {
+			cands = append(cands, cand{profile: h.profile, project: h.rule.Project, where: (certScope{region: h.rule.Region}).label(), id: h.rule.ID})
+		}
+		h, err := disambiguate(rt, ambiguous("load balancer", ref, cands, regionFlags, ""), inScope, func(h ruleHit) string {
+			return joinLabel(h.rule.Name, (certScope{region: h.rule.Region}).label(), h.rule.IPAddress, "project "+h.rule.Project, "gcp/"+h.profile)
+		})
+		if err != nil {
+			return nil, err
+		}
+		inScope = []ruleHit{h}
+	}
+	if len(inScope) == 1 {
+		h := inScope[0]
+		c, err := openScope(ctx, rt, scope{h.profile, h.rule.Project})
+		if err != nil {
+			return nil, err
+		}
+		s := certScope{c: c, region: h.rule.Region, timeout: timeout}
+		m, err := s.urlMapOfTarget(ctx, h.rule.Target)
+		if err != nil {
+			return nil, fmt.Errorf("forwarding rule %s (%s, project %s, gcp/%s): %w", h.rule.Name, s.label(), c.project, h.profile, err)
+		}
+		return &lbRef{profile: h.profile, scope: s, urlMap: m}, nil
+	}
+	accounts, err := gcpAccounts(rt)
+	if err != nil {
+		return nil, err
+	}
+	scopes, err := scopesOf(rt, accounts)
 	if err != nil {
 		return nil, err
 	}
@@ -201,12 +214,10 @@ func resolveLB(ctx context.Context, rt *app.Runtime, ref, region string, all boo
 	var hits []hit
 	var firstErr error
 	var searched []string
-	for _, a := range cfg.Accounts(rt.Flags.Profile) {
-		if a.Platform != platform.GCP {
-			continue
-		}
-		searched = append(searched, "gcp/"+a.Profile)
-		c, err := openProfile(ctx, rt, a.Profile)
+	for _, sc := range scopes {
+		a := struct{ Profile string }{sc.profile}
+		searched = append(searched, sc.String())
+		c, err := openScope(ctx, rt, sc)
 		if err == nil {
 			var scopes []string
 			if scopes, err = c.urlMapScopes(ctx, ref); err == nil {
@@ -218,9 +229,12 @@ func resolveLB(ctx context.Context, rt *app.Runtime, ref, region string, all boo
 				continue
 			}
 		}
-		rt.Infof("warning: gcp/%s: %v", a.Profile, err)
+		if len(scopes) > 1 && isAPIDisabled(err) {
+			continue
+		}
+		rt.Infof("warning: %s: %v", sc, err)
 		if firstErr == nil {
-			firstErr = fmt.Errorf("gcp/%s: %w", a.Profile, err)
+			firstErr = fmt.Errorf("%s: %w", sc, err)
 		}
 	}
 	switch len(hits) {
@@ -237,16 +251,68 @@ func resolveLB(ctx context.Context, rt *app.Runtime, ref, region string, all boo
 		h := hits[0]
 		return &lbRef{profile: h.profile, scope: certScope{c: h.c, region: h.region, timeout: timeout}, urlMap: ref}, nil
 	}
-	var names []string
+	cands := make([]cand, 0, len(hits))
 	for _, h := range hits {
-		names = append(names, fmt.Sprintf("gcp/%s (%s)", h.profile, (certScope{region: h.region}).label()))
+		cands = append(cands, cand{profile: h.profile, project: h.c.project, where: (certScope{region: h.region}).label()})
 	}
-	amb := &app.AmbiguousError{What: fmt.Sprintf("load balancer %q", ref), Candidates: names, Hint: "pass --profile <name>, --region <r> or --global to choose"}
-	h, err := disambiguate(rt, amb, hits, func(h hit) string { return joinLabel(ref, (certScope{region: h.region}).label(), "gcp/"+h.profile) })
+	h, err := disambiguate(rt, ambiguous("load balancer", ref, cands, regionFlags, ""), hits, func(h hit) string {
+		return joinLabel(ref, (certScope{region: h.region}).label(), "project "+h.c.project, "gcp/"+h.profile)
+	})
 	if err != nil {
 		return nil, err
 	}
 	return &lbRef{profile: h.profile, scope: certScope{c: h.c, region: h.region, timeout: timeout}, urlMap: ref}, nil
+}
+
+// ruleHit is a cached forwarding rule that a load balancer reference
+// names. rule.Project is always set.
+type ruleHit struct {
+	profile string
+	rule    ForwardingRule
+}
+
+// cachedRuleHits returns the forwarding rules of the inventory named ref
+// (by name or id) in the selected accounts, in the project of --project
+// when it is given. The forwarding rules are synced once when none is
+// known (lbScopes).
+func cachedRuleHits(ctx context.Context, rt *app.Runtime, ref string) ([]ruleHit, error) {
+	scopes, err := lbScopes(ctx, rt, ref)
+	if err != nil {
+		if errors.Is(err, platform.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	db, err := rt.DB()
+	if err != nil {
+		return nil, err
+	}
+	var hits []ruleHit
+	seen := map[string]bool{}
+	for _, sc := range scopes {
+		if seen[sc.profile] {
+			continue
+		}
+		seen[sc.profile] = true
+		rows, err := db.List(ctx, inventory.Query{Platform: platform.GCP, Profile: sc.profile, Type: platform.ResLoadBalancer})
+		if err != nil {
+			return nil, err
+		}
+		def, _, _ := accountProjects(rt, sc.profile)
+		for _, r := range rows {
+			var fr ForwardingRule
+			if (r.Name != ref && r.ID != ref) || r.Decode(&fr) != nil {
+				continue
+			}
+			if fr.Project == "" {
+				fr.Project = def
+			}
+			if keepProject(rt, sc.profile, fr.Project) {
+				hits = append(hits, ruleHit{profile: sc.profile, rule: fr})
+			}
+		}
+	}
+	return hits, nil
 }
 
 // prefixedName derives the name of a sibling resource: prefix<insert>rest
@@ -389,7 +455,7 @@ local store, or another domain, typed.`,
 				}
 			}
 			s := lb.scope
-			target := platform.Target{Platform: platform.GCP, Profile: lb.profile, Region: s.region, Domain: o.domain}
+			target := platform.Target{Platform: platform.GCP, Profile: lb.profile, Project: s.c.project, Region: s.region, Domain: o.domain}
 			steps, err := planCertSet(ctx, rt, lb, o, mat)
 			if err != nil {
 				return err

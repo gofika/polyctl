@@ -359,7 +359,9 @@ type ruleView struct {
 
 // firewallView is the output shape of a firewall rule.
 type firewallView struct {
-	Name              string     `json:"name" yaml:"name"`
+	Name string `json:"name" yaml:"name"`
+	// Project is the project of the rule.
+	Project           string     `json:"project,omitempty" yaml:"project,omitempty"`
 	Network           string     `json:"network" yaml:"network"`
 	Direction         string     `json:"direction" yaml:"direction"`
 	Priority          int64      `json:"priority" yaml:"priority"`
