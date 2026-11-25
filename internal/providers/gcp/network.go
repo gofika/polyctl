@@ -352,7 +352,7 @@ func networkGetCmd(rt *app.Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "get <name>",
 		Short: "Show a VPC network with its subnetworks in every region",
-		Long:  "Show a VPC network with its subnetworks in every region. On a terminal,\nwithout <name> the networks of the project are offered.",
+		Long:  "Show a VPC network with its subnetworks in every region. On a terminal,\nwithout <name> the networks of one project are offered (which one is asked\nfirst when several are selected).",
 		Args:  app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()

@@ -30,10 +30,55 @@ create goes to the default project, and --project on the dns and compute
 commands names the project of one call (pass --profile to pick another
 account).`,
 	}
+	dns, compute := newDNSCmd(rt), newComputeCmd(rt)
+	noteSameName(dns)
+	noteSameName(compute)
 	cmd.AddCommand(
-		app.WhoamiCommand(rt, platform.GCP, "On Google Cloud this reads the profile's project (or, without that permission,\nits Cloud DNS zones) and reports the project, the signed-in account and the\nlogin method."),
-		newProjectCmd(rt), newDNSCmd(rt), newComputeCmd(rt))
+		app.WhoamiCommand(rt, platform.GCP, "On Google Cloud this reads the default project of the account (or, without\nthat permission, its Cloud DNS zones) and reports the default project, the\nother selected projects, the signed-in account and the login method."),
+		newProjectCmd(rt), dns, compute)
 	return cmd
+}
+
+// sameNameHelp is the paragraph every command that looks a resource up by
+// its name carries in its help: what happens when several projects hold
+// the name.
+const sameNameHelp = `
+
+One gcp account works on several projects. A name that several of the
+selected projects hold (or several zones, regions or accounts) is asked on a
+terminal. In the non-interactive flow it is exit code 5: the error lists the
+candidates and names what chooses one, --project <id> among them.`
+
+// looksUpByName reports whether a command of the dns or compute tree finds
+// an existing resource by the name it is given: every command with a
+// positional argument, but the ones that create what the argument names.
+func looksUpByName(c *cobra.Command) bool {
+	if c.HasSubCommands() || !strings.Contains(c.Use, "<") {
+		return false
+	}
+	switch c.Name() {
+	case "create":
+		return false
+	case "ensure":
+		// firewall ensure [<name>] creates the rule; load-balancer ensure
+		// <instance> looks the instance up.
+		return strings.Contains(c.Use, "<instance>")
+	}
+	return true
+}
+
+// noteSameName appends sameNameHelp to the help of every command below c
+// that looks a resource up by name.
+func noteSameName(c *cobra.Command) {
+	if looksUpByName(c) {
+		if c.Long == "" {
+			c.Long = c.Short
+		}
+		c.Long += sameNameHelp
+	}
+	for _, sub := range c.Commands() {
+		noteSameName(sub)
+	}
 }
 
 // openClient opens the gcp profile and returns the concrete client.

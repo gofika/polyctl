@@ -574,8 +574,8 @@ func computeGetCmd(rt *app.Runtime) *cobra.Command {
 		Short: "Show one Compute Engine instance, its addresses and disks",
 		Long: `Show one Compute Engine instance, found by its name or id in the inventory of
 every selected GCP account (in any status; --profile narrows the search,
---zone picks among instances of one name in several zones). The instance is
-read live. --field prints one raw value for scripts: external-ip,
+--zone and --project pick among instances of one name in several zones or
+projects). The instance is read live. --field prints one raw value for scripts: external-ip,
 internal-ip, status, zone or machine-type. An instance without an external
 IP is exit code 1 with --field external-ip, with the reason on stderr and
 nothing on stdout.`,

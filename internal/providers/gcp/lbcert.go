@@ -346,8 +346,8 @@ func lbCertSetCmd(rt *app.Runtime) *cobra.Command {
 		Long: `Put the certificate of --domain on the target HTTPS proxies of a load balancer.
 <lb> is a forwarding rule name or the load balancer name (its URL map); the
 inventory and the URL maps of the selected GCP accounts tell which project and
-scope hold it (several are exit code 5: pass --profile, --region or --global;
-none is exit code 4).
+scope hold it (several are a pick on a terminal and exit code 5 otherwise:
+pass --profile, --project, --region or --global; none is exit code 4).
 
 The certificate is --cert-file and --key-file (checked as for ssl-certificate
 create, and it must cover --domain; exit code 2 otherwise), or by default the

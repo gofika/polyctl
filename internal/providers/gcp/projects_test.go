@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"google.golang.org/api/dns/v1"
 	"google.golang.org/api/option"
 
@@ -723,4 +724,43 @@ func TestDomainRoutingCoversSelectedProjects(t *testing.T) {
 		t.Errorf("interactive = %+v, %v", tg, err)
 	}
 	p.Done()
+}
+
+// The help of every dns and compute command that looks a resource up by
+// its name says what happens to a name several projects hold; a command
+// that creates what it names, and a list, do not.
+func TestHelpOfNameLookupsNamesProjectAmbiguity(t *testing.T) {
+	h, _ := multiDNS(t)
+	says := map[string]bool{}
+	var walk func(c *cobra.Command)
+	walk = func(c *cobra.Command) {
+		if !c.HasSubCommands() {
+			says[strings.TrimPrefix(c.CommandPath(), "gcp ")] = strings.Contains(c.Long, "exit code 5") && strings.Contains(c.Long, "--project <id>") && strings.Contains(c.Long, "asked on a\nterminal")
+		}
+		for _, sub := range c.Commands() {
+			walk(sub)
+		}
+	}
+	walk(Command(h.rt))
+	for _, path := range []string{
+		"dns zone get", "dns record list", "dns record upsert", "dns record delete",
+		"compute instance get", "compute instance start", "compute instance stop", "compute instance delete", "compute instance resize",
+		"compute instance reboot", "compute instance update", "compute instance password",
+		"compute instance ssh-key list", "compute instance ssh-key add", "compute instance ssh-key remove",
+		"compute firewall get", "compute firewall update", "compute firewall delete", "compute network get",
+		"compute ssl-certificate update", "compute ssl-certificate delete",
+		"compute load-balancer get", "compute load-balancer delete", "compute load-balancer ensure", "compute load-balancer cert set",
+		"compute backend-service get", "compute backend-service delete", "compute forwarding-rule get", "compute forwarding-rule delete",
+		"compute health-check get", "compute health-check delete", "compute instance-group get", "compute instance-group delete",
+	} {
+		if v, ok := says[path]; !ok || !v {
+			t.Errorf("gcp %s: the help does not say what a name of several projects does (command exists: %v)", path, ok)
+		}
+		delete(says, path)
+	}
+	for path, v := range says {
+		if v {
+			t.Errorf("gcp %s looks nothing up by name, but its help says what a name of several projects does", path)
+		}
+	}
 }

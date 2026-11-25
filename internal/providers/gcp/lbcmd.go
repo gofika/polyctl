@@ -764,7 +764,8 @@ the forwarding rule name) or the name of one of its forwarding rules; the
 inventory tells which account holds it (synced once when unknown), then
 everything is read live. Without --region or --global a regional load
 balancer wins over a global one of the same name. Several matches are exit
-code 5 (pass --profile, --region or --global; a terminal lets you choose);
+code 5 (pass --profile, --project, --region or --global; a terminal lets you
+choose);
 none is exit code 4. On a terminal, without <name> the load balancers of
 the selected accounts are offered.`,
 		Example: "  polyctl gcp compute load-balancer get lb-web-1 -o json",
