@@ -44,7 +44,7 @@ func storeZone(ctx context.Context, rt *app.Runtime, profile string, z apiZone) 
 	if err != nil {
 		return
 	}
-	if err := db.Upsert(ctx, zoneSet(profile), app.ZoneResources([]platform.Zone{toZone(z)})[0], cfg.TTLFor(platform.ResZone)); err != nil {
+	if err := db.Upsert(ctx, zoneSet(profile), zoneResources([]platform.Zone{toZone(z)})[0], cfg.TTLFor(platform.ResZone)); err != nil {
 		rt.Infof("warning: could not update the local inventory: %v", err)
 	}
 }

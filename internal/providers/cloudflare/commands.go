@@ -80,11 +80,9 @@ func cachedZones(ctx context.Context, rt *app.Runtime) ([]platform.Zone, string,
 		if err != nil {
 			return nil, err
 		}
-		zones, err := s.client.ListZones(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return app.ZoneResources(zones), nil
+		// A sync that fails for some of the selected accounts keeps the
+		// zones stored for them.
+		return s.client.Sync(ctx, platform.ResZone)
 	})
 	if err != nil {
 		return nil, profile, cached, err
@@ -131,7 +129,7 @@ func resolveZone(ctx context.Context, rt *app.Runtime, arg string) (*platform.Zo
 	}
 	if db, err := rt.DB(); err == nil {
 		cfg, _ := rt.Config()
-		_ = db.Upsert(ctx, zoneSet(profile), app.ZoneResources([]platform.Zone{*z})[0], cfg.TTLFor(platform.ResZone))
+		_ = db.Upsert(ctx, zoneSet(profile), zoneResources([]platform.Zone{*z})[0], cfg.TTLFor(platform.ResZone))
 	}
 	return z, profile, nil
 }

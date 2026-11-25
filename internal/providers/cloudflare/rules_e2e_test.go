@@ -149,7 +149,7 @@ func sameContent(a, b map[string]any) bool {
 
 func (f *zoneFake) serveRules(w http.ResponseWriter, r *http.Request, zoneID string, rest []string, acc string, body []byte) {
 	z := f.zoneByID(zoneID)
-	if z == nil || z.deleted || z.account != acc {
+	if z == nil || z.deleted || !sees(acc, z.account) {
 		f.fail(w, http.StatusForbidden, 10000, "Authentication error")
 		return
 	}

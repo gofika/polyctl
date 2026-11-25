@@ -48,6 +48,9 @@ type fakeCF struct {
 	// badTokenStatus is the status an unknown access token gets (default
 	// 401).
 	badTokenStatus int
+	// failZones answers this status to the zone listing of an account
+	// (GET /zones?account.id=<account>).
+	failZones map[string]int
 }
 
 func newFake(t *testing.T) (*fakeCF, *httptest.Server) {
@@ -191,6 +194,10 @@ func (f *fakeCF) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case p == "/accounts":
 		f.page(w, r, f.accounts)
 	case p == "/zones":
+		if status := f.failZones[r.URL.Query().Get("account.id")]; status != 0 {
+			f.fail(w, status, 1000, "the zones of the account cannot be listed")
+			return
+		}
 		items := f.zones
 		if acc := r.URL.Query().Get("account.id"); acc != "" {
 			items = nil

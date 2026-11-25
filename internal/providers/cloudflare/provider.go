@@ -590,15 +590,20 @@ func oauthEmail(ctx context.Context, a *api) string {
 	return ""
 }
 
-// Sync fetches every resource of the given type.
+// Sync fetches every resource of the given type, in every selected account
+// of the login. A sync that fails for some accounts only returns the rows
+// of the others with a *platform.RegionSyncError: the rows stored for the
+// failed accounts are kept.
 func (c *Client) Sync(ctx context.Context, rt platform.ResourceType) ([]platform.Resource, error) {
 	switch rt {
 	case platform.ResZone:
-		zones, err := c.ListZones(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return app.ZoneResources(zones), nil
+		return c.eachAccount(ctx, func(ctx context.Context, ac *Client) ([]platform.Resource, error) {
+			zs, err := ac.api.listZonesOf(ctx, ac.api.accountID)
+			if err != nil {
+				return nil, err
+			}
+			return zoneResources(toZones(zs)), nil
+		})
 	case platform.ResDNSRecord:
 		return c.syncRecords(ctx)
 	case platform.ResR2Bucket:
@@ -614,38 +619,59 @@ func (c *Client) Sync(ctx context.Context, rt platform.ResourceType) ([]platform
 // Only when every zone fails (or a non-permission error occurs) is the error
 // returned, so a token without any DNS permission still surfaces as
 // ErrUnauthorized.
+//
+// With several accounts selected, an account whose zones cannot be listed
+// (or one of whose zones fails for another reason) is a failure of that
+// account: its stored records are kept. The skipped zones are counted
+// across all the accounts, so an account in which the token reads no
+// records at all does not fail as long as another account has some.
 func (c *Client) syncRecords(ctx context.Context) ([]platform.Resource, error) {
-	zones, err := c.ListZones(ctx)
-	if err != nil {
-		return nil, err
-	}
 	var (
-		out     []platform.Resource
 		skipped []error
 		okZones int
 	)
-	for _, z := range zones {
-		if err := ctx.Err(); err != nil {
+	out, err := c.eachAccount(ctx, func(ctx context.Context, ac *Client) ([]platform.Resource, error) {
+		zs, err := ac.api.listZonesOf(ctx, ac.api.accountID)
+		if err != nil {
 			return nil, err
 		}
-		recs, err := c.ListRecords(ctx, z.ID)
-		if err != nil {
-			if errors.Is(err, platform.ErrUnauthorized) || errors.Is(err, platform.ErrNotFound) {
-				skipped = append(skipped, fmt.Errorf("zone %s: %w", z.Name, err))
-				continue
+		var out []platform.Resource
+		var skip []error
+		ok := 0
+		for _, z := range toZones(zs) {
+			if err := ctx.Err(); err != nil {
+				return nil, err
 			}
-			return nil, fmt.Errorf("zone %s: %w", z.Name, err)
+			recs, err := ac.ListRecords(ctx, z.ID)
+			if err != nil {
+				if errors.Is(err, platform.ErrUnauthorized) || errors.Is(err, platform.ErrNotFound) {
+					skip = append(skip, fmt.Errorf("zone %s: %w", z.Name, err))
+					continue
+				}
+				return nil, fmt.Errorf("zone %s: %w", z.Name, err)
+			}
+			ok++
+			out = append(out, app.RecordResources(z.ID, z.Name, recs)...)
 		}
-		okZones++
-		out = append(out, app.RecordResources(z.ID, z.Name, recs)...)
+		// Counted only for an account that was read to its end: a failed
+		// account keeps its stored rows, whatever was skipped in it.
+		skipped = append(skipped, skip...)
+		okZones += ok
+		return out, nil
+	})
+	if err != nil && platform.AsRegionSyncError(err) == nil {
+		return nil, err
 	}
 	if len(skipped) > 0 && okZones == 0 {
+		if err != nil {
+			skipped = append(skipped, err)
+		}
 		return nil, errors.Join(skipped...)
 	}
 	for _, e := range skipped {
 		warnf("cloudflare/%s: skipped %v", c.profile.Name, e)
 	}
-	return out, nil
+	return out, err
 }
 
 // ListZones returns the zones of every selected account of the login (all

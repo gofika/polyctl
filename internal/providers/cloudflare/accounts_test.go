@@ -3,8 +3,10 @@ package cloudflare
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http/httptest"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -255,5 +257,138 @@ func TestVerifyTokenTriesTheSelection(t *testing.T) {
 	want := []string{"GET /user/tokens/verify", "GET /accounts/acc1/tokens/verify", "GET /accounts/acc2/tokens/verify"}
 	if got := f.reqs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("requests: %q", got)
+	}
+}
+
+// captureWarnings collects what the sync warns about.
+func captureWarnings(t *testing.T) *[]string {
+	t.Helper()
+	var warned []string
+	orig := warnf
+	warnf = func(format string, args ...any) { warned = append(warned, fmt.Sprintf(format, args...)) }
+	t.Cleanup(func() { warnf = orig })
+	return &warned
+}
+
+// rowIDs lists "id parent" of resources, sorted.
+func rowIDs(res []platform.Resource) []string {
+	out := make([]string, 0, len(res))
+	for _, r := range res {
+		out = append(out, r.ID+" "+r.ParentID)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func TestSyncOfTheSelection(t *testing.T) {
+	f, srv := newFake(t)
+	f.addZone("zone3", "example.net", "active", "acc3", "Gamma")
+	c := openSelection(t, srv, map[string]string{metaAccountID: "acc1", metaAccounts: "acc1,acc2"})
+	ctx := context.Background()
+
+	// The zones of both accounts, each under its account; none of an
+	// account that is not selected.
+	zones, err := c.Sync(ctx, platform.ResZone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := rowIDs(zones), []string{"zone1 acc1", "zone2 acc2"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("zones: %v", got)
+	}
+	// The records keep their zone as parent.
+	recs, err := c.Sync(ctx, platform.ResDNSRecord)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byZone := map[string]int{}
+	for _, r := range recs {
+		byZone[r.ParentID]++
+	}
+	if len(recs) != 9 || byZone["zone1"] != 8 || byZone["zone2"] != 1 {
+		t.Fatalf("records: %v", byZone)
+	}
+
+	// A login stored before the selection reads its one account, with the
+	// requests it always made.
+	f.reqs()
+	old := openClient(t, srv, "good-token", "acc2")
+	zones, err = old.Sync(ctx, platform.ResZone)
+	if err != nil || !reflect.DeepEqual(rowIDs(zones), []string{"zone2 acc2"}) {
+		t.Fatalf("one account: %v %v", rowIDs(zones), err)
+	}
+	if got, want := f.reqs(), []string{"GET /zones?account.id=acc2&page=1&per_page=50"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("requests: %q", got)
+	}
+}
+
+func TestSyncKeepsAFailedAccount(t *testing.T) {
+	f, srv := newFake(t)
+	f.failZones = map[string]int{"acc2": 400}
+	c := openSelection(t, srv, map[string]string{metaAccountID: "acc1", metaAccounts: "acc1,acc2"})
+	ctx := context.Background()
+
+	for _, typ := range []platform.ResourceType{platform.ResZone, platform.ResDNSRecord} {
+		res, err := c.Sync(ctx, typ)
+		rse := platform.AsRegionSyncError(err)
+		if rse == nil {
+			t.Fatalf("%s: want a RegionSyncError, got %v", typ, err)
+		}
+		if len(rse.Failures) != 1 || rse.Failures[0].Region != "acc2" || !rse.Failures[0].Tree || rse.Noun != "account" {
+			t.Fatalf("%s: failures: %+v", typ, rse)
+		}
+		if !strings.Contains(err.Error(), "polyctl cloudflare account remove acc2") {
+			t.Errorf("%s: the failure does not say how to drop the account: %v", typ, err)
+		}
+		// The rows of the account that answered are returned.
+		for _, r := range res {
+			if (typ == platform.ResZone && r.ParentID != "acc1") || (typ == platform.ResDNSRecord && r.ParentID != "zone1") {
+				t.Fatalf("%s: row of the failed account: %+v", typ, r)
+			}
+		}
+		if len(res) == 0 {
+			t.Fatalf("%s: no rows of the other account", typ)
+		}
+	}
+
+	// Every account failing is a plain error with the cause (and so the
+	// exit code) of the first.
+	f.failZones = map[string]int{"acc1": 403, "acc2": 400}
+	for _, typ := range []platform.ResourceType{platform.ResZone, platform.ResDNSRecord} {
+		res, err := c.Sync(ctx, typ)
+		if err == nil || platform.AsRegionSyncError(err) != nil || !errors.Is(err, platform.ErrUnauthorized) || res != nil {
+			t.Fatalf("%s: every account failed: %v %v", typ, res, err)
+		}
+		if !strings.Contains(err.Error(), "every selected account failed") {
+			t.Errorf("%s: %v", typ, err)
+		}
+	}
+
+	// One account alone fails as it always did.
+	f.failZones = map[string]int{"acc2": 400}
+	if _, err := openClient(t, srv, "good-token", "acc2").Sync(ctx, platform.ResZone); err == nil || platform.AsRegionSyncError(err) != nil {
+		t.Fatalf("one account: %v", err)
+	}
+}
+
+// The zones whose records the token cannot read are skipped across the
+// accounts: an account without any readable zone is no failure while
+// another account has one.
+func TestSyncRecordsSkipsAcrossAccounts(t *testing.T) {
+	f, srv := newFake(t)
+	f.forbidRecords["zone2"] = true
+	warned := captureWarnings(t)
+	c := openSelection(t, srv, map[string]string{metaAccountID: "acc1", metaAccounts: "acc1,acc2"})
+	ctx := context.Background()
+
+	recs, err := c.Sync(ctx, platform.ResDNSRecord)
+	if err != nil || len(recs) != 8 {
+		t.Fatalf("want the 8 records of zone1 and no error, got %d, %v", len(recs), err)
+	}
+	if len(*warned) != 1 || !strings.Contains((*warned)[0], "example.org") {
+		t.Fatalf("warnings: %v", *warned)
+	}
+	f.forbidRecords["zone1"] = true
+	if _, err := c.Sync(ctx, platform.ResDNSRecord); !errors.Is(err, platform.ErrUnauthorized) || platform.AsRegionSyncError(err) != nil {
+		t.Fatalf("no readable zone at all: %v", err)
 	}
 }

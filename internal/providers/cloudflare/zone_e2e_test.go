@@ -48,7 +48,7 @@ type zfZone struct {
 type zoneFake struct {
 	t        *testing.T
 	mu       sync.Mutex
-	tokens   map[string]string // token -> account id
+	tokens   map[string]string // token -> the account ids it sees, comma-separated
 	zones    []*zfZone
 	requests []string
 	bodies   map[string]string // "METHOD path" -> last body
@@ -69,7 +69,7 @@ type zoneFake struct {
 func newZoneFake(t *testing.T) *zoneFake {
 	return &zoneFake{
 		t:                 t,
-		tokens:            map[string]string{"tok-acme": "acc1", "tok-beta": "acc2"},
+		tokens:            map[string]string{"tok-acme": "acc1", "tok-beta": "acc2", "tok-both": "acc1,acc2"},
 		bodies:            map[string]string{},
 		foundationDefault: map[string]bool{},
 		throttle:          map[string]int{},
@@ -233,11 +233,15 @@ func (f *zoneFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case p == "/user":
 		f.ok(w, map[string]any{"id": "user", "email": "ops@example.com"}, nil)
 	case p == "/accounts":
-		f.ok(w, []any{map[string]any{"id": acc, "name": "Account " + acc}}, map[string]any{"page": 1, "per_page": 50, "count": 1, "total_count": 1, "total_pages": 1})
+		var out []any
+		for _, id := range strings.Split(acc, ",") {
+			out = append(out, map[string]any{"id": id, "name": "Account " + id})
+		}
+		f.ok(w, out, map[string]any{"page": 1, "per_page": 50, "count": len(out), "total_count": len(out), "total_pages": 1})
 	case p == "/zones" && r.Method == http.MethodGet:
 		var out []any
 		for _, z := range f.zones {
-			if z.deleted || (!f.ignoreAccount && z.account != acc) {
+			if z.deleted || (!f.ignoreAccount && !sees(acc, z.account)) {
 				continue
 			}
 			if want := r.URL.Query().Get("account.id"); want != "" && want != z.account && !f.ignoreAccount {
@@ -277,7 +281,7 @@ func (f *zoneFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			f.fail(w, http.StatusBadRequest, 1001, "Invalid zone identifier")
 			return
 		}
-		if z.account != acc {
+		if !sees(acc, z.account) {
 			f.fail(w, http.StatusForbidden, 10000, "Authentication error")
 			return
 		}

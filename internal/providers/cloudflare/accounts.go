@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"sort"
 	"strings"
 
+	"github.com/gofika/polyctl/internal/app"
 	"github.com/gofika/polyctl/internal/platform"
 )
 
@@ -150,6 +152,70 @@ func (c *Client) pin(id string) *Client {
 	cp := *c
 	cp.api = c.api.pin(id)
 	return &cp
+}
+
+// eachAccount runs fn for every account the client covers, one after the
+// other, and returns the rows of all of them, for the inventory.
+//
+// With one account it is fn's result as it is. With several:
+//
+//   - an account that fails is a failure of its whole tree
+//     (platform.RegionError.Tree): the rows stored for it are kept and the
+//     rows of the other accounts replace theirs;
+//   - when every account fails the result is a plain error wrapping the
+//     first one, so that nothing is replaced and the exit code is kept.
+//
+// The accounts are not read at the same time: there are few of them, and
+// Cloudflare limits the requests of a user, not of an account.
+func (c *Client) eachAccount(ctx context.Context, fn func(ctx context.Context, ac *Client) ([]platform.Resource, error)) ([]platform.Resource, error) {
+	ids := c.api.scopeIDs()
+	if len(ids) == 1 {
+		return fn(ctx, c.inAccount(ids[0]))
+	}
+	var out []platform.Resource
+	var failures []platform.RegionError
+	var first error
+	for _, id := range ids {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		res, err := fn(ctx, c.inAccount(id))
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			if first == nil {
+				first = err
+			}
+			failures = append(failures, platform.RegionError{Region: id, Tree: true,
+				Err: fmt.Errorf("%w (if the account is not to be used any more: polyctl cloudflare account remove %s)", err, id)})
+			continue
+		}
+		out = append(out, res...)
+	}
+	if len(failures) == 0 {
+		return out, nil
+	}
+	sort.SliceStable(failures, func(i, j int) bool { return failures[i].Region < failures[j].Region })
+	e := &platform.RegionSyncError{Failures: failures, Noun: "account"}
+	if len(failures) == len(ids) {
+		return nil, fmt.Errorf("every selected account failed (%s): %w", e.Error(), first)
+	}
+	return out, e
+}
+
+// zoneResources converts zones to inventory resources whose parent is the
+// account of the zone: a sync that fails for one account keeps the zones
+// of that account, and an account that leaves the selection takes its
+// zones (and their records) with it.
+func zoneResources(zones []platform.Zone) []platform.Resource {
+	out := app.ZoneResources(zones)
+	for i, z := range zones {
+		if z.Extra != nil {
+			out[i].ParentID, _ = z.Extra["account_id"].(string)
+		}
+	}
+	return out
 }
 
 // toZones converts the zones of the API.

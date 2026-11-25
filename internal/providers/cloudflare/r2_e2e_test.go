@@ -46,7 +46,7 @@ type r2Zone struct {
 type r2Fake struct {
 	t        *testing.T
 	mu       sync.Mutex
-	tokens   map[string]string // token -> account id
+	tokens   map[string]string // token -> the account ids it sees, comma-separated
 	accounts map[string]*r2Account
 	zones    []r2Zone
 	records  map[string][]map[string]any // zone id -> records
@@ -56,12 +56,26 @@ type r2Fake struct {
 	postErr  int               // when set, the creation of a domain fails with this code (HTTP 400)
 	nextID   int
 	headers  []string // cf-r2-jurisdiction values seen
+	// failZones answers this status to the zone listing of an account
+	// (GET /zones?account.id=<account>).
+	failZones map[string]int
+}
+
+// sees reports whether a token of the accounts in list (comma-separated)
+// sees the account acc.
+func sees(list, acc string) bool {
+	for _, a := range strings.Split(list, ",") {
+		if a == acc {
+			return true
+		}
+	}
+	return false
 }
 
 func newR2Fake(t *testing.T) *r2Fake {
 	return &r2Fake{
 		t:      t,
-		tokens: map[string]string{"tok-acme": "acc1", "tok-beta": "acc2"},
+		tokens: map[string]string{"tok-acme": "acc1", "tok-beta": "acc2", "tok-both": "acc1,acc2"},
 		accounts: map[string]*r2Account{
 			"acc1": {id: "acc1", name: "Acme", domains: map[string][]map[string]any{}},
 			"acc2": {id: "acc2", name: "Beta", domains: map[string][]map[string]any{}},
@@ -73,9 +87,10 @@ func newR2Fake(t *testing.T) *r2Fake {
 			{"zone-pend", "pending.test", "pending", "acc1"},
 			{"zone-beta", "example.net", "active", "acc2"},
 		},
-		records:  map[string][]map[string]any{},
-		bodies:   map[string]string{},
-		pageSize: 1000,
+		records:   map[string][]map[string]any{},
+		bodies:    map[string]string{},
+		pageSize:  1000,
+		failZones: map[string]int{},
 	}
 }
 
@@ -209,12 +224,20 @@ func (f *r2Fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case p == "/user":
 		f.ok(w, map[string]any{"id": "user", "email": "ops@example.com"}, nil)
 	case p == "/accounts":
-		a := f.accounts[acc]
-		f.ok(w, []any{map[string]any{"id": a.id, "name": a.name}}, map[string]any{"page": 1, "per_page": 50, "count": 1, "total_count": 1})
+		var out []any
+		for _, id := range strings.Split(acc, ",") {
+			a := f.accounts[id]
+			out = append(out, map[string]any{"id": a.id, "name": a.name})
+		}
+		f.ok(w, out, map[string]any{"page": 1, "per_page": 50, "count": len(out), "total_count": len(out)})
 	case p == "/zones":
+		if status := f.failZones[r.URL.Query().Get("account.id")]; status != 0 {
+			f.fail(w, status, 1000, "the zones of the account cannot be listed")
+			return
+		}
 		var out []any
 		for _, z := range f.zones {
-			if z.account != acc {
+			if !sees(acc, z.account) {
 				continue
 			}
 			if want := r.URL.Query().Get("account.id"); want != "" && want != z.account {
@@ -228,14 +251,14 @@ func (f *r2Fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.ok(w, out, map[string]any{"page": 1, "per_page": 50, "count": len(out), "total_count": len(out), "total_pages": 1})
 	case parts[0] == "zones" && len(parts) == 2:
 		z := f.zoneByID(parts[1])
-		if z == nil || z.account != acc {
+		if z == nil || !sees(acc, z.account) {
 			f.fail(w, http.StatusNotFound, 7003, "Could not route")
 			return
 		}
 		f.ok(w, f.zoneJSON(*z), nil)
 	case parts[0] == "zones" && len(parts) >= 3 && parts[2] == "dns_records":
 		z := f.zoneByID(parts[1])
-		if z == nil || z.account != acc {
+		if z == nil || !sees(acc, z.account) {
 			f.fail(w, http.StatusNotFound, 7003, "Could not route")
 			return
 		}
@@ -280,10 +303,12 @@ func (f *r2Fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *r2Fake) serveR2(w http.ResponseWriter, r *http.Request, tokenAcc string, parts []string, body []byte) {
-	if parts[1] != tokenAcc {
+	if !sees(tokenAcc, parts[1]) {
 		f.fail(w, http.StatusForbidden, 10000, "Authentication error")
 		return
 	}
+	// The account of the path is the one the request is about.
+	tokenAcc = parts[1]
 	a := f.accounts[tokenAcc]
 	if a.r2Disabled {
 		f.fail(w, http.StatusForbidden, 10042, "Please enable R2 through the Cloudflare Dashboard.")
