@@ -1212,7 +1212,11 @@ func (e *r2Env) selection(profile string) string {
 func TestAccountUseAddRemove(t *testing.T) {
 	e := newR2Env(t)
 	e.loginAll()
+	// The account that stays holds a record and a bucket too: they must
+	// survive the removal of the others.
+	e.f.addRecord("zone-ex", "rec-ex", "www.example.com", "A", "192.0.2.1")
 	e.f.addRecord("zone-beta", "rec-beta", "www.example.net", "A", "192.0.2.2")
+	e.f.accounts["acc1"].buckets = []string{"assets"}
 	e.f.accounts["acc2"].buckets = []string{"media"}
 	acct := func(args ...string) (int, string) {
 		t.Helper()
@@ -1307,6 +1311,12 @@ func TestAccountUseAddRemove(t *testing.T) {
 	if got := e.rows("all", platform.ResZone); !slices.Contains(got, "zone-beta acc2") || !slices.Contains(got, "zone-gamma acc3") {
 		t.Fatalf("zones: %v", got)
 	}
+	if got, want := e.rows("all", platform.ResDNSRecord), []string{"rec-beta zone-beta", "rec-ex zone-ex"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("records before the removal: %v", got)
+	}
+	if got, want := e.rows("all", platform.ResR2Bucket), []string{"acc1/assets acc1", "acc2/media acc2"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("buckets before the removal: %v", got)
+	}
 	if code, out = acct("remove", "nosuch"); code != cli.ExitNotFound || !strings.Contains(out, "nosuch is not selected for cloudflare/all (selected: acc3, acc1, acc2, acc9)") {
 		t.Errorf("remove of an unselected account: exit %d, %s", code, out)
 	}
@@ -1329,10 +1339,10 @@ func TestAccountUseAddRemove(t *testing.T) {
 	if got, want := e.rows("all", platform.ResZone), []string{"zone-a acc1", "zone-couk acc1", "zone-ex acc1", "zone-pend acc1"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("zones after the removal: %v", got)
 	}
-	if got := e.rows("all", platform.ResDNSRecord); len(got) != 0 {
+	if got, want := e.rows("all", platform.ResDNSRecord), []string{"rec-ex zone-ex"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("records after the removal: %v", got)
 	}
-	if got := e.rows("all", platform.ResR2Bucket); len(got) != 0 {
+	if got, want := e.rows("all", platform.ResR2Bucket), []string{"acc1/assets acc1"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("buckets after the removal: %v", got)
 	}
 	if got := e.domains("all"); slices.Contains(got, "example.net") || slices.Contains(got, "example.org") || !slices.Contains(got, "example.com") {
@@ -1354,7 +1364,9 @@ func TestAccountUseAddRemove(t *testing.T) {
 // account as parent leave the inventory with their account too.
 func TestAccountRemoveDropsRowsWithoutAParent(t *testing.T) {
 	e := newR2Env(t)
+	e.f.addRecord("zone-ex", "rec-ex", "www.example.com", "A", "192.0.2.1")
 	e.f.addRecord("zone-beta", "rec-beta", "www.example.net", "A", "192.0.2.2")
+	e.f.accounts["acc1"].buckets = []string{"assets"}
 	e.f.accounts["acc2"].buckets = []string{"media"}
 	e.loginBoth("acc1", "acc1", "acc2")
 	if code, _, stderr := e.run("sync", "--profile", "both", "--platform", "cloudflare"); code != cli.ExitOK {
@@ -1391,8 +1403,11 @@ func TestAccountRemoveDropsRowsWithoutAParent(t *testing.T) {
 	if got := e.rows("both", platform.ResZone); !slices.Contains(got, "zone-beta ") {
 		t.Fatalf("zones: %v", got)
 	}
-	if got := e.rows("both", platform.ResR2Bucket); !reflect.DeepEqual(got, []string{"media "}) {
+	if got := e.rows("both", platform.ResR2Bucket); !reflect.DeepEqual(got, []string{"acc1/assets acc1", "media "}) {
 		t.Fatalf("buckets: %v", got)
+	}
+	if got := e.rows("both", platform.ResDNSRecord); !reflect.DeepEqual(got, []string{"rec-beta zone-beta", "rec-ex zone-ex"}) {
+		t.Fatalf("records: %v", got)
 	}
 
 	if code, _, stderr := e.run("cloudflare", "account", "remove", "acc2", "--profile", "both"); code != cli.ExitOK {
@@ -1401,10 +1416,11 @@ func TestAccountRemoveDropsRowsWithoutAParent(t *testing.T) {
 	if got, want := e.rows("both", platform.ResZone), []string{"zone-a acc1", "zone-couk acc1", "zone-ex acc1", "zone-pend acc1"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("zones: %v", got)
 	}
-	if got := e.rows("both", platform.ResDNSRecord); len(got) != 0 {
+	// What is of the account that stays is still there.
+	if got, want := e.rows("both", platform.ResDNSRecord), []string{"rec-ex zone-ex"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("records: %v", got)
 	}
-	if got := e.rows("both", platform.ResR2Bucket); len(got) != 0 {
+	if got, want := e.rows("both", platform.ResR2Bucket), []string{"acc1/assets acc1"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("buckets: %v", got)
 	}
 	if got := e.domains("both"); slices.Contains(got, "example.net") {
