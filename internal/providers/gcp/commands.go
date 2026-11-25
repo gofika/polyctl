@@ -136,6 +136,13 @@ func resolveZone(ctx context.Context, rt *app.Runtime, profile, arg string) (*zo
 	if arg == "" {
 		return nil, fmt.Errorf("zone is required")
 	}
+	// A zone id names its project: with --project it must be that one, so
+	// that a call pinned to one project never works on a zone of another.
+	if p, _ := splitZoneID(arg); p != "" {
+		if pin := pinnedProject(rt); pin != "" && p != pin {
+			return nil, app.UsageErrf("zone %q is of project %s, not of --project %s: drop --project or name a zone of that project", arg, p, pin)
+		}
+	}
 	zones, _, err := cachedZones(ctx, rt, profile)
 	if err != nil && !errors.Is(err, inventory.ErrNeverSynced) {
 		return nil, err

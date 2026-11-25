@@ -115,3 +115,31 @@ func TestCoverageChange(t *testing.T) {
 		}
 	}
 }
+
+// A zone id names its project; --project must not contradict it, so that a
+// call pinned to one project never reads or writes a zone of another.
+func TestZoneIDMustBeOfThePinnedProject(t *testing.T) {
+	h, g := multiDNS(t)
+	h.nonInteractive()
+	g.addZone("p1", "main", "example.com", "public")
+	g.addZone("p2", "main", "example.org", "public")
+	g.reset()
+	for _, args := range [][]string{
+		{"dns", "record", "list", "p2/main", "--project", "p1"},
+		{"dns", "record", "upsert", "p2/main", "--type", "A", "--name", "www", "--value", "192.0.2.9", "--project", "p1"},
+		{"dns", "record", "delete", "p2/main", "--type", "A", "--name", "www", "--yes", "--project", "p1"},
+	} {
+		err := h.run(args...)
+		if exitClass(err) != "usage" || !has(err, "p2/main", "--project p1") {
+			t.Errorf("%v = %v, want a usage error naming both", args[2:], err)
+		}
+	}
+	for _, c := range g.calls {
+		if strings.Contains(c, "/changes") || strings.Contains(c, "/projects/p2/") {
+			t.Errorf("call %s", c)
+		}
+	}
+	if err := h.run("dns", "record", "list", "p2/main", "--project", "p2"); err != nil {
+		t.Errorf("matching --project = %v", err)
+	}
+}

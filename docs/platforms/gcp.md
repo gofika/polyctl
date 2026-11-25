@@ -63,6 +63,7 @@ polyctl gcp project remove acme-prod --default acme-dns   # removing the default
 
 - Lookups and lists read only that project; a create goes to it instead of the default project.
 - The project need not be selected: a project outside the selection is read live and nothing of it is written to the inventory (so `--offline` cannot serve it, the pick lists of the interactive flow, which read the inventory, do not offer its instances, and a load balancer there is found by its URL map name, not by a forwarding rule name).
+- A zone id names its project: `--project` with a zone id of another project (`gcp dns record list acme-dns/example-zone --project acme-prod`) is exit code 2, and nothing is read or written.
 - A value that cannot be a project id (empty, or with a slash, comma or space) is exit code 2. `gcp project ...` and the platform-neutral commands do not take the flag.
 
 **Ids.** A managed zone id is `<project>/<managed zone>` (`acme-prod/example-zone`), a DNS record id starts with it (`acme-prod/example-zone|A|www.example.com|203.0.113.10`), and a certificate's inventory id is `<project>/<region or global>/<name>`. Instance, forwarding rule and address ids are the numeric ids of Compute Engine. Where a command takes a zone or a record id, a bare managed zone name (`example-zone`, `example-zone|A|...`) is still accepted and means the zone of that name: in the project of `--project` when given, else in the selected projects.
