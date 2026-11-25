@@ -32,6 +32,8 @@ func newCertDeployCmd(rt *app.Runtime) *cobra.Command {
 		deployers []string
 		wait      app.WaitFlags
 		issueTO   time.Duration
+		email     string
+		agreeTOS  bool
 	)
 	cmd := &cobra.Command{
 		Use:   "deploy (<domain> | --all)",
@@ -59,7 +61,11 @@ run, as cert ensure would with --days plus 5 (so that a certificate just
 deployed is not due again the next day); a domain no DNS account hosts skips
 its targets (their certificate is managed elsewhere), unless the store holds
 a certificate of it: an unexpired one is deployed with a warning, an expired
-one fails the domain.
+one fails the domain. The first certificate needs an ACME account: --email
+and --agree-tos (or cert.email and cert.agree_tos: true) register it; the
+interactive flow asks for whichever is missing, and the non-interactive flow
+fails each root domain that needs one (exit code 1). Declining the terms or
+leaving the e-mail prompt skips the targets of that domain.
 
 Every account of the platforms with a deployer is scanned, narrowed by
 --profile, --platform and --deployer; cert.skip_accounts leaves out a profile
@@ -166,7 +172,11 @@ polyctl cert deploy --all --prune-expired --yes.`,
 			if err != nil {
 				return err
 			}
-			env, err := certDeployEnv(rt, cfg, accounts)
+			acct := cert.EnsureOptions{Email: s.Email, AgreeTOS: agreeTOS || s.AgreeTOS}
+			if cmd.Flags().Changed("email") {
+				acct.Email = email
+			}
+			env, err := certDeployEnv(rt, cfg, accounts, acct)
 			if err != nil {
 				return err
 			}
@@ -186,6 +196,8 @@ polyctl cert deploy --all --prune-expired --yes.`,
 	f.StringArrayVar(&regions, "region", nil, "region to scan (repeatable; replaces cert.aws.regions / cert.aliyun.regions; \"global\" for GCP global proxies)")
 	f.StringArrayVar(&deployers, "deployer", nil, "deployer to run: "+strings.Join(platform.DeployerIDs(), ", ")+" (repeatable; default: all)")
 	f.BoolVar(&prune, "prune-expired", false, "also delete the expired certificates nothing uses any more (asks first; --yes in scripts)")
+	f.StringVar(&email, "email", "", "e-mail address of the ACME account, used when it is registered (default: cert.email)")
+	f.BoolVar(&agreeTOS, "agree-tos", false, "agree to the CA's terms of service when registering the ACME account (or cert.agree_tos: true)")
 	f.DurationVar(&issueTO, "issue-timeout", DefaultCertTimeout, "upper bound of ensuring the certificate of each root domain, waiting for its lock included")
 	app.AddWaitFlags(cmd, &wait, true, app.DefaultWaitTimeout)
 	_ = cmd.RegisterFlagCompletionFunc("deployer", cobra.FixedCompletions(platform.DeployerIDs(), cobra.ShellCompDirectiveNoFileComp))
@@ -258,7 +270,9 @@ func checkSkipAccounts(entries []string) error {
 }
 
 // certDeployEnv builds the environment of cert deploy from the runtime.
-func certDeployEnv(rt *app.Runtime, cfg *config.Config, accounts []config.AccountRef) (*cert.DeployEnv, error) {
+// acct holds the ACME account e-mail and terms agreement (--email,
+// --agree-tos or the cert settings).
+func certDeployEnv(rt *app.Runtime, cfg *config.Config, accounts []config.AccountRef, acct cert.EnsureOptions) (*cert.DeployEnv, error) {
 	// The DNS account of a domain is routed among every account, whatever
 	// --profile / --platform select for the deployment.
 	routing, err := rt.Unselected()
@@ -270,7 +284,7 @@ func certDeployEnv(rt *app.Runtime, cfg *config.Config, accounts []config.Accoun
 		return nil, err
 	}
 	s := cfg.CertSettings()
-	base := cert.EnsureOptions{KeyType: s.KeyType, Email: s.Email, AgreeTOS: s.AgreeTOS, ReuseKey: s.ReuseKey, DryRun: rt.DryRun()}
+	base := cert.EnsureOptions{KeyType: s.KeyType, Email: acct.Email, AgreeTOS: acct.AgreeTOS, ReuseKey: s.ReuseKey, DryRun: rt.DryRun()}
 	env := &cert.DeployEnv{
 		Accounts:     accounts,
 		SkipAccounts: s.SkipAccounts,

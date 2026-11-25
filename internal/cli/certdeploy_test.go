@@ -217,6 +217,30 @@ func TestCertDeployUsage(t *testing.T) {
 	}
 }
 
+// The first certificate of cert deploy registers the ACME account from
+// --email and --agree-tos; without them the non-interactive flow fails the
+// root domain (exit code 1) and points at those flags, which exist.
+func TestCertDeployRegistersFromFlags(t *testing.T) {
+	_, cfgPath, d, iss := deploySetup(t)
+	cfg := loadConfig(t, cfgPath)
+	cfg.Cert.Email, cfg.Cert.AgreeTOS = "", false
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := run(t, cfgPath, "cert", "deploy", "example.com")
+	if ExitCodeFor(err) != ExitError || !strings.Contains(err.Error(), "--email") || iss.registers != 0 {
+		t.Fatalf("no account settings = %v (exit %d)", err, ExitCodeFor(err))
+	}
+	if _, stderr, err := run(t, cfgPath, "cert", "deploy", "example.com", "--email", "ops@example.net"); ExitCodeFor(err) != ExitError ||
+		!strings.Contains(err.Error(), "--agree-tos") {
+		t.Fatalf("no agreement = %v (%s)", err, stderr)
+	}
+	if _, stderr, err := run(t, cfgPath, "cert", "deploy", "example.com", "--email", "ops@example.net", "--agree-tos"); err != nil ||
+		iss.registers != 1 || iss.obtains != 1 || len(d.writes) != 1 {
+		t.Fatalf("with flags = %v (%s), registers %d obtains %d writes %v", err, stderr, iss.registers, iss.obtains, d.writes)
+	}
+}
+
 // A root domain whose zone two DNS accounts hold: cert deploy points at
 // cert.dns_accounts (its --profile / --platform select deploy accounts),
 // and cert.dns_accounts routes the renewal to the account it names.
