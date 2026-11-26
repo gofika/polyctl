@@ -763,7 +763,9 @@ already. A disabled account that is no longer visible is forgotten.
 
 Only the local configuration changes; the cached inventory of the login is
 synced again on its next use. --dry-run reports what would change and writes
-nothing. Works with --offline for accounts named by id.`,
+nothing. Works with --offline for accounts named by id; whether the
+credentials see an account that is not disabled is not checked then, which a
+note says.`,
 		Args: app.RangeArgsOrInteractive(rt, 1, 100, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -780,6 +782,20 @@ nothing. Works with --offline for accounts named by id.`,
 			}
 			if len(ids) == 0 {
 				return b.pick(ctx, newDefault)
+			}
+			if rt.Flags.Offline {
+				// Nothing tells whether an account that is not disabled
+				// is one the credentials see: it counts as enabled
+				// already, which the user is told was not checked.
+				var unknown []string
+				for _, id := range ids {
+					if id != b.cur.AccountID && !slices.Contains(b.cur.Disabled, id) {
+						unknown = append(unknown, id)
+					}
+				}
+				if len(unknown) > 0 {
+					rt.Infof("note: --offline: whether the credentials see %s was not checked", strings.Join(unknown, ", "))
+				}
 			}
 			var disabled []string
 			for _, d := range b.cur.Disabled {

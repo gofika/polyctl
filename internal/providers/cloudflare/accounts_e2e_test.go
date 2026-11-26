@@ -1486,6 +1486,20 @@ func TestAccountUseEnableDisable(t *testing.T) {
 	if code, out = acct("disable", "No Such Name", "--offline"); code != cli.ExitOffline {
 		t.Errorf("disable of an unknown name --offline: exit %d, %s", code, out)
 	}
+	// enable --offline of an id that is not disabled counts as enabled
+	// already, and says that nothing told whether the credentials see it;
+	// the default account and a disabled one need no such note.
+	const unseen = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	if code, out = acct("enable", unseen, "--offline"); code != cli.ExitOK || !strings.Contains(out, "note: --offline: whether the credentials see "+unseen+" was not checked") ||
+		!strings.Contains(out, "already enabled") || e.stored("all") != "acc1|Acme|acc2,acc3,acc9" {
+		t.Errorf("enable --offline of an unseen id: exit %d, %s, %s", code, e.stored("all"), out)
+	}
+	if code, out = acct("enable", "acc1", "--offline"); code != cli.ExitOK || strings.Contains(out, "was not checked") {
+		t.Errorf("enable --offline of the default account: exit %d, %s", code, out)
+	}
+	if code, out = acct("enable", "acc9", "--offline", "--dry-run"); code != cli.ExitOK || strings.Contains(out, "whether the credentials see") || e.stored("all") != "acc1|Acme|acc2,acc3,acc9" {
+		t.Errorf("enable --offline --dry-run of a disabled account: exit %d, %s, %s", code, e.stored("all"), out)
+	}
 	for _, sub := range []string{"disable", "remove"} {
 		if code, out = acct(sub); code != cli.ExitUsage || !strings.Contains(out, noAccountsToDisable) {
 			t.Errorf("%s without an account: exit %d, %s", sub, code, out)
