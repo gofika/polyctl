@@ -30,7 +30,7 @@ polyctl dns set    <domain> <name> <type> <value> [--ttl 300] [--priority 10] [-
 polyctl dns add    <domain> <name> <type> <value> [--ttl 300] [--priority 10] [--proxied[=false]]
 polyctl dns ensure <domain> <name> <type> <value>... [--ttl 300|auto] [--priority 10] [--proxied[=false]]
 polyctl dns ensure <domain> (-r <name:type:value[:ttl[:proxied]]>... | -f records.yaml) [--prune-duplicates]
-polyctl dns delete <domain> (<name> <type> [<value>] | --id <record-id>) [-y]
+polyctl dns delete <domain> (<name> [<type> [<value>]] | --id <record-id>) [-y]
 polyctl dns delete <domain> --all [--type <T>[,<T>...]]... [--keep-bound] [-y]
 ```
 
@@ -108,14 +108,17 @@ records:
 ### dns delete
 
 ```sh
+polyctl dns delete example.com www                          # every record of www, when they have one type
 polyctl dns delete example.com www A                        # one record, or asks when several match
 polyctl dns delete example.com www A 203.0.113.10           # only the record with this value
 polyctl dns delete example.com --id 372e67954025e0ba6aaa6d586b9e0b59
 polyctl dns delete example.com --all --type TXT --dry-run
 ```
 
+- Only `<name>` is required. `<type>` and `<value>` narrow the selection and are needed only to tell records apart: a name whose records all have one type is deleted as if that type had been given.
+- A name with records of several types is never deleted as a whole. On a terminal its records are listed (type, value, TTL, id) to tick the ones to delete; ticking none deletes nothing (exit code 0). Non-interactive, the command names the types found and exits with code 5 without deleting anything, also with `-y`: give `<type>`. The SOA and NS records of the zone apex are not meant by `@` alone; give `NS` to select the apex NS records.
 - `<value>` narrows the match. It is compared as `dns ensure` compares values: host names ignore case and a trailing dot, addresses are compared in canonical form, TXT text with or without its quotes, and an MX value may be `10 mx.example.com` (as `dns list` prints it; the priority must match) or the host alone. `--id` deletes exactly one record by platform id and cannot be combined with a record (exit code 2). An id that names several records (an older GoDaddy id, see [GoDaddy](platforms/godaddy.md#dns-records)) is exit code 5 and deletes nothing.
-- A selector that matches several records shows them and asks first (`-y` skips the question). Answering no deletes nothing and exits with code 0 (`nothing to do: no record was deleted`).
+- A selector that matches several records lists them with their ids, says how many match and how to delete one of them only (its `<value>` after the `<type>`, or `--id <id>`), and asks first (`-y` skips the question). Answering no deletes nothing and exits with code 0 (`nothing to do: no record was deleted; to delete one of them only, ...`).
 - Non-interactive: nothing is asked or deleted without `-y`; the command exits with code 2 (`confirmation required: pass --yes to proceed ...`).
 - No matching record is exit code 4.
 - A record that fails to delete does not stop the others; the command ends with `N of M step(s) failed; first error: ...` (exit code 1).
@@ -123,7 +126,7 @@ polyctl dns delete example.com --all --type TXT --dry-run
 **`--all`** deletes every record of the zone, for retiring a domain or emptying it before a move.
 
 - `--type` (repeatable or comma-separated, any case) limits it to those types across the zone. Without `--all`, `--type` takes a single type.
-- Cannot be combined with a `<name> <type>` record or `--id` (exit code 2).
+- Cannot be combined with a positional record or `--id` (exit code 2).
 - Clears only the account the domain routes to. A zone held by several accounts is exit code 5 until `--profile` / `--platform` picks one.
 - Never deleted: the SOA and the NS records of the zone apex (reported `skipped`, also with `--type NS`). NS records below the apex (delegations) are deleted. The zone itself stays.
 - Records owned by another service (Cloudflare R2 custom domains) are removed by unbinding them; `--keep-bound` skips them instead.
