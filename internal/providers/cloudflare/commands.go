@@ -514,6 +514,7 @@ func newDNSCreateCmd(rt *app.Runtime) *cobra.Command {
 type are left alone.
 
 ` + app.RecordArgsHelp("zone") + `
+` + app.PlatformRecordTypesHelp(platform.Cloudflare) + `
 
 --proxied is a boolean: --proxied switches the proxy on, --proxied=false
 switches it off, and without it Cloudflare's default applies.

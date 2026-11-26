@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -111,4 +112,42 @@ func (rt *Runtime) AskNewRecordValue(cur platform.Record) (string, error) {
 		return "", NothingToDof("%s %s keeps the value %s", cur.Name, cur.Type, cur.Value)
 	}
 	return value, nil
+}
+
+// RecordTypesHelp is the table of the record types each platform writes and
+// of the value forms of the less common ones, shown once, by `polyctl dns
+// --help`. It is made from what polyctl knows (platform.RecordType) and
+// what the providers say they write, so it cannot drift from the checks.
+func RecordTypesHelp() string {
+	var b strings.Builder
+	b.WriteString("Record types each platform writes (any other type is refused before\nanything is sent: exit code 7 for a known type, 2 for an unknown one):\n\n")
+	for _, p := range platform.Providers() {
+		types := platform.WritableRecordTypes(p.ID())
+		if len(types) == 0 {
+			continue
+		}
+		fmt.Fprintf(&b, "  %-11s %s\n", p.ID(), strings.Join(types, " "))
+	}
+	b.WriteString("\nValues are written in zone-file form, checked, and sent in a normal form\n(host names in lower case without the trailing dot, addresses canonical).\nThe forms of the less common types:\n\n")
+	for _, t := range platform.KnownRecordTypes {
+		info, _ := platform.RecordType(t)
+		switch t {
+		case "A", "AAAA", "CNAME", "ALIAS", "ANAME", "NS", "PTR", "SPF":
+			continue
+		}
+		fmt.Fprintf(&b, "  %-10s %s\n  %-10s e.g. %s\n", t, info.Form, "", info.Example)
+	}
+	b.WriteString(`
+The priority of an MX record goes in front of its value or in --priority (a
+new MX record needs one); SRV, HTTPS, SVCB, URI and NAPTR carry theirs as a
+field of the value, and --priority is refused for them. SOA is managed by
+the platforms; URL forwarding and Route 53 alias targets are not record
+types and stay with the platform's own tools.`)
+	return b.String()
+}
+
+// PlatformRecordTypesHelp is the line a record command of platform id shows
+// about the types it writes.
+func PlatformRecordTypesHelp(id platform.ID) string {
+	return "Record types: " + strings.Join(platform.WritableRecordTypes(id), " ") + "; their value\nforms are in `polyctl dns --help`."
 }

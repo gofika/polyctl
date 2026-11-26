@@ -27,7 +27,7 @@ namecom dns delete <domain> (<name> [<type> [<value>]] | --id <record-id>) [-y]
 - Former form (0.5.x): `create` still reads the record from `--name`, `--type` and `--value` (without `--name`, the apex; on a terminal the name is asked instead). These flags are no longer listed in the help. A positional record together with one of them is exit code 2.
 - `update` changes the fields given as `--name`, `--type`, `--value`, `--ttl` and `--priority`; `--name` is relative to the domain (`www`, `@`). The positional `<type>` and `<value>` say which record is meant, the flags what it becomes. Without any of these flags a terminal asks for the new value (the current one is the default; the same value changes nothing, exit code 0), and the non-interactive flow is exit code 2.
 - `--ttl` in seconds, minimum 300; `0` (the default of `create`) uses name.com's default.
-- `--priority` for MX/SRV records.
+- `--priority` is the priority of an MX record; an SRV value carries its own (`10 5 5060 sip.example.com`), which goes to the priority field of the record and the rest to its answer. The types name.com writes (no CAA) and their value forms: [Record types](../commands.md#record-types).
 - `whoami` needs the network (exit code 6 with `--offline`); credentials that no longer work exit with code 3.
 - List commands honour `--refresh` / `--offline`; writes always go to name.com.
 

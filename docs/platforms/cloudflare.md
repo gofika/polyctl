@@ -222,7 +222,7 @@ polyctl cf dns delete example.com --id 372e67954025e0ba6aaa6d586b9e0b59
 - `update` changes the fields given as `--name`, `--type` and `--value`; `--name` is relative to the zone (`www`, `@`) or an FQDN.
 - `--ttl` in seconds; `0` or `1` means automatic.
 - `--proxied` is the orange cloud: `--proxied` on, `--proxied=false` off. Without it, `create` uses Cloudflare's default and `update` keeps the current setting.
-- `--priority` for MX/SRV/URI records; `--comment` sets a comment (`update --comment ""` clears it).
+- `--priority` is the priority of an MX record (SRV and URI carry theirs in the value); `--comment` sets a comment (`update --comment ""` clears it). The types Cloudflare writes and their value forms: [Record types](../commands.md#record-types).
 
 `dev-mode` and `ssl-mode` without a value show the current state.
 

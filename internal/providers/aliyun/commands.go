@@ -242,7 +242,7 @@ func newDNSRecordCreateCmd(rt *app.Runtime) *cobra.Command {
 		Long: `Create one record in <domain>.
 
 ` + app.RecordArgsHelp("domain") + `
-The priority of an MX record goes in --priority.
+` + app.PlatformRecordTypesHelp(platform.Aliyun) + `
 
 ` + app.RecordAskHelp("domain"),
 		Example: `  polyctl aliyun dns record create example.com www A 203.0.113.10

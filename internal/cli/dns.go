@@ -24,7 +24,9 @@ func newDNSCmd(rt *app.Runtime) *cobra.Command {
 		Long: `Manage DNS records of any zone regardless of where it is hosted. The owning
 account (profile and platform) is looked up in the local domain index; pass
 --profile and/or --platform to narrow the search, --refresh to re-fetch from
-the platform, --offline to never touch the network.`,
+the platform, --offline to never touch the network.
+
+` + app.RecordTypesHelp(),
 	}
 	addRouteFlags(rt, cmd)
 	cmd.AddCommand(newDNSListCmd(rt), newDNSAddCmd(rt), newDNSEnsureCmd(rt), newDNSDeleteCmd(rt))
@@ -58,6 +60,9 @@ func dnsNameOf(t *app.Target, name, arg string) (string, error) {
 // recordHelp is the paragraph of the record commands about their positional
 // record.
 var recordHelp = app.RecordArgsHelp("zone")
+
+// recordTypesPointer says where the record types and their value forms are.
+const recordTypesPointer = "The record types each platform writes and their value forms: `polyctl dns --help`."
 
 // recordGrid renders records of platform p; Cloudflare gets a PROXIED column.
 func recordGrid(recs []platform.Record, p platform.ID) output.Grid {
@@ -155,6 +160,7 @@ records or several TXT or MX records are built up. To change an existing
 record use ` + "`polyctl dns ensure`" + `.
 
 ` + recordHelp + `
+` + recordTypesPointer + `
 
 ` + app.RecordAskHelp("zone") + `
 
@@ -557,6 +563,7 @@ One record, or the set of one name and type, is written as arguments:
   polyctl dns ensure example.com @ MX "10 mx1.example.com" "20 mx2.example.com"
 
 ` + recordHelp + `
+` + recordTypesPointer + `
 
 Several values are the set of that name and type. --ttl (seconds, or auto),
 --priority and --proxied apply to the positional record only.

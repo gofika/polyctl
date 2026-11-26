@@ -627,6 +627,7 @@ func newDNSAddCmd(rt *app.Runtime) *cobra.Command {
 are kept.
 
 ` + recordArgsHelp + `
+` + app.PlatformRecordTypesHelp(platform.GoDaddy) + `
 
 ` + app.RecordAskHelp("domain"),
 		Example: `  polyctl godaddy dns add example.com www A 203.0.113.10
@@ -696,6 +697,7 @@ when it does. Every <value> is one record. To add a record and keep the
 existing ones use ` + "`polyctl godaddy dns add`" + `.
 
 ` + recordArgsHelp + `
+` + app.PlatformRecordTypesHelp(platform.GoDaddy) + `
 
 ` + app.RecordAskHelp("domain") + "\n\n" + app.RecordSetAskHelp,
 		Example: `  polyctl godaddy dns upsert example.com www A 203.0.113.10 203.0.113.11

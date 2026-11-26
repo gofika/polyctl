@@ -599,6 +599,7 @@ values of a name/type pair in one set; this command makes the set equal to
 the values given, one argument each.
 
 ` + recordArgsHelp + `
+` + app.PlatformRecordTypesHelp(platform.GCP) + `
 
 MX values take the priority as a leading number inside the value ("10
 mail.example.com"), or from --priority; an SRV value starts with its own.

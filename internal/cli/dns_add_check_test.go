@@ -59,3 +59,31 @@ func TestDNSAddChecksTheRecordFirst(t *testing.T) {
 		t.Errorf("records = %q", got)
 	}
 }
+
+// polyctl dns --help lists the types each platform writes and the value
+// forms of the less common ones, from the checks themselves; the record
+// commands of a platform name its types.
+func TestRecordTypesHelp(t *testing.T) {
+	_, cfgPath, _ := ensureZone(t)
+	code, stdout, stderr := mainRun(cfgPath, "dns", "--help")
+	if code != ExitOK {
+		t.Fatalf("exit %d, %s", code, stderr)
+	}
+	// (The fakes stand in for Cloudflare and GoDaddy here, and say no
+	// types.)
+	for _, id := range []platform.ID{platform.AWS, platform.GCP, platform.Aliyun, platform.NameCom} {
+		types := platform.WritableRecordTypes(id)
+		if len(types) == 0 || !strings.Contains(stdout, string(id)+strings.Repeat(" ", 12-len(id))+strings.Join(types, " ")+"\n") {
+			t.Errorf("no line for %s %v in:\n%s", id, types, stdout)
+		}
+	}
+	for _, want := range []string{"SRV        <priority> <weight> <port> <target>", "e.g. 10 5 5060 sip.example.com", "--priority is refused for them"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("help lacks %q", want)
+		}
+	}
+	_, stdout, _ = mainRun(cfgPath, "namecom", "dns", "create", "--help")
+	if !strings.Contains(stdout, "Record types: A AAAA CNAME ANAME MX NS TXT SRV;") {
+		t.Errorf("namecom dns create help:\n%s", stdout)
+	}
+}

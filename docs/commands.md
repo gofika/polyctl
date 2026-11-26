@@ -58,12 +58,54 @@ polyctl dns delete example.com www A
 - `--ttl` of `dns add` is in seconds; `0` or no flag means the platform default. `--ttl` of `dns ensure` is described [below](#dns-ensure).
 - In tables, special TTLs are shown by name: `auto` (Cloudflare automatic, `1` in the API), `alias` (Route 53 alias records) and `default` (a GoDaddy record written without `--ttl`). JSON and YAML keep the raw value.
 - `--proxied` is Cloudflare only. `--proxied` turns the proxy on, `--proxied=false` turns it off (the `=` is required). Without it, `dns ensure` keeps the current setting of an existing record, and a new record gets Cloudflare's default. The `PROXIED` column appears for Cloudflare zones.
+
+### Record types
+
+Every command that writes a record (`dns add`, `dns ensure`, and the `create`, `add`, `upsert` and `update` record commands of the platforms) checks it before anything is sent:
+
+- A type polyctl does not know is exit code 2, and the message lists the known types. `SOA` is managed by the platforms. URL forwarding (`URL`, `REDIRECT_URL`, `FORWARD_URL`, ...) and Route 53 alias targets are not record types: they stay with the platform's own tools (Cloudflare: `polyctl cloudflare redirect rule set`), and the message says so.
+- A known type the platform does not write is exit code 7, and the message names the types it writes (`SPF` adds: write the policy as a TXT record; `ALIAS` / `ANAME` name the platform's own word for it).
+- An invalid value is exit code 2: the message says what is wrong and shows a valid value of the type.
+- A valid value is sent in a normal form: host names in lower case without the trailing dot (internationalized names in punycode), addresses canonical, hex in lower case, the value of CAA and the strings of NAPTR and URI quoted. Each platform gets it in the fields of its API (the components of Cloudflare's `data`, the priority field of name.com, the SRV fields of GoDaddy, the trailing dots Cloud DNS expects).
+- The priority of an MX record goes in front of its value (`"10 mail.example.com"`) or in `--priority` / `priority`; a new MX record needs one. SRV, HTTPS, SVCB, URI and NAPTR carry theirs as a field of the value: `--priority` with them is exit code 2, and the message says which field it is. Other types take no priority.
+- Records that cannot share a name are refused: a CNAME beside any other record (on Cloudflare beside A, AAAA or NS records), NS beside anything but DS on Cloudflare and Alibaba Cloud, ALIAS / ANAME beside A, AAAA or CNAME records. `dns ensure` checks its records among themselves, `dns add` against the zone.
+
+| Type | Value | Example | Cloudflare | Route 53 | Cloud DNS | Alibaba Cloud | name.com | GoDaddy |
+|---|---|---|:-:|:-:|:-:|:-:|:-:|:-:|
+| `A` | IPv4 address | `203.0.113.10` | yes | yes | yes | yes | yes | yes |
+| `AAAA` | IPv6 address | `2001:db8::10` | yes | yes | yes | yes | yes | yes |
+| `CNAME` | host | `target.example.net` | yes | yes | yes | yes | yes | yes |
+| `ALIAS` | host | `target.example.net` | | | yes (apex only) | yes | | |
+| `ANAME` | host | `target.example.net` | | | | | yes | |
+| `MX` | `[<priority>] <host>` | `10 mail.example.com` | yes | yes | yes | yes | yes | yes |
+| `NS` | host | `ns1.example.net` | yes | yes | yes | yes | yes | yes |
+| `TXT` | text, or `"<string>" ["<string>"...]` of at most 255 bytes each | `"v=spf1 -all"` | yes | yes | yes | yes | yes | yes |
+| `SPF` | as TXT | `"v=spf1 -all"` | | yes | yes | | | |
+| `SRV` | `<priority> <weight> <port> <target>` | `10 5 5060 sip.example.com` | yes | yes | yes | yes | yes | yes |
+| `CAA` | `<flags> <tag> "<value>"` | `0 issue "letsencrypt.org"` | yes | yes | yes | yes | | yes |
+| `PTR` | host | `host.example.com` | yes | yes | yes | | | |
+| `NAPTR` | `<order> <preference> "<flags>" "<service>" "<regexp>" <replacement>` | `100 10 "S" "SIP+D2U" "" _sip._udp.example.com` | yes | yes | yes | | | |
+| `HTTPS` | `<priority> <target> [<key>=<value>...]` (priority 0: alias mode, no parameters) | `1 . alpn="h3,h2"` | yes | yes | yes | yes | | |
+| `SVCB` | as HTTPS | `1 svc.example.net port=8443` | yes | yes | yes | yes | | |
+| `TLSA` | `<usage> <selector> <matching-type> <hex data>` | `3 1 1 <64 hex digits>` | yes | yes | yes | yes | | |
+| `SMIMEA` | as TLSA | `3 1 1 <64 hex digits>` | yes | | | | | |
+| `SSHFP` | `<algorithm> <fingerprint-type> <hex fingerprint>` | `4 2 <64 hex digits>` | yes | yes | yes | | | |
+| `DS` | `<key-tag> <algorithm> <digest-type> <hex digest>` | `12345 13 2 <64 hex digits>` | yes | yes | yes | | | |
+| `DNSKEY` | `<flags> 3 <algorithm> <base64 key>` | `257 3 13 mdss...GQ==` | yes | | yes | | | |
+| `CERT` | `<type> <key-tag> <algorithm> <base64 certificate>` (type a number or `PKIX`, `PGP`, ...) | `PKIX 0 0 MIIBszCC...` | yes | | | | | |
+| `URI` | `<priority> <weight> "<target URI>"` | `10 1 "https://www.example.com/"` | yes | | | | | |
+| `LOC` | `<d> [<m> [<s>]] N\|S <d> [<m> [<s>]] E\|W <altitude>[m] [<size>[m] [<hp>[m] [<vp>[m]]]]` | `52 22 23.000 N 4 53 32.000 E -2.00m` | yes | | | | | |
+| `OPENPGPKEY` | `<base64 key>` | `mDMEXEcE6RYJ...` | yes | | | | | |
+| `IPSECKEY` | `<precedence> <gateway-type> <algorithm> <gateway> [<base64 key>]` | `10 1 2 192.0.2.38 AQNR...` | | | yes | | | |
+
+The hex data has the length its type calls for (TLSA / SMIMEA matching type 1: 64 digits, 2: 128; SSHFP fingerprint type 1: 40, 2: 64; DS digest type 1: 40, 2 and 3: 64, 4: 96). `polyctl dns --help` prints the same table from the checks themselves.
 - After a write, the inventory is updated, so the next `dns list` shows the change without `--refresh`.
 - A Cloudflare, name.com or GoDaddy request refused for its rate limit (HTTP 429) waits for the delay the platform announces (`Retry-After`, `RateLimit-Reset`; at most 2 minutes per wait, 3 waits per request) and is sent again, so a long `dns delete --all` or sync rides out the limit window instead of failing partway.
 
 ### dns add
 
 - `dns add` always creates one more record and leaves the others alone. Use it to build round-robin `A` records or several `TXT` / `MX` records. To change a record, use `dns ensure`.
+- A record whose name already holds a record it cannot share the name with (a CNAME beside an A record, a second CNAME, ...) is refused before the write.
 
 ### dns ensure
 
@@ -94,12 +136,12 @@ records:
 - Names are relative (`www`, `@`, `a.b`) or full names in the zone (`www.example.com`, with or without the trailing dot). A name outside the zone (`www.other.com`) is a usage error.
 - TTL (seconds or `auto`) and proxied (`true` / `false`) are optional. Left out, an existing record keeps its value and a new one gets the platform default (Cloudflare: automatic TTL, not proxied). `auto` and `0` mean automatic on Cloudflare; elsewhere `auto` equals leaving the TTL out and `0` is refused.
 - Values are compared as the platform stores them (host names without case or trailing dot, compressed IPv6, TXT and SPF unquoted and joined), so an equivalent value is `unchanged`.
-- MX: put the priority in front of the value (`"10 mail.example.com"`, `@:MX:10 mail.example.com`) or in `--priority` / `priority`. A new MX record needs one. SRV values are `<priority> <weight> <port> <target>`.
+- Values and priorities are checked as [Record types](#record-types) says: an MX priority in front of the value (`"10 mail.example.com"`, `@:MX:10 mail.example.com`) or in `--priority` / `priority`, needed for a new MX record; SRV values are `<priority> <weight> <port> <target>`.
 - Inline, a value ending in `:<number>` or an IPv6 address that could be read with a TTL is refused as ambiguous: use the file.
 - Several records with the same name and type form a set: missing values are created, nothing is updated.
 - One desired record against several existing ones of that name and type: fine if one already matches, or if one has the desired value (only its other fields, such as the TTL, are updated); the others are left alone. When none has the desired value the command stops before writing (exit code 5), unless `--prune-duplicates` keeps one (updating the oldest) and deletes the rest, without asking. With `--prune-duplicates` the record kept is always the one that matches or has the desired value, when there is one.
 - `proxied=true` on a platform other than Cloudflare is reported `skipped`; `proxied=false` there is ignored. On a proxied Cloudflare record the TTL is not compared.
-- Usage errors (exit code 2), found before the zone is read: unknown fields, a record given twice, two CNAMEs of one name, a CNAME next to an A / AAAA record, `proxied` on types other than A / AAAA / CNAME, and `SOA`. A type the platform cannot write is exit code 7. A CNAME whose name already has A / AAAA records (or the reverse) fails before anything is written.
+- Usage errors (exit code 2), found before the zone is read: unknown fields, a record given twice, an invalid value or type, two CNAMEs of one name, records of types that cannot share a name (see [Record types](#record-types)), `proxied` on types other than A / AAAA / CNAME, and `SOA`. A type the platform cannot write is exit code 7. A CNAME whose name already has A / AAAA records (or the reverse) fails before anything is written.
 - The zone is always read live, so `--offline` is refused (exit code 6).
 - The first failed write stops the run. Run the command again to continue from there.
 - Report rows are `dns-record/<name>/<TYPE>`. An update lists its changed fields (`value a -> b; ttl 300 -> 600`); in JSON, `attrs.changed` holds the old and new `value`, `ttl`, `proxied` and `priority`.

@@ -597,6 +597,7 @@ func newDNSCreateCmd(rt *app.Runtime) *cobra.Command {
 type are left alone.
 
 ` + app.RecordArgsHelp("domain") + `
+` + app.PlatformRecordTypesHelp(platform.NameCom) + `
 
 ` + app.RecordAskHelp("domain"),
 		Example: `  polyctl namecom dns create example.com www A 203.0.113.10

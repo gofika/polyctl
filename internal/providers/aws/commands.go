@@ -411,6 +411,7 @@ values take their priority as a leading number inside the value ("10
 mail.example.com"), or from --priority; an SRV value starts with its own.
 
 ` + recordArgsHelp + `
+` + app.PlatformRecordTypesHelp(platform.AWS) + `
 
 A routing-policy set (weighted, latency, failover, geolocation...) is
 chosen with --set-identifier and keeps its policy; a set identifier that
