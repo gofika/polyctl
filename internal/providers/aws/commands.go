@@ -402,22 +402,38 @@ func recordUpsertCmd(rt *app.Runtime) *cobra.Command {
 	var values []string
 	var ttl, priority int
 	cmd := &cobra.Command{
-		Use:   "upsert <zone>",
+		Use:   "upsert <zone> <name> <type> <value>...",
 		Short: "Create or replace a whole record set (name + type) with the given values",
-		Long: `Create or replace the record set identified by --name and --type. Every
---value becomes one value of the set; existing values that are not repeated
-are removed. MX and SRV values take their priority from --priority, or as a
-leading number inside the value ("10 mail.example.com").
+		Long: `Create or replace the record set of <name> and <type>. Every <value> becomes
+one value of the set; existing values that are not repeated are removed. MX
+and SRV values take their priority from --priority, or as a leading number
+inside the value ("10 mail.example.com").
+
+` + recordArgsHelp + `
 
 A routing-policy set (weighted, latency, failover, geolocation...) is
 chosen with --set-identifier and keeps its policy; a set identifier that
 does not exist is not found (exit code 4), since this command sets no
 routing policy. Without it, a name and type that hold only routing-policy
 sets are ambiguous (exit code 5).`,
-		Args: app.ArgsOrInteractive(rt, 1, nil),
+		Example: `  polyctl aws route53 record upsert example.com www A 203.0.113.10 203.0.113.11
+  polyctl aws route53 record upsert example.com @ MX "10 mx1.example.net" "20 mx2.example.net" --ttl 300
+  polyctl aws route53 record upsert example.com www A 203.0.113.12 --set-identifier eu`,
+		Args:              app.RecordArgsOrInteractive(rt, 1, -1),
+		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.AWS)),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// The record is positional (<name> <type> <value>...) or, in the
+			// former form, given with --name, --type and --value.
+			if len(args) > 1 {
+				rec, err := app.ParseRecordArgs(cmd, args[1:], 1, -1)
+				if err != nil {
+					return err
+				}
+				name, typ, values = rec.Name, rec.Type, rec.Values
+				args = args[:1]
+			}
 			if (typ == "" || len(values) == 0) && !rt.Interactive() {
-				return app.UsageErrf("--type and at least one --value are required")
+				return app.UsageErrf("%s", app.RecordUsage(cmd, 1, -1))
 			}
 			if rt.Flags.Offline {
 				return app.ErrOffline
@@ -490,16 +506,37 @@ sets are ambiguous (exit code 5).`,
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 = keep existing, or 300 for a new set)")
 	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX/SRV values that do not start with one")
 	cmd.Flags().StringVar(&setID, "set-identifier", "", "set identifier of a routing-policy record set (weighted, latency, failover...)")
+	hideFormerRecordFlags(cmd)
 	return cmd
+}
+
+// recordArgsHelp is the paragraph of the record commands about their
+// positional record.
+const recordArgsHelp = `<name> is relative to the zone (www, a.b), @ for the zone apex, or a full name
+inside the zone (www.example.com). <type> is case-insensitive. A value is one
+argument: quote one that contains spaces. A value that starts with "-" goes
+after "--".`
+
+// hideFormerRecordFlags leaves --name, --type and --value, the former form
+// of the record of a record command, out of its help. They keep working.
+func hideFormerRecordFlags(cmd *cobra.Command) {
+	for _, n := range []string{"name", "type", "value"} {
+		if cmd.Flags().Lookup(n) != nil {
+			_ = cmd.Flags().MarkHidden(n)
+		}
+	}
 }
 
 func recordDeleteCmd(rt *app.Runtime) *cobra.Command {
 	var typ, name, setID string
 	cmd := &cobra.Command{
-		Use:   "delete <zone>",
+		Use:   "delete <zone> <name> <type>",
 		Short: "Delete a whole record set (name + type)",
-		Long: `Delete the record set identified by --name and --type, with every value in
-it. A routing-policy set (weighted, latency, failover, geolocation...) is
+		Long: `Delete the record set of <name> and <type>, with every value in it. <name> is
+relative to the zone (www, a.b), @ for the zone apex, or a full name inside
+the zone (www.example.com). <type> is case-insensitive.
+
+A routing-policy set (weighted, latency, failover, geolocation...) is
 chosen with --set-identifier; without it, a name and type that hold only
 routing-policy sets are ambiguous (exit code 5) and the identifiers are
 listed.
@@ -509,11 +546,22 @@ no; --yes skips it). The non-interactive flow asks nothing: --yes is required
 (exit code 2 without it, before anything is read). Declining changes nothing.
 A missing set is not found (exit code 4) before the question. --dry-run
 reports what would be deleted and asks nothing.`,
-		Example: "  polyctl aws route53 record delete example.com --type TXT --name _acme-challenge\n  polyctl aws route53 record delete example.com --type A --name www --set-identifier eu --yes",
-		Args:    app.ArgsOrInteractive(rt, 1, nil),
+		Example:           "  polyctl aws route53 record delete example.com _acme-challenge TXT\n  polyctl aws route53 record delete example.com www A --set-identifier eu --yes",
+		Args:              app.RecordArgsOrInteractive(rt, 0, 0),
+		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.AWS)),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// The record set is positional (<name> <type>) or, in the former
+			// form, given with --name and --type.
+			if len(args) > 1 {
+				rec, err := app.ParseRecordArgs(cmd, args[1:], 0, 0)
+				if err != nil {
+					return err
+				}
+				name, typ = rec.Name, rec.Type
+				args = args[:1]
+			}
 			if typ == "" && !rt.Interactive() {
-				return app.UsageErrf("--type is required")
+				return app.UsageErrf("%s", app.RecordUsage(cmd, 0, 0))
 			}
 			if !rt.Flags.DryRun {
 				what := "delete the picked record set"
@@ -584,6 +632,7 @@ reports what would be deleted and asks nothing.`,
 	cmd.Flags().StringVar(&typ, "type", "", "record type")
 	cmd.Flags().StringVar(&name, "name", "", "record name relative to the zone (www, @); default: the zone apex")
 	cmd.Flags().StringVar(&setID, "set-identifier", "", "set identifier of a routing-policy record set (weighted, latency, failover...)")
+	hideFormerRecordFlags(cmd)
 	return cmd
 }
 
