@@ -625,17 +625,39 @@ func newAuthStatusCmd(rt *app.Runtime) *cobra.Command {
 // failed with failures: an authentication error (exit code 3) when every
 // one of them is a credential or permission failure, like cert deploy,
 // otherwise a general error (exit code 1). A network failure, a timeout or
-// a platform outage says nothing about the credentials.
+// a platform outage says nothing about the credentials. Its text only
+// counts the failures: the row of each account already says why it failed.
 func errVerificationFailed(failures []error, total int) error {
 	if len(failures) == 0 {
 		return nil
 	}
+	e := &verificationError{text: fmt.Sprintf("%d of %d account(s) failed verification", len(failures), total), cause: failures[0]}
 	for _, err := range failures {
 		if !errors.Is(err, platform.ErrUnauthorized) && !errors.Is(err, platform.ErrForbidden) {
-			return fmt.Errorf("%d of %d account(s) failed verification; first error: %v", len(failures), total, failures[0])
+			e.cause = nil
+			break
 		}
 	}
-	return fmt.Errorf("%d of %d account(s) failed verification; first error: %w", len(failures), total, failures[0])
+	return e
+}
+
+// verificationError is the summary of the failed accounts of auth status.
+// cause, the first failure, is set when every failure is one of credentials
+// or permissions, and gives the error its exit code without being printed
+// a second time.
+type verificationError struct {
+	text  string
+	cause error
+}
+
+func (e *verificationError) Error() string { return e.text }
+func (e *verificationError) Unwrap() error { return e.cause }
+
+// statusError is the text of the row of an account that failed: the error
+// without the "open <platform> profile <name>" its opening put in front,
+// which the columns of the row already say.
+func statusError(ref config.AccountRef, err error) string {
+	return strings.TrimPrefix(err.Error(), fmt.Sprintf("open %s profile %q: ", ref.Platform, ref.Profile))
 }
 
 // verifyAccounts checks the credentials of each account and returns the
@@ -656,7 +678,7 @@ func verifyAccounts(ctx context.Context, rt *app.Runtime, refs []config.AccountR
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return rows, failures, ctxErr
 			}
-			row.Error = err.Error()
+			row.Error = statusError(ref, err)
 			failures = append(failures, err)
 		} else {
 			row.OK = true

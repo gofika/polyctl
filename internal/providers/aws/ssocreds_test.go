@@ -2,7 +2,9 @@ package aws
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,6 +23,7 @@ type fakeSSOCreds struct {
 	roleCalls    int
 	tokenCalls   int
 	accessTokens []string
+	tokenErr     error
 }
 
 func (f *fakeSSOCreds) GetRoleCredentials(_ context.Context, in *sso.GetRoleCredentialsInput, _ ...func(*sso.Options)) (*sso.GetRoleCredentialsOutput, error) {
@@ -36,6 +39,9 @@ func (f *fakeSSOCreds) GetRoleCredentials(_ context.Context, in *sso.GetRoleCred
 
 func (f *fakeSSOCreds) CreateToken(_ context.Context, _ *ssooidc.CreateTokenInput, _ ...func(*ssooidc.Options)) (*ssooidc.CreateTokenOutput, error) {
 	f.tokenCalls++
+	if f.tokenErr != nil {
+		return nil, f.tokenErr
+	}
 	return &ssooidc.CreateTokenOutput{AccessToken: awssdk.String(fmt.Sprintf("fresh-token-%d", f.tokenCalls)), ExpiresIn: 3600}, nil
 }
 
@@ -106,5 +112,39 @@ func TestSSORoleCredentialsRefreshAccessToken(t *testing.T) {
 	}
 	if saved[secretAccessToken] != "fresh-token-1" || prof.Secret[secretAccessToken] != "token-0" {
 		t.Errorf("saved %v, profile secret changed: %v", saved, prof.Secret)
+	}
+}
+
+// A refresh Identity Center refuses means the session is over: the error
+// is one of credentials, names the code and the login command, and carries
+// neither the text of the SDK nor that of its credentials cache. A refresh
+// that did not reach Identity Center says nothing about the session.
+func TestSSOSessionRefreshFailure(t *testing.T) {
+	expired := func() platform.Profile {
+		return ssoProfile(map[string]string{secretAccessToken: "token-0", secretRefreshToken: "refresh", secretClientID: "cid", secretClientSecret: "csec",
+			secretTokenExpiresAt: time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)})
+	}
+	f := &fakeSSOCreds{ttl: time.Hour, tokenErr: fmt.Errorf("operation error SSO OIDC: CreateToken, https response error StatusCode: 400, RequestID: r-1, %w",
+		&fakeAPIError{code: "InvalidRequestException"})}
+	useFakeSSO(t, f)
+	_, err := ssoRoleCredentials(context.Background(), expired())
+	want := "unauthorized: the SSO session has expired (InvalidRequestException); run `polyctl auth login aws --profile lab`"
+	if !errors.Is(err, platform.ErrUnauthorized) || err.Error() != want {
+		t.Errorf("refused refresh = %v, want %q", err, want)
+	}
+	if f.roleCalls != 0 {
+		t.Errorf("role credentials asked %d time(s) after a refused refresh", f.roleCalls)
+	}
+
+	network := errors.New("dial tcp: no route to host")
+	useFakeSSO(t, &fakeSSOCreds{ttl: time.Hour, tokenErr: network})
+	_, err = ssoRoleCredentials(context.Background(), expired())
+	if !errors.Is(err, network) || errors.Is(err, platform.ErrUnauthorized) || strings.Contains(err.Error(), "cached credentials") {
+		t.Errorf("refresh without network = %v, want the network error and not one of credentials", err)
+	}
+
+	useFakeSSO(t, &fakeSSOCreds{ttl: time.Hour, tokenErr: context.Canceled})
+	if _, err = ssoRoleCredentials(context.Background(), expired()); !errors.Is(err, context.Canceled) || errors.Is(err, platform.ErrUnauthorized) {
+		t.Errorf("cancelled refresh = %v, want context.Canceled", err)
 	}
 }

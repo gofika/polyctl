@@ -389,6 +389,11 @@ func ssoRoleCredentials(ctx context.Context, prof platform.Profile) (awssdk.Cred
 		o.ExpiryWindow = ssoCredentialsExpiryWindow
 	})
 	if _, err := cache.Retrieve(ctx); err != nil {
+		// The cache puts "failed to refresh cached credentials" in front
+		// of the error of retrieve, which says what failed on its own.
+		if inner := errors.Unwrap(err); inner != nil {
+			err = inner
+		}
 		return nil, err
 	}
 	return cache, nil
@@ -426,7 +431,18 @@ func (s *ssoSession) retrieve(ctx context.Context) (awssdk.Credentials, error) {
 			RefreshToken: awssdk.String(rt),
 		})
 		if err != nil {
-			return awssdk.Credentials{}, fmt.Errorf("%w: the SSO session has expired and could not be refreshed (%v); run `polyctl auth login aws --profile %s`", platform.ErrUnauthorized, err, name)
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return awssdk.Credentials{}, err
+			}
+			// An answer of Identity Center means the session is over:
+			// its code is enough, the request id and the HTTP status of
+			// the SDK text say nothing more. Anything else (no network,
+			// an outage) says nothing about the session.
+			var ae apiError
+			if errors.As(err, &ae) {
+				return awssdk.Credentials{}, fmt.Errorf("%w: the SSO session has expired (%s); run `polyctl auth login aws --profile %s`", platform.ErrUnauthorized, ae.ErrorCode(), name)
+			}
+			return awssdk.Credentials{}, fmt.Errorf("refresh the SSO session: %w", err)
 		}
 		token = awssdk.ToString(out.AccessToken)
 		s.secret[secretAccessToken] = token

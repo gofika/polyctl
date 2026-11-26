@@ -1219,6 +1219,13 @@ func TestAuthStatusExitCodeFollowsFailures(t *testing.T) {
 		if jerr := json.Unmarshal([]byte(stdout), &rows); jerr != nil || len(rows) != 3 {
 			t.Errorf("%s: rows %q (%v)", c.name, stdout, jerr)
 		}
+		// The summary counts the failures; why each account failed is in
+		// its row and is not said a second time.
+		if n := btoi(c.a != nil) + btoi(c.a2 != nil) + btoi(c.b != nil); n > 0 {
+			if want := fmt.Sprintf("%d of 3 account(s) failed verification", n); err == nil || err.Error() != want {
+				t.Errorf("%s: error %v, want %q", c.name, err, want)
+			}
+		}
 	}
 
 	for _, ref := range []struct {
@@ -1243,5 +1250,25 @@ func TestAuthStatusExitCodeFollowsFailures(t *testing.T) {
 	}
 	if n := clientOn("a", fakePlatform).count("Verify") + clientOn("a", fakePlatform2).count("Verify") + clientOn("b", fakePlatform2).count("Verify"); n != 0 {
 		t.Errorf("a cancelled auth status verified %d account(s)", n)
+	}
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// The row of an account that could not be opened leaves out the platform
+// and the profile its columns already show.
+func TestStatusErrorDropsWhatTheRowSays(t *testing.T) {
+	ref := config.AccountRef{Profile: "default", Platform: platform.AWS}
+	inner := fmt.Errorf("%w: the SSO session has expired", platform.ErrUnauthorized)
+	if got := statusError(ref, fmt.Errorf("open %s profile %q: %w", ref.Platform, ref.Profile, inner)); got != inner.Error() {
+		t.Errorf("statusError = %q, want %q", got, inner.Error())
+	}
+	if got := statusError(ref, inner); got != inner.Error() {
+		t.Errorf("statusError of an error without the prefix = %q", got)
 	}
 }
