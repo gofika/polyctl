@@ -360,7 +360,17 @@ func (d *DB) replace(ctx context.Context, s Set, resources []platform.Resource, 
 	defer tx.Rollback()
 
 	kept := len(keep)+len(trees) > 0
+	// markedDue: the set was marked due (Expire) before this sync.
+	markedDue := false
 	if s.Scope == "" && kept {
+		var oldExp int64
+		switch err := tx.QueryRowContext(ctx, `SELECT expires_at FROM sync_state WHERE platform=? AND profile=? AND resource_type=? AND scope=''`,
+			string(s.Platform), s.Profile, string(s.Type)).Scan(&oldExp); {
+		case err == nil:
+			markedDue = oldExp == 0
+		case !errors.Is(err, sql.ErrNoRows):
+			return err
+		}
 		// Only the rows outside the kept parents go, and their index
 		// entries before them.
 		if len(trees) > 0 {
@@ -457,10 +467,16 @@ func (d *DB) replace(ctx context.Context, s Set, resources []platform.Resource, 
 	}
 	// A set with kept parents holds old rows of the parents that failed:
 	// it expires now, so the next read syncs again (and find reports it
-	// stale) instead of serving them as fresh for a whole TTL.
+	// stale) instead of serving them as fresh for a whole TTL. A set that
+	// was marked due stays marked: the parents that failed may be the very
+	// ones the mark was set for, and what reads the mark (the routing by
+	// domain) must try them again.
 	setExp := exp
 	if s.Scope == "" && kept {
 		setExp = now
+		if markedDue {
+			setExp = time.Unix(0, 0)
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO sync_state (platform, profile, resource_type, scope, synced_at, expires_at) VALUES (?,?,?,?,?,?)`,
 		string(s.Platform), s.Profile, string(s.Type), s.Scope, now.Unix(), setExp.Unix()); err != nil {

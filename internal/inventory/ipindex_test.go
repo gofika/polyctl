@@ -203,6 +203,53 @@ func TestReplaceKeepingFailedRegions(t *testing.T) {
 	}
 }
 
+// A set that was marked due and whose sync kept old rows stays marked: the
+// parents that failed may be the ones the mark was set for. A sync that
+// read everything clears the mark.
+func TestReplaceKeepingKeepsTheDueMark(t *testing.T) {
+	db, _ := openDB(t)
+	set := inventory.Set{Platform: platform.GCP, Profile: "a", Type: platform.ResZone}
+	rows := []platform.Resource{{Type: platform.ResZone, ID: "z1", Name: "example.com", Domain: "example.com", ParentID: "proj-a"}}
+	if err := db.Replace(ctx, set, rows, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	marked := func() bool {
+		t.Helper()
+		st, err := db.GetState(ctx, set)
+		if err != nil || st == nil {
+			t.Fatalf("state = %+v, %v", st, err)
+		}
+		return st.ExpiresAt.Unix() == 0
+	}
+	// Not marked: a sync that kept rows expires the set now, no more.
+	if err := db.ReplaceKeepingTrees(ctx, set, rows, time.Hour, nil, []string{"proj-b"}); err != nil {
+		t.Fatal(err)
+	}
+	if marked() {
+		t.Fatal("a sync that kept rows marked a set that was not marked due")
+	}
+	if err := db.Expire(ctx, platform.GCP, "a"); err != nil {
+		t.Fatal(err)
+	}
+	for name, sync := range map[string]func() error{
+		"trees":   func() error { return db.ReplaceKeepingTrees(ctx, set, rows, time.Hour, nil, []string{"proj-b"}) },
+		"parents": func() error { return db.ReplaceKeeping(ctx, set, rows, time.Hour, []string{"proj-b"}) },
+	} {
+		if err := sync(); err != nil {
+			t.Fatal(err)
+		}
+		if !marked() {
+			t.Fatalf("%s: a sync that kept rows cleared the mark", name)
+		}
+	}
+	if err := db.Replace(ctx, set, rows, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := db.GetState(ctx, set); marked() || !st.Fresh(time.Now()) {
+		t.Fatalf("state after a sync that read everything = %+v", st)
+	}
+}
+
 // A failed tree keeps the rows of the parent itself and of every parent
 // below it; rows of the trees that worked are replaced.
 func TestReplaceKeepingTrees(t *testing.T) {
