@@ -265,3 +265,32 @@ func TestDNSRecordTypeCompletion(t *testing.T) {
 		}
 	}
 }
+
+// The interactive upsert proposes the current value in the form the record
+// check takes: an MX value with its priority, an SRV value with all four
+// fields (GoDaddy keeps the priority, weight and port apart from the
+// target). Keeping it passes the record check; the MX record is written
+// again as it is.
+func TestDNSUpsertProposesCheckableValue(t *testing.T) {
+	e := newDeleteEnv(t)
+	for _, c := range []struct{ name, typ, value string }{
+		{"@", "MX", "10 mail.example.com"},
+		{"_sip._tcp", "SRV", "10 5 5060 sip.example.com"},
+	} {
+		if code, _, stderr := e.run(nil, "", "godaddy", "dns", "add", "example.com", c.name, c.typ, c.value); code != cli.ExitOK {
+			t.Fatalf("add %s: exit %d, %s", c.typ, code, stderr)
+		}
+		before := e.records()
+		p := prompttest.New(t, prompttest.KeepDefault{}, "")
+		if code, _, stderr := e.run(p, "", "godaddy", "dns", "upsert", "example.com", c.name, c.typ); code != cli.ExitOK {
+			t.Fatalf("upsert %s: exit %d, %s", c.typ, code, stderr)
+		}
+		p.Done()
+		if a := p.Find("Value of the " + c.typ + " record"); a == nil || a.Default != c.value {
+			t.Errorf("%s default %+v, want %q", c.typ, a, c.value)
+		}
+		if got := e.records(); c.typ == "MX" && got != before {
+			t.Errorf("%s upsert wrote %q, had %q", c.typ, got, before)
+		}
+	}
+}

@@ -284,7 +284,8 @@ type RecordPrompt struct {
 	// routing-policy set a Route 53 upsert replaces).
 	Current func(platform.Record) bool
 	// ValueOf renders the value of an existing record as the command takes
-	// it; nil: its Value.
+	// it; nil: platform.RecordAddValue, the value with the priority and the
+	// fields a platform keeps apart put back, as the record check takes it.
 	ValueOf func(platform.Record) string
 }
 
@@ -340,7 +341,7 @@ func (rt *Runtime) CompleteRecord(in *RecordInput, p RecordPrompt) error {
 			if p.ValueOf != nil {
 				cur = append(cur, p.ValueOf(r))
 			} else {
-				cur = append(cur, r.Value)
+				cur = append(cur, platform.RecordAddValue(r))
 			}
 		}
 		if len(cur) == 1 || (p.WholeSet && len(cur) > 0) {

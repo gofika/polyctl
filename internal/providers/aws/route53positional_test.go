@@ -242,3 +242,36 @@ func TestRoute53RecordDeleteCompletion(t *testing.T) {
 		t.Errorf("after the type: %q", vals)
 	}
 }
+
+// The interactive upsert proposes the current value in the form the record
+// check takes: an MX value with its priority, an SRV value with all four
+// fields. Keeping it writes the set again as it is.
+func TestRoute53RecordUpsertProposesCheckableValue(t *testing.T) {
+	h, r53, _ := positionalHarness(t)
+	h.rt.Flags.NonInteractive = false
+	r53.sets["Z3"] = []r53types.ResourceRecordSet{
+		valueSet("other.org.", "MX", 300, "10 mail.other.org."),
+		valueSet("_sip._tcp.other.org.", "SRV", 300, "10 5 5060 sip.other.org."),
+	}
+	for _, c := range []struct{ name, typ, def, want string }{
+		{"@", "MX", "10 mail.other.org.", "10 mail.other.org"},
+		{"_sip._tcp", "SRV", "10 5 5060 sip.other.org.", "10 5 5060 sip.other.org"},
+	} {
+		p := prompttest.New(t, c.typ, prompttest.KeepDefault{}, "")
+		h.rt.Picker = p
+		if err := h.run("route53", "record", "upsert", "other.org", c.name); err != nil {
+			t.Fatalf("upsert %s %s: %v\n%s", c.name, c.typ, err, h.stderr.String())
+		}
+		p.Done()
+		if a := p.Find("Value of the " + c.typ + " record"); a == nil || a.Default != c.def {
+			t.Errorf("%s default %+v, want %q", c.typ, a, c.def)
+		}
+		fqdn := "other.org."
+		if c.name != "@" {
+			fqdn = c.name + ".other.org."
+		}
+		if got := r53.values("Z3", fqdn, c.typ); len(got) != 1 || strings.TrimSuffix(got[0], ".") != c.want {
+			t.Errorf("%s %s = %v, want %q", fqdn, c.typ, got, c.want)
+		}
+	}
+}

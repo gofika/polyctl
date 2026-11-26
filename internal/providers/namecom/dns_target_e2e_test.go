@@ -240,3 +240,34 @@ func TestDNSUpdateLists(t *testing.T) {
 		t.Errorf("same value: exit %d, records %q, %s", code, e.records(), stderr)
 	}
 }
+
+// dns update without a change flag proposes the current value in the form
+// the record check takes: an MX value with its priority, an SRV value with
+// all four fields. Keeping it is "nothing to do"; a new MX host keeps the
+// priority in front.
+func TestDNSUpdateProposesCheckableValue(t *testing.T) {
+	e := newRecordEnv(t)
+	for _, args := range [][]string{{"mx", "MX", "10 mail.example.com"}, {"_sip._tcp", "SRV", "10 5 5060 sip.example.com"}} {
+		if code, _, stderr := e.run(nil, append([]string{"namecom", "dns", "create", "example.com"}, args...)...); code != cli.ExitOK {
+			t.Fatalf("create %v: exit %d, %s", args, code, stderr)
+		}
+	}
+	before := e.records()
+	for _, c := range []struct{ name, typ, def string }{
+		{"mx", "MX", "10 mail.example.com"},
+		{"_sip._tcp", "SRV", "10 5 5060 sip.example.com"},
+	} {
+		p := prompttest.New(t, prompttest.KeepDefault{})
+		code, _, stderr := e.runTerm(p, "", "namecom", "dns", "update", "example.com", c.name, c.typ)
+		if code != cli.ExitOK || e.records() != before || !strings.Contains(stderr, "keeps the value "+c.def) {
+			t.Errorf("%s keep: exit %d, records %q, %s", c.typ, code, e.records(), stderr)
+		}
+		if a := p.Find("Value of the " + c.typ + " record"); a == nil || a.Default != c.def {
+			t.Errorf("%s default %+v, want %q", c.typ, a, c.def)
+		}
+	}
+	p := prompttest.New(t, "10 mx2.example.com")
+	if code, _, stderr := e.runTerm(p, "", "namecom", "dns", "update", "example.com", "mx", "MX"); code != cli.ExitOK || !strings.Contains(e.records(), "mx MX mx2.example.com 0 10") {
+		t.Errorf("new MX host: exit %d, records %q, %s", code, e.records(), stderr)
+	}
+}

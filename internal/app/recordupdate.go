@@ -101,15 +101,19 @@ func (rt *Runtime) RecordChanges(cmd *cobra.Command, flags ...string) (bool, err
 }
 
 // AskNewRecordValue asks for the new value of cur, the record an update
-// command was given no change for; its value is the default. The same value
-// again is "nothing to do" (exit code 0).
+// command was given no change for; its value is the default, in the form
+// the record check takes (platform.RecordAddValue: an MX priority and the
+// SRV fields a platform keeps apart put back). The same value again, as dns
+// ensure compares values (platform.RecordValueMatches), is "nothing to do"
+// (exit code 0).
 func (rt *Runtime) AskNewRecordValue(cur platform.Record) (string, error) {
-	value, err := rt.AskRecordValue(strings.ToUpper(cur.Type), cur.Value)
+	def := platform.RecordAddValue(cur)
+	value, err := rt.AskRecordValue(strings.ToUpper(cur.Type), def)
 	if err != nil {
 		return "", err
 	}
-	if value == cur.Value {
-		return "", NothingToDof("%s %s keeps the value %s", cur.Name, cur.Type, cur.Value)
+	if value == def || platform.RecordValueMatches(cur, value) {
+		return "", NothingToDof("%s %s keeps the value %s", cur.Name, cur.Type, def)
 	}
 	return value, nil
 }
