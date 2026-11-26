@@ -5,6 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/platform"
 )
 
@@ -190,6 +191,44 @@ func CompleteRecordArgs(first CompletionFunc, id platform.ID) CompletionFunc {
 		}
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
+}
+
+// CompleteDomainRecordArgs is CompleteRecordArgs for a command that is not
+// tied to one platform (dns add, dns ensure): the <type> position completes
+// with the types the platform of the zone of the <domain> writes, as the
+// local inventory knows the zone; with every known type when it knows no
+// zone of the domain, or zones of it on platforms that differ.
+func CompleteDomainRecordArgs(rt *Runtime, first CompletionFunc) CompletionFunc {
+	all := CompleteRecordArgs(first, "")
+	return func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 2 {
+			if id := cachedZonePlatform(cmd, rt, args[0]); id != "" {
+				return CompleteRecordArgs(first, id)(cmd, args, toComplete)
+			}
+		}
+		return all(cmd, args, toComplete)
+	}
+}
+
+// cachedZonePlatform is the platform of the zone that serves domain in the
+// local inventory (the zone of the longest name domain ends with), "" when
+// there is none or the zones of that name are on several platforms.
+func cachedZonePlatform(cmd *cobra.Command, rt *Runtime, domain string) platform.ID {
+	domain = platform.NormalizeDomain(domain)
+	best, id := "", platform.ID("")
+	for _, r := range completionRows(cmd, rt, "", inventory.Query{Type: platform.ResZone}) {
+		name := platform.NormalizeDomain(r.Name)
+		if name == "" || (domain != name && !strings.HasSuffix(domain, "."+name)) || len(name) < len(best) {
+			continue
+		}
+		switch {
+		case len(name) > len(best):
+			best, id = name, r.Platform
+		case id != r.Platform:
+			id = ""
+		}
+	}
+	return id
 }
 
 // NoFormerFlags is the formerFlags of a command whose --name, --type and

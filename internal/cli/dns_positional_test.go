@@ -412,10 +412,19 @@ func TestDNSDeleteCompletion(t *testing.T) {
 	}
 }
 
-// Without a platform the <type> position completes every type of a record
-// spec; the name and the values complete to nothing.
+// The <type> position completes the types the platform of the zone writes
+// (every known type when the platform does not say); the name and the
+// values complete to nothing.
 func TestDNSRecordTypeCompletion(t *testing.T) {
 	_, cfgPath, _ := ensureZone(t)
+	fakeRecordTypes = []string{"A", "TXT", "SRV"}
+	for _, verb := range []string{"add", "ensure"} {
+		code, stdout, stderr := mainRun(cfgPath, "__complete", "dns", verb, "example.com", "www", "")
+		if code != ExitOK || !strings.HasPrefix(stdout, "A\nTXT\nSRV\n:") {
+			t.Errorf("%s with the types of the platform: exit %d, completion %q (%s)", verb, code, stdout, stderr)
+		}
+	}
+	fakeRecordTypes = nil
 	for _, verb := range []string{"add", "ensure"} {
 		code, stdout, stderr := mainRun(cfgPath, "__complete", "dns", verb, "example.com", "www", "")
 		if code != ExitOK || !strings.HasPrefix(stdout, strings.Join(platform.KnownRecordTypes, "\n")+"\n:") {

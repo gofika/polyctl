@@ -163,7 +163,7 @@ record use ` + "`polyctl dns ensure`" + `.
 		Example: `  polyctl dns add example.com www A 203.0.113.11
   polyctl dns add example.com @ TXT "v=spf1 include:_spf.example.net ~all"`,
 		Args:              app.ProxiedRecordArgs(app.RecordArgsOrInteractive(rt, 1, 1), 1),
-		ValidArgsFunction: app.CompleteRecordArgs(completeDomains(rt), ""),
+		ValidArgsFunction: app.CompleteDomainRecordArgs(rt, completeDomains(rt)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The record is positional (<name> <type> <value>) or, in the
 			// former form, given with --name, --type and --value. The
@@ -607,7 +607,7 @@ positional record nothing is asked.`,
   polyctl dns ensure example.com -r www:A:203.0.113.10:300 -r '@:MX:10 mail.example.com'
   polyctl dns ensure example.com -f records.yaml --dry-run`,
 		Args:              app.ProxiedRecordArgs(app.RecordArgsOrInteractive(rt, 1, -1), -1),
-		ValidArgsFunction: app.CompleteRecordArgs(completeDomains(rt), ""),
+		ValidArgsFunction: app.CompleteDomainRecordArgs(rt, completeDomains(rt)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			var specs []platform.RecordSpec
