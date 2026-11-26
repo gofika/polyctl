@@ -140,6 +140,26 @@ func ProxiedRecordArgs(v cobra.PositionalArgs, maxValues int) cobra.PositionalAr
 	}
 }
 
+// ProxiedTargetArgs is ProxiedArgs for a command that selects an existing
+// record with `<zone> [<name> [<type> [<value>]]]` (update). The fourth
+// argument only selects a record there, so a "true" or "false" in that place
+// beside --proxied is the stray value of the flag, not a record value: read
+// as one, `--proxied false` would select nothing, or switch the proxy on for
+// a record whose value is "false". A record with such a value is named with
+// --id.
+func ProxiedTargetArgs(v cobra.PositionalArgs) cobra.PositionalArgs {
+	stray := ProxiedArgs(v)
+	return func(cmd *cobra.Command, args []string) error {
+		if len(args) != 4 {
+			return stray(cmd, args)
+		}
+		if f := cmd.Flags().Lookup("proxied"); f != nil && f.Changed && (args[3] == "true" || args[3] == "false") {
+			return UsageErrf("--proxied takes no separate value (got %q): write --proxied or --proxied=false; a record whose value is %q is named with --id", args[3], args[3])
+		}
+		return v(cmd, args)
+	}
+}
+
 // CompletionFunc is the signature of cobra's argument completion.
 type CompletionFunc = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective)
 

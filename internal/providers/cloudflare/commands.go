@@ -611,7 +611,7 @@ switches it off, and without it the record keeps its current setting.`,
   polyctl cloudflare dns update example.com www A --proxied=false
   polyctl cloudflare dns update example.com www A 203.0.113.10 --value 203.0.113.20
   polyctl cloudflare dns update example.com --id 372e67954025e0ba6aaa6d586b9e0b59 --ttl 300`,
-		Args:              app.ProxiedRecordArgs(app.RecordTargetArgsOrInteractive(rt), 1),
+		Args:              app.ProxiedTargetArgs(app.RecordTargetArgsOrInteractive(rt)),
 		ValidArgsFunction: app.CompleteRecordTargetArgs(rt, completeZones(rt), platform.Cloudflare),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target, err := app.ParseRecordTarget(cmd, args)

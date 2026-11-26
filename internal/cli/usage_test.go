@@ -270,6 +270,10 @@ func TestProxiedSeparateValueIsNamed(t *testing.T) {
 		{"cloudflare", "dns", "create", "example.com", "www", "A", "1.1.1.1", "--proxied", "true"},
 		{"cloudflare", "dns", "update", "example.com", "r1", "--proxied", "false"},
 		{"cloudflare", "dns", "update", "example.com", "--proxied", "true"},
+		// The fourth argument of update selects a record: beside --proxied it
+		// is the stray value, not a record value.
+		{"cloudflare", "dns", "update", "example.com", "www", "A", "--proxied", "false"},
+		{"cloudflare", "dns", "update", "example.com", "www", "A", "--proxied", "true"},
 	} {
 		code, _, stderr := mainExit(dir, args...)
 		if code != ExitUsage || !strings.Contains(stderr, "--proxied takes no separate value") || !strings.Contains(stderr, "--proxied=false") {
