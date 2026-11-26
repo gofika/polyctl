@@ -529,7 +529,7 @@ switches it off, and without it Cloudflare's default applies.
 			// former form, given with --name, --type and --value. The
 			// interactive flow asks for what is missing: the zone, the
 			// name, the type and the value.
-			in, err := rt.RecordInput(cmd, args, app.RecordForm{MinValues: 1, MaxValues: 1})
+			in, err := rt.RecordInput(cmd, args, app.RecordForm{MinValues: 1, MaxValues: 1, Platform: platform.Cloudflare, Creates: true})
 			if err != nil {
 				return err
 			}
@@ -549,15 +549,15 @@ switches it off, and without it Cloudflare's default applies.
 				Existing: func() ([]platform.Record, error) { return s.client.ListRecords(cmd.Context(), z.ID) }}); err != nil {
 				return err
 			}
-			name, typ, value := in.Name, in.Type, in.Value()
-			rec := platform.Record{ZoneID: z.ID, Name: platform.FQDN(name, z.Name), Type: strings.ToUpper(typ), Value: value, TTL: ttl}
+			checked, err := in.Check(cmd, "")
+			if err != nil {
+				return err
+			}
+			v := checked[0]
+			rec := platform.Record{ZoneID: z.ID, Name: platform.FQDN(in.Name, z.Name), Type: v.Type, Value: v.Value, Priority: v.Priority, TTL: ttl}
 			if cmd.Flags().Changed("proxied") {
 				px := proxied
 				rec.Proxied = &px
-			}
-			if cmd.Flags().Changed("priority") {
-				p := priority
-				rec.Priority = &p
 			}
 			if comment != "" {
 				rec.Extra = map[string]any{"comment": comment}
@@ -577,7 +577,7 @@ switches it off, and without it Cloudflare's default applies.
 	}
 	app.FormerRecordFlags(cmd, false)
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 or 1 = automatic)")
-	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX/SRV/URI records")
+	cmd.Flags().IntVar(&priority, "priority", 0, "priority of an MX record (or in front of its value)")
 	cmd.Flags().BoolVar(&proxied, "proxied", false, "proxy through Cloudflare: --proxied or --proxied=false (default: Cloudflare's default)")
 	cmd.Flags().StringVar(&comment, "comment", "", "record comment")
 	return cmd
@@ -621,6 +621,9 @@ switches it off, and without it the record keeps its current setting.`,
 			}
 			changes, err := rt.RecordChanges(cmd, changeFlags...)
 			if err != nil {
+				return err
+			}
+			if err := app.CheckRecordChange(cmd, platform.Cloudflare, target.TypeOf()); err != nil {
 				return err
 			}
 			if rt.Flags.Offline {
@@ -681,6 +684,9 @@ switches it off, and without it the record keeps its current setting.`,
 			if cmd.Flags().Changed("comment") {
 				rec.Extra["comment"] = comment
 			}
+			if err := app.CheckRecordUpdate(cmd, platform.Cloudflare, *cur, &rec); err != nil {
+				return err
+			}
 			report := platform.Target{Platform: platform.Cloudflare, Profile: profile, Domain: z.Name}
 			if done, err := rt.WouldWrite(report, platform.Change{Resource: app.RecordResource(rec.Name, rec.Type), Action: platform.Updated, ID: cur.ID, Detail: cur.Value + " -> " + rec.Value}); done || err != nil {
 				return err
@@ -699,7 +705,7 @@ switches it off, and without it the record keeps its current setting.`,
 	cmd.Flags().StringVar(&name, "name", "", "new record name relative to the zone (www, @) or FQDN")
 	cmd.Flags().StringVar(&value, "value", "", "new record value")
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "new TTL in seconds (0 or 1 = automatic)")
-	cmd.Flags().IntVar(&priority, "priority", 0, "new priority for MX/SRV/URI records")
+	cmd.Flags().IntVar(&priority, "priority", 0, "new priority of an MX record")
 	cmd.Flags().BoolVar(&proxied, "proxied", false, "proxy through Cloudflare: --proxied or --proxied=false (default: keep the current setting)")
 	cmd.Flags().StringVar(&comment, "comment", "", "new record comment (empty string clears it)")
 	return cmd

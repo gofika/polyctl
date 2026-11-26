@@ -20,6 +20,14 @@ type RecordForm struct {
 	// and the command decides what happens then. A record that was begun
 	// is still completed, or refused, like any other.
 	Optional bool
+	// Platform is the platform the record is written to: the record is
+	// checked against the types it writes (see RecordInput.Check). "" for
+	// a command that finds the platform from the domain: it passes it to
+	// Check once it knows it, and until then the value alone is checked.
+	Platform platform.ID
+	// Creates says the record is created, or makes up a whole record set:
+	// an MX record then needs a priority.
+	Creates bool
 }
 
 func (f RecordForm) shape() recordShape {
@@ -107,7 +115,112 @@ func (rt *Runtime) RecordInput(cmd *cobra.Command, args []string, form RecordFor
 	if !rt.Interactive() && !in.writable() && (in.Given() || !form.Optional) {
 		return nil, UsageErrf("%s", in.usage)
 	}
+	// A record that is complete is checked now, before anything is read.
+	if in.writable() {
+		if _, err := in.Check(cmd, ""); err != nil {
+			return nil, err
+		}
+	}
 	return in, nil
+}
+
+// Complete reports whether the record has its type and its values: it is
+// written without asking.
+func (in *RecordInput) Complete() bool { return in != nil && in.writable() }
+
+// Check is the check every command that writes a record runs on it before
+// any request (platform.CheckRecord), one value at a time with the
+// --priority of cmd: the type is known and one platform p writes (the
+// Platform of the form when p is ""; neither: any known type), a priority
+// apart belongs to the type, and each value is valid for it. It returns the
+// values checked, in the normal form the providers take.
+func (in *RecordInput) Check(cmd *cobra.Command, p platform.ID) ([]platform.RecordValue, error) {
+	if p == "" {
+		p = in.form.Platform
+	}
+	prio := PriorityFlag(cmd)
+	out := make([]platform.RecordValue, 0, len(in.Values))
+	for _, v := range in.Values {
+		rv, err := platform.CheckRecord(platform.RecordCheck{Platform: p, Type: in.Type, Value: v, Priority: prio, New: in.form.Creates})
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rv)
+	}
+	return out, nil
+}
+
+// PriorityFlag is the --priority of cmd, nil when it was not given.
+func PriorityFlag(cmd *cobra.Command) *int {
+	f := cmd.Flags().Lookup("priority")
+	if f == nil || !f.Changed {
+		return nil
+	}
+	n, err := cmd.Flags().GetInt("priority")
+	if err != nil {
+		return nil
+	}
+	return &n
+}
+
+// CheckRecordChange checks, before anything is read, what the flags of an
+// update command say about the record it writes on platform p: the new type
+// (--type, else typ, the <type> that selects the record; "" when neither
+// says) is one p writes, and --value and --priority are valid for it. What
+// is known only once the record is read is checked by CheckRecordUpdate.
+func CheckRecordChange(cmd *cobra.Command, p platform.ID, typ string) error {
+	if t := formerFlag(cmd, "type"); strings.TrimSpace(t) != "" {
+		typ = t
+	}
+	if strings.TrimSpace(typ) == "" {
+		return nil
+	}
+	value := formerFlag(cmd, "value")
+	if value == "" {
+		// The type alone, and a priority: checked against the example
+		// value, which is valid.
+		info, ok := platform.RecordType(typ)
+		switch {
+		case !ok:
+			info.Example = "x"
+		case info.Type == "MX":
+			info.Example = "mail.example.com"
+		}
+		value = info.Example
+	}
+	_, err := platform.CheckRecord(platform.RecordCheck{Platform: p, Type: typ, Value: value, Priority: PriorityFlag(cmd)})
+	return err
+}
+
+// CheckRecordUpdate checks rec, the record an update command writes on
+// platform p in place of cur, before the request, as RecordInput.Check
+// checks a record to write: whenever its type, its value or (--priority of
+// cmd) its priority changes. rec then takes the normal form of the value,
+// the priority of an MX value given in front of it, and loses a priority its
+// new type has no place for. A record that keeps its type and value is not
+// checked again: its value is the one the platform holds.
+func CheckRecordUpdate(cmd *cobra.Command, p platform.ID, cur platform.Record, rec *platform.Record) error {
+	prio := PriorityFlag(cmd)
+	typeChanged := !strings.EqualFold(rec.Type, cur.Type)
+	if !typeChanged && rec.Value == cur.Value && prio == nil {
+		return nil
+	}
+	wasMX := strings.EqualFold(cur.Type, "MX")
+	v, err := platform.CheckRecord(platform.RecordCheck{Platform: p, Type: rec.Type, Value: rec.Value, Priority: prio, New: typeChanged || !wasMX})
+	if err != nil {
+		return err
+	}
+	rec.Type, rec.Value = v.Type, v.Value
+	switch {
+	case v.Type == "MX" && v.Priority != nil:
+		rec.Priority = v.Priority
+	case v.Type == "MX":
+		// The record keeps the priority it has.
+	case typeChanged || rec.Value != cur.Value:
+		// No priority apart: the type has none, or carries it in the value.
+		rec.Priority = nil
+	}
+	return nil
 }
 
 func formerFlag(cmd *cobra.Command, name string) string {

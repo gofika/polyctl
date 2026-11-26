@@ -169,7 +169,7 @@ record use ` + "`polyctl dns ensure`" + `.
 			// former form, given with --name, --type and --value. The
 			// interactive flow asks for what is missing: the zone, then the
 			// name, the type and the value.
-			in, err := rt.RecordInput(cmd, args, app.RecordForm{MinValues: 1, MaxValues: 1})
+			in, err := rt.RecordInput(cmd, args, app.RecordForm{MinValues: 1, MaxValues: 1, Creates: true})
 			if err != nil {
 				return err
 			}
@@ -183,6 +183,13 @@ record use ` + "`polyctl dns ensure`" + `.
 			}
 			if rt.Flags.Offline {
 				return app.ErrOffline
+			}
+			// The type is one the platform of the zone writes: checked as
+			// soon as the platform is known, before the zone is read.
+			if in.Complete() {
+				if _, err := in.Check(cmd, t.Platform); err != nil {
+					return err
+				}
 			}
 			// A <domain> below its zone names the record (the former form
 			// `dns add www.example.com --type A --value ...`). The zone itself
@@ -217,11 +224,15 @@ record use ` + "`polyctl dns ensure`" + `.
 					return err
 				}
 			}
-			rec := platform.Record{ZoneID: t.ResourceID, Name: fqdn, Type: in.Type, Value: in.Value(), TTL: ttl}
-			if cmd.Flags().Changed("priority") {
-				p := priority
-				rec.Priority = &p
+			checked, err := in.Check(cmd, t.Platform)
+			if err != nil {
+				return err
 			}
+			v := checked[0]
+			if err := addConflict(t, existing, fqdn, v.Type); err != nil {
+				return err
+			}
+			rec := platform.Record{ZoneID: t.ResourceID, Name: fqdn, Type: v.Type, Value: v.Value, Priority: v.Priority, TTL: ttl}
 			if cmd.Flags().Changed("proxied") {
 				b := proxied
 				rec.Proxied = &b
@@ -243,9 +254,37 @@ record use ` + "`polyctl dns ensure`" + `.
 	}
 	app.FormerRecordFlags(cmd, false)
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 = platform default)")
-	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX/SRV records")
+	cmd.Flags().IntVar(&priority, "priority", 0, "priority of an MX record (or in front of its value)")
 	cmd.Flags().BoolVar(&proxied, "proxied", false, "Cloudflare proxy status: --proxied or --proxied=false (default: the platform default)")
 	return cmd
+}
+
+// addConflict refuses a record of type typ for fqdn when the zone already
+// holds a record of that name it cannot share the name with (a CNAME beside
+// other records, ...: platform.RecordTypesConflict), or a CNAME when it adds
+// another one.
+func addConflict(t *app.Target, existing []platform.Record, fqdn, typ string) error {
+	for _, r := range existing {
+		if platform.NormalizeDomain(r.Name) != fqdn {
+			continue
+		}
+		other := strings.ToUpper(r.Type)
+		if typ == "CNAME" && other == "CNAME" {
+			return fmt.Errorf("%s already has a CNAME record, and a name has at most one; change it with `polyctl dns ensure`", fqdn)
+		}
+		if platform.RecordTypesConflict(t.Platform, typ, other) {
+			return fmt.Errorf("%s already has %s %s record, which %s %s record cannot share its name with on %s; remove it first with `polyctl dns delete`", fqdn, article(other), other, article(typ), typ, t.Platform)
+		}
+	}
+	return nil
+}
+
+// article is the indefinite article of a record type read out ("an MX").
+func article(typ string) string {
+	if typ != "" && strings.ContainsRune("AEFHILMNORSX", rune(typ[0])) {
+		return "an"
+	}
+	return "a"
 }
 
 // dnsDeleteForm is the form of dns delete: the record by name or --id, with

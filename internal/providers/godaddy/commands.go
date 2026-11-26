@@ -613,13 +613,9 @@ func newDNSListCmd(rt *app.Runtime) *cobra.Command {
 	return cmd
 }
 
-func buildRecord(cmd *cobra.Command, zone, typ, name, value string, ttl, priority int) platform.Record {
-	rec := platform.Record{ZoneID: zone, Name: platform.FQDN(name, zone), Type: strings.ToUpper(typ), Value: value, TTL: ttl}
-	if cmd.Flags().Changed("priority") {
-		p := priority
-		rec.Priority = &p
-	}
-	return rec
+// buildRecord is the record of name in zone with the checked value v.
+func buildRecord(zone, name string, v platform.RecordValue, ttl int) platform.Record {
+	return platform.Record{ZoneID: zone, Name: platform.FQDN(name, zone), Type: v.Type, Value: v.Value, Priority: v.Priority, TTL: ttl}
 }
 
 func newDNSAddCmd(rt *app.Runtime) *cobra.Command {
@@ -641,7 +637,7 @@ are kept.
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The record is positional (<name> <type> <value>) or, in the
 			// former form, given with --name, --type and --value.
-			in, err := rt.RecordInput(cmd, args, app.RecordForm{MinValues: 1, MaxValues: 1})
+			in, err := rt.RecordInput(cmd, args, app.RecordForm{MinValues: 1, MaxValues: 1, Platform: platform.GoDaddy, Creates: true})
 			if err != nil {
 				return err
 			}
@@ -662,8 +658,11 @@ are kept.
 				Existing: func() ([]platform.Record, error) { return c.ListRecords(cmd.Context(), zone) }}); err != nil {
 				return err
 			}
-			name, typ, value := in.Name, in.Type, in.Value()
-			rec := buildRecord(cmd, zone, typ, name, value, ttl, priority)
+			checked, err := in.Check(cmd, "")
+			if err != nil {
+				return err
+			}
+			rec := buildRecord(zone, in.Name, checked[0], ttl)
 			if done, err := rt.WouldWrite(platform.Target{Platform: platform.GoDaddy, Profile: p.Name, Domain: zone}, platform.Change{Resource: app.RecordResource(rec.Name, rec.Type), Action: platform.Created, Detail: rec.Value}); done || err != nil {
 				return err
 			}
@@ -678,7 +677,7 @@ are kept.
 	}
 	app.FormerRecordFlags(cmd, false)
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 = GoDaddy default; minimum 600)")
-	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX/SRV records")
+	cmd.Flags().IntVar(&priority, "priority", 0, "priority of an MX record (or in front of its value)")
 	return cmd
 }
 
@@ -706,7 +705,7 @@ existing ones use ` + "`polyctl godaddy dns add`" + `.
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The record set is positional (<name> <type> <value>...) or, in
 			// the former form, given with --name, --type and --value.
-			in, err := rt.RecordInput(cmd, args, app.RecordForm{MinValues: 1, MaxValues: -1})
+			in, err := rt.RecordInput(cmd, args, app.RecordForm{MinValues: 1, MaxValues: -1, Platform: platform.GoDaddy, Creates: true})
 			if err != nil {
 				return err
 			}
@@ -727,11 +726,15 @@ existing ones use ` + "`polyctl godaddy dns add`" + `.
 				Existing: func() ([]platform.Record, error) { return c.ListRecords(cmd.Context(), zone) }}); err != nil {
 				return err
 			}
+			checked, err := in.Check(cmd, "")
+			if err != nil {
+				return err
+			}
 			name, typ, values := in.Name, in.Type, in.Values
 			rel := platform.RelativeName(platform.FQDN(name, zone), zone)
-			recs := make([]platform.Record, 0, len(values))
-			for _, v := range values {
-				recs = append(recs, buildRecord(cmd, zone, typ, rel, v, ttl, priority))
+			recs := make([]platform.Record, 0, len(checked))
+			for _, v := range checked {
+				recs = append(recs, buildRecord(zone, rel, v, ttl))
 			}
 			if done, err := rt.WouldWrite(platform.Target{Platform: platform.GoDaddy, Profile: p.Name, Domain: zone}, platform.Change{Resource: app.RecordResource(platform.FQDN(rel, zone), typ), Action: platform.Updated, Detail: "set to " + strings.Join(values, ",")}); done || err != nil {
 				return err
@@ -747,7 +750,7 @@ existing ones use ` + "`polyctl godaddy dns add`" + `.
 	}
 	app.FormerRecordFlags(cmd, true)
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 = GoDaddy default; minimum 600)")
-	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX/SRV records")
+	cmd.Flags().IntVar(&priority, "priority", 0, "priority of an MX record (or in front of its value)")
 	return cmd
 }
 

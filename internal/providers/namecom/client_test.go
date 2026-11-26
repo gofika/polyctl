@@ -38,6 +38,8 @@ type fakeServer struct {
 	lastPath   string
 	// availabilityCalls counts accepted checkAvailability requests.
 	availabilityCalls int
+	// requests counts every request.
+	requests int
 }
 
 func newFakeServer(t *testing.T) (*fakeServer, *httptest.Server) {
@@ -74,6 +76,7 @@ func (fs *fakeServer) addRecord(domain string, r apiRecord) apiRecord {
 func (fs *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
+	fs.requests++
 	user, pass, ok := r.BasicAuth()
 	// Login appends the "-test" suffix for the test environment; accept both.
 	if !ok || (user != testUser && user != testUser+testUserSuffix) || pass != testToken {

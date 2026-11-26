@@ -38,6 +38,13 @@ func (x *Fake) Reset() {
 	x.fs.records = map[string][]apiRecord{}
 }
 
+// Requests is the number of requests the fake has served.
+func (x *Fake) Requests() int {
+	x.fs.mu.Lock()
+	defer x.fs.mu.Unlock()
+	return x.fs.requests
+}
+
 // Records lists the records of domain as "host TYPE answer ttl priority"
 // (host "@" for the apex, priority "-" when there is none).
 func (x *Fake) Records(domain string) []string {

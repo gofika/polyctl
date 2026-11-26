@@ -600,9 +600,10 @@ the values given, one argument each.
 
 ` + recordArgsHelp + `
 
-MX and SRV values take the priority from --priority, or as a leading number
-inside the value ("10 mail.example.com"). Hostnames get the trailing dot
-Cloud DNS expects; TXT and SPF values are quoted automatically.
+MX values take the priority as a leading number inside the value ("10
+mail.example.com"), or from --priority; an SRV value starts with its own.
+Hostnames get the trailing dot Cloud DNS expects; TXT and SPF values are
+quoted automatically.
 
 ` + app.RecordAskHelp("zone") + "\n\n" + app.RecordSetAskHelp,
 		Example: `  polyctl gcp dns record upsert example-zone www A 203.0.113.10 203.0.113.11
@@ -613,7 +614,7 @@ Cloud DNS expects; TXT and SPF values are quoted automatically.
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The record is positional (<name> <type> <value>...) or, in the
 			// former form, given with --name, --type and --value.
-			in, err := rt.RecordInput(cmd, args, app.RecordForm{MinValues: 1, MaxValues: -1})
+			in, err := rt.RecordInput(cmd, args, app.RecordForm{MinValues: 1, MaxValues: -1, Platform: platform.GCP, Creates: true})
 			if err != nil {
 				return err
 			}
@@ -638,16 +639,15 @@ Cloud DNS expects; TXT and SPF values are quoted automatically.
 				}}); err != nil {
 				return err
 			}
+			checked, err := in.Check(cmd, "")
+			if err != nil {
+				return err
+			}
 			typ, values := in.Type, in.Values
 			fqdn := platform.FQDN(in.Name, z.Name)
-			raw := make([]string, 0, len(values))
-			for _, v := range values {
-				rec := platform.Record{Name: fqdn, Type: typ, Value: v}
-				if cmd.Flags().Changed("priority") {
-					p := priority
-					rec.Priority = &p
-				}
-				rd, err := rrdataFromRecord(rec)
+			raw := make([]string, 0, len(checked))
+			for _, v := range checked {
+				rd, err := rrdataFromRecord(platform.Record{Name: fqdn, Type: v.Type, Value: v.Value, Priority: v.Priority})
 				if err != nil {
 					return err
 				}
@@ -675,7 +675,7 @@ Cloud DNS expects; TXT and SPF values are quoted automatically.
 	}
 	app.FormerRecordFlags(cmd, true)
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 = keep existing, or 300 for a new set)")
-	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX/SRV records")
+	cmd.Flags().IntVar(&priority, "priority", 0, "priority of MX values that do not start with one")
 	return cmd
 }
 

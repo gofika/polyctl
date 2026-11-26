@@ -407,8 +407,8 @@ func recordUpsertCmd(rt *app.Runtime) *cobra.Command {
 		Short: "Create or replace a whole record set (name + type) with the given values",
 		Long: `Create or replace the record set of <name> and <type>. Every <value> becomes
 one value of the set; existing values that are not repeated are removed. MX
-and SRV values take their priority from --priority, or as a leading number
-inside the value ("10 mail.example.com").
+values take their priority as a leading number inside the value ("10
+mail.example.com"), or from --priority; an SRV value starts with its own.
 
 ` + recordArgsHelp + `
 
@@ -428,7 +428,7 @@ in the non-interactive flow.
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The record is positional (<name> <type> <value>...) or, in the
 			// former form, given with --name, --type and --value.
-			in, err := rt.RecordInput(cmd, args, app.RecordForm{MinValues: 1, MaxValues: -1})
+			in, err := rt.RecordInput(cmd, args, app.RecordForm{MinValues: 1, MaxValues: -1, Platform: platform.AWS, Creates: true})
 			if err != nil {
 				return err
 			}
@@ -459,16 +459,16 @@ in the non-interactive flow.
 				Current: func(r platform.Record) bool { return extraString(r.Extra, "set_identifier") == setID }}); err != nil {
 				return err
 			}
-			typ, values := in.Type, in.Values
-			fqdn := platform.FQDN(in.Name, z.Name)
-			if cmd.Flags().Changed("priority") && hasPriority(typ) {
-				// Prepend --priority to values that do not carry one already.
-				for i, v := range values {
-					if p, _ := splitPriority(typ, v); p == nil {
-						values[i] = fmt.Sprintf("%d %s", priority, strings.TrimSpace(v))
-					}
-				}
+			checked, err := in.Check(cmd, "")
+			if err != nil {
+				return err
 			}
+			// The values in zone-file form, an MX priority in front.
+			typ, values := in.Type, make([]string, len(checked))
+			for i, v := range checked {
+				values[i] = v.ZoneValue()
+			}
+			fqdn := platform.FQDN(in.Name, z.Name)
 			if done, err := rt.WouldWrite(platform.Target{Platform: platform.AWS, Profile: prof.Name, Domain: z.Name}, platform.Change{Resource: app.RecordResource(fqdn, typ), Action: platform.Updated, Detail: "set to " + strings.Join(values, ",")}); done || err != nil {
 				return err
 			}
@@ -491,7 +491,7 @@ in the non-interactive flow.
 	}
 	app.FormerRecordFlags(cmd, true)
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 = keep existing, or 300 for a new set)")
-	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX/SRV values that do not start with one")
+	cmd.Flags().IntVar(&priority, "priority", 0, "priority of MX values that do not start with one")
 	cmd.Flags().StringVar(&setID, "set-identifier", "", "set identifier of a routing-policy record set (weighted, latency, failover...)")
 	return cmd
 }

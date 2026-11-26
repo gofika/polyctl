@@ -23,6 +23,8 @@ type fakeRoute53 struct {
 	getZoneErr   error
 	listCalls    int
 	getZoneCalls int
+	// calls counts every request.
+	calls int
 }
 
 func newFakeRoute53() *fakeRoute53 {
@@ -30,6 +32,7 @@ func newFakeRoute53() *fakeRoute53 {
 }
 
 func (f *fakeRoute53) ListHostedZones(ctx context.Context, in *route53.ListHostedZonesInput, _ ...func(*route53.Options)) (*route53.ListHostedZonesOutput, error) {
+	f.calls++
 	start := 0
 	if in.Marker != nil {
 		for i, z := range f.zones {
@@ -52,6 +55,7 @@ func (f *fakeRoute53) ListHostedZones(ctx context.Context, in *route53.ListHoste
 
 func (f *fakeRoute53) GetHostedZone(ctx context.Context, in *route53.GetHostedZoneInput, _ ...func(*route53.Options)) (*route53.GetHostedZoneOutput, error) {
 	f.getZoneCalls++
+	f.calls++
 	if f.getZoneErr != nil {
 		return nil, f.getZoneErr
 	}
@@ -77,6 +81,7 @@ func setLess(a, b r53types.ResourceRecordSet) bool {
 
 func (f *fakeRoute53) ListResourceRecordSets(ctx context.Context, in *route53.ListResourceRecordSetsInput, _ ...func(*route53.Options)) (*route53.ListResourceRecordSetsOutput, error) {
 	f.listCalls++
+	f.calls++
 	sets := append([]r53types.ResourceRecordSet(nil), f.sets[awssdk.ToString(in.HostedZoneId)]...)
 	sort.Slice(sets, func(i, j int) bool { return setLess(sets[i], sets[j]) })
 	start := 0
@@ -101,6 +106,7 @@ func (f *fakeRoute53) ListResourceRecordSets(ctx context.Context, in *route53.Li
 }
 
 func (f *fakeRoute53) ChangeResourceRecordSets(ctx context.Context, in *route53.ChangeResourceRecordSetsInput, _ ...func(*route53.Options)) (*route53.ChangeResourceRecordSetsOutput, error) {
+	f.calls++
 	zone := awssdk.ToString(in.HostedZoneId)
 	for _, ch := range in.ChangeBatch.Changes {
 		rs := *ch.ResourceRecordSet

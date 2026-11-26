@@ -83,3 +83,29 @@ func (x *Fake) Details(domain string) []string {
 	}
 	return out
 }
+
+// Calls is the number of requests the fake has served.
+func (x *Fake) Calls() int {
+	x.f.mu.Lock()
+	defer x.f.mu.Unlock()
+	return len(x.f.calls)
+}
+
+// SRVs lists the SRV records of domain as "service protocol name port
+// weight priority data".
+func (x *Fake) SRVs(domain string) []string {
+	var out []string
+	for _, r := range x.f.getRecords(domain) {
+		if r.Type != "SRV" {
+			continue
+		}
+		n := func(p *int) string {
+			if p == nil {
+				return "-"
+			}
+			return fmt.Sprint(*p)
+		}
+		out = append(out, fmt.Sprintf("%s %s %s %s %s %s %s", r.Service, r.Protocol, r.Name, n(r.Port), n(r.Weight), n(r.Priority), r.Data))
+	}
+	return out
+}

@@ -607,7 +607,7 @@ type are left alone.
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The record is positional (<name> <type> <value>) or, in the
 			// former form, given with --name, --type and --value.
-			in, err := rt.RecordInput(cmd, args, app.RecordForm{MinValues: 1, MaxValues: 1})
+			in, err := rt.RecordInput(cmd, args, app.RecordForm{MinValues: 1, MaxValues: 1, Platform: platform.NameCom, Creates: true})
 			if err != nil {
 				return err
 			}
@@ -625,12 +625,12 @@ type are left alone.
 				Existing: func() ([]platform.Record, error) { return c.ListRecords(cmd.Context(), domain) }}); err != nil {
 				return err
 			}
-			name, typ, value := in.Name, in.Type, in.Value()
-			rec := platform.Record{ZoneID: domain, Name: platform.FQDN(name, domain), Type: strings.ToUpper(typ), Value: value, TTL: ttl}
-			if cmd.Flags().Changed("priority") {
-				pr := priority
-				rec.Priority = &pr
+			checked, err := in.Check(cmd, "")
+			if err != nil {
+				return err
 			}
+			v := checked[0]
+			rec := platform.Record{ZoneID: domain, Name: platform.FQDN(in.Name, domain), Type: v.Type, Value: v.Value, Priority: v.Priority, TTL: ttl}
 			if done, err := rt.WouldWrite(platform.Target{Platform: platform.NameCom, Profile: p.Name, Domain: domain}, platform.Change{Resource: app.RecordResource(rec.Name, rec.Type), Action: platform.Created, Detail: rec.Value}); done || err != nil {
 				return err
 			}
@@ -647,7 +647,7 @@ type are left alone.
 	}
 	app.FormerRecordFlags(cmd, false)
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 = name.com default, minimum 300)")
-	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX/SRV records")
+	cmd.Flags().IntVar(&priority, "priority", 0, "priority of an MX record (or in front of its value)")
 	return cmd
 }
 
@@ -694,6 +694,9 @@ Only the fields given with flags are changed; the positional <type> and
 			if err != nil {
 				return err
 			}
+			if err := app.CheckRecordChange(cmd, platform.NameCom, target.TypeOf()); err != nil {
+				return err
+			}
 			args, err = rt.DomainArg(cmd.Context(), args, platform.NameCom, platform.ResZone, nil)
 			if err != nil {
 				return err
@@ -734,6 +737,9 @@ Only the fields given with flags are changed; the positional <type> and
 				pr := priority
 				rec.Priority = &pr
 			}
+			if err := app.CheckRecordUpdate(cmd, platform.NameCom, cur, &rec); err != nil {
+				return err
+			}
 			if done, err := rt.WouldWrite(platform.Target{Platform: platform.NameCom, Profile: p.Name, Domain: domain}, platform.Change{Resource: app.RecordResource(rec.Name, rec.Type), Action: platform.Updated, ID: cur.ID, Detail: cur.Value + " -> " + rec.Value}); done || err != nil {
 				return err
 			}
@@ -753,7 +759,7 @@ Only the fields given with flags are changed; the positional <type> and
 	cmd.Flags().StringVar(&name, "name", "", "new record name relative to the domain (www, @)")
 	cmd.Flags().StringVar(&value, "value", "", "new record value")
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "new TTL in seconds (minimum 300)")
-	cmd.Flags().IntVar(&priority, "priority", 0, "new priority for MX/SRV records")
+	cmd.Flags().IntVar(&priority, "priority", 0, "new priority of an MX record")
 	return cmd
 }
 

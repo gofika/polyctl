@@ -28,6 +28,14 @@ type RecordArgs struct {
 	formerID, noValue bool
 }
 
+// TypeOf is the type of the record, "" when it names none (or r is nil).
+func (r *RecordArgs) TypeOf() string {
+	if r == nil {
+		return ""
+	}
+	return r.Type
+}
+
 // Value is the first value, "" when the record was given without one.
 func (r *RecordArgs) Value() string {
 	if r == nil || len(r.Values) == 0 {

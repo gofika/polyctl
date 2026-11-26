@@ -253,7 +253,7 @@ The priority of an MX record goes in --priority.
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The record is positional (<name> <type> <value>) or, in the
 			// former form, given with --name, --type and --value.
-			in, err := rt.RecordInput(cmd, args, app.RecordForm{MinValues: 1, MaxValues: 1})
+			in, err := rt.RecordInput(cmd, args, app.RecordForm{MinValues: 1, MaxValues: 1, Platform: platform.Aliyun, Creates: true})
 			if err != nil {
 				return err
 			}
@@ -273,12 +273,12 @@ The priority of an MX record goes in --priority.
 				Existing: func() ([]platform.Record, error) { return c.ListRecords(cmd.Context(), zone) }}); err != nil {
 				return err
 			}
-			name, typ, value := in.Name, in.Type, in.Value()
-			rec := platform.Record{ZoneID: zone, Name: platform.FQDN(name, zone), Type: strings.ToUpper(typ), Value: value, TTL: ttl}
-			if cmd.Flags().Changed("priority") {
-				pr := priority
-				rec.Priority = &pr
+			checked, err := in.Check(cmd, "")
+			if err != nil {
+				return err
 			}
+			v := checked[0]
+			rec := platform.Record{ZoneID: zone, Name: platform.FQDN(in.Name, zone), Type: v.Type, Value: v.Value, Priority: v.Priority, TTL: ttl}
 			if line != "" {
 				rec.Extra = map[string]any{"line": line}
 			}
@@ -373,6 +373,9 @@ nothing else; --line is the line the record is moved to.
 			if err := mustPositive("ttl", ttl); err != nil {
 				return err
 			}
+			if err := app.CheckRecordChange(cmd, platform.Aliyun, target.TypeOf()); err != nil {
+				return err
+			}
 			args, err = rt.DomainArg(cmd.Context(), args, platform.Aliyun, platform.ResZone, nil)
 			if err != nil {
 				return err
@@ -420,6 +423,9 @@ nothing else; --line is the line the record is moved to.
 			}
 			if line != "" {
 				rec.Extra["line"] = line
+			}
+			if err := app.CheckRecordUpdate(cmd, platform.Aliyun, cur, &rec); err != nil {
+				return err
 			}
 			if done, err := rt.WouldWrite(platform.Target{Platform: platform.Aliyun, Profile: p.Name, Domain: zone}, platform.Change{Resource: app.RecordResource(rec.Name, rec.Type), Action: platform.Updated, ID: cur.ID, Detail: cur.Value + " -> " + rec.Value}); done || err != nil {
 				return err
