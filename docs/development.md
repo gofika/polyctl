@@ -35,6 +35,8 @@ internal/output/        table / json / yaml rendering
 internal/sshremote/     SSH login to instances and the authorized_keys edit script; sshtest/ is a test server
 internal/dnstest/       Fake DNS resolvers on 127.0.0.1 for tests
 internal/httpx/         JSON REST client with retries (Cloudflare, name.com, GoDaddy)
+internal/fsutil/        Rename that retries while another process holds the file open on Windows (config.yaml,
+                        credentials.json, certificate store)
 internal/prompt/        Line / secret / confirm prompts and the arrow-key Picker, drawn on stderr
 internal/browser/       Open a URL in the default browser
 internal/loopback/      127.0.0.1 listener for the redirect of a browser login (GCP, Cloudflare)
