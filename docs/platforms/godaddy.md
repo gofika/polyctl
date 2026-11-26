@@ -14,9 +14,9 @@ godaddy domain lock <domain>      godaddy domain unlock <domain>
 godaddy domain autorenew <domain> on|off
 godaddy domain check <name>...    # availability and price
 godaddy dns list <domain> [--type] [--name]
-godaddy dns add <domain> --type A --name www --value 203.0.113.10 [--ttl 600] [--priority]          # one more record; the others stay
-godaddy dns upsert <domain> --type A --name www --value <v> [--value <v>...] [--ttl] [--priority]   # sets the whole name+type set
-godaddy dns delete <domain> (--type A --name www | --id <zone|TYPE|name|value>) [--yes]
+godaddy dns add <domain> <name> <type> <value> [--ttl 600] [--priority <n>]        # one more record; the others stay
+godaddy dns upsert <domain> <name> <type> <value>... [--ttl 600] [--priority <n>]   # sets the whole name+type set
+godaddy dns delete <domain> (<name> <type> | --id <zone|TYPE|name|value>) [--yes]
 ```
 
 - `whoami` needs the network (exit code 6 with `--offline`); credentials that no longer work exit with code 3.
@@ -29,9 +29,11 @@ GoDaddy has no record ids: records are addressed by type and name.
 Only domains GoDaddy serves DNS for are indexed as zones: a domain whose nameservers are not GoDaddy's (`*.domaincontrol.com`; a domain with no nameservers listed keeps GoDaddy's defaults), or whose status is cancelled, expired or transferred out, is left out of the zone and record sync, so the neutral `dns` commands do not route to it. `godaddy dns` still reaches it when named.
 
 - `add` appends one record to the name+type set; the others stay.
-- `upsert` creates the set or replaces all of it with the given `--value`s (repeat `--value` for several records), like `record upsert` on Route 53 and Cloud DNS.
-- `delete --type --name` deletes the whole set; `delete --id` deletes one record and cannot be combined with `--type` or `--name` (exit code 2). It lists what it would delete and asks for confirmation (`--yes` in the non-interactive flow; see [Confirmations](../interactive.md#confirmations)). A set or record that does not exist is exit code 4 and asks nothing.
-- `--name` is relative to the domain (`www`, `@`); default `@`.
+- `upsert` creates the set or replaces all of it with the values given (each `<value>` is one record), like `record upsert` on Route 53 and Cloud DNS.
+- `delete <domain> <name> <type>` deletes the whole set; `delete --id` deletes one record and cannot be combined with `<name> <type>` (exit code 2). It lists what it would delete and asks for confirmation (`--yes` in the non-interactive flow; see [Confirmations](../interactive.md#confirmations)). A set or record that does not exist is exit code 4 and asks nothing.
+- `<name>` is relative to the domain (`www`, `a.b`), `@` for the apex, or a full name inside the domain. `<type>` is case-insensitive. A value is one argument: quote one that contains spaces, and put `--` before one that starts with `-`.
+- A wrong number of record arguments is exit code 2, and the message shows the usage (`usage: polyctl godaddy dns add <domain> <name> <type> <value>`). With only `<domain>`, a terminal asks for the type and the value (`add`, `upsert`; the record is then at the apex) or for the record to delete (`delete`).
+- Former form (0.5.x): `add`, `upsert` and `delete` still read the record from `--name`, `--type` and `--value` (repeated on `upsert`; without `--name`, the apex). These flags are no longer listed in the help. A positional record together with one of them is exit code 2.
 - `--ttl` in seconds, minimum 600; `0` (default) uses GoDaddy's default.
 - `--priority` for MX/SRV records.
 
@@ -40,7 +42,9 @@ The record id is synthetic, `zone|TYPE|name|value` with each part percent-encode
 An id without the MX or SRV fields, and the `TYPE|name|value` id older polyctl versions printed, still work while they name one record; when one matches several it is exit code 5 and the error lists the ids to use instead. The first run of this version drops the GoDaddy records cached under the older ids; they are fetched again on their next use.
 
 ```sh
-polyctl godaddy dns upsert example.com --type A --name www --value 203.0.113.10 --value 203.0.113.11
+polyctl godaddy dns add example.com @ TXT "v=spf1 include:_spf.example.net ~all"
+polyctl godaddy dns upsert example.com www A 203.0.113.10 203.0.113.11
+polyctl godaddy dns delete example.com www A --yes
 polyctl godaddy dns delete example.com --id 'example.com|TXT|@|v=spf1%20include:_spf.example.com%20~all' --yes
 ```
 

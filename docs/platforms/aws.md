@@ -46,8 +46,8 @@ A denied call exits with code 3 and names the IAM action it needed (for example 
 aws whoami                                        # account, ARN, user id
 aws route53 zone list | zone get <zone-id|name>
 aws route53 record list <zone> [--type] [--name]
-aws route53 record upsert <zone> --type A --name www --value 203.0.113.10 [--value ...] [--ttl 300] [--priority <n>] [--set-identifier <id>]
-aws route53 record delete <zone> --type A --name www [--set-identifier <id>] [--yes]   # deletes the whole record set
+aws route53 record upsert <zone> <name> <type> <value>... [--ttl 300] [--priority <n>] [--set-identifier <id>]
+aws route53 record delete <zone> <name> <type> [--set-identifier <id>] [--yes]   # deletes the whole record set
 aws route53domains list | get <domain> | ns get <domain> | ns set <domain> <nameserver>...
 
 aws ec2 instance list [--state <s>,...] [--type <t>,...] [--name <substring|pattern>] [--region <r>]
@@ -83,8 +83,11 @@ Every regional command takes `--region <r>`. Run `polyctl aws <command> --help` 
 
 Route 53 stores a record set (name + type) with several values. polyctl shows **one record per value**, in the inventory and in `dns list`, with the id `<zone-id>|<TYPE>|<name>|<set-identifier>|<value>` (each part URL-encoded). Updating or deleting one such record rewrites the whole set with that value changed or removed.
 
-- `record upsert` replaces the whole set; repeat `--value` to write several values in one call. `--ttl 0` keeps the existing TTL (300 for a new set). `--priority` applies to MX/SRV values that do not start with one. `--name` defaults to the zone apex.
-- `record delete` deletes the whole record set of `--name` / `--type`. It lists the values and asks first ([Confirmations](../interactive.md#confirmations)); the non-interactive flow needs `--yes`. A set that does not exist is exit code 4 and asks nothing.
+- The record is written like a zone file line: `polyctl aws route53 record upsert example.com www A 203.0.113.10 203.0.113.11`. `<name>` is relative to the zone (`www`, `a.b`), `@` for the zone apex, or a full name inside the zone; `<type>` is case-insensitive; each `<value>` is one argument (quote one that contains spaces, and put `--` before one that starts with `-`).
+- `record upsert` replaces the whole set with the values given. `--ttl 0` keeps the existing TTL (300 for a new set). `--priority` applies to MX/SRV values that do not start with one (`"10 mail.example.com"`).
+- `record delete` deletes the whole record set of `<name>` and `<type>`. It lists the values and asks first ([Confirmations](../interactive.md#confirmations)); the non-interactive flow needs `--yes`. A set that does not exist is exit code 4 and asks nothing.
+- A wrong number of record arguments is exit code 2, and the message shows the usage (`usage: polyctl aws route53 record upsert <zone> <name> <type> <value>...`). With only `<zone>`, a terminal asks for the type and the value (`record upsert`, at the zone apex) or offers the record sets of the zone (`record delete`).
+- Former form (0.5.x): `record upsert` and `record delete` still read the record from `--name`, `--type` and `--value` (repeated for several values; without `--name`, the zone apex). These flags are no longer listed in the help. A positional record together with one of them is exit code 2.
 - Routing-policy sets (weighted, latency, failover, geolocation...) share a name and type and differ by their set identifier: `record upsert` and `record delete` take `--set-identifier <id>`, and the interactive pick of `record delete` offers each set with its identifier. Without `--set-identifier`, a name and type that hold only routing-policy sets are ambiguous (exit code 5) and the identifiers are listed. An updated set keeps its routing policy; `record upsert` sets no policy, so it cannot create a routing-policy set, and an identifier that does not exist is exit code 4.
 - Values are written in the form Route 53 requires: TXT and SPF text in double quotes (split into strings of at most 255 characters), and the value part of a CAA record in double quotes (`0 issue letsencrypt.org` is written as `0 issue "letsencrypt.org"`), inner quotes and backslashes escaped. A value given with its quotes is written as is. So the same `dns ensure` spec works on Route 53 and on the other platforms, and its read-back compares equal.
 - `route53domains` is the registrar group: `list`, `get`, `ns get`, `ns set`.
