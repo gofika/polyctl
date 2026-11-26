@@ -59,3 +59,36 @@ func TestParseRecordArgs(t *testing.T) {
 		t.Errorf("default former flag: %v", err)
 	}
 }
+
+// The record of a delete command is a selector: only the name is required.
+func TestParseRecordSelector(t *testing.T) {
+	cmd := recordCmd("delete <zone> [<name> [<type> [<value>]]]", "name", "type", "value")
+	if rec, err := ParseRecordSelector(cmd, nil, 1); rec != nil || err != nil {
+		t.Errorf("no arguments = %+v, %v", rec, err)
+	}
+	if rec, err := ParseRecordSelector(cmd, []string{" www "}, 1); err != nil || rec.Name != "www" || rec.Type != "" || rec.Value() != "" {
+		t.Errorf("name only = %+v, %v", rec, err)
+	}
+	if rec, err := ParseRecordSelector(cmd, []string{"www", "a", "x"}, 1); err != nil || rec.Type != "A" || rec.Value() != "x" {
+		t.Errorf("name, type and value = %+v, %v", rec, err)
+	}
+	const usage = "usage: polyctl delete <zone> <name> [<type> [<value>]]"
+	for _, args := range [][]string{{"www", "A", "x", "y"}, {""}, {"www", ""}, {"www", "A", " "}} {
+		if _, err := ParseRecordSelector(cmd, args, 1); !errors.Is(err, ErrUsage) || !strings.Contains(err.Error(), usage) {
+			t.Errorf("%q = %v, want the usage %q", args, err, usage)
+		}
+	}
+	if got := RecordSelectorUsage(cmd, 0); got != "usage: polyctl delete <zone> <name> [<type>]" {
+		t.Errorf("usage without a value = %q", got)
+	}
+	if _, err := ParseRecordSelector(cmd, []string{"www", "A"}, 0); err != nil {
+		t.Errorf("name and type without a value: %v", err)
+	}
+	if _, err := ParseRecordSelector(cmd, []string{"www", "A", "x"}, 0); !errors.Is(err, ErrUsage) {
+		t.Errorf("a value where none is taken: %v", err)
+	}
+	_ = cmd.Flags().Set("name", "www")
+	if _, err := ParseRecordSelector(cmd, []string{"www"}, 1); !errors.Is(err, ErrUsage) || !strings.Contains(err.Error(), "with --name; use one form") {
+		t.Errorf("selector beside --name = %v", err)
+	}
+}

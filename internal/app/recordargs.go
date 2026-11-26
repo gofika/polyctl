@@ -32,6 +32,14 @@ func (r *RecordArgs) Value() string {
 // formerRecordFlags are the flags of the former form of a record command.
 var formerRecordFlags = []string{"name", "type", "value"}
 
+// recordShape says what the positional record of a command takes: minValues
+// to maxValues values (maxValues < 0: any number), and whether the <type>
+// may be left out (a record that is selected, not written).
+type recordShape struct {
+	minValues, maxValues int
+	typeOptional         bool
+}
+
 // ParseRecordArgs reads the positional record of cmd. args are the
 // arguments after the <domain> or <zone>; without any there is no
 // positional record and it returns nil, nil (the flags of the former form,
@@ -43,11 +51,29 @@ var formerRecordFlags = []string{"name", "type", "value"}
 // beside one of the flags of the former form. Those flags are --name,
 // --type and --value unless formerFlags names the ones of the command.
 func ParseRecordArgs(cmd *cobra.Command, args []string, minValues, maxValues int, formerFlags ...string) (*RecordArgs, error) {
+	return recordShape{minValues: minValues, maxValues: maxValues}.parse(cmd, args, formerFlags)
+}
+
+// ParseRecordSelector reads the positional record of a command that
+// selects records instead of writing one (delete): <name> [<type>
+// [<value>]], at most maxValues values. Only the name is required: Type is
+// "" when it was left out, and the command then finds out which records the
+// name means (see RecordsOfName). Otherwise it is ParseRecordArgs.
+func ParseRecordSelector(cmd *cobra.Command, args []string, maxValues int, formerFlags ...string) (*RecordArgs, error) {
+	return recordShape{maxValues: maxValues, typeOptional: true}.parse(cmd, args, formerFlags)
+}
+
+func (sh recordShape) parse(cmd *cobra.Command, args []string, formerFlags []string) (*RecordArgs, error) {
 	if len(args) == 0 {
 		return nil, nil
 	}
-	if n := len(args) - 2; n < minValues || (maxValues >= 0 && n > maxValues) {
-		return nil, UsageErrf("%s", RecordUsage(cmd, minValues, maxValues))
+	usage := sh.usage(cmd)
+	n := len(args) - 2
+	if sh.typeOptional && len(args) == 1 {
+		n = 0
+	}
+	if n < sh.minValues || (sh.maxValues >= 0 && n > sh.maxValues) {
+		return nil, UsageErrf("%s", usage)
 	}
 	if len(formerFlags) == 0 {
 		formerFlags = formerRecordFlags
@@ -60,18 +86,22 @@ func ParseRecordArgs(cmd *cobra.Command, args []string, minValues, maxValues int
 	}
 	if len(given) > 0 {
 		return nil, UsageErrf("the record is given both as arguments and with %s; use one form: %s",
-			strings.Join(given, ", "), RecordUsage(cmd, minValues, maxValues))
+			strings.Join(given, ", "), usage)
 	}
-	rec := &RecordArgs{Name: strings.TrimSpace(args[0]), Type: strings.ToUpper(strings.TrimSpace(args[1])), Values: args[2:]}
+	rec := &RecordArgs{Name: strings.TrimSpace(args[0])}
 	if rec.Name == "" {
-		return nil, UsageErrf("<name> must not be empty (@ is the zone apex): %s", RecordUsage(cmd, minValues, maxValues))
+		return nil, UsageErrf("<name> must not be empty (@ is the zone apex): %s", usage)
 	}
+	if len(args) == 1 {
+		return rec, nil
+	}
+	rec.Type, rec.Values = strings.ToUpper(strings.TrimSpace(args[1])), args[2:]
 	if rec.Type == "" {
-		return nil, UsageErrf("<type> must not be empty: %s", RecordUsage(cmd, minValues, maxValues))
+		return nil, UsageErrf("<type> must not be empty: %s", usage)
 	}
 	for _, v := range rec.Values {
 		if strings.TrimSpace(v) == "" {
-			return nil, UsageErrf("<value> must not be empty: %s", RecordUsage(cmd, minValues, maxValues))
+			return nil, UsageErrf("<value> must not be empty: %s", usage)
 		}
 	}
 	return rec, nil
@@ -81,21 +111,36 @@ func ParseRecordArgs(cmd *cobra.Command, args []string, minValues, maxValues int
 // "usage: polyctl dns set <domain> <name> <type> <value>". The first
 // argument is named as the usage line of cmd names it (<domain>, <zone>).
 func RecordUsage(cmd *cobra.Command, minValues, maxValues int) string {
+	return recordShape{minValues: minValues, maxValues: maxValues}.usage(cmd)
+}
+
+// RecordSelectorUsage is RecordUsage for a command that reads its record
+// with ParseRecordSelector, "usage: polyctl dns delete <domain> <name>
+// [<type> [<value>]]".
+func RecordSelectorUsage(cmd *cobra.Command, maxValues int) string {
+	return recordShape{maxValues: maxValues, typeOptional: true}.usage(cmd)
+}
+
+func (sh recordShape) usage(cmd *cobra.Command) string {
 	first := "<domain>"
 	if words := strings.Fields(cmd.Use); len(words) > 1 {
 		first = strings.Trim(words[1], "[]")
 	}
 	value := "<value>"
-	if maxValues < 0 || maxValues > 1 {
+	if sh.maxValues < 0 || sh.maxValues > 1 {
 		value += "..."
 	}
-	if minValues == 0 {
+	if sh.minValues == 0 {
 		value = "[" + value + "]"
 	}
-	if maxValues == 0 {
+	if sh.maxValues == 0 {
 		value = ""
 	}
-	return strings.TrimSpace("usage: " + cmd.CommandPath() + " " + first + " <name> <type> " + value)
+	record := strings.TrimSpace("<type> " + value)
+	if sh.typeOptional {
+		record = "[" + record + "]"
+	}
+	return "usage: " + cmd.CommandPath() + " " + first + " <name> " + record
 }
 
 // RecordArgsOrInteractive validates the arguments of a record command:
@@ -104,6 +149,16 @@ func RecordUsage(cmd *cobra.Command, minValues, maxValues int) string {
 // as ParseRecordArgs reads it. Without any argument the interactive flow
 // asks for the domain; the non-interactive flow gets the usage text.
 func RecordArgsOrInteractive(rt *Runtime, minValues, maxValues int, formerFlags ...string) cobra.PositionalArgs {
+	return recordShape{minValues: minValues, maxValues: maxValues}.argsOrInteractive(rt, formerFlags)
+}
+
+// RecordSelectorArgsOrInteractive is RecordArgsOrInteractive for a command
+// that reads its record with ParseRecordSelector.
+func RecordSelectorArgsOrInteractive(rt *Runtime, maxValues int, formerFlags ...string) cobra.PositionalArgs {
+	return recordShape{maxValues: maxValues, typeOptional: true}.argsOrInteractive(rt, formerFlags)
+}
+
+func (sh recordShape) argsOrInteractive(rt *Runtime, formerFlags []string) cobra.PositionalArgs {
 	return func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
 			if rt.Interactive() {
@@ -114,9 +169,9 @@ func RecordArgsOrInteractive(rt *Runtime, minValues, maxValues int, formerFlags 
 			if err := CheckNonInteractiveEnv(); err != nil {
 				return UsageErrf("%v", err)
 			}
-			return UsageErrf("%s", RecordUsage(cmd, minValues, maxValues))
+			return UsageErrf("%s", sh.usage(cmd))
 		}
-		_, err := ParseRecordArgs(cmd, args[1:], minValues, maxValues, formerFlags...)
+		_, err := sh.parse(cmd, args[1:], formerFlags)
 		return err
 	}
 }

@@ -62,13 +62,7 @@ func (rt *Runtime) PickRecordID(title string, recs []platform.Record, mark func(
 		if r.Type == "SOA" || strings.TrimSpace(r.ID) == "" {
 			continue
 		}
-		note := ""
-		if mark != nil {
-			if m := mark(r); m != "" {
-				note = "[" + m + "]"
-			}
-		}
-		opts = append(opts, prompt.Option{Label: RecordLabel(r, note, r.ID), Value: r.ID})
+		opts = append(opts, prompt.Option{Label: recordOptionLabel(r, mark), Value: r.ID})
 	}
 	return rt.Choose(Choice{Title: title, Options: opts, Arg: "<record-id>", What: "record"})
 }
