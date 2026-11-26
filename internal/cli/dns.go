@@ -154,10 +154,13 @@ func newDNSAddCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "add <domain> <name> <type> <value>",
 		Short: "Add a DNS record, keeping the existing ones of that name + type",
-		Long: `Create one more record in the zone serving <domain>. Records that already
-have the same name and type are left alone, which is how round-robin A
-records or several TXT or MX records are built up. To change an existing
-record use ` + "`polyctl dns ensure`" + `.
+		Long: `Create one more record in the zone serving <domain>. The records the name
+already has are left alone, of its type or of others, which is how round-robin
+A records, several TXT or MX records, or records of several types on one name
+are built up (dns ensure is for a name with one record, and replaces a record
+of another type). A record the name's records cannot share it with (a CNAME
+beside other records) is refused. To change an existing record use
+` + "`polyctl dns ensure`" + `.
 
 ` + recordHelp + `
 ` + recordTypesPointer + `
@@ -550,12 +553,11 @@ func newDNSEnsureCmd(rt *app.Runtime) *cobra.Command {
 	var prune, proxied bool
 	cmd := &cobra.Command{
 		Use:   "ensure <domain> [<name> <type> <value>...]",
-		Short: "Converge a set of DNS records: create the missing, update the differing",
-		Long: `Bring a set of records of the zone serving <domain> to the desired state in one
-run. Each record is matched on name + type: one that is already as desired is
-reported unchanged and not written, one that differs is updated in place
-(keeping its id), and a missing one is created. Records that are not named are
-never touched, so the command can be repeated safely.
+		Short: "Converge DNS records: create the missing, update the differing, replace the one record of another type",
+		Long: `Bring records of the zone serving <domain> to the desired state in one run;
+the command can be repeated safely. It is meant for names that hold one record,
+or the set of one type (several MX or TXT values). For more than one record on
+a name, or records of several types, use ` + "`polyctl dns add`" + `.
 
 One record, or the set of one name and type, is written as arguments:
 
@@ -593,14 +595,40 @@ front of its value ("10 mail.example.com"), an SRV value is
       value: mail.example.com
       priority: 10      # MX only
 
-Several records with the same name and type form a set: each value that is
-missing is created and nothing is updated (several MX or TXT values). One
-record against several existing ones of that name and type is fine when one of
-them is as desired, or has the desired value (its TTL or proxied setting is
-then updated); otherwise the command stops before writing anything (exit code
-5), unless --prune-duplicates is given: it keeps one record (updating the
-oldest when none has the desired value) and deletes the others, after the
-creates and updates. proxied=true on a platform other than Cloudflare reports the record as
+What ensure changes, for each name it is given (records of names it is not
+given are never touched; the SOA and NS records of the zone apex are the
+zone's own and never count):
+
+  - No record: the record is created.
+  - One record of the type: unchanged when it is as desired, else updated in
+    place, keeping its id (an existing TTL and proxied setting are kept unless
+    given).
+  - One record of another type: replaced, which deletes it and then creates the
+    record. A terminal shows it and asks first (default no); a script needs
+    --yes (exit code 2 without it).
+  - A record of the type beside records of other types: that record is
+    updated as above; the records of other types are left alone, unless the
+    type cannot share the name with them (a CNAME): then as below.
+  - Several records of other types and none of the type: a terminal lists them
+    and asks whether to replace them all (then confirmed), keep them and add the
+    record beside them (when the types can share the name), or cancel. A script
+    stops with exit code 5, --yes or not: several records of a name are never
+    deleted without a terminal. Use dns add to add the record beside them, or
+    dns delete first to replace them.
+  - Several records of the type (duplicates): fine when one of them is as
+    desired or has the desired value (its TTL or proxied setting is then
+    updated); otherwise exit code 5, unless --prune-duplicates keeps one
+    (updating the oldest when none has the desired value) and deletes the
+    others, after the creates and updates.
+
+Several records of the same name and type form a set: each value that is
+missing is created and nothing is updated (several MX or TXT values); records
+of other types on the name are handled as above. Every name is decided before
+anything is written: a no or a cancel writes nothing (exit code 0), and a
+--dry-run reports the deletes and creates of a replace and asks nothing. When a
+write fails after the records it replaces were deleted, the error names them
+with the ` + "`polyctl dns add`" + ` commands that restore them (exit code 1).
+proxied=true on a platform other than Cloudflare reports the record as
 skipped. The zone is always read live: --offline is refused (exit code 6).
 
 ` + app.RecordAskHelp("zone") + `
@@ -612,7 +640,8 @@ positional record nothing is asked.`,
   polyctl dns ensure example.com www CNAME target.example.net --ttl 300
   polyctl dns ensure example.com @ TXT "v=spf1 -all" "google-site-verification=abc"
   polyctl dns ensure example.com -r www:A:203.0.113.10:300 -r '@:MX:10 mail.example.com'
-  polyctl dns ensure example.com -f records.yaml --dry-run`,
+  polyctl dns ensure example.com -f records.yaml --dry-run
+  polyctl dns ensure example.com www CNAME target.example.net --yes   # replaces the A record of www`,
 		Args:              app.ProxiedRecordArgs(app.RecordArgsOrInteractive(rt, 1, -1), -1),
 		ValidArgsFunction: app.CompleteDomainRecordArgs(rt, completeDomains(rt)),
 		RunE: func(cmd *cobra.Command, args []string) error {

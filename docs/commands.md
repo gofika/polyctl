@@ -68,7 +68,7 @@ Every command that writes a record (`dns add`, `dns ensure`, and the `create`, `
 - An invalid value is exit code 2: the message says what is wrong and shows a valid value of the type.
 - A valid value is sent in a normal form: host names in lower case without the trailing dot (internationalized names in punycode), addresses canonical, hex in lower case, the value of CAA and the strings of NAPTR and URI quoted. Each platform gets it in the fields of its API (the components of Cloudflare's `data`, the priority field of name.com, the SRV fields of GoDaddy, the trailing dots Cloud DNS expects).
 - The priority of an MX record goes in front of its value (`"10 mail.example.com"`) or in `--priority` / `priority`; a new MX record needs one. SRV, HTTPS, SVCB, URI and NAPTR carry theirs as a field of the value: `--priority` with them is exit code 2, and the message says which field it is. Other types take no priority.
-- Records that cannot share a name are refused: a CNAME beside any other record (on Cloudflare beside A, AAAA or NS records), NS below the zone apex beside anything but DS on Cloudflare and Alibaba Cloud, ALIAS / ANAME beside A, AAAA or CNAME records. `dns ensure` checks its records among themselves, `dns add` against the zone.
+- Records that cannot share a name are refused: a CNAME beside any other record (on Cloudflare beside A, AAAA or NS records), NS below the zone apex beside anything but DS on Cloudflare and Alibaba Cloud, ALIAS / ANAME beside A, AAAA or CNAME records. `dns ensure` checks its records among themselves (against the zone it replaces or asks, see [What ensure changes](#what-ensure-changes)); `dns add` refuses them against the zone.
 
 | Type | Value | Example | Cloudflare | Route 53 | Cloud DNS | Alibaba Cloud | name.com | GoDaddy |
 |---|---|---|:-:|:-:|:-:|:-:|:-:|:-:|
@@ -104,18 +104,19 @@ The hex data has the length its type calls for (TLSA / SMIMEA matching type 1: 6
 
 ### dns add
 
-- `dns add` always creates one more record and leaves the others alone. Use it to build round-robin `A` records or several `TXT` / `MX` records. To change a record, use `dns ensure`.
+- `dns add` always creates one more record and leaves the others of the name alone, of its type or of others. Use it to build round-robin `A` records, several `TXT` / `MX` records, or records of several types on one name. To change a record, use `dns ensure`, which is for a name with one record.
 - A record whose name already holds a record it cannot share the name with (a CNAME beside an A record, a second CNAME, ...) is refused before the write.
 
 ### dns ensure
 
-Brings a set of records of one zone to the desired state. Safe to run again and again.
+Brings records of one zone to the desired state. Safe to run again and again. It is meant for names that hold one record, or the set of one type (several `MX` or `TXT` values); for more than one record on a name, or records of several types, use `dns add`.
 
 ```sh
 polyctl dns ensure example.com www A 203.0.113.10 --ttl 300 --proxied
 polyctl dns ensure example.com @ MX "10 mx1.example.com" "20 mx2.example.com"
 polyctl dns ensure example.com -r www:A:203.0.113.10:300:true -r '@:MX:10 mail.example.com'
 polyctl dns ensure example.com -f records.yaml --dry-run
+polyctl dns ensure example.com www CNAME target.example.net --yes   # replaces the A record of www
 ```
 
 ```yaml
@@ -132,19 +133,33 @@ records:
 ```
 
 - The positional record is one name and type; several values are the set of that name and type. `--ttl` (seconds or `auto`), `--priority` and `--proxied` apply to it only and are exit code 2 without one.
-- The positional record, `--record` / `-r` (repeatable) and `--file` / `-f` can be combined. Each record is matched on name + type: already as desired is `unchanged` (not written), different is updated in place, missing is created. Records you do not name are never touched.
+- The positional record, `--record` / `-r` (repeatable) and `--file` / `-f` can be combined. What happens to each name is in [What ensure changes](#what-ensure-changes). Records of names you do not give are never touched.
 - Names are relative (`www`, `@`, `a.b`) or full names in the zone (`www.example.com`, with or without the trailing dot). A name outside the zone (`www.other.com`) is a usage error.
 - TTL (seconds or `auto`) and proxied (`true` / `false`) are optional. Left out, an existing record keeps its value and a new one gets the platform default (Cloudflare: automatic TTL, not proxied). `auto` and `0` mean automatic on Cloudflare; elsewhere `auto` equals leaving the TTL out and `0` is refused.
 - Values are compared as the platform stores them (host names without case or trailing dot, compressed IPv6, TXT and SPF unquoted and joined), so an equivalent value is `unchanged`.
 - Values and priorities are checked as [Record types](#record-types) says: an MX priority in front of the value (`"10 mail.example.com"`, `@:MX:10 mail.example.com`) or in `--priority` / `priority`, needed for a new MX record; SRV values are `<priority> <weight> <port> <target>`.
 - Inline, a value ending in `:<number>` or an IPv6 address that could be read with a TTL is refused as ambiguous: use the file.
-- Several records with the same name and type form a set: missing values are created, nothing is updated.
-- One desired record against several existing ones of that name and type: fine if one already matches, or if one has the desired value (only its other fields, such as the TTL, are updated); the others are left alone. When none has the desired value the command stops before writing (exit code 5), unless `--prune-duplicates` keeps one (updating the oldest) and deletes the rest, without asking. With `--prune-duplicates` the record kept is always the one that matches or has the desired value, when there is one.
 - `proxied=true` on a platform other than Cloudflare is reported `skipped`; `proxied=false` there is ignored. On a proxied Cloudflare record the TTL is not compared.
-- Usage errors (exit code 2), found before the zone is read: unknown fields, a record given twice, an invalid value or type, two CNAMEs of one name, records of types that cannot share a name (see [Record types](#record-types)), `proxied` on types other than A / AAAA / CNAME, and `SOA`. A type the platform cannot write is exit code 7. A CNAME whose name already has A / AAAA records (or the reverse) fails before anything is written.
+- Usage errors (exit code 2), found before the zone is read: unknown fields, a record given twice, an invalid value or type, two CNAMEs of one name, records of types that cannot share a name (see [Record types](#record-types)), `proxied` on types other than A / AAAA / CNAME, and `SOA`. A type the platform cannot write is exit code 7.
 - The zone is always read live, so `--offline` is refused (exit code 6).
-- The first failed write stops the run. Run the command again to continue from there.
-- Report rows are `dns-record/<name>/<TYPE>`. An update lists its changed fields (`value a -> b; ttl 300 -> 600`); in JSON, `attrs.changed` holds the old and new `value`, `ttl`, `proxied` and `priority`.
+- The first failed write stops the run. Run the command again to continue from there. When the write that fails comes after the records it replaces were deleted, the error says so, names each deleted record with its type, value and TTL, and prints the `polyctl dns add ...` command that restores it (exit code 1).
+- Report rows are `dns-record/<name>/<TYPE>`. An update lists its changed fields (`value a -> b; ttl 300 -> 600`); in JSON, `attrs.changed` holds the old and new `value`, `ttl`, `proxied` and `priority`. A replaced record is a `deleted` row of its own type before the rows of the records that replace it; its `attrs` keep its `value`, `ttl`, `priority` and `proxied`, and `replaced_by` the types that replace it.
+
+#### What ensure changes
+
+For each name it is given. The SOA and NS records of the zone apex are the zone's own and never count; records of other names are never touched.
+
+| The name holds | dns ensure |
+| --- | --- |
+| no record | creates the record |
+| one record of the type | leaves it `unchanged` when it is as desired, else updates it in place (keeping its id; an existing TTL and proxied setting are kept unless given) |
+| one record of another type | replaces it: deletes it, then creates the record. On a terminal the record is shown and confirmed first (default no); a script needs `--yes` (exit code 2 without it) |
+| a record of the type beside records of other types | updates that record as above and leaves the records of other types alone, unless the type cannot share the name with them (a CNAME): then as in the next row |
+| several records of other types, none of the type | on a terminal lists them and asks: replace them all (then confirmed, with the count), keep them and add the record beside them (as `dns add` does; offered when the types can share the name), or cancel. A script stops with exit code 5, with or without `--yes`, and the error lists them: use `dns add` to add the record beside them, or `dns delete` first to replace them. Several records of a name are never deleted without a terminal |
+| several records of the type (duplicates) | fine when one is as desired or has the desired value (only its other fields, such as the TTL, are updated); the others are left alone. Otherwise exit code 5, unless `--prune-duplicates` keeps one (the one that matches or has the desired value, else the oldest, which is updated) and deletes the others after the creates and updates, without asking |
+
+- Several records of one name and type in one run form a set: missing values are created, nothing is updated. Records of other types on the name follow the table, with the set in place of the one record.
+- Every name of a run is decided before anything is written: a `--file` with several names stops before the first write when one of them needs `--yes` or a terminal. A no or a cancel writes nothing (exit code 0). A `--dry-run` reports the `would delete` and `would create` rows of a replace and asks nothing (a choice between several records is still asked on a terminal).
 
 ### dns delete
 
@@ -411,5 +426,5 @@ The same operation has the same verb and shape on every platform:
 | Compute services | `<service> instance list\|start\|stop ...` |
 
 - **`create`** makes one new resource and fails when it exists. **`set` / `upsert`** set one object (the nameservers of a domain, a zone setting, a record set) and never create anything else.
-- **`ensure`** converges a group of related resources: it reads what exists, changes only what differs, reports `unchanged` for what matches, and never deletes resources it was not told about. Any command that creates dependencies you did not name one by one (a VPC, a security group, a certificate, a listener) is an `ensure` command. Exit code 0 includes "everything was unchanged". It prints a [change report](configuration.md#dry-runs-and-change-reports).
+- **`ensure`** converges a group of related resources: it reads what exists, changes only what differs, reports `unchanged` for what matches, and never deletes resources it was not told about (`dns ensure` replaces records of other types on a name it is given, as [What ensure changes](#what-ensure-changes) says). Any command that creates dependencies you did not name one by one (a VPC, a security group, a certificate, a listener) is an `ensure` command. Exit code 0 includes "everything was unchanged". It prints a [change report](configuration.md#dry-runs-and-change-reports).
 - **Waiting**: asynchronous changes take `--wait` (wait until the change has completed; the default of `ensure` commands and of every `instance create`), `--no-wait` (return once the change was requested; accepted by every command that has `--wait`) and `--timeout <duration>` (upper bound of the wait, default `10m`). A wait that runs out of time is exit code 1 and names the resource and its last status.

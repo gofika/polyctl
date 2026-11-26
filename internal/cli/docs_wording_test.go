@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/gofika/polyctl/internal/app"
 )
 
 // readDoc reads a document of the repository, given relative to its root,
@@ -68,6 +70,64 @@ func TestDocsDescribeEnabledProjectsAndAccounts(t *testing.T) {
 			gone: []string{"both commands open one list"},
 			has:  []string{"`polyctl gcp project enable` and `polyctl cloudflare account enable` manage which ones are enabled", "`disable` always needs them (exit code 2 without)"},
 		},
+	} {
+		text := readDoc(t, tc.doc)
+		for _, phrase := range tc.gone {
+			if strings.Contains(text, phrase) {
+				t.Errorf("%s still says %q", tc.doc, phrase)
+			}
+		}
+		for _, phrase := range tc.has {
+			if !strings.Contains(text, phrase) {
+				t.Errorf("%s does not say %q", tc.doc, phrase)
+			}
+		}
+	}
+}
+
+// What dns ensure changes is stated where a user meets it: the help of dns
+// ensure and dns add, and the documents.
+func TestDNSEnsureRulesAreDocumented(t *testing.T) {
+	rt := app.New(app.Flags{}, strings.NewReader(""), &strings.Builder{}, &strings.Builder{})
+	root := NewRoot(rt)
+	ensure, add := find(root, "dns ensure"), find(root, "dns add")
+	help := strings.Join(strings.Fields(ensure.Long), " ")
+	for _, phrase := range []string{
+		"What ensure changes",
+		"No record: the record is created.",
+		"One record of the type: unchanged when it is as desired, else updated in place",
+		"One record of another type: replaced, which deletes it and then creates the record. A terminal shows it and asks first (default no); a script needs --yes",
+		"the records of other types are left alone",
+		"several records of a name are never deleted without a terminal",
+		"Several records of the type (duplicates)",
+		"For more than one record on a name, or records of several types, use `polyctl dns add`.",
+		"the error names them with the `polyctl dns add` commands that restore them",
+	} {
+		if !strings.Contains(help, phrase) {
+			t.Errorf("dns ensure --help does not say %q", phrase)
+		}
+	}
+	if !strings.Contains(ensure.Short, "replace the one record of another type") || !strings.Contains(ensure.Example, "--yes   # replaces the A record of www") {
+		t.Errorf("dns ensure short %q / examples %q", ensure.Short, ensure.Example)
+	}
+	if h := strings.Join(strings.Fields(add.Long), " "); !strings.Contains(h, "records of several types on one name") || !strings.Contains(h, "dns ensure is for a name with one record") {
+		t.Errorf("dns add --help does not point to it for several records of a name:\n%s", add.Long)
+	}
+	for _, tc := range []struct {
+		doc       string
+		gone, has []string
+	}{
+		{
+			doc:  "docs/commands.md",
+			gone: []string{"A CNAME whose name already has A / AAAA records (or the reverse) fails before anything is written"},
+			has: []string{"#### What ensure changes", "| one record of another type | replaces it: deletes it, then creates the record.",
+				"A script stops with exit code 5, with or without `--yes`", "Several records of a name are never deleted without a terminal",
+				"prints the `polyctl dns add ...` command that restores it (exit code 1)", "`replaced_by`",
+				"for more than one record on a name, or records of several types, use `dns add`"},
+		},
+		{doc: "docs/interactive.md", has: []string{"- Core: `dns ensure` before it replaces the records of another type on a name", "| `dns ensure` on a name that holds several records of other types"}},
+		{doc: "docs/configuration.md", has: []string{"or a name with several records of other types (also with `--yes`", "also `dns ensure` replacing the record of another type on a name"}},
+		{doc: "README.md", has: []string{"# replaces the one record of www (asks first; --yes in scripts)"}},
 	} {
 		text := readDoc(t, tc.doc)
 		for _, phrase := range tc.gone {

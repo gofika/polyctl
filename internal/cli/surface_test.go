@@ -710,6 +710,7 @@ func TestDocsListConfirmingCommands(t *testing.T) {
 	rt := app.New(app.Flags{}, strings.NewReader(""), &strings.Builder{}, &strings.Builder{})
 	root := NewRoot(rt)
 	for _, c := range []struct{ path, label, token string }{
+		{"dns ensure", "Core", "`dns ensure`"},
 		{"dns delete", "Core", "`dns delete`"},
 		{"cert deploy", "Core", "`cert deploy --prune-expired`"},
 		{"auth logout", "Accounts", "`auth logout`"},
