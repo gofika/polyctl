@@ -354,7 +354,8 @@ func newDomainWhichCmd(rt *app.Runtime) *cobra.Command {
 				return f, nil
 			}
 			// The sets marked due are indexed before the lookup, as routing
-			// does: one of them may hold a second owner of the domain.
+			// does: one of them may hold a second owner of the domain. With
+			// --refresh every selected account is indexed here instead.
 			var indexErrs []error
 			for _, kind := range []platform.ResourceType{platform.ResZone, platform.ResDomain} {
 				if err := rt.IndexDue(cmd.Context(), kind); err != nil {

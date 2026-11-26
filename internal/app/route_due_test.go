@@ -241,6 +241,41 @@ func TestResolveDomainRefreshCoversSetsMarkedDue(t *testing.T) {
 	}
 }
 
+// IndexDue alone, as domain which and the domain picker call it before
+// they read the index: with --refresh every candidate is indexed, once per
+// run, so that the flag does not leave a set marked due unread; the
+// lookups that follow ask nobody again.
+func TestIndexDueWithRefreshIndexesEveryCandidateOnce(t *testing.T) {
+	h := newHarness(t, app.Flags{Refresh: true}, nil)
+	h.seedStandard()
+	h.markDue("a")
+	h.client("a").zones = []platform.Zone{zone("z-example", "example.com"), zone("z-new", "newlycovered.io")}
+	for i := 0; i < 2; i++ {
+		if err := h.rt.IndexDue(ctx, platform.ResZone); err != nil {
+			t.Fatalf("IndexDue = %v", err)
+		}
+	}
+	for _, p := range []string{"a", "b", "c"} {
+		if n := h.client(p).count("Sync:zone"); n != 1 {
+			t.Fatalf("after IndexDue: profile %s zone sync count = %d, want 1", p, n)
+		}
+	}
+	if err := h.rt.IndexForLookup(ctx, platform.ResZone); err != nil {
+		t.Fatalf("IndexForLookup = %v", err)
+	}
+	if tgt, err := h.rt.ResolveDomain(ctx, "newlycovered.io", platform.ResZone); err != nil || tgt.Profile != "a" {
+		t.Fatalf("target = %+v, %v", tgt, err)
+	}
+	for _, p := range []string{"a", "b", "c"} {
+		if n := h.client(p).count("Sync:zone"); n != 1 {
+			t.Errorf("profile %s zone sync count = %d, want 1", p, n)
+		}
+		if n := h.client(p).count("Sync:domain"); n != 0 {
+			t.Errorf("profile %s synced domains for a zone lookup", p)
+		}
+	}
+}
+
 // An account marked due of which one project (or one account of a token)
 // fails stores what the others returned and stays marked: the part that
 // failed may be the one the mark was set for, so the next run asks again

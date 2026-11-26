@@ -39,7 +39,8 @@ type DomainPick struct {
 
 // PickDomain asks for one of the domains of the local index in the
 // interactive flow, restricted by --profile and --platform like domain
-// routing; like routing, it first indexes the sets marked due (IndexDue).
+// routing; like routing, it first indexes the sets marked due, or with
+// --refresh every selected account (IndexDue).
 // Each domain is one option, labelled with its kinds and owners
 // ("example.com  zone cloudflare/acme  domain namecom/acme"): the accounts
 // holding its zone in one cell and those holding its registration in the

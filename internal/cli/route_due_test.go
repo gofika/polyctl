@@ -4,7 +4,10 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/gofika/polyctl/internal/app"
+	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/platform"
 )
 
@@ -31,6 +34,22 @@ func TestRoutingIndexesSetsMarkedDue(t *testing.T) {
 	}
 
 	db := openInventory(t, dir)
+	zoneSet := inventory.Set{Platform: fakePlatform, Profile: "a", Type: platform.ResZone}
+	if err := db.Replace(context.Background(), zoneSet, app.ZoneResources([]platform.Zone{old}), -time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := db.GetState(context.Background(), zoneSet); err != nil || st.Fresh(time.Now()) || app.ForcedDue(st) {
+		t.Fatalf("state = %+v, %v; want past its TTL", st, err)
+	}
+	db.Close()
+	if _, stderr, err := run(t, cfgPath, "dns", "list", "newlycovered.io"); ExitCodeFor(err) != ExitNotFound || strings.Contains(stderr, "indexing") {
+		t.Fatalf("past the TTL = %v (%s)", err, stderr)
+	}
+	if n := fc.count("Sync"); n != 0 {
+		t.Fatalf("a miss in a set past its TTL synced %d times", n)
+	}
+
+	db = openInventory(t, dir)
 	if err := db.Expire(context.Background(), fakePlatform, "a"); err != nil {
 		t.Fatal(err)
 	}
@@ -83,5 +102,27 @@ func TestDomainWhichIndexesSetsMarkedDue(t *testing.T) {
 	// The accounts that were never indexed are not swept for it.
 	if n := clientOn("b", fakePlatform2).count("Sync"); n != 0 {
 		t.Errorf("an account without a set marked due synced %d times", n)
+	}
+}
+
+// domain which --refresh indexes before it reads the index, as routing
+// does, also when the index already holds the domain: the flag does not
+// leave a set marked due unread, and each account is asked once.
+func TestDomainWhichRefreshIndexesSetsMarkedDue(t *testing.T) {
+	dir, cfgPath := setupMulti(t)
+	seed(t, dir, []platform.Zone{{ID: "z1", Name: "example.com"}}, nil)
+	db := openInventory(t, dir)
+	if err := db.Expire(context.Background(), fakePlatform, "a"); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	client("a").zones = []platform.Zone{{ID: "z1", Name: "example.com"}, {ID: "z2", Name: "example.com"}}
+
+	out, stderr, err := run(t, cfgPath, "domain", "which", "example.com", "--refresh", "-o", "json")
+	if err != nil || !strings.Contains(out, `"resource_id": "z2"`) {
+		t.Fatalf("which --refresh = %q, %v (%s)", out, err, stderr)
+	}
+	if n := client("a").count("Sync:zone"); n != 1 {
+		t.Errorf("zone sync count = %d, want 1", n)
 	}
 }

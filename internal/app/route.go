@@ -307,14 +307,22 @@ type dueKey struct {
 
 // IndexDue indexes kind in the accounts selected by --profile / --platform
 // whose set of kind was marked due (ForcedDue), each at most once per run.
-// It does nothing with --offline, and nothing with --refresh, which indexes
-// every candidate anyway. A failing account is a warning and stays marked
+// It does nothing with --offline. With --refresh it indexes every candidate
+// instead, once per run as routing does before its lookup, so that a caller
+// that reads the index itself does not serve a set marked due because of
+// the flag. A failing account is a warning and stays marked
 // for the next run; the error returned says that every account marked due
 // that was tried in this run failed (the other candidates were not asked).
 func (rt *Runtime) IndexDue(ctx context.Context, kind platform.ResourceType) error {
 	profiles, err := rt.indexCandidates(ctx, kind)
 	if err != nil {
 		return err
+	}
+	if rt.Flags.Refresh {
+		if rt.Flags.Offline || len(profiles) == 0 {
+			return nil
+		}
+		return rt.refreshIndex(ctx, kind, profiles)
 	}
 	dueErr, err := rt.indexDue(ctx, kind, profiles)
 	if err != nil {
@@ -323,7 +331,9 @@ func (rt *Runtime) IndexDue(ctx context.Context, kind platform.ResourceType) err
 	return dueErr
 }
 
-// indexDue is IndexDue for the given candidates. Its first error is the
+// indexDue is IndexDue for the given candidates, for a caller that
+// indexes them all itself with --refresh (nothing is done then). Its first
+// error is the
 // one of every account failing (the lookup may still be answered by
 // another account), its second one stops the lookup.
 func (rt *Runtime) indexDue(ctx context.Context, kind platform.ResourceType, profiles []config.AccountRef) (error, error) {
