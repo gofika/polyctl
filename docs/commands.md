@@ -160,7 +160,7 @@ For each name it is given. The SOA and NS records of the zone apex are the zone'
 
 - Several records of one name and type in one run form a set: missing values are created, nothing is updated. Records of other types on the name follow the table, with the set in place of the one record.
 - A record of another type that belongs to another service of the platform (the CNAME of a Cloudflare R2 custom domain, which the DNS API cannot delete) is never replaced: the run stops before anything is written (exit code 1) and points at `dns add`, or at `dns delete`, which unbinds it. Nor is a record that the `polyctl dns add` command restoring it could not write again (a Route 53 alias record, a record of a Route 53 or Cloud DNS routing policy): change it with the platform's record commands, or delete it first.
-- Every name of a run is decided before anything is written: a `--file` with several names stops before the first write when one of them needs `--yes` or a terminal. A no or a cancel writes nothing (exit code 0). A `--dry-run` reports the `would delete` and `would create` rows of a replace and asks nothing (a choice between several records is still asked on a terminal).
+- Every name of a run is decided before anything is written: a `--file` with several names stops before the first write when one of them needs `--yes` or a terminal. A no or a cancel writes nothing (exit code 0). A `--dry-run` reports the `would delete` and `would create` rows of a replace, asks no confirmation and needs no `--yes`; a choice between several records is still asked on a terminal (exit code 5 in a script).
 
 ### dns delete
 

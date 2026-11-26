@@ -624,8 +624,10 @@ zone's own and never count):
 Several records of the same name and type form a set: each value that is
 missing is created and nothing is updated (several MX or TXT values); records
 of other types on the name are handled as above. Every name is decided before
-anything is written: a no or a cancel writes nothing (exit code 0), and a
---dry-run reports the deletes and creates of a replace and asks nothing. When a
+anything is written: a no or a cancel writes nothing (exit code 0). A
+--dry-run reports the deletes and creates of a replace, asks no confirmation
+and needs no --yes; a choice between several records is still asked on a
+terminal (exit code 5 in a script). When a
 write fails after the records it replaces were deleted, the error names them
 with the ` + "`polyctl dns add`" + ` commands that restore them (exit code 1). A
 record that belongs to another service of the platform (the CNAME of a
