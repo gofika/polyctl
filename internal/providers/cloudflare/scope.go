@@ -557,6 +557,36 @@ func disabledZoneErr(name, id, account string) error {
 		platform.ErrNotFound, platform.NormalizeDomain(name), id, account, account, account)
 }
 
+// disabledNameErr is the answer for a zone name that only a disabled
+// account holds a zone of.
+func disabledNameErr(name, account string) error {
+	return fmt.Errorf("%w: zone %q (it is in account %s, which is disabled: polyctl cloudflare account enable %s, or --account %s)",
+		platform.ErrNotFound, name, account, account, account)
+}
+
+// zoneOfDisabledAccount asks the platform whether the zone ref (a
+// normalized name or an id), which the enabled accounts of the login do
+// not hold, is a zone of a disabled account, and returns the error that
+// names that account then; nil otherwise, also when the platform cannot
+// be asked. a is the API of the profile's login, not pinned.
+func zoneOfDisabledAccount(ctx context.Context, a *api, ref string) error {
+	if !strings.Contains(ref, ".") {
+		z, err := a.getZone(ctx, ref)
+		if err != nil {
+			return nil
+		}
+		if acc := z.Account.ID; acc != "" && !a.covers(acc) {
+			return disabledZoneErr(z.Name, z.ID, acc)
+		}
+		return nil
+	}
+	zs, others, err := a.zonesNamedAll(ctx, ref)
+	if err != nil || len(zs) > 0 || len(others) == 0 {
+		return nil
+	}
+	return disabledNameErr(ref, others[0].Account.ID)
+}
+
 // otherAccountErr is the usage error of a zone id given with the --account
 // of another account.
 func otherAccountErr(ref, account, pin string) error {
@@ -600,9 +630,7 @@ func findLiveZone(ctx context.Context, rt *app.Runtime, a *api, sc acctScope, re
 			return nil, fmt.Errorf("%w: zone %q in account %s of cloudflare/%s", platform.ErrNotFound, name, sc.pin, sc.profile)
 		}
 		if len(others) > 0 {
-			acc := others[0].Account.ID
-			return nil, fmt.Errorf("%w: zone %q (it is in account %s, which is disabled: polyctl cloudflare account enable %s, or --account %s)",
-				platform.ErrNotFound, name, acc, acc, acc)
+			return nil, disabledNameErr(name, others[0].Account.ID)
 		}
 		return nil, fmt.Errorf("%w: zone %q", platform.ErrNotFound, name)
 	}

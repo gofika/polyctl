@@ -433,6 +433,21 @@ func TestDisabledAccountIsReadLive(t *testing.T) {
 		if code != cli.ExitNotFound || !strings.Contains(stderr, "which is disabled") || !strings.Contains(stderr, "polyctl cloudflare account enable acc2") || !strings.Contains(stderr, "--account acc2") {
 			t.Errorf("zone get %s without --account: exit %d, %s", ref, code, stderr)
 		}
+		// The commands that route the zone through the inventory say
+		// the same, and write nothing.
+		for _, args := range [][]string{{"zone", "delete", ref, "--yes"}, {"ssl-mode", ref}, {"cache", "rule", "list", ref}} {
+			code, _, stderr = e.run(append(append([]string{"cloudflare"}, args...), "--profile", "both")...)
+			if code != cli.ExitNotFound || !strings.Contains(stderr, "which is disabled") || !strings.Contains(stderr, "polyctl cloudflare account enable acc2") || !strings.Contains(stderr, "--account acc2") {
+				t.Errorf("%v without --account: exit %d, %s", args, code, stderr)
+			}
+		}
+		if w := e.f.writes(); len(w) != 0 {
+			t.Errorf("writes: %v", w)
+		}
+	}
+	// A zone nobody holds stays the plain answer.
+	if code, _, stderr = e.run("cloudflare", "ssl-mode", "nowhere.example", "--profile", "both"); code != cli.ExitNotFound || strings.Contains(stderr, "disabled") {
+		t.Errorf("ssl-mode get of an unknown zone: exit %d, %s", code, stderr)
 	}
 	// A zone of an enabled account, named by id with the --account of
 	// the other one.

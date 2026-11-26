@@ -167,7 +167,10 @@ func resolveLiveZone(ctx context.Context, rt *app.Runtime, arg string) (*zoneSco
 //
 // A disabled account named by --account is not in the inventory: its zone
 // is looked up on the platform, through the profile every Cloudflare
-// command would use.
+// command would use. Without --account, a zone that is not found is
+// asked of the logins that disabled an account: when it is a zone of
+// such an account the error (exit code 4) names the account, `account
+// enable` and --account.
 func routeZone(ctx context.Context, rt *app.Runtime, ref string) (*Client, inventory.Resource, error) {
 	if rt.Flags.Offline {
 		return nil, inventory.Resource{}, app.ErrOffline
@@ -227,6 +230,21 @@ func routeZone(ctx context.Context, rt *app.Runtime, ref string) (*Client, inven
 				}
 			}
 			break
+		}
+	}
+	if errors.Is(err, platform.ErrNotFound) {
+		// A zone of a disabled account is not in the inventory: the
+		// error names the account and how to reach it, as the commands
+		// that look the zone up live do.
+		for _, s := range scopes {
+			if s.pin != "" || len(s.disabled) == 0 {
+				continue
+			}
+			if c, oerr := openProfile(ctx, rt, s.profile); oerr == nil {
+				if derr := zoneOfDisabledAccount(ctx, c.api, ref); derr != nil {
+					return nil, inventory.Resource{}, derr
+				}
+			}
 		}
 	}
 	if err != nil {
