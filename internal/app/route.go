@@ -291,8 +291,10 @@ func (rt *Runtime) refreshIndex(ctx context.Context, kind platform.ResourceType,
 // not just run past its TTL: the data migration of an upgrade, a login that
 // changed what the account covers, and the enable / disable / use commands
 // of a platform set its expiry to the zero Unix time (inventory.DB.Expire),
-// which no sync ever writes (a sync writes its own time plus the TTL, or
-// its own time for a set that kept old rows).
+// which no sync writes anew (a sync writes its own time plus the TTL, or
+// its own time for a set that kept old rows; a set that was marked due and
+// kept old rows, because some of its regions, projects or accounts failed,
+// keeps the mark).
 func ForcedDue(st *inventory.State) bool {
 	return st != nil && st.ExpiresAt.Unix() == 0
 }
@@ -306,8 +308,9 @@ type dueKey struct {
 // IndexDue indexes kind in the accounts selected by --profile / --platform
 // whose set of kind was marked due (ForcedDue), each at most once per run.
 // It does nothing with --offline, and nothing with --refresh, which indexes
-// every candidate anyway. A failing account is a warning; the error
-// returned says that every account tried in this run failed.
+// every candidate anyway. A failing account is a warning and stays marked
+// for the next run; the error returned says that every account marked due
+// that was tried in this run failed (the other candidates were not asked).
 func (rt *Runtime) IndexDue(ctx context.Context, kind platform.ResourceType) error {
 	profiles, err := rt.indexCandidates(ctx, kind)
 	if err != nil {
@@ -360,8 +363,16 @@ func (rt *Runtime) indexDue(ctx context.Context, kind platform.ResourceType, pro
 	}
 	// The outcome of this run, so that a later lookup reports what the
 	// first one did.
-	var errs []error
-	tried := 0
+	tried, errs := rt.dueOutcome(kind, profiles)
+	if tried == 0 || len(errs) < tried {
+		return nil, nil
+	}
+	return indexFailure(ctx, string(kind)+"s", "the account(s) whose cached inventory was marked due", errs), nil
+}
+
+// dueOutcome returns how many of profiles indexDue tried in this run for
+// kind, and the errors of the ones that failed.
+func (rt *Runtime) dueOutcome(kind platform.ResourceType, profiles []config.AccountRef) (tried int, errs []error) {
 	for _, p := range profiles {
 		err, done := rt.dueIndexed[dueKey{p, kind}]
 		if !done {
@@ -372,10 +383,7 @@ func (rt *Runtime) indexDue(ctx context.Context, kind platform.ResourceType, pro
 			errs = append(errs, err)
 		}
 	}
-	if tried == 0 || len(errs) < tried {
-		return nil, nil
-	}
-	return IndexFailure(ctx, string(kind)+"s", errs, tried), nil
+	return tried, errs
 }
 
 // indexKind syncs kind in each of profiles. A failing account is a
@@ -420,6 +428,16 @@ func SyncError(reports []SyncReport, err error) error {
 // permission one, 1 otherwise (the causes differ; the messages list them).
 // A cancelled context is returned as is.
 func IndexFailure(ctx context.Context, what string, errs []error, total int) error {
+	which := "any account"
+	if len(errs) < total {
+		which = fmt.Sprintf("%d of %d account(s)", len(errs), total)
+	}
+	return indexFailure(ctx, what, which, errs)
+}
+
+// indexFailure is IndexFailure with the accounts that failed named by
+// which.
+func indexFailure(ctx context.Context, what, which string, errs []error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -430,10 +448,6 @@ func IndexFailure(ctx context.Context, what string, errs []error, total int) err
 		if !errors.Is(e, platform.ErrUnauthorized) && !errors.Is(e, platform.ErrForbidden) {
 			auth = false
 		}
-	}
-	which := "any account"
-	if len(errs) < total {
-		which = fmt.Sprintf("%d of %d account(s)", len(errs), total)
 	}
 	if auth {
 		return fmt.Errorf("could not index the %s of %s: %w", what, which, errors.Join(errs...))

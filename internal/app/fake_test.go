@@ -118,12 +118,14 @@ func (c *fakeClient) Sync(ctx context.Context, rt platform.ResourceType) ([]plat
 	c.record("Sync:" + string(rt))
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.syncErr != nil {
+	// A sync that failed in some regions only returns what the others
+	// found with its error.
+	if c.syncErr != nil && platform.AsRegionSyncError(c.syncErr) == nil {
 		return nil, c.syncErr
 	}
 	switch rt {
 	case platform.ResZone:
-		return app.ZoneResources(c.zones), nil
+		return app.ZoneResources(c.zones), c.syncErr
 	case platform.ResDNSRecord:
 		var out []platform.Resource
 		for _, z := range c.zones {
@@ -131,7 +133,7 @@ func (c *fakeClient) Sync(ctx context.Context, rt platform.ResourceType) ([]plat
 		}
 		return out, nil
 	case platform.ResDomain:
-		return app.DomainResources(c.domains), nil
+		return app.DomainResources(c.domains), c.syncErr
 	}
 	return nil, platform.ErrNotSupported
 }
