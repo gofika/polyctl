@@ -607,16 +607,7 @@ func hideFormerRecordFlags(cmd *cobra.Command) {
 }
 
 // recordTargetHelp says how update and delete find their record.
-const recordTargetHelp = `<name> is relative to the zone (www, a.b), @ for the zone apex, or a full name
-inside the zone (www.example.com). <type> and <value> narrow the selection and
-are needed only to tell records apart; <type> is case-insensitive. --id names
-one record by its id, as ` + "`polyctl cloudflare dns list`" + ` shows it, and cannot be
-combined with a positional record. The former form <zone> <record-id> still
-works: a single argument after the zone that is the id of a record of the
-zone, and not the name of one, is taken for that id.
-
-On a terminal, a missing <zone> is picked from the zones of the profile, and
-with only the zone its records are listed to choose from.`
+var recordTargetHelp = app.RecordTargetHelp("zone", "polyctl cloudflare dns list")
 
 func newDNSUpdateCmd(rt *app.Runtime) *cobra.Command {
 	var typ, name, value, comment, id string
@@ -632,13 +623,7 @@ Only the fields given with flags are changed; the positional <type> and
 
 ` + recordTargetHelp + `
 
-Exactly one record is updated. When several records match, the interactive
-flow lists them to choose one, and the non-interactive flow lists them on
-stderr and exits with code 5: add <type>, <value> or use --id.
-
-Without a flag that changes something, the interactive flow asks for the new
-value (the current one is the default); the non-interactive flow is a usage
-error (exit code 2).
+` + app.RecordUpdateHelp + `
 
 --proxied is a boolean: --proxied switches the proxy on, --proxied=false
 switches it off, and without it the record keeps its current setting.`,
@@ -653,12 +638,9 @@ switches it off, and without it the record keeps its current setting.`,
 			if err != nil {
 				return err
 			}
-			changes := false
-			for _, f := range changeFlags {
-				changes = changes || cmd.Flags().Changed(f)
-			}
-			if !changes && !rt.Interactive() {
-				return app.UsageErrf("nothing to change: pass --%s", strings.Join(changeFlags, ", --"))
+			changes, err := rt.RecordChanges(cmd, changeFlags...)
+			if err != nil {
+				return err
 			}
 			if rt.Flags.Offline {
 				return app.ErrOffline
@@ -681,11 +663,8 @@ switches it off, and without it the record keeps its current setting.`,
 			}
 			cur := &chosen.Records[0]
 			if !changes {
-				if value, err = rt.AskRecordValue(strings.ToUpper(cur.Type), cur.Value); err != nil {
+				if value, err = rt.AskNewRecordValue(*cur); err != nil {
 					return err
-				}
-				if value == cur.Value {
-					return app.NothingToDof("%s %s keeps the value %s", cur.Name, cur.Type, cur.Value)
 				}
 			}
 			rec := *cur
@@ -765,16 +744,7 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 
 ` + recordTargetHelp + `
 
-A name whose records all have one type needs no <type>. A name with records
-of several types is not deleted as a whole: the interactive flow lists its
-records to tick (ticking none deletes nothing), and the non-interactive flow
-names the types and exits with code 5, also with --yes.
-
-A single match is deleted at once. Several matches are listed on stderr with
-their ids and a note on how to delete one of them only (<value> or --id), and
-confirmed first (default no; a no deletes nothing, exit code 0); --yes skips
-the question. The non-interactive flow asks nothing: --yes is required to
-delete several records (exit code 2 without it).
+` + app.RecordDeleteHelp + `
 
 The CNAME of an R2 custom domain is removed by unbinding the domain from its
 bucket. --dry-run reports what would be deleted and asks nothing.`,
@@ -813,10 +783,7 @@ bucket. --dry-run reports what would be deleted and asks nothing.`,
 				return err
 			}
 			del := app.RecordsDelete{Target: platform.Target{Platform: platform.Cloudflare, Profile: profile, Domain: z.Name},
-				Zone: *z, DNS: s.client, Records: chosen.Records, Grid: recordGrid}
-			if !chosen.Listed {
-				del.Exact = app.ExactRecordHint("<type>", true, true)
-			}
+				Zone: *z, DNS: s.client, Records: chosen.Records, Grid: recordGrid, Exact: sel.Exact(chosen)}
 			if done, err := rt.DeleteRecords(cmd.Context(), del); !done || err != nil {
 				return err
 			}

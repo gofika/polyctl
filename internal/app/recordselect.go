@@ -89,8 +89,9 @@ func (rt *Runtime) NeedsType(n NameRecords, typeArg string) (bool, error) {
 // by its id with --id when it takes that (byID). typeArg is the type
 // argument of the form the command was called in: "<type>" names the
 // positional <value>, "--type" the former --value. "" for a command that
-// has neither.
-func ExactRecordHint(typeArg string, byValue, byID bool) string {
+// has neither. more are further ways of the command ("its line with
+// --line"), named before the id.
+func ExactRecordHint(typeArg string, byValue, byID bool, more ...string) string {
 	var ways []string
 	if byValue {
 		if typeArg == "--type" {
@@ -99,6 +100,7 @@ func ExactRecordHint(typeArg string, byValue, byID bool) string {
 			ways = append(ways, "its <value> after the <type>")
 		}
 	}
+	ways = append(ways, more...)
 	if byID {
 		ways = append(ways, "its id with --id <id>")
 	}
@@ -216,6 +218,12 @@ type RecordSelect struct {
 	// the records of the zone are then listed to choose from. Type and
 	// Value narrow the selection ("" is "any").
 	Name, Type, Value string
+	// Qualifiers are what else the platform tells records of one name, type
+	// and value apart with (the line of an Alibaba Cloud record). One that
+	// was given narrows the selection as Type and Value do; one that was not
+	// is named as a way to say which record is meant when the candidates
+	// differ in it.
+	Qualifiers []RecordQualifier
 	// ID is the exact selector (--id): the record with this id, whatever
 	// Name, Type and Value say.
 	ID string
@@ -253,6 +261,18 @@ type RecordSelect struct {
 	// (the zone name, or the full name of the records), recs the
 	// candidates. It returns the records chosen.
 	List func(of string, recs []platform.Record) ([]platform.Record, error)
+}
+
+// RecordQualifier is one more fact that tells records apart on a platform,
+// given with a flag.
+type RecordQualifier struct {
+	// Flag is how the command takes it ("--line") and Noun what it is
+	// called ("line").
+	Flag, Noun string
+	// Value is what was given, "" for "any".
+	Value string
+	// Of is the fact of a record.
+	Of func(platform.Record) string
 }
 
 // RecordSelection is the answer of SelectRecords.
@@ -321,14 +341,14 @@ func (rt *Runtime) SelectRecords(s RecordSelect) (RecordSelection, error) {
 			return RecordSelection{}, UsageErrf("a record is required: its <name>, or --id")
 		}
 		var cands []platform.Record
-		for _, r := range s.Records {
+		for _, r := range s.qualified() {
 			if (s.Type == "" || strings.EqualFold(r.Type, s.Type)) && (s.Value == "" || platform.RecordValueMatches(r, s.Value)) {
 				cands = append(cands, r)
 			}
 		}
 		return s.list(rt, zone, zone, cands)
 	}
-	found, err := RecordsOfName(zone, s.Records, s.Name, s.Type, s.Value)
+	found, err := RecordsOfName(zone, s.qualified(), s.Name, s.Type, s.Value)
 	if err != nil {
 		return RecordSelection{}, err
 	}
@@ -356,6 +376,55 @@ func (rt *Runtime) SelectRecords(s RecordSelect) (RecordSelection, error) {
 		return s.list(rt, zone, found.Name, found.Records)
 	}
 	return RecordSelection{Records: found.Records}, nil
+}
+
+// qualified are the records of the zone that have every qualifier given.
+func (s RecordSelect) qualified() []platform.Record {
+	recs := s.Records
+	for _, q := range s.Qualifiers {
+		if q.Value == "" {
+			continue
+		}
+		var keep []platform.Record
+		for _, r := range recs {
+			if strings.EqualFold(q.Of(r), q.Value) {
+				keep = append(keep, r)
+			}
+		}
+		recs = keep
+	}
+	return recs
+}
+
+// openQualifiers are the ways to name one of recs with a qualifier that
+// was not given: those recs differ in ("its line with --line").
+func (s RecordSelect) openQualifiers(recs []platform.Record) []string {
+	var ways []string
+	for _, q := range s.Qualifiers {
+		if q.Value != "" {
+			continue
+		}
+		for _, r := range recs[1:] {
+			if !strings.EqualFold(q.Of(r), q.Of(recs[0])) {
+				ways = append(ways, "its "+q.Noun+" with "+q.Flag)
+				break
+			}
+		}
+	}
+	return ways
+}
+
+// Exact says how to delete one of the records chosen only, for
+// RecordsDelete.Exact: "" when they were ticked in a list.
+func (s RecordSelect) Exact(chosen RecordSelection) string {
+	if chosen.Listed || len(chosen.Records) == 0 {
+		return ""
+	}
+	typeArg := s.TypeArg
+	if typeArg == "" {
+		typeArg = "<type>"
+	}
+	return ExactRecordHint(typeArg, true, true, s.openQualifiers(chosen.Records)...)
 }
 
 // withID are the records id names.
@@ -423,6 +492,7 @@ func (s RecordSelect) exactHint(n NameRecords) string {
 	if s.Value == "" {
 		ways = append(ways, "its <value> after the <type>")
 	}
+	ways = append(ways, s.openQualifiers(n.Records)...)
 	ways = append(ways, "its id with --id <id>")
 	return "give " + strings.Join(ways, ", or ")
 }

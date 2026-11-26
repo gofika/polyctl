@@ -150,3 +150,49 @@ func TestSelectRecordsLists(t *testing.T) {
 	}
 	p.Done()
 }
+
+// A qualifier of the platform (the line of a record) narrows the selection
+// when it is given, and is named as a way to say which record is meant only
+// when the candidates differ in it.
+func TestSelectRecordsQualifier(t *testing.T) {
+	line := func(r platform.Record) string { s, _ := r.Extra["line"].(string); return s }
+	on := func(id, name, value, l string) platform.Record {
+		return platform.Record{ID: id, Name: name + ".example.com", Type: "A", Value: value, Extra: map[string]any{"line": l}}
+	}
+	recs := []platform.Record{
+		on("d1", "www", "192.0.2.1", "default"), on("t1", "www", "192.0.2.1", "telecom"),
+		on("s1", "same", "192.0.2.1", "default"), on("s2", "same", "192.0.2.2", "default"),
+	}
+	sel := func(name, given string, one bool) app.RecordSelect {
+		return app.RecordSelect{Zone: "example.com", Records: recs, Name: name + ".example.com", One: one, Verb: "Update",
+			Qualifiers: []app.RecordQualifier{{Flag: "--line", Noun: "line", Value: given, Of: line}}}
+	}
+	rt, _ := plainRT()
+	if got, err := rt.SelectRecords(sel("www", "Telecom", true)); err != nil || ids(got.Records) != "t1" {
+		t.Errorf("line given: %s, %v", ids(got.Records), err)
+	}
+	if _, err := rt.SelectRecords(sel("www", "unicom", true)); !errors.Is(err, platform.ErrNotFound) {
+		t.Errorf("a line without a record = %v", err)
+	}
+	_, err := rt.SelectRecords(sel("www", "", true))
+	if !errors.Is(err, platform.ErrAmbiguous) || !strings.Contains(err.Error(), "give its <value> after the <type>, or its line with --line, or its id with --id <id>") {
+		t.Errorf("records that differ in the line = %v", err)
+	}
+	if _, err := rt.SelectRecords(sel("same", "", true)); !errors.Is(err, platform.ErrAmbiguous) || strings.Contains(err.Error(), "--line") {
+		t.Errorf("records of one line = %v", err)
+	}
+	// A delete takes every record of the name; the hint of its confirmation
+	// names the line when the records differ in it.
+	s := sel("www", "", false)
+	got, err := rt.SelectRecords(s)
+	if err != nil || ids(got.Records) != "d1 t1" || s.Exact(got) != "give its <value> after the <type>, or its line with --line, or its id with --id <id>" {
+		t.Errorf("delete: %s, %q, %v", ids(got.Records), s.Exact(got), err)
+	}
+	s = sel("same", "", false)
+	if got, _ := rt.SelectRecords(s); s.Exact(got) != "give its <value> after the <type>, or its id with --id <id>" {
+		t.Errorf("delete, one line: %q", s.Exact(got))
+	}
+	if s.Exact(app.RecordSelection{Records: recs[:2], Listed: true}) != "" {
+		t.Error("records ticked in a list need no hint")
+	}
+}
