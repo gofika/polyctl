@@ -200,9 +200,16 @@ record use ` + "`polyctl dns ensure`" + `.
 			if err != nil {
 				return err
 			}
+			// The zone is read before anything is asked or written, so a zone
+			// that cannot be read fails the command (and its --dry-run)
+			// before the write.
+			existing, err := dns.ListRecords(cmd.Context(), t.ResourceID)
+			if err != nil {
+				return err
+			}
 			asked := in.Name == ""
 			if err := rt.CompleteRecord(in, app.RecordPrompt{Platform: t.Platform, Zone: t.Domain,
-				Existing: func() ([]platform.Record, error) { return dns.ListRecords(cmd.Context(), t.ResourceID) }}); err != nil {
+				Existing: func() ([]platform.Record, error) { return existing, nil }}); err != nil {
 				return err
 			}
 			if asked && in.Name != "" {

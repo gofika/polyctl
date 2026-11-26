@@ -189,6 +189,8 @@ type fakeClient struct {
 	syncErrs map[platform.ResourceType]error
 	// failCreate fails CreateRecord for this record name with errFakeCreate.
 	failCreate string
+	// failListRecords makes ListRecords fail.
+	failListRecords error
 	// failDelete fails DeleteRecord for this record id with errFakeDelete.
 	failDelete string
 	// zoneErr fails GetZone; domainErr fails GetDomain.
@@ -281,6 +283,9 @@ func (c *fakeClient) ListRecords(ctx context.Context, zoneID string) ([]platform
 	c.record("ListRecords:" + zoneID)
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.failListRecords != nil {
+		return nil, c.failListRecords
+	}
 	return append([]platform.Record(nil), c.records[zoneID]...), nil
 }
 

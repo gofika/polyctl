@@ -235,6 +235,30 @@ func TestDNSListOfflineFromInventory(t *testing.T) {
 
 func intp(i int) *int { return &i }
 
+// dns add reads the zone before it writes: a zone that cannot be read fails
+// the command, and its --dry-run, without a create.
+func TestDNSAddFailsWhenZoneUnreadable(t *testing.T) {
+	for _, extra := range [][]string{nil, {"--dry-run"}} {
+		dir, cfgPath := setup(t, true)
+		seed(t, dir, []platform.Zone{{ID: "z1", Name: "example.com"}}, nil)
+		fc := client("a")
+		fc.zones = []platform.Zone{{ID: "z1", Name: "example.com"}}
+		fc.failListRecords = errors.New("zone unreadable")
+
+		args := append([]string{"dns", "add", "example.com", "www", "A", "1.2.3.4"}, extra...)
+		stdout, _, err := run(t, cfgPath, args...)
+		if err == nil || !strings.Contains(err.Error(), "zone unreadable") {
+			t.Errorf("%v: err = %v, want the read error", args, err)
+		}
+		if fc.count("ListRecords:z1") != 1 || fc.count("CreateRecord") != 0 {
+			t.Errorf("%v: calls = %v", args, fc.calls)
+		}
+		if stdout != "" {
+			t.Errorf("%v: stdout = %q", args, stdout)
+		}
+	}
+}
+
 func TestDNSAddCreatesRecord(t *testing.T) {
 	dir, cfgPath := setup(t, true)
 	seed(t, dir, []platform.Zone{{ID: "z1", Name: "example.com"}}, nil)
@@ -245,7 +269,7 @@ func TestDNSAddCreatesRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dns add: %v (stderr %q)", err, stderr)
 	}
-	if fc.count("ListRecords") != 0 || fc.count("CreateRecord:www.example.com:A") != 1 || fc.count("UpdateRecord") != 0 {
+	if fc.count("ListRecords:z1") != 1 || fc.count("CreateRecord:www.example.com:A") != 1 || fc.count("UpdateRecord") != 0 {
 		t.Errorf("calls = %v", fc.calls)
 	}
 	if got := fc.records["z1"]; len(got) != 1 || got[0].Value != "1.2.3.4" || got[0].Name != "www.example.com" {
