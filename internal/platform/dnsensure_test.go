@@ -512,6 +512,26 @@ func TestDNSEnsureOccupiedNames(t *testing.T) {
 	}
 }
 
+// A desired record that is not written (proxied=true off Cloudflare) still
+// names its type: the record of that type is no record of another type and
+// is never replaced, whatever else the run writes for the name.
+func TestDNSEnsureSkippedRecordKeepsItsType(t *testing.T) {
+	a := Record{ID: "a1", Name: "www.example.com", Type: "A", Value: "203.0.113.1", TTL: 300}
+	m := &memDNS{recs: []Record{a}}
+	r, asked := ensureDecided(t, m, AWS, false, true, nil, "www:A:203.0.113.1:300:true", "www:TXT:hello")
+	if r.err != nil || len(asked) != 0 || strings.Join(m.calls, ",") != "create:www.example.com:TXT:hello" ||
+		dnsActions(r.changes) != "dns-record/www/A=skipped dns-record/www/TXT=created" {
+		t.Errorf("skipped A beside TXT = %s, %v, asked %+v, calls %v", dnsActions(r.changes), r.err, asked, m.calls)
+	}
+	// A name whose only desired record is skipped writes nothing there, so
+	// the records of other types it holds need no decision.
+	m = &memDNS{recs: []Record{{ID: "t1", Name: "www.example.com", Type: "TXT", Value: "x"}}}
+	r, asked = ensureDecided(t, m, AWS, false, true, nil, "www:A:203.0.113.1:300:true")
+	if r.err != nil || len(asked) != 0 || m.writes() != 0 {
+		t.Errorf("only a skipped record = %v, asked %+v, calls %v", r.err, asked, m.calls)
+	}
+}
+
 // A write that fails after the records it replaces were deleted says so,
 // names them and the command that restores them, and is a general error.
 func TestDNSEnsureFailedCreateAfterReplace(t *testing.T) {

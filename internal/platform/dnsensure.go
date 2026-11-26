@@ -572,9 +572,11 @@ type OccupiedName struct {
 	// Count is the number of its desired records.
 	Types []string
 	Count int
-	// Others are the records of other types, as the zone lists them.
+	// Others are the records of other types, as the zone lists them: not of
+	// a type the run names for the name, even one whose desired record is
+	// not written (proxied=true off Cloudflare).
 	Others []Record
-	// Claimed says the name also holds a record of a type of Types.
+	// Claimed says the name also holds a record of a type the run names.
 	Claimed bool
 	// Conflict says a type of Types cannot share the name with a record of
 	// Others (RecordTypesConflict).
@@ -653,20 +655,27 @@ func (o OccupiedName) Refusal() error {
 }
 
 // occupiedNames are the names of in that need a decision (OccupiedName), in
-// input order. Desired records that are not written (proxied=true off
-// Cloudflare) do not count.
+// input order. A desired record that is not written (proxied=true off
+// Cloudflare) still names its type for its name: a record of that type is
+// never one of the others, so it is never replaced. It does not count among
+// the desired records, and a name with no other desired record needs no
+// decision.
 func occupiedNames(in DNSEnsure) []OccupiedName {
 	var names []OccupiedName
+	named := map[string][]string{} // every type of a name, written or not
 	at := map[string]int{}
 	for _, d := range in.Desired {
-		if d.ProxiedUnsupported {
-			continue
-		}
 		i, ok := at[d.FQDN]
 		if !ok {
 			i = len(names)
 			at[d.FQDN] = i
 			names = append(names, OccupiedName{Platform: in.Platform, Name: d.Name, FQDN: d.FQDN})
+		}
+		if !slices.Contains(named[d.FQDN], d.Type) {
+			named[d.FQDN] = append(named[d.FQDN], d.Type)
+		}
+		if d.ProxiedUnsupported {
+			continue
 		}
 		names[i].Count++
 		if !slices.Contains(names[i].Types, d.Type) {
@@ -681,7 +690,7 @@ func occupiedNames(in DNSEnsure) []OccupiedName {
 		o := &names[i]
 		typ := strings.ToUpper(r.Type)
 		switch {
-		case slices.Contains(o.Types, typ):
+		case slices.Contains(named[o.FQDN], typ):
 			o.Claimed = true
 		case typ == "SOA", typ == "NS" && o.Name == "@":
 			// The zone's own records.
@@ -691,7 +700,7 @@ func occupiedNames(in DNSEnsure) []OccupiedName {
 	}
 	var out []OccupiedName
 	for _, o := range names {
-		if len(o.Others) == 0 {
+		if len(o.Others) == 0 || o.Count == 0 {
 			continue
 		}
 		o.Conflict = o.conflictReason() != ""
