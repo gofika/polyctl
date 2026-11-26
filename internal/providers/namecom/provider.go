@@ -60,12 +60,11 @@ func (*provider) LoginOptions() []string {
 	return []string{"username", "token", metaEnv}
 }
 
-// RecordTypes are the record types name.com can write.
-// name.com keeps the priority of an SRV record apart from its answer, which a
-// record value given as "<priority> <weight> <port> <target>" text does not
-// do, so SRV is left out.
+// RecordTypes are the record types name.com can write: the types of its
+// record API (CAA is not among them). The priority of an SRV value goes to
+// the priority field of the record and the rest to its answer (fromRecord).
 func (*provider) RecordTypes() []string {
-	return []string{"A", "AAAA", "CNAME", "MX", "NS", "TXT", "CAA"}
+	return []string{"A", "AAAA", "CNAME", "ANAME", "MX", "NS", "TXT", "SRV"}
 }
 
 var _ platform.RecordTyper = (*provider)(nil)

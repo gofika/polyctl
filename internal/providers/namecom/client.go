@@ -299,6 +299,22 @@ func fromRecord(r platform.Record, domain string) (apiRecordWrite, error) {
 		p := *r.Priority
 		w.Priority = &p
 	}
+	if w.Type == "SRV" {
+		// "<priority> <weight> <port> <target>": the priority is a field of
+		// its own, the answer "<weight> <port> <target>". A record as listed
+		// already has them apart.
+		if f := strings.Fields(r.Value); len(f) == 4 {
+			fs, err := platform.RecordFields("SRV", r.Value)
+			if err != nil {
+				return apiRecordWrite{}, err
+			}
+			p, _ := strconv.Atoi(fs[0])
+			w.Priority, w.Answer = &p, strings.Join(fs[1:], " ")
+		}
+		if w.Priority == nil {
+			return apiRecordWrite{}, fmt.Errorf("%w: an SRV record needs a priority: write the value as <priority> <weight> <port> <target>", platform.ErrInvalidInput)
+		}
+	}
 	return w, nil
 }
 

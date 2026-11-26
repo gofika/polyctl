@@ -5,11 +5,11 @@ import (
 	"testing"
 )
 
-// SRV values given as text cannot be written to this platform's separate
-// fields, so dns ensure refuses them up front (exit code 7).
-func TestRecordTypesLeaveOutSRV(t *testing.T) {
+// name.com writes exactly the types of its record API: SRV and ANAME, and
+// no CAA.
+func TestRecordTypes(t *testing.T) {
 	types := (&provider{}).RecordTypes()
-	if slices.Contains(types, "SRV") || !slices.Contains(types, "MX") {
+	if !slices.Equal(types, []string{"A", "AAAA", "CNAME", "ANAME", "MX", "NS", "TXT", "SRV"}) {
 		t.Errorf("RecordTypes = %v", types)
 	}
 }
