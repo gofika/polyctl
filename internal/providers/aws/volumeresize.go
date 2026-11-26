@@ -19,8 +19,9 @@ import (
 // locateInstanceVolume finds the volume attached to an instance as device
 // (default: the instance's root device, read from the instance). When no
 // volume has that device, a single volume is taken only when the device
-// was not given; otherwise the volumes are listed and the choice is the
-// user's (exit code 2): polyctl does not guess which disk is meant.
+// was not given; several volumes are a list to choose from in the
+// interactive flow and ambiguous (exit code 5, naming the volumes, --device
+// and the volume id) otherwise: polyctl does not guess which disk is meant.
 func locateInstanceVolume(ctx context.Context, rt *app.Runtime, ref, device, region string) (*locatedVolume, error) {
 	li, err := resolveInstance(ctx, rt, ref, region, false)
 	if err != nil {
@@ -49,27 +50,41 @@ func locateInstanceVolume(ctx context.Context, rt *app.Runtime, ref, device, reg
 	case len(all) == 1 && device == "":
 		return &locatedVolume{c: li.c, profile: li.profile, region: li.region, vol: all[0]}, nil
 	}
-	var cands []string
-	var opts []prompt.Option
-	for i, v := range all {
-		dev := ""
+	devOf := func(v ec2types.Volume) string {
 		if a := volumeAttached(v); a != nil {
-			dev = awssdk.ToString(a.Device)
+			return awssdk.ToString(a.Device)
 		}
-		cands = append(cands, fmt.Sprintf("%s %s %dGB", dev, awssdk.ToString(v.VolumeId), awssdk.ToInt32(v.Size)))
-		opts = append(opts, prompt.Option{Label: prompt.Cells(dev, awssdk.ToString(v.VolumeId), fmt.Sprintf("%d GB", awssdk.ToInt32(v.Size)), string(v.VolumeType), tagName(v.Tags)), Value: strconv.Itoa(i)})
+		return ""
 	}
-	if rt.Interactive() {
-		// The interactive flow asks which volume is meant.
-		v, err := rt.Pick().Select("Volume of instance "+instanceLabel(li.inst), opts, "")
+	label := func(v ec2types.Volume) string {
+		return prompt.Cells(devOf(v), awssdk.ToString(v.VolumeId), fmt.Sprintf("%d GB", awssdk.ToInt32(v.Size)), string(v.VolumeType), tagName(v.Tags))
+	}
+	var cands []string
+	for _, v := range all {
+		cands = append(cands, fmt.Sprintf("%s %s %dGB", devOf(v), awssdk.ToString(v.VolumeId), awssdk.ToInt32(v.Size)))
+	}
+	found := func(v ec2types.Volume) *locatedVolume {
+		return &locatedVolume{c: li.c, profile: li.profile, region: li.region, vol: v}
+	}
+	if len(all) == 1 {
+		// --device names a device the instance's only volume is not
+		// attached as: the volume is offered, never taken.
+		v, err := app.PickOf(rt, app.Choice{Title: "Volume of instance " + instanceLabel(li.inst), Missing: func() error {
+			return app.UsageErrf("instance %s has no volume attached as %s; its volume is: %s. Pass --device <dev> or the volume id",
+				instanceLabel(li.inst), dev, cands[0])
+		}}, all, label)
 		if err != nil {
 			return nil, err
 		}
-		i, _ := strconv.Atoi(v)
-		return &locatedVolume{c: li.c, profile: li.profile, region: li.region, vol: all[i]}, nil
+		return found(v), nil
 	}
-	return nil, app.UsageErrf("instance %s has no volume attached as %s; its volumes are: %s. Pass --device <dev> or the volume id",
-		instanceLabel(li.inst), orNone(dev), strings.Join(cands, ", "))
+	amb := &app.AmbiguousError{What: fmt.Sprintf("volume of instance %s (none is attached as %s)", instanceLabel(li.inst), orNone(dev)),
+		Candidates: cands, Hint: "pass --device <dev> or the volume id to choose"}
+	v, err := app.OneOf(rt, amb, all, label)
+	if err != nil {
+		return nil, err
+	}
+	return found(v), nil
 }
 
 // isIOType reports a provisioned-IOPS volume type.
@@ -120,7 +135,8 @@ smaller size is exit code 2), --type, --iops and --throughput change its
 performance. Only the fields given are sent. The volume is named by its id
 or Name tag, or, without it, by --instance and --device (default: the
 instance's root device): a volume is never guessed when the instance has
-several and none is attached as that device (exit code 2).
+several and none is attached as that device. That is exit code 5, naming
+the volumes; a terminal lets you choose.
 
 When every field given is as asked already, the volume is reported
 unchanged and nothing is sent: AWS accepts such a request and counts it

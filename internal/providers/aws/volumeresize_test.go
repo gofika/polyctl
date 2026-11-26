@@ -147,11 +147,13 @@ func TestVolumeResizeByInstance(t *testing.T) {
 	if rep := h.report(); rep.Changes[0].ID != "vol-0111" {
 		t.Errorf("root = %+v", rep)
 	}
-	// A device that no volume has, with several volumes: exit code 2 and
-	// the candidates, nothing written.
+	// A device that no volume has, with several volumes: exit code 5 with
+	// the candidates and how to choose, nothing written.
 	h.ec2.reset()
 	err := h.run("ec2", "volume", "resize", "--instance", "site-xz7", "--device", "/dev/sdc", "--size", "500")
-	if !isUsage(err) || !strings.Contains(err.Error(), "vol-0111") || !strings.Contains(err.Error(), "vol-0222") || len(h.ebsWrites()) != 0 {
+	var amb *app.AmbiguousError
+	if !errors.As(err, &amb) || !strings.Contains(err.Error(), "/dev/xvda vol-0111") || !strings.Contains(err.Error(), "/dev/sdb vol-0222") ||
+		!strings.Contains(err.Error(), "pass --device <dev> or the volume id") || len(h.ebsWrites()) != 0 {
 		t.Errorf("unknown device = %v", err)
 	}
 	// Usage errors of the locating flags.

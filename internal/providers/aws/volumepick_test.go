@@ -163,3 +163,22 @@ func TestVolumeAmbiguousPick(t *testing.T) {
 		t.Errorf("non-interactive = %v", err)
 	}
 }
+
+// resize --instance with a --device no volume of the instance is attached
+// as: the volumes are a list to choose from on a terminal.
+func TestVolumeResizeByInstanceListsTheVolumes(t *testing.T) {
+	h := volumePickHarness(t, app.Flags{DryRun: true})
+	p := prompttest.New(t, prompttest.Label("vol-0222"))
+	h.rt.Picker = p
+	if err := h.run("ec2", "volume", "resize", "--instance", "site-xz7", "--device", "/dev/sdc", "--size", "500"); err != nil {
+		t.Fatalf("resize: %v\n%s", err, h.stderr.String())
+	}
+	p.Done()
+	a := p.Asked[0]
+	if !strings.HasPrefix(a.Title, "Ambiguous volume of instance") || len(a.Options) < 2 || !strings.Contains(prompttest.Labels(a.Options), "/dev/sdb") {
+		t.Errorf("asked %q with %s", a.Title, prompttest.Labels(a.Options))
+	}
+	if rep := h.report(); rep.Changes[0].ID != "vol-0222" {
+		t.Errorf("report = %+v", rep)
+	}
+}
