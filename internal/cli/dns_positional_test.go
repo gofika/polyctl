@@ -191,6 +191,8 @@ func TestDNSPositionalRecordUsage(t *testing.T) {
 		// --all and --id select on their own.
 		{[]string{"dns", "delete", "example.com", "h1", "A", "--all", "-y"}, "--all and --id cannot be combined with a positional record"},
 		{[]string{"dns", "delete", "example.com", "h1", "A", "--id", "r1"}, "--all and --id cannot be combined with a positional record"},
+		// <type> of delete is one type; the text names the argument.
+		{[]string{"dns", "delete", "example.com", "h1", "A,AAAA"}, "<type> is one record type: " + deleteUsage},
 		// The record options of ensure belong to the positional record.
 		{[]string{"dns", "ensure", "example.com", "-r", "www:A:192.0.2.9", "--ttl", "300"}, "--ttl applies to a positional record"},
 		{[]string{"dns", "ensure", "example.com", "-r", "www:A:192.0.2.9", "--priority", "10"}, "--priority applies to a positional record"},

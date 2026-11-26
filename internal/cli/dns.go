@@ -409,6 +409,9 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 				return usageErr("--id selects one record; it cannot be combined with --name, --type or --value")
 			}
 			if len(types) > 1 || (len(types) == 1 && strings.Contains(types[0], ",")) {
+				if nameArg == "<name>" {
+					return usageErr("<type> is one record type: %s", app.RecordUsage(cmd, 0, 1))
+				}
 				return usageErr("--type takes one record type without --all")
 			}
 			typ := ""
