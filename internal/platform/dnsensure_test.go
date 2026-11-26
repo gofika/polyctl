@@ -573,6 +573,45 @@ func TestDNSEnsureRefusesBoundRecord(t *testing.T) {
 	}
 }
 
+// A record of another type that dns add could not write again (a Route 53
+// alias, a record of a routing policy) is never replaced, as the restore
+// command for it would fail.
+func TestDNSEnsureRefusesRecordDNSAddCannotRestore(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		p    ID
+		r    Record
+		why  string
+	}{
+		{"alias", AWS, Record{ID: "a1", Name: "www.example.com", Type: "A", Value: "dualstack.lb-1.us-east-1.elb.amazonaws.com",
+			Extra: map[string]any{"alias": true, "alias_zone_id": "Z35SXDOTRQ7X7K"}}, "it is an alias record"},
+		{"set identifier", AWS, Record{ID: "a2", Name: "www.example.com", Type: "A", Value: "203.0.113.1", TTL: 60,
+			Extra: map[string]any{"set_identifier": "eu"}}, "set identifier eu"},
+		{"routing policy", GCP, Record{ID: "a3", Name: "www.example.com", Type: "A", Value: "<routing policy>",
+			Extra: map[string]any{"routing_policy": map[string]any{"geo": true}}}, "a record set with a routing policy"},
+		{"value", AWS, Record{ID: "a4", Name: "www.example.com", Type: "A", Value: "not-an-address"}, "dns add refuses it"},
+	} {
+		if _, err := RestoreValue(c.p, c.r); err == nil || !strings.Contains(err.Error(), c.why) {
+			t.Errorf("%s: RestoreValue = %v", c.name, err)
+		}
+		m := &memDNS{recs: []Record{c.r}}
+		r, asked := ensureDecided(t, m, c.p, false, true, nil, "www:TXT:hello")
+		if r.err == nil || len(asked) != 0 || m.writes() != 0 || errors.Is(r.err, ErrInvalidInput) {
+			t.Errorf("%s: replace = %v, asked %d, calls %v", c.name, r.err, len(asked), m.calls)
+			continue
+		}
+		for _, want := range []string{"could not write again", c.why, "`polyctl dns delete`", "nothing was written"} {
+			if !strings.Contains(r.err.Error(), want) {
+				t.Errorf("%s: error %q lacks %q", c.name, r.err, want)
+			}
+		}
+	}
+	// An ordinary record is written again by its restore command.
+	if v, err := RestoreValue(AWS, Record{Type: "MX", Value: "mail.example.com", Priority: ip(10)}); err != nil || v != "10 mail.example.com" {
+		t.Errorf("RestoreValue(MX) = %q, %v", v, err)
+	}
+}
+
 // A delete of a replace that fails after other records of the name were
 // deleted names those and the commands that restore them.
 func TestDNSEnsureFailedDeleteAfterReplace(t *testing.T) {

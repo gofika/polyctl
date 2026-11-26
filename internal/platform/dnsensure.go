@@ -409,6 +409,27 @@ func RecordAddValue(r Record) string {
 	return r.Value
 }
 
+// RestoreValue is RecordAddValue of r when `dns add` on platform p writes r
+// again as it is, and otherwise an error that says why it cannot: a Route
+// 53 alias record, a record of a routing policy (a Route 53 set identifier,
+// a Cloud DNS routing policy), or a value dns add's own check refuses.
+func RestoreValue(p ID, r Record) (string, error) {
+	switch {
+	case extraFlag(r.Extra, "alias"):
+		return "", errors.New("it is an alias record, which dns add does not write")
+	case r.Extra["set_identifier"] != nil && fmt.Sprint(r.Extra["set_identifier"]) != "":
+		return "", fmt.Errorf("it belongs to a routing policy (set identifier %v), which dns add does not write", r.Extra["set_identifier"])
+	case r.Extra["routing_policy"] != nil:
+		return "", errors.New("it is a record set with a routing policy, which dns add does not write")
+	}
+	v := RecordAddValue(r)
+	if _, err := CheckRecord(RecordCheck{Platform: p, Type: r.Type, Value: v, New: true}); err != nil {
+		// The reason alone: the refusal is no usage error of the run.
+		return "", fmt.Errorf("dns add refuses it: %s", strings.TrimPrefix(err.Error(), ErrInvalidInput.Error()+": "))
+	}
+	return v, nil
+}
+
 // RecordValueMatches reports whether value names the value of r, compared
 // as dns ensure compares values: host names without case or trailing dot,
 // addresses canonical, TXT text with or without its quotes. An MX value may
@@ -547,8 +568,9 @@ type DNSEnsure struct {
 	// anything is written. nil refuses every such name (OccupiedName.Refusal).
 	// A name one of whose records belongs to another service of the platform
 	// (RecordOwner: the CNAME of an R2 custom domain, which the DNS API
-	// cannot delete) is refused before Decide is asked
-	// (OccupiedName.BoundRefusal).
+	// cannot delete), or is one dns add could not write again (RestoreValue:
+	// a Route 53 alias, a routing policy), is refused before Decide is asked
+	// (OccupiedName.BoundRefusal, OccupiedName.RestoreRefusal).
 	Decide func(OccupiedName) (replace bool, err error)
 	// Restore is the command that writes a deleted record again: the error
 	// of a write that fails after the records it replaces were deleted
@@ -672,16 +694,33 @@ func (o OccupiedName) BoundRefusal(r Record, owner string) error {
 		o.FQDN, strings.ToUpper(r.Type), recordDisplay(o.Platform, r), owner, o.What(), hint)
 }
 
-// boundOther returns the first record of o.Others that belongs to another
-// service of the platform (RecordOwner), with that owner.
-func (in DNSEnsure) boundOther(o OccupiedName) (Record, string, bool) {
+// RestoreRefusal is the error of a name whose record r of another type
+// `dns add` cannot write again (RestoreValue, why): dns ensure does not
+// replace it, as the record could not be restored should the write that
+// replaces it fail.
+func (o OccupiedName) RestoreRefusal(r Record, why error) error {
+	hint := fmt.Sprintf("add %s beside it with `polyctl dns add`, or change it with the record commands of %s or delete it first with `polyctl dns delete`", o.What(), o.Platform)
+	if !o.CanKeep() {
+		hint = fmt.Sprintf("change it with the record commands of %s, or delete it first with `polyctl dns delete`, then run dns ensure again", o.Platform)
+	}
+	return fmt.Errorf("%s holds %s %s, which `polyctl dns add` could not write again: %v; dns ensure does not replace it with %s: %s (nothing was written)",
+		o.FQDN, strings.ToUpper(r.Type), recordDisplay(o.Platform, r), why, o.What(), hint)
+}
+
+// irreplaceable is the refusal of o when one of its records of other types
+// cannot be replaced: it belongs to another service of the platform
+// (RecordOwner), or dns add could not write it again (RestoreValue).
+func (in DNSEnsure) irreplaceable(o OccupiedName) error {
 	zone := Zone{ID: in.ZoneID, Name: in.Zone}
 	for _, r := range o.Others {
 		if owner, ok := RecordOwner(in.DNS, zone, r); ok {
-			return r, owner, true
+			return o.BoundRefusal(r, owner)
+		}
+		if _, err := RestoreValue(in.Platform, r); err != nil {
+			return o.RestoreRefusal(r, err)
 		}
 	}
-	return Record{}, "", false
+	return nil
 }
 
 // occupiedNames are the names of in that need a decision (OccupiedName), in
@@ -849,8 +888,8 @@ func PlanDNSEnsure(in DNSEnsure) (*Plan, error) {
 	replaced := map[string]OccupiedName{}
 	for _, o := range occupiedNames(in) {
 		replace, err := false, error(nil)
-		if r, owner, ok := in.boundOther(o); ok {
-			return nil, o.BoundRefusal(r, owner)
+		if err := in.irreplaceable(o); err != nil {
+			return nil, err
 		}
 		if in.Decide == nil {
 			err = o.Refusal()

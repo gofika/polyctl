@@ -630,7 +630,8 @@ write fails after the records it replaces were deleted, the error names them
 with the ` + "`polyctl dns add`" + ` commands that restore them (exit code 1). A
 record that belongs to another service of the platform (the CNAME of a
 Cloudflare R2 custom domain) is never replaced: the run stops before anything
-is written; dns delete unbinds such a record.
+is written; dns delete unbinds such a record. Nor is a record that dns add
+could not write again (a Route 53 alias record, a record of a routing policy).
 proxied=true on a platform other than Cloudflare reports the record as
 skipped. The zone is always read live: --offline is refused (exit code 6).
 

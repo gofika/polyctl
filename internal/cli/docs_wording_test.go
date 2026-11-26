@@ -103,6 +103,7 @@ func TestDNSEnsureRulesAreDocumented(t *testing.T) {
 		"For more than one record on a name, or records of several types, use `polyctl dns add`.",
 		"the error names them with the `polyctl dns add` commands that restore them",
 		"A record that belongs to another service of the platform (the CNAME of a Cloudflare R2 custom domain) is never replaced",
+		"Nor is a record that dns add could not write again (a Route 53 alias record, a record of a routing policy).",
 	} {
 		if !strings.Contains(help, phrase) {
 			t.Errorf("dns ensure --help does not say %q", phrase)
@@ -125,7 +126,8 @@ func TestDNSEnsureRulesAreDocumented(t *testing.T) {
 				"A script stops with exit code 5, with or without `--yes`", "Several records of a name are never deleted without a terminal",
 				"prints the `polyctl dns add ...` command that restores it (exit code 1)", "`replaced_by`",
 				"for more than one record on a name, or records of several types, use `dns add`",
-				"(the CNAME of a Cloudflare R2 custom domain, which the DNS API cannot delete) is never replaced"},
+				"(the CNAME of a Cloudflare R2 custom domain, which the DNS API cannot delete) is never replaced",
+				"Nor is a record that the `polyctl dns add` command restoring it could not write again (a Route 53 alias record, a record of a Route 53 or Cloud DNS routing policy)"},
 		},
 		{doc: "docs/interactive.md", has: []string{"- Core: `dns ensure` before it replaces the records of another type on a name", "| `dns ensure` on a name that holds several records of other types"}},
 		{doc: "docs/configuration.md", has: []string{"or a name with several records of other types (also with `--yes`", "also `dns ensure` replacing the record of another type on a name"}},
