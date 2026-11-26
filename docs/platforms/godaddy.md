@@ -33,7 +33,7 @@ Only domains GoDaddy serves DNS for are indexed as zones: a domain whose nameser
 - `delete <domain> <name> <type>` deletes the whole set; `delete --id` deletes one record and cannot be combined with `<name> <type>` (exit code 2). It lists what it would delete and asks for confirmation (`--yes` in the non-interactive flow; see [Confirmations](../interactive.md#confirmations)). A set or record that does not exist is exit code 4 and asks nothing.
 - `<name>` is relative to the domain (`www`, `a.b`), `@` for the apex, or a full name inside the domain. `<type>` is case-insensitive. A value is one argument: quote one that contains spaces, and put `--` before one that starts with `-`.
 - A wrong number of record arguments is exit code 2, and the message shows the usage (`usage: polyctl godaddy dns add <domain> <name> <type> <value>`). With only `<domain>`, a terminal asks for the type and the value (`add`, `upsert`; the record is then at the apex) or for the record to delete (`delete`).
-- Former form (0.5.x): `add`, `upsert` and `delete` still read the record from `--name`, `--type` and `--value` (repeated on `upsert`; without `--name`, the apex). These flags are no longer listed in the help. A positional record together with one of them is exit code 2.
+- Former form (0.5.x): `add` and `upsert` still read the record from `--name`, `--type` and `--value` (repeated on `upsert`), `delete` from `--name` and `--type` (without `--name`, the apex). These flags are no longer listed in the help. A positional record together with one of them is exit code 2.
 - `--ttl` in seconds, minimum 600; `0` (default) uses GoDaddy's default.
 - `--priority` for MX/SRV records.
 
