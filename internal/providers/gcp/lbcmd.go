@@ -477,9 +477,7 @@ func lbScopes(ctx context.Context, rt *app.Runtime, ref string) ([]scope, error)
 		if slices.ContainsFunc(found, func(sc scope) bool { return sc.profile == a.Profile }) {
 			continue
 		}
-		if uncovered, err := pinUncovered(ctx, rt, a.Profile); err != nil {
-			return nil, err
-		} else if uncovered {
+		if pinUnheld(rt) {
 			found = append(found, scope{profile: a.Profile, project: pinnedProject(rt)})
 		}
 	}

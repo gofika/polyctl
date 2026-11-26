@@ -79,7 +79,7 @@ note: gcp/acme: skipped 2 project(s) in which an API is not enabled or billing i
 
 - The default project cannot be disabled, so the hint of a note leaves it out.
 - A sync asks such a project once per API and run, not once per resource type.
-- A list or lookup read live from the project of `--project` keeps the error (exit code 3): you asked for that project.
+- A list or lookup of the project named with `--project` keeps the error (exit code 3): you asked for that project. This holds for the lists served from the inventory too (`dns zone list`, `compute instance list`, a lookup by name): the inventory holds nothing of a project the syncs skip, so the project is asked live. With `--offline` nothing is asked and the list is empty.
 - Any other failure of one project (a removed permission, a quota or rate limit, the network) is a real failure: a warning names the project and `polyctl gcp project disable <id>`, the rows cached for that project are kept, the other projects are synced, and the set is synced again on its next use. When every enabled project fails, the sync fails and replaces nothing. A project list that fails for another reason than a missing permission fails the sync of the account, and nothing is replaced.
 
 **Credentials that cannot list projects** (a service account without `resourcemanager.projects.list`, or a caller for which the Resource Manager API is not enabled) work on the **default project alone**. Other projects stay reachable with `--project` (read live, nothing cached). `project list` and the list of `enable` are exit code 3; `disable` of the default project is refused (make another one the default with `use` first).

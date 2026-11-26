@@ -164,3 +164,57 @@ func TestSweepProjectsSkipsAndFails(t *testing.T) {
 		t.Errorf("cancelled sweep = %v, %v", rows, err)
 	}
 }
+
+// The project named with --project keeps the answer of an API that is not
+// enabled (exit code 3) on the readers served from the inventory too: the
+// sync over the enabled projects skips the project, so the inventory
+// holds nothing of it, and the command reads it live instead of answering
+// with an empty list or "not found". A second run, with the sets fresh,
+// answers the same. --offline asks nothing.
+func TestPinnedProjectWithoutTheAPIKeepsTheErrorOnCachedReaders(t *testing.T) {
+	t.Run("dns", func(t *testing.T) {
+		h, g := multiDNS(t)
+		h.nonInteractive()
+		g.addZone("p1", "one", "one.example", "public")
+		g.disabled["p2"] = true
+		for i := range 2 {
+			if err := h.run("dns", "zone", "list", "--project", "p2"); exitClass(err) != "auth" {
+				t.Errorf("run %d: zone list --project p2 = %v, want the error of the project (exit code 3)", i, err)
+			}
+		}
+		// The sweep over the enabled projects still skips it.
+		if err := h.run("dns", "zone", "list"); err != nil {
+			t.Errorf("zone list = %v, want no error", err)
+		}
+		// A project that has the API and holds nothing is an empty list.
+		g.disabled["p2"] = false
+		if err := h.run("dns", "zone", "list", "--project", "p2"); err != nil {
+			t.Errorf("zone list of an empty project = %v, want no error", err)
+		}
+		g.disabled["p2"] = true
+		h.rt.Flags.Offline = true
+		if err := h.run("dns", "zone", "list", "--project", "p2"); err != nil {
+			t.Errorf("offline zone list --project p2 = %v, want the (empty) inventory", err)
+		}
+	})
+	t.Run("compute", func(t *testing.T) {
+		h := twoProjects(t)
+		h.gce.addInstance("proj", "us-central1-a", "web-1", "10.0.0.1", "34.0.0.1")
+		h.gce.fail = map[string]fakeErr{"/projects/p2/": {code: 403, reason: "accessNotConfigured",
+			message: "Compute Engine API has not been used in project p2 before or it is disabled."}}
+		for i := range 2 {
+			if err := h.run("compute", "instance", "list", "--project", "p2"); exitClass(err) != "auth" {
+				t.Errorf("run %d: instance list --project p2 = %v, want the error of the project (exit code 3)", i, err)
+			}
+		}
+		if err := h.run("compute", "instance", "get", "web-1", "--project", "p2"); exitClass(err) != "auth" {
+			t.Errorf("instance get --project p2 = %v, want the error of the project (exit code 3)", err)
+		}
+		if err := h.run("compute", "instance", "list"); err != nil {
+			t.Errorf("instance list = %v, want no error", err)
+		}
+		if err := h.run("compute", "instance", "get", "web-1"); err != nil {
+			t.Errorf("instance get = %v, want the instance of proj", err)
+		}
+	})
+}

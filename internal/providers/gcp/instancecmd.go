@@ -330,22 +330,16 @@ func resolveInstance(ctx context.Context, rt *app.Runtime, ref, zone string, all
 	return &locatedInstance{c: c, profile: h.profile, zone: h.inst.Zone, inst: in}, nil
 }
 
-// liveInstanceHits asks the pinned project of the accounts whose inventory
-// does not hold it (it is disabled there, or their syncs do not cover it)
-// for the instance: every zone of it is listed once. Without such an
-// account there is nothing to ask. It runs when the inventory knows no
-// such instance.
+// liveInstanceHits asks the pinned project of the accounts for the
+// instance: every zone of it is listed once. It runs when the inventory
+// knows no such instance: the project is disabled, the syncs do not cover
+// it, or they skipped it because the Compute Engine API is not enabled in
+// it, in which case its answer is the error of the command (exit code
+// 3). Without --project there is nothing to ask.
 func liveInstanceHits(ctx context.Context, rt *app.Runtime, accounts []config.AccountRef, ref string, byIP bool) ([]instanceHit, error) {
 	var hits []instanceHit
 	for _, a := range accounts {
-		live := pinDisabled(rt, a.Profile)
-		if !live {
-			var err error
-			if live, err = pinUncovered(ctx, rt, a.Profile); err != nil {
-				return nil, err
-			}
-		}
-		if !live {
+		if !pinDisabled(rt, a.Profile) && !pinUnheld(rt) {
 			continue
 		}
 		c, err := openProfile(ctx, rt, a.Profile)

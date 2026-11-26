@@ -86,28 +86,16 @@ func pinDisabled(rt *app.Runtime, profile string) bool {
 	return err == nil && slices.Contains(disabled, pin)
 }
 
-// pinUncovered reports whether --project names a project the syncs of the
-// profile do not cover although it is not disabled: one the credentials
-// reach without listing it (or cannot list at all). The inventory never
-// holds it, so it is read live. This asks the account for its projects,
-// so a command calls it only when the inventory holds nothing of the
-// pinned project; the default project is covered without asking, and
-// with --offline nothing is asked.
-func pinUncovered(ctx context.Context, rt *app.Runtime, profile string) (bool, error) {
-	pin := pinnedProject(rt)
-	if pin == "" || rt.Flags.Offline {
-		return false, nil
-	}
-	def, disabled, err := accountMeta(rt, profile)
-	if err != nil || pin == def || slices.Contains(disabled, pin) {
-		return false, nil
-	}
-	c, err := openAccount(ctx, rt, profile)
-	if err != nil {
-		return false, err
-	}
-	ok, err := c.covers(ctx, pin)
-	return err == nil && !ok, err
+// pinUnheld reports whether --project names a project that has to be
+// read live because the inventory holds nothing of it. A command calls it
+// only then. Such a project is one the syncs of the profile do not cover
+// (the credentials reach it without listing it, or cannot list at all),
+// one that is empty, or one in which the API is not enabled: a sync over
+// the enabled projects skips that last one, while a command on the
+// project named with --project keeps its answer (exit code 3). Reading
+// it live tells them apart. With --offline nothing is asked.
+func pinUnheld(rt *app.Runtime) bool {
+	return pinnedProject(rt) != "" && !rt.Flags.Offline
 }
 
 // keepProject reports whether a cached row of project (empty: the default

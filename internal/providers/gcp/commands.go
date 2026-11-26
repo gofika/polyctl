@@ -131,9 +131,11 @@ func zoneRefOf(z platform.Zone) *zoneRef {
 
 // cachedZones serves the zone list through the inventory (honouring
 // --refresh / --offline / TTL): the zones of every enabled project, or of
-// the project of --project. A pinned project that is disabled, or that
-// the syncs of the account do not cover, is not in the inventory: its
-// zones are read live and not stored.
+// the project of --project. A pinned project that is disabled is not in
+// the inventory, and neither is one the syncs of the account do not
+// cover or skipped because Cloud DNS is not enabled in it: when the
+// inventory holds no zone of the pinned project its zones are read live
+// and not stored, so that the answer of that project is kept.
 func cachedZones(ctx context.Context, rt *app.Runtime, profile string) ([]platform.Zone, bool, error) {
 	live := func() ([]platform.Zone, bool, error) {
 		c, err := openProfile(ctx, rt, profile)
@@ -168,12 +170,8 @@ func cachedZones(ctx context.Context, rt *app.Runtime, profile string) ([]platfo
 		}
 		zones = append(zones, z)
 	}
-	if len(zones) == 0 {
-		if uncovered, err := pinUncovered(ctx, rt, profile); err != nil {
-			return nil, cached, err
-		} else if uncovered {
-			return live()
-		}
+	if len(zones) == 0 && pinUnheld(rt) {
+		return live()
 	}
 	return zones, cached, nil
 }
@@ -870,8 +868,10 @@ type instanceResult struct {
 
 // cachedInstances serves the instance list through the inventory: the
 // instances of every enabled project, or of the project of --project
-// (read live and not stored when it is disabled, or one the syncs of the
-// account do not cover).
+// (read live and not stored when it is disabled, or when the inventory
+// holds no instance of it: the syncs do not cover it, or skipped it
+// because the Compute Engine API is not enabled in it, and the command on
+// that one project keeps its answer).
 func cachedInstances(ctx context.Context, rt *app.Runtime, profile string) ([]Instance, bool, error) {
 	decode := func(id string, d func(any) error) (Instance, error) {
 		var in Instance
@@ -928,12 +928,8 @@ func cachedInstances(ctx context.Context, rt *app.Runtime, profile string) ([]In
 		}
 		out = append(out, in)
 	}
-	if len(out) == 0 {
-		if uncovered, err := pinUncovered(ctx, rt, profile); err != nil {
-			return nil, cached, err
-		} else if uncovered {
-			return live()
-		}
+	if len(out) == 0 && pinUnheld(rt) {
+		return live()
 	}
 	return out, cached, nil
 }
