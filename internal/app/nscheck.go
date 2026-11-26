@@ -249,10 +249,12 @@ func hostOf(addr string) string {
 }
 
 // nsAccountEntries returns the index entries of kind for exactly domain in
-// the accounts the selection allows. When there are none, or with
-// --refresh, the accounts whose set is missing or expired (all of them with
-// --refresh) are synced first. Sync failures are returned: an account that
-// could not be listed may hold the domain.
+// the accounts the selection allows. The sets marked due are synced before
+// the lookup, as routing does (IndexDue): one of them may hold a second
+// zone of the domain. When there are no entries, or with --refresh, the
+// accounts whose set is missing or expired (all of them with --refresh)
+// are synced first. Sync failures are returned: an account that could not
+// be listed may hold the domain.
 func (rt *Runtime) nsAccountEntries(ctx context.Context, domain string, kind platform.ResourceType) ([]inventory.IndexEntry, []error, error) {
 	accounts, err := rt.AccountsFor(kind)
 	if err != nil {
@@ -286,15 +288,23 @@ func (rt *Runtime) nsAccountEntries(ctx context.Context, domain string, kind pla
 		}
 		return out, nil
 	}
+	if _, err := rt.indexDue(ctx, kind, accounts); err != nil {
+		return nil, nil, err
+	}
+	_, dueErrs := rt.dueOutcome(kind, accounts)
 	entries, err := lookup()
 	if err != nil {
 		return nil, nil, err
 	}
 	if len(entries) > 0 && !rt.Flags.Refresh {
-		return entries, nil, nil
+		return entries, dueErrs, nil
 	}
 	var stale []config.AccountRef
 	for _, a := range accounts {
+		// An account marked due was tried above, once per run.
+		if _, done := rt.dueIndexed[dueKey{a, kind}]; done {
+			continue
+		}
 		st, err := db.GetState(ctx, inventory.Set{Platform: a.Platform, Profile: a.Profile, Type: kind})
 		if err != nil {
 			return nil, nil, err
@@ -303,7 +313,7 @@ func (rt *Runtime) nsAccountEntries(ctx context.Context, domain string, kind pla
 			stale = append(stale, a)
 		}
 	}
-	var syncErrs []error
+	syncErrs := dueErrs
 	if len(stale) > 0 {
 		rt.Infof("indexing %s across %d account(s)...", kind, len(stale))
 	}

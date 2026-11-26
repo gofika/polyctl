@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gofika/polyctl/internal/app"
+	"github.com/gofika/polyctl/internal/dnstest"
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/platform"
 	"github.com/gofika/polyctl/internal/prompt/prompttest"
@@ -337,6 +338,73 @@ func TestResolveDomainSetMarkedDueRespectsThePlatform(t *testing.T) {
 	}
 	if !app.ForcedDue(h.zoneState("a")) {
 		t.Errorf("the set of an account that is not selected lost its mark")
+	}
+}
+
+// domain ns check reads the index itself: a hit is not served from a set
+// marked due either, so the second zone of the name that its account
+// covers since then is listed. The account is asked once per run.
+func TestNSCheckIndexesSetsMarkedDue(t *testing.T) {
+	h := newHarness(t, app.Flags{}, nil)
+	ns := []string{"ns1.dns.example.net", "ns2.dns.example.net"}
+	za := platform.Zone{ID: "z1", Name: "example.com", Nameservers: ns}
+	zb := platform.Zone{ID: "z2", Name: "example.com", Nameservers: []string{"ns1.other.example.org"}}
+	h.seedZones("a", za)
+	h.seedZones("b", zone("z9", "other.org"))
+	h.seedZones("c")
+	h.client("a").zones = []platform.Zone{za}
+	h.markDue("b")
+	h.client("b").zones = []platform.Zone{zone("z9", "other.org"), zb}
+	srv := dnstest.Start(t, map[string]dnstest.Answer{"example.com": {NS: ns}})
+
+	opts := app.NSCheckOptions{Domain: "example.com", Resolvers: []string{srv.Addr}, Timeout: time.Second, NoRegistrar: true}
+	res, err := h.rt.NSCheck(ctx, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Zones) != 2 || res.Zone.ZoneID != "z1" {
+		t.Fatalf("zones = %+v, compared %+v; want z1 and z2, z1 compared", res.Zones, res.Zone)
+	}
+	if _, err := h.rt.NSCheck(ctx, opts); err != nil {
+		t.Fatal(err)
+	}
+	if a, b := h.client("a").count("Sync"), h.client("b").count("Sync:zone"); a != 0 || b != 1 {
+		t.Errorf("sync counts: a %d (want 0), b %d (want 1)", a, b)
+	}
+}
+
+// An account marked due that fails is a warning while ns check finds the
+// zone elsewhere; when it finds none, the failure is reported, and the
+// account is not asked a second time in the run.
+func TestNSCheckSetMarkedDueFailingAccount(t *testing.T) {
+	h := newHarness(t, app.Flags{}, nil)
+	ns := []string{"ns1.dns.example.net", "ns2.dns.example.net"}
+	za := platform.Zone{ID: "z1", Name: "example.com", Nameservers: ns}
+	h.seedZones("a", za)
+	h.seedZones("b", zone("z9", "other.org"))
+	h.seedZones("c")
+	h.client("a").zones = []platform.Zone{za}
+	h.markDue("b")
+	h.client("b").syncErr = errors.New("dial tcp: connection refused")
+	srv := dnstest.Start(t, map[string]dnstest.Answer{"example.com": {NS: ns}, "missing.org": {NS: ns}})
+
+	res, err := h.rt.NSCheck(ctx, app.NSCheckOptions{Domain: "example.com", Resolvers: []string{srv.Addr}, Timeout: time.Second, NoRegistrar: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Zones) != 1 || res.Status != app.NSStatusOK || !strings.Contains(h.stderr.String(), "warning: index namecom/b") {
+		t.Errorf("result = %+v, stderr = %q; want the zone of a and a warning for b", res, h.stderr.String())
+	}
+	// Nothing found, and b could not be asked: not "no hosted zone".
+	res, err = h.rt.NSCheck(ctx, app.NSCheckOptions{Domain: "missing.org", Resolvers: []string{srv.Addr}, Timeout: time.Second, NoRegistrar: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != app.NSStatusUnknown || !strings.Contains(res.Message, "namecom/b") {
+		t.Errorf("miss = %+v, want the failure of b", res)
+	}
+	if n := h.client("b").count("Sync:zone"); n != 1 {
+		t.Errorf("profile b zone sync count = %d, want 1", n)
 	}
 }
 
