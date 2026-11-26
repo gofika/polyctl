@@ -265,3 +265,43 @@ func TestRecordTypesConflict(t *testing.T) {
 		t.Errorf("CNAME and TXT on cloudflare = %v", err)
 	}
 }
+
+// "@" for the zone apex as the target of a record is GoDaddy's form (its
+// default `www CNAME @`): GoDaddy, and a check that does not know the
+// platform yet, take it; the other platforms are told to write the zone's
+// name.
+func TestCheckRecordApexTarget(t *testing.T) {
+	for _, c := range []struct{ typ, value, want string }{
+		{"CNAME", "@", "@"},
+		{"NS", "@", "@"},
+		{"MX", "10 @", "@"},
+		{"SRV", "10 5 5060 @", "10 5 5060 @"},
+	} {
+		for _, p := range []ID{GoDaddy, ""} {
+			v, err := CheckRecord(RecordCheck{Platform: p, Types: KnownRecordTypes, Type: c.typ, Value: c.value})
+			if err != nil || v.Value != c.want {
+				t.Errorf("%q: %s %q = %q, %v", p, c.typ, c.value, v.Value, err)
+			}
+		}
+		_, err := CheckRecord(RecordCheck{Platform: AWS, Types: KnownRecordTypes, Type: c.typ, Value: c.value})
+		if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "write the zone's name") {
+			t.Errorf("aws: %s %q = %v", c.typ, c.value, err)
+		}
+	}
+	// "@" is no host in a value of another kind, nor inside a name.
+	for _, c := range []struct{ typ, value string }{{"HTTPS", "1 @"}, {"CNAME", "@.example.com"}} {
+		if _, err := CheckRecord(RecordCheck{Platform: GoDaddy, Types: KnownRecordTypes, Type: c.typ, Value: c.value}); err == nil {
+			t.Errorf("%s %q accepted", c.typ, c.value)
+		}
+	}
+	// dns ensure on GoDaddy takes it too, without the single-label warning.
+	var warned []string
+	warn := func(f string, a ...any) { warned = append(warned, f) }
+	d, err := NormalizeRecordSpecs("example.com", GoDaddy, []RecordSpec{{Name: "www", Type: "CNAME", Value: "@"}}, nil, warn)
+	if err != nil || d[0].Value != "@" || len(warned) != 0 {
+		t.Errorf("ensure on GoDaddy = %+v, %v, warned %v", d, err, warned)
+	}
+	if _, err := NormalizeRecordSpecs("example.com", Cloudflare, []RecordSpec{{Name: "www", Type: "CNAME", Value: "@"}}, nil, nil); !errors.Is(err, ErrInvalidInput) {
+		t.Errorf("ensure on Cloudflare = %v", err)
+	}
+}

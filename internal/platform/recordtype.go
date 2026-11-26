@@ -162,6 +162,9 @@ func CheckRecord(c RecordCheck) (RecordValue, error) {
 	if err != nil {
 		return RecordValue{}, invalid("%v", err)
 	}
+	if err := checkApexTarget(c.Platform, typ, v.Value); err != nil {
+		return RecordValue{}, invalid("%v", err)
+	}
 	if c.New && typ == "MX" && v.Priority == nil {
 		return RecordValue{}, invalid(`an MX record needs a priority: write the value as "10 mail.example.com", or give the priority apart`)
 	}
@@ -426,11 +429,48 @@ func checkAAAA(v string) (string, *int, error) {
 	return a.String(), nil, nil
 }
 
+// apexHost is the zone-file name of the zone apex as the target of a
+// record: GoDaddy stores and lists it as it is (its default `www CNAME @`).
+const apexHost = "@"
+
+// targetHost is normalHost for the host a CNAME, ALIAS, ANAME, NS, PTR, MX
+// or SRV record points to, which may also be apexHost (see apexTarget).
+func targetHost(name, h string, root bool) (string, error) {
+	if h == apexHost {
+		return h, nil
+	}
+	return normalHost(name, h, root)
+}
+
+// apexTarget reports whether v, the normal form of a value of type typ,
+// points to apexHost.
+func apexTarget(typ, v string) bool {
+	switch typ {
+	case "CNAME", "ALIAS", "ANAME", "NS", "PTR", "MX":
+		return v == apexHost
+	case "SRV":
+		f := strings.Fields(v)
+		return len(f) == 4 && f[3] == apexHost
+	}
+	return false
+}
+
+// checkApexTarget refuses a value of type typ pointing to apexHost on a
+// platform other than GoDaddy, the one platform that takes "@" for the
+// apex; elsewhere the zone's name is written. An unknown platform ("")
+// accepts it.
+func checkApexTarget(p ID, typ, v string) error {
+	if p == "" || p == GoDaddy || !apexTarget(typ, v) {
+		return nil
+	}
+	return fmt.Errorf("value %q is not valid for type %s on %s: %q for the zone apex is GoDaddy's form; write the zone's name", v, typ, p, apexHost)
+}
+
 func checkHost(v string) (string, *int, error) {
 	if strings.ContainsAny(v, " \t") {
 		return "", nil, errors.New("it is not one host name")
 	}
-	h, err := normalHost("host", v, false)
+	h, err := targetHost("host", v, false)
 	return h, nil, err
 }
 
@@ -449,7 +489,7 @@ func checkMX(v string) (string, *int, error) {
 	default:
 		return "", nil, errors.New("it is not a host name or <priority> <host>")
 	}
-	h, err := normalHost("host", f[0], true)
+	h, err := targetHost("host", f[0], true)
 	return h, prio, err
 }
 
@@ -491,7 +531,7 @@ func checkSRV(v string) (string, *int, error) {
 		}
 		out[i] = strconv.Itoa(n)
 	}
-	h, err := normalHost("target", f[3], true)
+	h, err := targetHost("target", f[3], true)
 	if err != nil {
 		return "", nil, err
 	}

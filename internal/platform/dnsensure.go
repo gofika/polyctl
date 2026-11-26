@@ -153,6 +153,9 @@ func normalizeSpec(zone string, p ID, idx int, s RecordSpec, types []string, war
 	if d.Value, err = normalizeValue(&d, s.Value, warn); err != nil {
 		return DesiredRecord{}, invalid("%s: %v", d.label(), err)
 	}
+	if err := checkApexTarget(p, d.Type, d.Value); err != nil {
+		return DesiredRecord{}, invalid("%s: %v", d.label(), err)
+	}
 	if d.Proxied != nil && p != Cloudflare {
 		if *d.Proxied {
 			d.ProxiedUnsupported = true
@@ -249,7 +252,7 @@ func normalizeValue(d *DesiredRecord, v string, warn func(string, ...any)) (stri
 	d.Priority = rv.Priority
 	switch d.Type {
 	case "CNAME", "NS", "MX", "ALIAS", "ANAME":
-		if h := rv.Value; h != "." && !strings.Contains(h, ".") {
+		if h := rv.Value; h != "." && h != apexHost && !strings.Contains(h, ".") {
 			warn("warning: %s: value %q is a single label; it is not completed with the zone name (write the full host name)", d.label(), h)
 		}
 	}

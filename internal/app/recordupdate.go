@@ -144,9 +144,11 @@ func RecordTypesHelp() string {
 	b.WriteString(`
 The priority of an MX record goes in front of its value or in --priority (a
 new MX record needs one); SRV, HTTPS, SVCB, URI and NAPTR carry theirs as a
-field of the value, and --priority is refused for them. SOA is managed by
-the platforms; URL forwarding and Route 53 alias targets are not record
-types and stay with the platform's own tools.`)
+field of the value, and --priority is refused for them. GoDaddy also takes
+@ for the zone apex as the target of a CNAME, NS, MX or SRV record (its
+default www CNAME @); the other platforms take the zone's name. SOA is
+managed by the platforms; URL forwarding and Route 53 alias targets are not
+record types and stay with the platform's own tools.`)
 	return b.String()
 }
 

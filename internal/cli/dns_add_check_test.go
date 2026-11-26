@@ -77,8 +77,8 @@ func TestRecordTypesHelp(t *testing.T) {
 			t.Errorf("no line for %s %v in:\n%s", id, types, stdout)
 		}
 	}
-	for _, want := range []string{"SRV        <priority> <weight> <port> <target>", "e.g. 10 5 5060 sip.example.com", "--priority is refused for them"} {
-		if !strings.Contains(stdout, want) {
+	for _, want := range []string{"SRV        <priority> <weight> <port> <target>", "e.g. 10 5 5060 sip.example.com", "--priority is refused for them", "GoDaddy also takes @ for the zone apex as the target of a CNAME, NS, MX or SRV record"} {
+		if !strings.Contains(stdout, want) && !strings.Contains(strings.Join(strings.Fields(stdout), " "), want) {
 			t.Errorf("help lacks %q", want)
 		}
 	}

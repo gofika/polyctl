@@ -294,3 +294,25 @@ func TestDNSUpsertProposesCheckableValue(t *testing.T) {
 		}
 	}
 }
+
+// A record GoDaddy lists with "@" (the zone apex) as its target, such as its
+// default `www CNAME @`, is written back as it is shown.
+func TestDNSWritesApexTarget(t *testing.T) {
+	e := newDeleteEnv(t)
+	e.f.SetRecord("example.com", "CNAME", "shop", "@")
+	before := e.records()
+	if code, _, stderr := e.run(nil, "", "godaddy", "dns", "upsert", "example.com", "shop", "CNAME", "@"); code != cli.ExitOK || e.records() != before {
+		t.Fatalf("upsert shop CNAME @: exit %d, records %q, %s", code, e.records(), stderr)
+	}
+	p := prompttest.New(t, prompttest.KeepDefault{}, "")
+	if code, _, stderr := e.run(p, "", "godaddy", "dns", "upsert", "example.com", "shop", "CNAME"); code != cli.ExitOK || e.records() != before {
+		t.Fatalf("interactive upsert: exit %d, records %q, %s", code, e.records(), stderr)
+	}
+	p.Done()
+	if a := p.Find("Value of the CNAME record"); a == nil || a.Default != "@" {
+		t.Errorf("default %+v", a)
+	}
+	if code, _, stderr := e.run(nil, "", "godaddy", "dns", "add", "example.com", "@", "MX", "10 @"); code != cli.ExitOK || !strings.Contains(e.records(), "MX @ @") {
+		t.Errorf("add @ MX 10 @: exit %d, records %q, %s", code, e.records(), stderr)
+	}
+}
