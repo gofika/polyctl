@@ -181,8 +181,13 @@ func (c *client) ListRecords(ctx context.Context, zoneID string) ([]platform.Rec
 const defaultLine = "default"
 
 // mxValue separates an MX value written as "<priority> <host>" when no
-// priority is given apart: Alidns keeps the priority in its own field.
+// priority is given apart: Alidns keeps the priority in its own field. A TXT
+// value is the text itself: one given as quoted strings is unquoted and
+// joined.
 func mxValue(r platform.Record) (string, *int) {
+	if strings.EqualFold(r.Type, "TXT") {
+		return platform.JoinTXT(r.Value), r.Priority
+	}
 	if !strings.EqualFold(r.Type, "MX") || r.Priority != nil {
 		return r.Value, r.Priority
 	}

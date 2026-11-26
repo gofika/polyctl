@@ -82,9 +82,11 @@ func (*provider) LoginOptions() []string {
 	return []string{secretKeyID, secretKeySecret, metaRegion, metaSite, optCLIProfile}
 }
 
-// RecordTypes are the record types Alidns can write.
+// RecordTypes are the record types Alidns can write: the DNS types of its
+// record types page (URL forwarding is not a DNS type; PTR is not created
+// in a zone there). ALIAS needs the Ultimate or Premium edition.
 func (*provider) RecordTypes() []string {
-	return []string{"A", "AAAA", "CNAME", "MX", "NS", "TXT", "SRV", "CAA"}
+	return []string{"A", "AAAA", "CNAME", "ALIAS", "MX", "NS", "TXT", "SRV", "CAA", "HTTPS", "SVCB", "TLSA"}
 }
 
 var _ platform.RecordTyper = (*provider)(nil)
