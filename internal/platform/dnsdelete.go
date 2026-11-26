@@ -132,7 +132,6 @@ func ClassifyDeleteAll(in DNSDeleteAll) []DeleteAllItem {
 	for _, t := range in.Types {
 		types[strings.ToUpper(t)] = true
 	}
-	unbinder, _ := in.DNS.(RecordUnbinder)
 	sys, _ := in.DNS.(SystemRecordMatcher)
 	var items []DeleteAllItem
 	for _, r := range in.Records {
@@ -154,13 +153,11 @@ func ClassifyDeleteAll(in DNSDeleteAll) []DeleteAllItem {
 			it.Disposition = DispNoID
 		default:
 			it.Disposition = DispNormal
-			if unbinder != nil {
-				if owner, ok := unbinder.Match(in.Zone, r); ok {
-					it.Owner = owner
-					it.Disposition = DispBound
-					if in.KeepBound {
-						it.Disposition = DispKept
-					}
+			if owner, ok := RecordOwner(in.DNS, in.Zone, r); ok {
+				it.Owner = owner
+				it.Disposition = DispBound
+				if in.KeepBound {
+					it.Disposition = DispKept
 				}
 			}
 		}

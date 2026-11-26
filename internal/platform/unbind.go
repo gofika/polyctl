@@ -20,6 +20,15 @@ type RecordUnbinder interface {
 	Unbind(ctx context.Context, zone Zone, rec Record) (handled bool, err error)
 }
 
+// RecordOwner names the service that owns rec (RecordUnbinder.Match) when
+// dns is a RecordUnbinder; ok is false for a record of the DNS API alone.
+func RecordOwner(dns DNSService, zone Zone, rec Record) (owner string, ok bool) {
+	if u, is := dns.(RecordUnbinder); is {
+		return u.Match(zone, rec)
+	}
+	return "", false
+}
+
 // Peer is another account on the same platform, opened.
 type Peer struct {
 	Profile string

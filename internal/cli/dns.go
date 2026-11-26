@@ -627,7 +627,10 @@ of other types on the name are handled as above. Every name is decided before
 anything is written: a no or a cancel writes nothing (exit code 0), and a
 --dry-run reports the deletes and creates of a replace and asks nothing. When a
 write fails after the records it replaces were deleted, the error names them
-with the ` + "`polyctl dns add`" + ` commands that restore them (exit code 1).
+with the ` + "`polyctl dns add`" + ` commands that restore them (exit code 1). A
+record that belongs to another service of the platform (the CNAME of a
+Cloudflare R2 custom domain) is never replaced: the run stops before anything
+is written; dns delete unbinds such a record.
 proxied=true on a platform other than Cloudflare reports the record as
 skipped. The zone is always read live: --offline is refused (exit code 6).
 
@@ -738,6 +741,7 @@ positional record nothing is asked.`,
 			repl := &ensureReplace{rt: rt, t: t}
 			plan, err := platform.PlanDNSEnsure(platform.DNSEnsure{
 				Platform:        t.Platform,
+				Zone:            t.Domain,
 				ZoneID:          t.ResourceID,
 				Existing:        existing,
 				Desired:         desired,

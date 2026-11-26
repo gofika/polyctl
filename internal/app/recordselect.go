@@ -572,12 +572,10 @@ func (rt *Runtime) DeleteRecords(ctx context.Context, d RecordsDelete) (done boo
 	var changes []platform.Change
 	for i, r := range d.Records {
 		detail := r.Value
-		if unbinder != nil {
-			if owner, ok := unbinder.Match(d.Zone, r); ok {
-				owners[i] = owner
-				bound = append(bound, owner)
-				detail += " (unbound from " + owner + ", which removes the record)"
-			}
+		if owner, ok := platform.RecordOwner(d.DNS, d.Zone, r); ok {
+			owners[i] = owner
+			bound = append(bound, owner)
+			detail += " (unbound from " + owner + ", which removes the record)"
 		}
 		changes = append(changes, platform.Change{Resource: RecordResource(r.Name, r.Type), Action: platform.Deleted, ID: r.ID, Detail: detail})
 	}

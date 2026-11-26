@@ -550,6 +550,29 @@ func TestDNSEnsureFailedCreateAfterReplace(t *testing.T) {
 	}
 }
 
+// A record of another type that belongs to another service of the platform
+// (the CNAME of an R2 custom domain) is never replaced: the run is refused
+// before any write, and Decide is not asked.
+func TestDNSEnsureRefusesBoundRecord(t *testing.T) {
+	m := &unbindDNS{handled: true, memDNS: memDNS{recs: []Record{
+		{ID: "c1", Name: "cdn.example.com", Type: "CNAME", Value: "public.r2.dev", Proxied: bp(true), Meta: map[string]any{"r2_bucket": "assets"}},
+	}}}
+	r, asked := ensureDecided(t, m, Cloudflare, false, true, nil, "www:A:203.0.113.5", "cdn:A:203.0.113.6")
+	if r.err == nil || len(asked) != 0 || m.writes() != 0 || len(m.unbinds) != 0 {
+		t.Fatalf("bound record = %v, asked %d, calls %v, unbinds %v", r.err, len(asked), m.calls, m.unbinds)
+	}
+	for _, want := range []string{"cdn.example.com holds CNAME public.r2.dev", "belongs to r2 bucket assets", "`polyctl dns delete`", "nothing was written"} {
+		if !strings.Contains(r.err.Error(), want) {
+			t.Errorf("error %q lacks %q", r.err, want)
+		}
+	}
+	// A type that can share the name with it is pointed at dns add.
+	r, _ = ensureDecided(t, m, Cloudflare, false, true, nil, "cdn:TXT:hello")
+	if r.err == nil || !strings.Contains(r.err.Error(), "`polyctl dns add`") || m.writes() != 0 {
+		t.Errorf("bound record beside TXT = %v, calls %v", r.err, m.calls)
+	}
+}
+
 // A delete of a replace that fails after other records of the name were
 // deleted names those and the commands that restore them.
 func TestDNSEnsureFailedDeleteAfterReplace(t *testing.T) {

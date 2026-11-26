@@ -530,7 +530,9 @@ func desiredDisplay(p ID, d DesiredRecord) string {
 // DNSEnsure is the input of PlanDNSEnsure.
 type DNSEnsure struct {
 	Platform ID
-	ZoneID   string
+	// Zone is the name of the zone, ZoneID its id.
+	Zone   string
+	ZoneID string
 	// Existing are the records of the zone, read in full.
 	Existing []Record
 	Desired  []DesiredRecord
@@ -543,6 +545,10 @@ type DNSEnsure struct {
 	// those. It is called for each such name in input order, after every
 	// other check and before any step runs; an error stops the plan before
 	// anything is written. nil refuses every such name (OccupiedName.Refusal).
+	// A name one of whose records belongs to another service of the platform
+	// (RecordOwner: the CNAME of an R2 custom domain, which the DNS API
+	// cannot delete) is refused before Decide is asked
+	// (OccupiedName.BoundRefusal).
 	Decide func(OccupiedName) (replace bool, err error)
 	// Restore is the command that writes a deleted record again: the error
 	// of a write that fails after the records it replaces were deleted
@@ -652,6 +658,30 @@ func (o OccupiedName) Refusal() error {
 		return o.Ambiguous()
 	}
 	return fmt.Errorf("%s holds %s (%s); replacing it with %s needs a confirmation (nothing was written)", o.FQDN, o.othersCount(), o.OthersText(), o.What())
+}
+
+// BoundRefusal is the error of a name whose record r of another type
+// belongs to owner, another service of the platform: dns ensure does not
+// replace it, as `dns delete` unbinds it there instead of deleting it.
+func (o OccupiedName) BoundRefusal(r Record, owner string) error {
+	hint := fmt.Sprintf("add %s beside it with `polyctl dns add`, or delete it first with `polyctl dns delete`, which unbinds it from %s", o.What(), owner)
+	if !o.CanKeep() {
+		hint = fmt.Sprintf("delete it first with `polyctl dns delete`, which unbinds it from %s, then run dns ensure again", owner)
+	}
+	return fmt.Errorf("%s holds %s %s, which belongs to %s and cannot be deleted through the DNS API; dns ensure does not replace it with %s: %s (nothing was written)",
+		o.FQDN, strings.ToUpper(r.Type), recordDisplay(o.Platform, r), owner, o.What(), hint)
+}
+
+// boundOther returns the first record of o.Others that belongs to another
+// service of the platform (RecordOwner), with that owner.
+func (in DNSEnsure) boundOther(o OccupiedName) (Record, string, bool) {
+	zone := Zone{ID: in.ZoneID, Name: in.Zone}
+	for _, r := range o.Others {
+		if owner, ok := RecordOwner(in.DNS, zone, r); ok {
+			return r, owner, true
+		}
+	}
+	return Record{}, "", false
 }
 
 // occupiedNames are the names of in that need a decision (OccupiedName), in
@@ -819,6 +849,9 @@ func PlanDNSEnsure(in DNSEnsure) (*Plan, error) {
 	replaced := map[string]OccupiedName{}
 	for _, o := range occupiedNames(in) {
 		replace, err := false, error(nil)
+		if r, owner, ok := in.boundOther(o); ok {
+			return nil, o.BoundRefusal(r, owner)
+		}
 		if in.Decide == nil {
 			err = o.Refusal()
 		} else {
