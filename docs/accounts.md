@@ -349,7 +349,7 @@ In 0.1.x a profile was one account on one platform; now it is a set of accounts,
 | (none) | `gcp whoami`, `godaddy whoami` |
 | `cf dns update\|delete <zone> --id <id>` | `cloudflare dns update\|delete <zone> <name> [<type> [<value>]]`, or `--id <id>` (`<zone> <id>` still works) |
 | `namecom dns update\|delete <domain> --id <id>` | `namecom dns update\|delete <domain> <name> [<type> [<value>]]`, or `--id <id>` (`<domain> <id>` still works) |
-| `aliyun dns record update\|delete <domain> --id <id>` | `aliyun dns record update\|delete <domain> <id>` |
+| `aliyun dns record update\|delete <domain> --id <id>` | `aliyun dns record update\|delete <domain> <name> [<type> [<value>]]`, or `--id <id>` (`<domain> <id>` still works) |
 | `aliyun dns record add` | `aliyun dns record create` |
 | `godaddy dns replace` | `godaddy dns upsert` |
 | `godaddy domain available` | `godaddy domain check` |
@@ -358,7 +358,7 @@ In 0.1.x a profile was one account on one platform; now it is a set of accounts,
 | `gcp compute list\|start\|stop` | `gcp compute instance list\|start\|stop` |
 | `aliyun ecs list\|start\|stop` | `aliyun ecs instance list\|start\|stop` |
 
-`--id` is an optional flag on `dns delete`, `cloudflare dns update|delete`, `namecom dns update|delete`, `godaddy dns delete` and `gcp dns record delete`. All `whoami` commands now print `profile`, `platform`, `identity`.
+`--id` is an optional flag on `dns delete`, `cloudflare dns update|delete`, `namecom dns update|delete`, `aliyun dns record update|delete`, `godaddy dns delete` and `gcp dns record delete`. All `whoami` commands now print `profile`, `platform`, `identity`.
 
 **Login options:**
 

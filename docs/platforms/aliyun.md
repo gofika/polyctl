@@ -63,8 +63,8 @@ aliyun whoami                                     # account, ARN, identity type
 aliyun dns domain list
 aliyun dns record list <domain> [--type] [--name]
 aliyun dns record create <domain> <name> <type> <value> [--ttl 600] [--priority] [--line default|telecom|unicom|mobile|oversea]
-aliyun dns record update <domain> <record-id> [--name] [--type] [--value] [--ttl] [--priority] [--line]
-aliyun dns record delete <domain> <record-id>
+aliyun dns record update <domain> (<name> [<type> [<value>]] [--current-line <line>] | --id <record-id>) [--name] [--type] [--value] [--ttl] [--priority] [--line]
+aliyun dns record delete <domain> (<name> [<type> [<value>]] [--line <line>] | --id <record-id>) [-y]
 aliyun domain list | get <domain>
 aliyun domain ns get <domain> | ns set <domain> <nameserver>...
 
@@ -144,10 +144,13 @@ aliyun cas certificate delete (<cert-id> | --expired) [--force] [--region <r>]..
 
 - `create` takes the record as arguments, like a zone file line: `polyctl aliyun dns record create example.com www A 203.0.113.10`. `<name>` is relative to the domain (`www`, `a.b`), `@` for the apex, or a full name inside the domain; `<type>` is case-insensitive; the value is one argument (quote one that contains spaces; one that starts with `-` goes after `--`). A wrong number of arguments is exit code 2, and the message shows the usage. With only `<domain>`, a terminal asks for the type and the value (the record is then at the apex).
 - Former form (0.5.x): `create` still reads the record from `--name`, `--type` and `--value` (without `--name`, the apex). These flags are no longer listed in the help. A positional record together with one of them is exit code 2.
-- `update` changes the fields given as `--name`, `--type` and `--value`; `--name` is relative to the domain (`www`, `@`) or a full name.
 - Alidns calls the relative record name `RR`; polyctl shows the full name. `--ttl 0` uses the Alidns default (600). `--priority` is for MX records (1-50).
 - Records carry a resolution line (`--line`, shown in the `LINE` column).
-- Records have ids, so `update` and `delete` take `<record-id>` as an argument.
+- `record update` and `record delete` find their record by `<name>`. `<type>` and `<value>` are needed only to tell records apart; `--id <record-id>` names one record exactly and cannot be combined with a positional record. The records of the domain are read live. With only `<domain>`, a terminal lists the records to choose from (a record that is not on the default line shows its line).
+- A record can exist once per resolution line. The line is one more way to tell records apart, needed only when records of the name differ in nothing else: `--line <line>` of `record delete`, `--current-line <line>` of `record update` (where `--line` is the line the record is moved to). Neither can be combined with `--id`. The hint of an ambiguous selection names the line only when the candidates differ in it.
+- `record delete`: a name whose records have one type needs no `<type>`. A single match is deleted at once. Several matches are listed with their ids and the way to delete one of them only (`<value>`, `--line` or `--id`), then confirmed (`--yes` in the non-interactive flow; see [Confirmations](../interactive.md#confirmations)). A name with records of several types is never deleted as a whole: a terminal lists its records to tick, scripts get exit code 5 naming the types, also with `--yes`. JSON: `{"profile", "zone", "records": [...]}`, plus `"deleted": "<record-id>"` when one record was deleted.
+- `record update` changes exactly one record, the fields given with `--name` (relative to the domain, `@`, or a full name), `--type`, `--value`, `--ttl`, `--priority` and `--line`; the positional `<type>` and `<value>` say which record is meant, the flags what it becomes. Several matches are a list to choose one from on a terminal, and exit code 5 with the candidates and their ids on stderr otherwise (also with `--yes`). Without a flag that changes something a terminal asks for the new value (the current one is the default; the same value changes nothing, exit code 0), and the non-interactive flow is exit code 2.
+- Former form: `record update|delete <domain> <record-id>` still works. A single argument after the domain that is the id of a record of the domain, and not the name of one, is taken for that id; one that is both is exit code 5 and names `--id` and the full record name as the two ways to say which.
 - `domain ns set` writes the nameservers at the registrar. The registrar API used depends on the account's site.
 
 ## ECS instances

@@ -365,8 +365,7 @@ The same operation has the same verb and shape on every platform:
 | Kind | Commands |
 | --- | --- |
 | Registrar groups | `list`, `get <domain>`, `ns get <domain>`, `ns set <domain> <nameserver>...` |
-| Records with an id (Cloudflare, name.com) | `create`, `update <zone> [<name> [<type> [<value>]]]`, `delete <zone> [<name> [<type> [<value>]]]` (`<domain>` on name.com): the record is found by name, `<type>` and `<value>` only tell records apart, and `--id <record-id>` names one exactly (the former `<zone> <record-id>` still works) |
-| Records with an id (Alibaba Cloud) | `create`, `update <domain> <record-id>`, `delete <domain> <record-id>` |
+| Records with an id (Cloudflare, name.com, Alibaba Cloud) | `create`, `update <zone> [<name> [<type> [<value>]]]`, `delete <zone> [<name> [<type> [<value>]]]` (`<domain>` on name.com and Alibaba Cloud): the record is found by name, `<type>` and `<value>` only tell records apart (on Alibaba Cloud also the line), and `--id <record-id>` names one exactly (the former `<zone> <record-id>` still works) |
 | Records by name and type (Route 53, Cloud DNS, GoDaddy) | `upsert` sets the whole record set; `delete <name> [<type>]` (`<type>` only for a name with records of several types), with `--id` as an optional way to pick one record |
 | Compute services | `<service> instance list\|start\|stop ...` |
 

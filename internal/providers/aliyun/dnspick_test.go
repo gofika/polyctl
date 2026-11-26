@@ -76,7 +76,7 @@ func TestDNSRecordCreateInteractive(t *testing.T) {
 	}
 }
 
-// dns record delete without arguments asks for the zone and the record;
+// dns record delete without arguments asks for the zone and the records;
 // leaving the list changes nothing.
 func TestDNSRecordDeleteInteractive(t *testing.T) {
 	t.Setenv(app.EnvNonInteractive, "")
@@ -91,7 +91,7 @@ func TestDNSRecordDeleteInteractive(t *testing.T) {
 		deleted = q.Get("RecordId")
 		return 200, map[string]any{"RecordId": deleted}
 	})
-	p := prompttest.New(t, "example.com", "77")
+	p := prompttest.New(t, "example.com", []string{"77"})
 	h.rt.Picker = p
 	if err := h.run("dns", "record", "delete"); err != nil {
 		t.Fatalf("delete: %v", err)
@@ -100,7 +100,7 @@ func TestDNSRecordDeleteInteractive(t *testing.T) {
 	if deleted != "77" {
 		t.Errorf("deleted %q", deleted)
 	}
-	if l := prompttest.Labels(p.Find("Record to delete").Options); !strings.Contains(l, "www.example.com  A  203.0.113.9") {
+	if l := prompttest.Labels(p.Find("Delete which records of example.com?").Options); !strings.Contains(l, "www.example.com  A  203.0.113.9") {
 		t.Errorf("record labels: %s", l)
 	}
 

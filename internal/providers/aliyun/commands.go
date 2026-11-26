@@ -326,22 +326,74 @@ The name is not asked: the record is then at the apex.`,
 	return cmd
 }
 
+// recordTargetHelp says how record update and delete find their record.
+var recordTargetHelp = app.RecordTargetHelp("domain", "polyctl aliyun dns record list")
+
+// lineQualifier is the resolution line as one more way to tell records
+// apart: alidns holds a record of one name, type and value once per line.
+// flag is the flag of the command that says which line is meant.
+func lineQualifier(flag, line string) []app.RecordQualifier {
+	return []app.RecordQualifier{{Flag: flag, Noun: "line", Value: line, Of: recordLine}}
+}
+
+// lineMark notes the line of a record in a list when it is not the default
+// one.
+func lineMark(r platform.Record) string {
+	if l := recordLine(r); l != "" && l != defaultLine {
+		return "line " + l
+	}
+	return ""
+}
+
+// lineWithID refuses a line beside --id, which names the record already.
+func lineWithID(cmd *cobra.Command, flag string) error {
+	if cmd.Flags().Changed("id") && cmd.Flags().Changed(flag) {
+		return app.UsageErrf("--id selects one record; it cannot be combined with --%s", flag)
+	}
+	return nil
+}
+
 func newDNSRecordUpdateCmd(rt *app.Runtime) *cobra.Command {
-	var typ, name, value, line string
+	var typ, name, value, line, id, currentLine string
 	var ttl, priority int
+	changeFlags := []string{"value", "ttl", "priority", "line", "name", "type"}
 	cmd := &cobra.Command{
-		Use:   "update <domain> <record-id>",
+		Use:   "update <domain> [<name> [<type> [<value>]]]",
 		Short: "Update one record (fields that are not given keep their value)",
-		Long: "Update the record <record-id> of <domain>; the ids are shown by\n" +
-			"`polyctl aliyun dns record list`. Only the fields given are changed.",
-		Args: app.RecordIDArgsOrInteractive(rt),
+		Long: `Update one record of <domain>: the record of <name>, or the one with --id.
+Only the fields given with flags are changed; the positional <type> and
+<value> say which record is meant, --type and --value what it becomes.
+
+` + recordTargetHelp + `
+
+A record can exist once per resolution line. --current-line says which line
+the record meant is on, and is needed only when records of the name differ in
+nothing else; --line is the line the record is moved to.
+
+` + app.RecordUpdateHelp,
+		Example: `  polyctl aliyun dns record update example.com www --value 203.0.113.20
+  polyctl aliyun dns record update example.com www A 203.0.113.10 --value 203.0.113.20
+  polyctl aliyun dns record update example.com www A --current-line telecom --ttl 900
+  polyctl aliyun dns record update example.com --id 9001 --line unicom`,
+		Args:              app.RecordTargetArgsOrInteractive(rt),
+		ValidArgsFunction: app.CompleteRecordTargetArgs(rt, app.CompleteDomainArg(rt, platform.Aliyun), platform.Aliyun),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			args, err := recordArgs(cmd.Context(), rt, args, "Record to update")
+			target, err := app.ParseRecordTarget(cmd, args)
 			if err != nil {
 				return err
 			}
-			id := args[1]
+			if err := lineWithID(cmd, "current-line"); err != nil {
+				return err
+			}
+			changes, err := rt.RecordChanges(cmd, changeFlags...)
+			if err != nil {
+				return err
+			}
 			if err := mustPositive("ttl", ttl); err != nil {
+				return err
+			}
+			args, err = rt.DomainArg(cmd.Context(), args, platform.Aliyun, platform.ResZone, nil)
+			if err != nil {
 				return err
 			}
 			zone := platform.NormalizeDomain(args[0])
@@ -353,17 +405,22 @@ func newDNSRecordUpdateCmd(rt *app.Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			var cur *platform.Record
-			for i := range existing {
-				if existing[i].ID == id {
-					cur = &existing[i]
-					break
+			chosen, err := rt.SelectRecords(target.Select(app.RecordSelect{Zone: zone, Records: existing, ID: id, One: true, Verb: "Update",
+				Qualifiers: lineQualifier("--current-line", currentLine), Mark: lineMark, Grid: recordGrid}))
+			if err != nil {
+				return err
+			}
+			cur := chosen.Records[0]
+			if !changes {
+				if value, err = rt.AskNewRecordValue(cur); err != nil {
+					return err
 				}
 			}
-			if cur == nil {
-				return fmt.Errorf("record %s in %s: %w", id, zone, platform.ErrNotFound)
+			rec := cur
+			rec.Extra = make(map[string]any, len(cur.Extra)+1)
+			for k, v := range cur.Extra {
+				rec.Extra[k] = v
 			}
-			rec := *cur
 			if typ != "" {
 				rec.Type = strings.ToUpper(typ)
 			}
@@ -381,12 +438,9 @@ func newDNSRecordUpdateCmd(rt *app.Runtime) *cobra.Command {
 				rec.Priority = &pr
 			}
 			if line != "" {
-				if rec.Extra == nil {
-					rec.Extra = map[string]any{}
-				}
 				rec.Extra["line"] = line
 			}
-			if done, err := rt.WouldWrite(platform.Target{Platform: platform.Aliyun, Profile: p.Name, Domain: zone}, platform.Change{Resource: app.RecordResource(rec.Name, rec.Type), Action: platform.Updated, ID: id, Detail: cur.Value + " -> " + rec.Value}); done || err != nil {
+			if done, err := rt.WouldWrite(platform.Target{Platform: platform.Aliyun, Profile: p.Name, Domain: zone}, platform.Change{Resource: app.RecordResource(rec.Name, rec.Type), Action: platform.Updated, ID: cur.ID, Detail: cur.Value + " -> " + rec.Value}); done || err != nil {
 				return err
 			}
 			out, err := c.UpdateRecord(cmd.Context(), zone, rec)
@@ -400,6 +454,8 @@ func newDNSRecordUpdateCmd(rt *app.Runtime) *cobra.Command {
 			})
 		},
 	}
+	cmd.Flags().StringVar(&id, "id", "", "update the record with this id")
+	cmd.Flags().StringVar(&currentLine, "current-line", "", "the resolution line the record is on, to tell records apart")
 	cmd.Flags().StringVar(&typ, "type", "", "new record type")
 	cmd.Flags().StringVar(&name, "name", "", "new record name relative to the domain (www, @)")
 	cmd.Flags().StringVar(&value, "value", "", "new record value")
@@ -409,59 +465,83 @@ func newDNSRecordUpdateCmd(rt *app.Runtime) *cobra.Command {
 	return cmd
 }
 
+// recordDeleteResult is the output of dns record delete. Deleted is the id
+// of the record when one was deleted, as the command printed it when it took
+// one record id.
+type recordDeleteResult struct {
+	Profile string            `json:"profile" yaml:"profile"`
+	Zone    string            `json:"zone" yaml:"zone"`
+	Deleted string            `json:"deleted,omitempty" yaml:"deleted,omitempty"`
+	Records []platform.Record `json:"records" yaml:"records"`
+}
+
 func newDNSRecordDeleteCmd(rt *app.Runtime) *cobra.Command {
+	var id, line string
 	cmd := &cobra.Command{
-		Use:   "delete <domain> <record-id>",
-		Short: "Delete one record (ids are shown by `polyctl aliyun dns record list`)",
-		Args:  app.RecordIDArgsOrInteractive(rt),
+		Use:   "delete <domain> [<name> [<type> [<value>]]]",
+		Short: "Delete the records of a name (optionally of one type, value and line), or one record by --id",
+		Long: `Delete the records of <name> in <domain>, or the one record with --id.
+
+` + recordTargetHelp + `
+
+A record can exist once per resolution line. --line deletes the records on
+that line only, and is needed only when records of the name differ in nothing
+else.
+
+` + app.RecordDeleteHelp + `
+
+--dry-run reports what would be deleted and asks nothing.`,
+		Example: `  polyctl aliyun dns record delete example.com www
+  polyctl aliyun dns record delete example.com www A
+  polyctl aliyun dns record delete example.com www A 203.0.113.10
+  polyctl aliyun dns record delete example.com www A --line telecom
+  polyctl aliyun dns record delete example.com --id 9001`,
+		Args:              app.RecordTargetArgsOrInteractive(rt),
+		ValidArgsFunction: app.CompleteRecordTargetArgs(rt, app.CompleteDomainArg(rt, platform.Aliyun), platform.Aliyun),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			args, err := recordArgs(cmd.Context(), rt, args, "Record to delete")
+			target, err := app.ParseRecordTarget(cmd, args)
 			if err != nil {
 				return err
 			}
-			id := args[1]
-			zone := platform.NormalizeDomain(args[0])
+			if err := lineWithID(cmd, "line"); err != nil {
+				return err
+			}
+			args, err = rt.DomainArg(cmd.Context(), args, platform.Aliyun, platform.ResZone, nil)
+			if err != nil {
+				return err
+			}
+			domain := platform.NormalizeDomain(args[0])
 			c, p, err := openClient(rt, cmd.Context())
 			if err != nil {
 				return err
 			}
-			if done, err := rt.WouldWrite(platform.Target{Platform: platform.Aliyun, Profile: p.Name, Domain: zone}, platform.Change{Resource: "record/" + id, Action: platform.Deleted, ID: id, Detail: "domain " + zone}); done || err != nil {
+			existing, err := c.ListRecords(cmd.Context(), domain)
+			if err != nil {
 				return err
 			}
-			if err := c.DeleteRecord(cmd.Context(), zone, id); err != nil {
+			zone := platform.Zone{ID: domain, Name: domain}
+			sel := target.Select(app.RecordSelect{Zone: domain, Records: existing, ID: id, Verb: "Delete",
+				Qualifiers: lineQualifier("--line", line), Mark: lineMark, Grid: recordGrid})
+			sel.Offer, _ = app.DeletableRecords(c, zone)
+			chosen, err := rt.SelectRecords(sel)
+			if err != nil {
 				return err
 			}
-			if db, err := rt.DB(); err == nil {
-				_ = db.Delete(cmd.Context(), inventory.Set{Platform: platform.Aliyun, Profile: p.Name}, platform.ResDNSRecord, id)
+			del := app.RecordsDelete{Target: platform.Target{Platform: platform.Aliyun, Profile: p.Name, Domain: domain},
+				Zone: zone, DNS: c, Records: chosen.Records, Grid: recordGrid, Exact: sel.Exact(chosen)}
+			if done, err := rt.DeleteRecords(cmd.Context(), del); !done || err != nil {
+				return err
 			}
-			rt.Infof("deleted record %s from %s via aliyun/%s", id, zone, p.Name)
-			return rt.Render(map[string]string{"profile": p.Name, "zone": zone, "deleted": id}, func() output.Grid { return output.Grid{} })
+			res := recordDeleteResult{Profile: p.Name, Zone: domain, Records: chosen.Records}
+			if len(chosen.Records) == 1 {
+				res.Deleted = chosen.Records[0].ID
+			}
+			return rt.Render(res, func() output.Grid { return output.Grid{} })
 		},
 	}
+	cmd.Flags().StringVar(&id, "id", "", "delete the record with this id")
+	cmd.Flags().StringVar(&line, "line", "", "only the records on this resolution line, to tell records apart")
 	return cmd
-}
-
-// recordArgs fills in a missing <domain> and <record-id> of record update
-// and delete in the interactive flow: the zone from the indexed alidns
-// zones, then the record from the records of the zone, read live.
-func recordArgs(ctx context.Context, rt *app.Runtime, args []string, title string) ([]string, error) {
-	args, err := rt.DomainArg(ctx, args, platform.Aliyun, platform.ResZone, nil)
-	if err != nil || len(args) >= 2 {
-		return args, err
-	}
-	c, _, err := openClient(rt, ctx)
-	if err != nil {
-		return nil, err
-	}
-	recs, err := c.ListRecords(ctx, platform.NormalizeDomain(args[0]))
-	if err != nil {
-		return nil, err
-	}
-	id, err := rt.PickRecordID(title, recs, nil)
-	if err != nil {
-		return nil, err
-	}
-	return append(args, id), nil
 }
 
 // ---- domain (registrar) ----------------------------------------------------

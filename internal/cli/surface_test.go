@@ -474,24 +474,11 @@ func TestPlatformTreeShapes(t *testing.T) {
 		}
 	}
 
-	// The record id is positional where it is required, and a flag where it
-	// is one of two ways to address a record.
-	for _, path := range []string{"aliyun dns record update", "aliyun dns record delete"} {
-		c := find(root, path)
-		if c == nil {
-			continue
-		}
-		if !strings.HasSuffix(c.Use, " <record-id>") || c.Flags().Lookup("id") != nil {
-			t.Errorf("%s: use %q, --id %v", path, c.Use, c.Flags().Lookup("id") != nil)
-		}
-		if err := c.Args(c, []string{"example.com"}); ExitCodeFor(err) != ExitUsage {
-			t.Errorf("%s without the record id = %v", path, err)
-		}
-	}
 	// Records found by name: <name> [<type> [<value>]] after the zone, the
 	// id as the exact selector --id. Without a terminal the zone alone is
 	// a usage error, and --id cannot stand beside a record.
-	for _, path := range []string{"cloudflare dns update", "cloudflare dns delete", "namecom dns update", "namecom dns delete"} {
+	for _, path := range []string{"cloudflare dns update", "cloudflare dns delete", "namecom dns update", "namecom dns delete",
+		"aliyun dns record update", "aliyun dns record delete"} {
 		c := find(root, path)
 		if c == nil {
 			t.Errorf("%s is missing", path)
@@ -692,6 +679,7 @@ func TestDocsListConfirmingCommands(t *testing.T) {
 		{"cloudflare redirect rule set", "Cloudflare", "`redirect rule set --replace`"},
 		{"godaddy dns delete", "GoDaddy", "`dns delete`"},
 		{"namecom dns delete", "name.com", "`dns delete`"},
+		{"aliyun dns record delete", "Alibaba Cloud", "`dns record delete`"},
 		{"aws route53 record delete", "AWS", "`route53 record delete`"},
 		{"gcp dns record delete", "GCP", "`dns record delete`"},
 	} {
