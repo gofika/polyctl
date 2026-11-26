@@ -564,7 +564,7 @@ func pickRecordToDelete(rt *app.Runtime, z *zoneRef, recs []platform.Record) (re
 		}
 		opts = append(opts, prompt.Option{Label: recordSetLabel(s), Value: strconv.Itoa(i)})
 	}
-	v, err := rt.Choose(app.Choice{Title: "Record set to delete", Options: opts, Arg: "--name and --type", What: "deletable record set in zone " + z.ID})
+	v, err := rt.Choose(app.Choice{Title: "Record set to delete", Options: opts, Arg: "<name> and <type>", What: "deletable record set in zone " + z.ID})
 	if err != nil {
 		return recordSet{}, nil, err
 	}

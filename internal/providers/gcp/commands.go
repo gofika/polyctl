@@ -588,25 +588,41 @@ func newRecordUpsertCmd(rt *app.Runtime) *cobra.Command {
 	var values []string
 	var ttl, priority int
 	cmd := &cobra.Command{
-		Use:   "upsert <zone>",
-		Short: "Create or replace a record set (--value may repeat; the set becomes exactly these values)",
-		Long: `Create or replace the record set identified by --name and --type. Cloud DNS
-stores all values of a name/type pair in one set; this command makes the set
-equal to the given --value list (repeat --value for multi-value sets).
+		Use:   "upsert <zone> <name> <type> <value>...",
+		Short: "Create or replace a record set (the set becomes exactly the values given)",
+		Long: `Create or replace the record set of <name> and <type>. Cloud DNS stores all
+values of a name/type pair in one set; this command makes the set equal to
+the values given, one argument each.
+
+` + recordArgsHelp + `
 
 MX and SRV values take the priority from --priority, or as a leading number
 inside the value ("10 mail.example.com"). Hostnames get the trailing dot
 Cloud DNS expects; TXT and SPF values are quoted automatically.
 
 On a terminal, a missing <zone> is picked from the managed zones of the
-profile, a missing --type from the record types, and a missing --value is
-asked (one value, checked as it is typed; the current values of the set
-are shown, and the first one proposed). --name defaults to the apex and is
-not asked.`,
-		Args: app.ArgsOrInteractive(rt, 1, nil),
+profile, and with only the zone the type is picked from the record types
+and the value is asked (one value, checked as it is typed; the current
+values of the set are shown, and the first one proposed). The name is not
+asked: the set is then at the zone apex.`,
+		Example: `  polyctl gcp dns record upsert example-zone www A 203.0.113.10 203.0.113.11
+  polyctl gcp dns record upsert example-zone @ MX "10 mx1.example.net" "20 mx2.example.net" --ttl 300
+  polyctl gcp dns record upsert example-zone @ TXT "v=spf1 include:_spf.example.net ~all"`,
+		Args:              app.RecordArgsOrInteractive(rt, 1, -1),
+		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.GCP)),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// The record is positional (<name> <type> <value>...) or, in the
+			// former form, given with --name, --type and --value.
+			if len(args) > 1 {
+				rec, err := app.ParseRecordArgs(cmd, args[1:], 1, -1)
+				if err != nil {
+					return err
+				}
+				name, typ, values = rec.Name, rec.Type, rec.Values
+				args = args[:1]
+			}
 			if (typ == "" || len(values) == 0) && !rt.Interactive() {
-				return app.UsageErrf("--type and at least one --value are required")
+				return app.UsageErrf("%s", app.RecordUsage(cmd, 1, -1))
 			}
 			if rt.Flags.Offline {
 				return app.ErrOffline
@@ -687,42 +703,74 @@ not asked.`,
 	cmd.Flags().StringArrayVar(&values, "value", nil, "record value (repeat for multiple values)")
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 = keep existing, or 300 for a new set)")
 	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX/SRV records")
+	hideFormerRecordFlags(cmd)
 	return cmd
+}
+
+// recordArgsHelp is the paragraph of the record commands about their
+// positional record.
+const recordArgsHelp = `<name> is relative to the zone (www, a.b), @ for the zone apex, or a full name
+inside the zone (www.example.com). <type> is case-insensitive. A value is one
+argument: quote one that contains spaces. A value that starts with "-" goes
+after "--".`
+
+// hideFormerRecordFlags leaves --name, --type and --value, the former form
+// of the record of a record command, out of its help. They keep working.
+func hideFormerRecordFlags(cmd *cobra.Command) {
+	for _, n := range []string{"name", "type", "value"} {
+		_ = cmd.Flags().MarkHidden(n)
+	}
 }
 
 func newRecordDeleteCmd(rt *app.Runtime) *cobra.Command {
 	var typ, name, value, id string
 	var priority int
 	cmd := &cobra.Command{
-		Use:   "delete <zone>",
-		Short: "Delete a record set (--name --type), one value of it (--value) or a record by --id",
-		Long: `Delete the record set of --name and --type, only one of its values (--value),
+		Use:   "delete <zone> [<name> <type> [<value>]]",
+		Short: "Delete a record set (<name> <type>), one value of it (<value>) or a record by --id",
+		Long: `Delete the record set of <name> and <type>, only one of its values (<value>),
 or the record value given with --id. Cloud DNS addresses records by name and
 type, so the id is an optional second way to pick one value here, not a
 required argument.
 
+` + recordArgsHelp + `
+
 On a terminal, a missing <zone> is picked from the managed zones of the
-profile, and without --name and --type (or --id) the record sets of the
-zone are offered (of --name when it is given; the apex SOA and NS sets
-left out), then, for a set of several values, the whole set or one value.
+profile, and with only the zone the record sets of the zone are offered (the
+apex SOA and NS sets left out), then, for a set of several values, the whole
+set or one value.
 
 Deleting a whole record set lists its values, then asks one yes/no question
 (default no; --yes skips it). The non-interactive flow asks nothing: --yes
 is required (exit code 2 without it, before anything is read). Declining
 changes nothing; a missing set is not found (exit code 4) before the
-question. Removing one value (--value, --id) asks nothing, like dns delete
+question. Removing one value (<value>, --id) asks nothing, like dns delete
 of one record. --dry-run asks nothing.`,
-		Args: app.ArgsOrInteractive(rt, 1, nil),
+		Example: `  polyctl gcp dns record delete example-zone _acme-challenge TXT --yes
+  polyctl gcp dns record delete example-zone www A 203.0.113.11
+  polyctl gcp dns record delete example-zone --id 'acme-prod/example-zone|A|www.example.com|203.0.113.11'`,
+		Args:              app.RecordArgsOrInteractive(rt, 0, 1),
+		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.GCP)),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// The record is positional (<name> <type> [<value>]) or, in the
+			// former form, given with --name, --type and --value.
+			if len(args) > 1 {
+				rec, err := app.ParseRecordArgs(cmd, args[1:], 0, 1)
+				if err != nil {
+					return err
+				}
+				name, typ, value = rec.Name, rec.Type, rec.Value()
+				args = args[:1]
+			}
 			if id != "" && (typ != "" || name != "" || value != "" || cmd.Flags().Changed("priority")) {
 				// The id selects one value; a filter beside it would be
 				// ignored, and a wrong id would delete an unrelated value
 				// without asking.
-				return app.UsageErrf("--id selects one record value; it cannot be combined with --name, --type, --value or --priority")
+				return app.UsageErrf("--id selects one record value; it cannot be combined with a record (<name> <type> [<value>]) or --priority")
 			}
 			pick := id == "" && (typ == "" || name == "")
 			if pick && !rt.Interactive() {
-				return app.UsageErrf("--name and --type (or --id) are required")
+				return app.UsageErrf("a record or --id is required: %s", app.RecordUsage(cmd, 0, 1))
 			}
 			if !rt.Flags.DryRun && !pick && id == "" && value == "" {
 				if err := rt.CanConfirm(fmt.Sprintf("delete the %s record set of %s", strings.ToUpper(typ), platform.FQDN(name, "<zone>"))); err != nil {
@@ -841,8 +889,9 @@ of one record. --dry-run asks nothing.`,
 	cmd.Flags().StringVar(&typ, "type", "", "record type")
 	cmd.Flags().StringVar(&name, "name", "", "record name relative to the zone (www, @) or FQDN; default: the zone apex")
 	cmd.Flags().StringVar(&value, "value", "", "only remove this value from the set")
-	cmd.Flags().IntVar(&priority, "priority", 0, "priority of the MX/SRV value given with --value")
+	cmd.Flags().IntVar(&priority, "priority", 0, "priority of the MX/SRV <value>, when the value does not start with one")
 	cmd.Flags().StringVar(&id, "id", "", "delete the record value with this id (project/zone|TYPE|name|value)")
+	hideFormerRecordFlags(cmd)
 	return cmd
 }
 

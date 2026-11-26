@@ -58,9 +58,9 @@ func TestDNSZonePick(t *testing.T) {
 	}
 }
 
-// upsert without --type / --value asks them, the current value of the set
+// upsert without a type and a value asks them, the current value of the set
 // proposed and the value checked as it is typed; the non-interactive flow
-// still names --type and --value.
+// shows the usage of the positional record.
 func TestDNSRecordUpsertAsks(t *testing.T) {
 	h, g := dnsHarness(t)
 	p := h.answer("proj/example-zone", "A", "not-an-ip", "192.0.2.7")
@@ -75,7 +75,7 @@ func TestDNSRecordUpsertAsks(t *testing.T) {
 		t.Errorf("rrset = %+v", rs)
 	}
 	h.nonInteractive()
-	if err := h.run("dns", "record", "upsert", "example-zone", "--name", "www"); exitClass(err) != "usage" || !strings.Contains(err.Error(), "--type") {
+	if err := h.run("dns", "record", "upsert", "example-zone", "--name", "www"); exitClass(err) != "usage" || !strings.Contains(err.Error(), "usage: gcp dns record upsert <zone> <name> <type> <value>...") {
 		t.Errorf("non-interactive = %v", err)
 	}
 }
@@ -110,7 +110,7 @@ func TestDNSRecordDeletePicks(t *testing.T) {
 	}
 
 	h.nonInteractive()
-	if err := h.run("dns", "record", "delete", "example-zone"); exitClass(err) != "usage" || !strings.Contains(err.Error(), "--name and --type") {
+	if err := h.run("dns", "record", "delete", "example-zone"); exitClass(err) != "usage" || !strings.Contains(err.Error(), "a record or --id is required: usage: gcp dns record delete <zone> <name> <type> [<value>]") {
 		t.Errorf("non-interactive = %v", err)
 	}
 }
