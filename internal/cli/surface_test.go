@@ -476,7 +476,7 @@ func TestPlatformTreeShapes(t *testing.T) {
 
 	// The record id is positional where it is required, and a flag where it
 	// is one of two ways to address a record.
-	for _, path := range []string{"namecom dns update", "namecom dns delete", "aliyun dns record update", "aliyun dns record delete"} {
+	for _, path := range []string{"aliyun dns record update", "aliyun dns record delete"} {
 		c := find(root, path)
 		if c == nil {
 			continue
@@ -491,13 +491,13 @@ func TestPlatformTreeShapes(t *testing.T) {
 	// Records found by name: <name> [<type> [<value>]] after the zone, the
 	// id as the exact selector --id. Without a terminal the zone alone is
 	// a usage error, and --id cannot stand beside a record.
-	for _, path := range []string{"cloudflare dns update", "cloudflare dns delete"} {
+	for _, path := range []string{"cloudflare dns update", "cloudflare dns delete", "namecom dns update", "namecom dns delete"} {
 		c := find(root, path)
 		if c == nil {
 			t.Errorf("%s is missing", path)
 			continue
 		}
-		if !strings.HasSuffix(c.Use, " <zone> [<name> [<type> [<value>]]]") || c.Flags().Lookup("id") == nil {
+		if !strings.HasSuffix(c.Use, "> [<name> [<type> [<value>]]]") || c.Flags().Lookup("id") == nil {
 			t.Errorf("%s: use %q, --id %v", path, c.Use, c.Flags().Lookup("id") != nil)
 		}
 		for n, wantErr := range map[int]bool{0: true, 1: true, 2: false, 3: false, 4: false, 5: true} {
@@ -691,6 +691,7 @@ func TestDocsListConfirmingCommands(t *testing.T) {
 		{"cloudflare cache rule set", "Cloudflare", "`cache rule set --replace`"},
 		{"cloudflare redirect rule set", "Cloudflare", "`redirect rule set --replace`"},
 		{"godaddy dns delete", "GoDaddy", "`dns delete`"},
+		{"namecom dns delete", "name.com", "`dns delete`"},
 		{"aws route53 record delete", "AWS", "`route53 record delete`"},
 		{"gcp dns record delete", "GCP", "`dns record delete`"},
 	} {

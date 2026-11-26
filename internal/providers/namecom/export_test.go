@@ -2,6 +2,8 @@ package namecom
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -53,4 +55,26 @@ func (x *Fake) Records(domain string) []string {
 		out = append(out, fmt.Sprintf("%s %s %s %d %s", host, r.Type, r.Answer, r.TTL, prio))
 	}
 	return out
+}
+
+// Add puts a record into domain (host "" or "@" for the apex) and returns
+// its id.
+func (x *Fake) Add(domain, host, typ, answer string) string {
+	x.fs.mu.Lock()
+	defer x.fs.mu.Unlock()
+	if host == "@" {
+		host = ""
+	}
+	return strconv.FormatInt(x.fs.addRecord(domain, apiRecord{Host: host, Type: typ, Answer: answer, TTL: 300}).ID, 10)
+}
+
+// IDs lists the ids of the records of domain, separated by spaces.
+func (x *Fake) IDs(domain string) string {
+	x.fs.mu.Lock()
+	defer x.fs.mu.Unlock()
+	var ids []string
+	for _, r := range x.fs.records[domain] {
+		ids = append(ids, strconv.FormatInt(r.ID, 10))
+	}
+	return strings.Join(ids, " ")
 }

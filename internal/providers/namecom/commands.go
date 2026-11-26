@@ -113,19 +113,6 @@ func storeRecord(ctx context.Context, rt *app.Runtime, profile, domain string, r
 	return nil
 }
 
-// dropRecord removes a record from the inventory. id must be the canonical
-// record id as stored by toRecord.
-func dropRecord(ctx context.Context, rt *app.Runtime, profile, id string) error {
-	db, err := rt.DB()
-	if err != nil {
-		return err
-	}
-	if err := db.Delete(ctx, inventory.Set{Platform: platform.NameCom, Profile: profile}, platform.ResDNSRecord, id); err != nil {
-		return fmt.Errorf("record %s: %w", id, err)
-	}
-	return nil
-}
-
 // loadDomain returns a domain from the inventory or the API according to
 // --refresh/--offline/TTL, caching a fresh fetch.
 func loadDomain(ctx context.Context, rt *app.Runtime, profile, name string) (*platform.Domain, bool, error) {
@@ -684,38 +671,69 @@ after "--".`,
 	return cmd
 }
 
+// recordTargetHelp says how update and delete find their record.
+var recordTargetHelp = app.RecordTargetHelp("domain", "polyctl namecom dns list")
+
+// recordIDMatches reports whether id names r: a name.com record id is a
+// number, and "0123" is the record 123.
+func recordIDMatches(id string, r platform.Record) bool {
+	n, err := parseRecordID(id)
+	return err == nil && strconv.FormatInt(n, 10) == r.ID
+}
+
 func newDNSUpdateCmd(rt *app.Runtime) *cobra.Command {
-	var typ, name, value string
+	var typ, name, value, id string
 	var ttl, priority int
+	changeFlags := []string{"value", "ttl", "priority", "name", "type"}
 	cmd := &cobra.Command{
-		Use:   "update <domain> <record-id>",
+		Use:   "update <domain> [<name> [<type> [<value>]]]",
 		Short: "Update one DNS record (fields that are not given keep their value)",
-		Long: "Update the DNS record <record-id> of <domain>; the ids are shown by\n" +
-			"`polyctl namecom dns list`. Only the fields given are changed.",
-		Args: app.RecordIDArgsOrInteractive(rt),
+		Long: `Update one DNS record of <domain>: the record of <name>, or the one with --id.
+Only the fields given with flags are changed; the positional <type> and
+<value> say which record is meant, --type and --value what it becomes.
+
+` + recordTargetHelp + `
+
+` + app.RecordUpdateHelp,
+		Example: `  polyctl namecom dns update example.com www --value 203.0.113.20
+  polyctl namecom dns update example.com www A 203.0.113.10 --value 203.0.113.20
+  polyctl namecom dns update example.com @ MX --priority 20
+  polyctl namecom dns update example.com --id 12345 --ttl 600`,
+		Args:              app.RecordTargetArgsOrInteractive(rt),
+		ValidArgsFunction: app.CompleteRecordTargetArgs(rt, app.CompleteDomainArg(rt, platform.NameCom), platform.NameCom),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			args, err := rt.DomainArg(cmd.Context(), args, platform.NameCom, platform.ResZone, nil)
+			target, err := app.ParseRecordTarget(cmd, args)
 			if err != nil {
 				return err
 			}
-			if len(args) < 2 {
-				id, err := pickRecord(cmd.Context(), rt, args[0], "Update")
-				if err != nil {
-					return err
-				}
-				args = append(args, id)
+			changes, err := rt.RecordChanges(cmd, changeFlags...)
+			if err != nil {
+				return err
 			}
-			id := args[1]
+			args, err = rt.DomainArg(cmd.Context(), args, platform.NameCom, platform.ResZone, nil)
+			if err != nil {
+				return err
+			}
 			domain := platform.NormalizeDomain(args[0])
 			c, p, err := open(cmd.Context(), rt)
 			if err != nil {
 				return err
 			}
-			cur, err := c.GetRecord(cmd.Context(), domain, id)
+			existing, err := c.ListRecords(cmd.Context(), domain)
 			if err != nil {
 				return err
 			}
-			rec := *cur
+			chosen, err := rt.SelectRecords(target.Select(app.RecordSelect{Zone: domain, Records: existing, ID: id, IDMatches: recordIDMatches, One: true, Verb: "Update", Grid: recordGrid}))
+			if err != nil {
+				return err
+			}
+			cur := chosen.Records[0]
+			rec := cur
+			if !changes {
+				if rec.Value, err = rt.AskNewRecordValue(cur); err != nil {
+					return err
+				}
+			}
 			if cmd.Flags().Changed("type") {
 				rec.Type = strings.ToUpper(typ)
 			}
@@ -732,7 +750,7 @@ func newDNSUpdateCmd(rt *app.Runtime) *cobra.Command {
 				pr := priority
 				rec.Priority = &pr
 			}
-			if done, err := rt.WouldWrite(platform.Target{Platform: platform.NameCom, Profile: p.Name, Domain: domain}, platform.Change{Resource: app.RecordResource(rec.Name, rec.Type), Action: platform.Updated, ID: id, Detail: cur.Value + " -> " + rec.Value}); done || err != nil {
+			if done, err := rt.WouldWrite(platform.Target{Platform: platform.NameCom, Profile: p.Name, Domain: domain}, platform.Change{Resource: app.RecordResource(rec.Name, rec.Type), Action: platform.Updated, ID: cur.ID, Detail: cur.Value + " -> " + rec.Value}); done || err != nil {
 				return err
 			}
 			out, err := c.UpdateRecord(cmd.Context(), domain, rec)
@@ -746,6 +764,7 @@ func newDNSUpdateCmd(rt *app.Runtime) *cobra.Command {
 			})
 		},
 	}
+	cmd.Flags().StringVar(&id, "id", "", "update the record with this id")
 	cmd.Flags().StringVar(&typ, "type", "", "new record type")
 	cmd.Flags().StringVar(&name, "name", "", "new record name relative to the domain (www, @)")
 	cmd.Flags().StringVar(&value, "value", "", "new record value")
@@ -754,60 +773,71 @@ func newDNSUpdateCmd(rt *app.Runtime) *cobra.Command {
 	return cmd
 }
 
+// deleteResult is the output of dns delete. DeletedID is the id of the
+// record when one was deleted, as the command printed it when it took one
+// record id.
+type deleteResult struct {
+	Profile   string            `json:"profile" yaml:"profile"`
+	Domain    string            `json:"domain" yaml:"domain"`
+	DeletedID string            `json:"deleted_id,omitempty" yaml:"deleted_id,omitempty"`
+	Records   []platform.Record `json:"records" yaml:"records"`
+}
+
 func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
+	var id string
 	cmd := &cobra.Command{
-		Use:   "delete <domain> <record-id>",
-		Short: "Delete one DNS record (ids are shown by `polyctl namecom dns list`)",
-		Args:  app.RecordIDArgsOrInteractive(rt),
+		Use:   "delete <domain> [<name> [<type> [<value>]]]",
+		Short: "Delete the DNS records of a name (optionally of one type and value), or one record by --id",
+		Long: `Delete the records of <name> in <domain>, or the one record with --id.
+
+` + recordTargetHelp + `
+
+` + app.RecordDeleteHelp + `
+
+--dry-run reports what would be deleted and asks nothing.`,
+		Example: `  polyctl namecom dns delete example.com www
+  polyctl namecom dns delete example.com www A
+  polyctl namecom dns delete example.com www A 203.0.113.10
+  polyctl namecom dns delete example.com --id 12345`,
+		Args:              app.RecordTargetArgsOrInteractive(rt),
+		ValidArgsFunction: app.CompleteRecordTargetArgs(rt, app.CompleteDomainArg(rt, platform.NameCom), platform.NameCom),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			args, err := rt.DomainArg(cmd.Context(), args, platform.NameCom, platform.ResZone, nil)
+			target, err := app.ParseRecordTarget(cmd, args)
 			if err != nil {
 				return err
 			}
-			if len(args) < 2 {
-				id, err := pickRecord(cmd.Context(), rt, args[0], "Delete")
-				if err != nil {
-					return err
-				}
-				args = append(args, id)
+			args, err = rt.DomainArg(cmd.Context(), args, platform.NameCom, platform.ResZone, nil)
+			if err != nil {
+				return err
 			}
-			id := args[1]
 			domain := platform.NormalizeDomain(args[0])
-			// Canonicalise the id once so the inventory delete and the output
-			// use the same form toRecord stores (e.g. " 123" / "0123" -> "123").
-			n, err := parseRecordID(id)
-			if err != nil {
-				return err
-			}
-			id = strconv.FormatInt(n, 10)
 			c, p, err := open(cmd.Context(), rt)
 			if err != nil {
 				return err
 			}
-			if done, err := rt.WouldWrite(platform.Target{Platform: platform.NameCom, Profile: p.Name, Domain: domain}, platform.Change{Resource: "record/" + id, Action: platform.Deleted, ID: id, Detail: "domain " + domain}); done || err != nil {
+			existing, err := c.ListRecords(cmd.Context(), domain)
+			if err != nil {
 				return err
 			}
-			if err := c.DeleteRecord(cmd.Context(), domain, id); err != nil {
+			zone := platform.Zone{ID: domain, Name: domain}
+			sel := target.Select(app.RecordSelect{Zone: domain, Records: existing, ID: id, IDMatches: recordIDMatches, Verb: "Delete", Grid: recordGrid})
+			sel.Offer, sel.Mark = app.DeletableRecords(c, zone)
+			chosen, err := rt.SelectRecords(sel)
+			if err != nil {
 				return err
 			}
-			warnInventory(rt, dropRecord(cmd.Context(), rt, p.Name, id))
-			rt.Infof("deleted record %s of %s via namecom/%s", id, domain, p.Name)
-			return rt.Render(map[string]string{"profile": p.Name, "domain": domain, "deleted_id": id}, func() output.Grid { return output.Grid{} })
+			del := app.RecordsDelete{Target: platform.Target{Platform: platform.NameCom, Profile: p.Name, Domain: domain},
+				Zone: zone, DNS: c, Records: chosen.Records, Grid: recordGrid, Exact: sel.Exact(chosen)}
+			if done, err := rt.DeleteRecords(cmd.Context(), del); !done || err != nil {
+				return err
+			}
+			res := deleteResult{Profile: p.Name, Domain: domain, Records: chosen.Records}
+			if len(chosen.Records) == 1 {
+				res.DeletedID = chosen.Records[0].ID
+			}
+			return rt.Render(res, func() output.Grid { return output.Grid{} })
 		},
 	}
+	cmd.Flags().StringVar(&id, "id", "", "delete the record with this id")
 	return cmd
-}
-
-// pickRecord asks for one record of domain (the <record-id> of dns update
-// and dns delete), read live.
-func pickRecord(ctx context.Context, rt *app.Runtime, domain, verb string) (string, error) {
-	c, _, err := open(ctx, rt)
-	if err != nil {
-		return "", err
-	}
-	recs, err := c.ListRecords(ctx, platform.NormalizeDomain(domain))
-	if err != nil {
-		return "", err
-	}
-	return rt.PickRecordID(verb+" which record of "+platform.NormalizeDomain(domain)+"?", recs, nil)
 }
