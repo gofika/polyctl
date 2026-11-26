@@ -12,6 +12,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/shellquote"
 )
 
 // SSHDConfig is the sshd configuration the script reads for a custom
@@ -183,12 +184,6 @@ apply)
 esac
 `
 
-// shellQuote quotes s for a POSIX shell: in single quotes, with each single
-// quote written as '\”.
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
-
 // userNameRe is what polyctl accepts as a user name on an instance (the
 // portable POSIX user names, plus upper case and a trailing $ of Samba
 // machine accounts).
@@ -215,18 +210,18 @@ func (c *Client) NeedsSudo(user string) bool { return user != c.User }
 func (c *Client) command(user string, args ...string) (cmd, stdin string) {
 	var b strings.Builder
 	if c.NeedsSudo(user) {
-		b.WriteString("sudo -n -u " + shellQuote(user) + " ")
+		b.WriteString("sudo -n -u " + shellquote.Quote(user) + " ")
 	}
 	b.WriteString("sh -s --")
 	for _, a := range args {
-		b.WriteString(" " + shellQuote(a))
+		b.WriteString(" " + shellquote.Quote(a))
 	}
 	return b.String(), keyScript()
 }
 
 // keyScript is the script with its placeholders filled in.
 func keyScript() string {
-	return strings.NewReplacer("@HEADER@", shellQuote(header), "@SSHD_CONFIG@", shellQuote(SSHDConfig)).Replace(script)
+	return strings.NewReplacer("@HEADER@", shellquote.Quote(header), "@SSHD_CONFIG@", shellquote.Quote(SSHDConfig)).Replace(script)
 }
 
 // runScript runs the script for user with args.

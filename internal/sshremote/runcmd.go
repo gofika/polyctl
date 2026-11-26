@@ -9,6 +9,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/shellquote"
 )
 
 // RunCommand runs command, one line of POSIX sh, as root on an instance
@@ -66,9 +67,9 @@ func rootCommand(prog string) string {
 func (r *RootEditor) runScript(ctx context.Context, user string, args ...string) (stdout, stderr []byte, code int, err error) {
 	quoted := make([]string, 0, len(args))
 	for _, a := range args {
-		quoted = append(quoted, shellQuote(a))
+		quoted = append(quoted, shellquote.Quote(a))
 	}
-	prog := strings.NewReplacer("@USER@", shellQuote(user), "@ARGS@", strings.Join(quoted, " "),
+	prog := strings.NewReplacer("@USER@", shellquote.Quote(user), "@ARGS@", strings.Join(quoted, " "),
 		"@SCRIPT@", strings.TrimRight(keyScript(), "\n")).Replace(rootWrapper)
 	return r.Run(ctx, rootCommand(prog))
 }
@@ -115,7 +116,7 @@ func (r *RootEditor) RemoveKeys(ctx context.Context, user string, keys []ssh.Pub
 func (r *RootEditor) FirstUser(ctx context.Context, users []string) (string, error) {
 	quoted := make([]string, 0, len(users))
 	for _, u := range users {
-		quoted = append(quoted, shellQuote(u))
+		quoted = append(quoted, shellquote.Quote(u))
 	}
 	prog := "echo " + probeMarker + "\nfor u in " + strings.Join(quoted, " ") +
 		"; do if id -u \"$u\" > /dev/null 2>&1; then echo \"$u\"; exit 0; fi; done\necho\n"
