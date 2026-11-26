@@ -53,12 +53,12 @@ A re-authentication (`auth login` for an account the profile already has) reuses
 ```sh
 # scripts and CI: nothing is asked
 printf '%s\n' "$NAMECOM_TOKEN" | polyctl auth login namecom --profile acme --set username=acme --set token=-
-polyctl dns delete example.com --type A --name www --yes
+polyctl dns delete example.com www A --yes
 polyctl aliyun ecs instance stop i-0123456789 --yes
 
 # the same guarantees on your own terminal
 polyctl --non-interactive auth use            # usage error: auth use: <profile> is required
-POLYCTL_NON_INTERACTIVE=1 polyctl dns delete example.com --type A --name www
+POLYCTL_NON_INTERACTIVE=1 polyctl dns delete example.com www A
 #   usage error: confirmation required: pass --yes to proceed (would delete 2 records in zone example.com)
 ```
 
@@ -97,8 +97,9 @@ The usage error always names what is missing. The table covers accounts, the pla
 | --- | --- | --- |
 | any command whose name matches several owners or resources | which one | `--profile` / `--platform`, or the id (exit code 5 otherwise). When the candidates are of one login (zones of one name in several Cloudflare accounts of a login, or in several projects of a GCP account) neither flag chooses: use the platform's own command, `polyctl cloudflare ... --account <id or name>` or `polyctl gcp dns ... --project <id>`, or its zone id, as the error says |
 | `dns list` / `set` / `add` / `ensure` / `delete` without `<domain>` | the zone, from the indexed zones | `<domain>` |
-| `dns set` / `add` without `--type` / `--value` | the record type, then the value | `--type` and `--value` |
-| `dns delete <domain>` without `--type`, `--id` or `--all` | the records to delete (multiple choice; SOA and apex NS not offered) | `--type` (with `--name`), `--id` or `--all` |
+| `dns set` / `add` with only `<domain>` | the record type, then the value (the record is named `<domain>`) | `<name> <type> <value>` |
+| `dns ensure` with only `<domain>` | nothing | `<name> <type> <value>...`, `--record` or `--file` |
+| `dns delete` with only `<domain>` | the records to delete (multiple choice; SOA and apex NS not offered) | `<name> <type> [<value>]`, `--id` or `--all` |
 | `domain info` / `which` / `ns check` / `ns get` / `ns set` without `<domain>` | the domain, from the index | `<domain>` |
 | `domain ns set <domain>` without nameservers (also `namecom` / `godaddy` / `aliyun` / `aws route53domains`) | the nameservers of an indexed DNS zone of the domain, or typed | `<nameserver>...` |
 | `find` without a query | the IP address or DNS name | `<ip\|dns-name>` |

@@ -117,8 +117,9 @@ polyctl domain index
 # 4. Platform-neutral commands route automatically
 polyctl domain which example.com
 polyctl dns list example.com
-polyctl dns set example.com --type A --name www --value 203.0.113.10
-polyctl dns ensure example.com -r www:A:203.0.113.10:300 -r @:MX:"10 mail.example.com"
+polyctl dns set example.com www A 203.0.113.10
+polyctl dns ensure example.com @ MX "10 mx1.example.com" "20 mx2.example.com"
+polyctl dns delete example.com old CNAME
 polyctl domain ns set example.com ns1.cloudflare.com ns2.cloudflare.com
 
 #    When several accounts know the domain, say which one

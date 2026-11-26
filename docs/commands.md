@@ -26,20 +26,35 @@ The status line on stderr always names the account used, for example `zone examp
 
 ```text
 polyctl dns list   <domain> [--type A] [--name www]
-polyctl dns set    <domain> --type <T> --value <V> [--name www|@] [--ttl 300] [--priority 10] [--proxied[=false]]
-polyctl dns add    <domain> --type <T> --value <V> [--name www|@] [--ttl 300] [--priority 10] [--proxied[=false]]
+polyctl dns set    <domain> <name> <type> <value> [--ttl 300] [--priority 10] [--proxied[=false]]
+polyctl dns add    <domain> <name> <type> <value> [--ttl 300] [--priority 10] [--proxied[=false]]
+polyctl dns ensure <domain> <name> <type> <value>... [--ttl 300|auto] [--priority 10] [--proxied[=false]]
 polyctl dns ensure <domain> (-r <name:type:value[:ttl[:proxied]]>... | -f records.yaml) [--prune-duplicates]
-polyctl dns delete <domain> (--type <T> [--name www|@] [--value <V>] | --id <record-id>) [-y]
+polyctl dns delete <domain> (<name> <type> [<value>] | --id <record-id>) [-y]
 polyctl dns delete <domain> --all [--type <T>[,<T>...]]... [--keep-bound] [-y]
 ```
 
 Every `dns` command also takes `--profile` and `--platform`.
 
+One record is written like a line of a zone file, after the domain:
+
+```sh
+polyctl dns ensure example.com @ A 192.0.2.10
+polyctl dns ensure example.com www CNAME target.example.net
+polyctl dns set example.com www A 203.0.113.10 --ttl 300
+polyctl dns add example.com @ TXT "v=spf1 include:_spf.example.net ~all"
+polyctl dns delete example.com www A
+```
+
 **Names and values**
 
 - `<domain>` may be the zone apex or any name under it: `www.example.com` resolves to the `example.com` zone.
-- `--name` is read as `dns ensure` reads it: relative to the zone (`www`, `@`), a full name in the zone (`www.example.com`), or an absolute name ending with a dot (`www.example.com.`). A name outside the zone (`www.other.org`, `www.other.org.`) is exit code 2, never put inside the zone. Without `--name`, the record name is `<domain>` itself.
-- A record's data is its **value** everywhere: the `--value` flag, the `VALUE` column and the `value` field of `-o json` / `-o yaml`. What one command prints can be passed to another.
+- `<name>` (and `--name` of `dns list`) is relative to the zone (`www`, `a.b`, `@` for the apex), a full name in the zone (`www.example.com`), or an absolute name ending with a dot (`www.example.com.`). A name outside the zone (`www.other.org`, `www.other.org.`) is exit code 2, never put inside the zone.
+- `<type>` is case-insensitive.
+- Each `<value>` is one argument: quote one that contains spaces (`"v=spf1 -all"`, `"10 mail.example.com"`). A value that starts with `-` goes after `--`: `polyctl dns set example.com note TXT -- -text`.
+- A record's data is its **value** everywhere: the `<value>` argument, the `VALUE` column and the `value` field of `-o json` / `-o yaml`. What one command prints can be passed to another.
+- A wrong number of record arguments is exit code 2, and the message shows the usage (`usage: polyctl dns set <domain> <name> <type> <value>`). With only `<domain>`, a terminal asks for the record (`dns set`, `dns add`, `dns delete`).
+- Former form (0.5.x): `dns set`, `dns add` and `dns delete` still read the record from `--name`, `--type` and `--value` (without `--name`, the record name is `<domain>` itself). These flags are no longer listed in the help. A positional record together with one of them is exit code 2.
 - `--ttl` is in seconds; `0` or no flag means the platform default (`dns set` keeps the existing TTL).
 - In tables, special TTLs are shown by name: `auto` (Cloudflare automatic, `1` in the API), `alias` (Route 53 alias records) and `default` (a GoDaddy record written without `--ttl`). JSON and YAML keep the raw value.
 - `--proxied` is Cloudflare only. `--proxied` turns the proxy on, `--proxied=false` turns it off (the `=` is required). Without it, `dns set` keeps the current setting and `dns add` uses Cloudflare's default. The `PROXIED` column appears for Cloudflare zones.
@@ -56,6 +71,8 @@ Every `dns` command also takes `--profile` and `--platform`.
 Brings a set of records of one zone to the desired state. Safe to run again and again.
 
 ```sh
+polyctl dns ensure example.com www A 203.0.113.10 --ttl 300 --proxied
+polyctl dns ensure example.com @ MX "10 mx1.example.com" "20 mx2.example.com"
 polyctl dns ensure example.com -r www:A:203.0.113.10:300:true -r '@:MX:10 mail.example.com'
 polyctl dns ensure example.com -f records.yaml --dry-run
 ```
@@ -73,11 +90,12 @@ records:
     priority: 10      # MX only
 ```
 
-- `--record` / `-r` (repeatable) and `--file` / `-f` can be combined. Each record is matched on name + type: already as desired is `unchanged` (not written), different is updated in place, missing is created. Records you do not name are never touched.
+- The positional record is one name and type; several values are the set of that name and type. `--ttl` (seconds or `auto`), `--priority` and `--proxied` apply to it only and are exit code 2 without one.
+- The positional record, `--record` / `-r` (repeatable) and `--file` / `-f` can be combined. Each record is matched on name + type: already as desired is `unchanged` (not written), different is updated in place, missing is created. Records you do not name are never touched.
 - Names are relative (`www`, `@`, `a.b`) or full names in the zone (`www.example.com`, with or without the trailing dot). A name outside the zone (`www.other.com`) is a usage error.
 - TTL (seconds or `auto`) and proxied (`true` / `false`) are optional. Left out, an existing record keeps its value and a new one gets the platform default (Cloudflare: automatic TTL, not proxied). `auto` and `0` mean automatic on Cloudflare; elsewhere `auto` equals leaving the TTL out and `0` is refused.
 - Values are compared as the platform stores them (host names without case or trailing dot, compressed IPv6, TXT and SPF unquoted and joined), so an equivalent value is `unchanged`.
-- MX: put the priority in front of the value (`@:MX:10 mail.example.com`) or in `priority`. A new MX record needs one. SRV values are `<priority> <weight> <port> <target>`.
+- MX: put the priority in front of the value (`"10 mail.example.com"`, `@:MX:10 mail.example.com`) or in `--priority` / `priority`. A new MX record needs one. SRV values are `<priority> <weight> <port> <target>`.
 - Inline, a value ending in `:<number>` or an IPv6 address that could be read with a TTL is refused as ambiguous: use the file.
 - Several records with the same name and type form a set: missing values are created, nothing is updated.
 - One desired record against several existing ones of that name and type: fine if one already matches, or if one has the desired value (only its other fields, such as the TTL, are updated); the others are left alone. When none has the desired value the command stops before writing (exit code 5), unless `--prune-duplicates` keeps one (updating the oldest) and deletes the rest, without asking. With `--prune-duplicates` the record kept is always the one that matches or has the desired value, when there is one.
@@ -90,12 +108,13 @@ records:
 ### dns delete
 
 ```sh
-polyctl dns delete example.com --name www --type A          # one record, or asks when several match
+polyctl dns delete example.com www A                        # one record, or asks when several match
+polyctl dns delete example.com www A 203.0.113.10           # only the record with this value
 polyctl dns delete example.com --id 372e67954025e0ba6aaa6d586b9e0b59
 polyctl dns delete example.com --all --type TXT --dry-run
 ```
 
-- `--value` narrows the match. It is compared as `dns ensure` compares values: host names ignore case and a trailing dot, addresses are compared in canonical form, TXT text with or without its quotes, and an MX value may be `10 mx.example.com` (as `dns list` prints it; the priority must match) or the host alone. `--id` deletes exactly one record by platform id and cannot be combined with `--name`, `--type` or `--value` (exit code 2). An id that names several records (an older GoDaddy id, see [GoDaddy](platforms/godaddy.md#dns-records)) is exit code 5 and deletes nothing.
+- `<value>` narrows the match. It is compared as `dns ensure` compares values: host names ignore case and a trailing dot, addresses are compared in canonical form, TXT text with or without its quotes, and an MX value may be `10 mx.example.com` (as `dns list` prints it; the priority must match) or the host alone. `--id` deletes exactly one record by platform id and cannot be combined with a record (exit code 2). An id that names several records (an older GoDaddy id, see [GoDaddy](platforms/godaddy.md#dns-records)) is exit code 5 and deletes nothing.
 - A selector that matches several records shows them and asks first (`-y` skips the question). Answering no deletes nothing and exits with code 0 (`nothing to do: no record was deleted`).
 - Non-interactive: nothing is asked or deleted without `-y`; the command exits with code 2 (`confirmation required: pass --yes to proceed ...`).
 - No matching record is exit code 4.
@@ -104,7 +123,7 @@ polyctl dns delete example.com --all --type TXT --dry-run
 **`--all`** deletes every record of the zone, for retiring a domain or emptying it before a move.
 
 - `--type` (repeatable or comma-separated, any case) limits it to those types across the zone. Without `--all`, `--type` takes a single type.
-- Cannot be combined with `--name`, `--value` or `--id` (exit code 2).
+- Cannot be combined with a `<name> <type>` record or `--id` (exit code 2).
 - Clears only the account the domain routes to. A zone held by several accounts is exit code 5 until `--profile` / `--platform` picks one.
 - Never deleted: the SOA and the NS records of the zone apex (reported `skipped`, also with `--type NS`). NS records below the apex (delegations) are deleted. The zone itself stays.
 - Records owned by another service (Cloudflare R2 custom domains) are removed by unbinding them; `--keep-bound` skips them instead.
