@@ -297,7 +297,8 @@ func (s RecordSelection) Type() string {
 	return typ
 }
 
-// SelectRecords finds the records s means. An id selects its record. A name
+// SelectRecords finds the records s means. An id selects its record, which
+// must have every qualifier given (not found otherwise). A name
 // selects its records, of the type and with the value when those are given:
 // see RecordSelect.One for what several of them mean. Without a name the
 // records of the zone (of the type and with the value, when given) are
@@ -328,6 +329,15 @@ func (rt *Runtime) SelectRecords(s RecordSelect) (RecordSelection, error) {
 		case 0:
 			return RecordSelection{}, fmt.Errorf("%w: no record with the id %s in zone %s", platform.ErrNotFound, s.ID, zone)
 		case 1:
+			// A qualifier that was given holds for the record named by its
+			// id too (the former form <zone> <record-id> beside --line):
+			// a record on another line is not the one meant.
+			for _, q := range s.Qualifiers {
+				if q.Value != "" && !strings.EqualFold(q.Of(recs[0]), q.Value) {
+					return RecordSelection{}, fmt.Errorf("%w: the record with the id %s in zone %s has the %s %s, not %s (%s); nothing was changed",
+						platform.ErrNotFound, s.ID, zone, q.Noun, q.Of(recs[0]), q.Value, q.Flag)
+				}
+			}
 			return RecordSelection{Records: recs, ByID: true}, nil
 		}
 		ids := make([]string, len(recs))

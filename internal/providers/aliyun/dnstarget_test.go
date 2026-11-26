@@ -95,6 +95,8 @@ func TestDNSRecordDeleteByName(t *testing.T) {
 		{"--id beside a record", []string{"www", "--id", "w1"}, app.ErrUsage, all, "--id selects one record"},
 		{"--id beside --line", []string{"--id", "g2", "--line", "telecom"}, app.ErrUsage, all, "--id selects one record; it cannot be combined with --line"},
 		{"only the domain", nil, app.ErrUsage, all, "a record or --id <record-id> is required: usage: aliyun dns record delete <domain> <name> [<type> [<value>]]"},
+		{"the former form beside a line the record is not on", []string{"g1", "--line", "telecom"}, platform.ErrNotFound, all, "the record with the id g1 in zone example.com has the line default, not telecom (--line)"},
+		{"the former form beside the line of the record", []string{"g2", "--line", "telecom"}, nil, "w1 w2 g1 m1 m2 p1", "deleted geo.example.com A 203.0.113.5"},
 	} {
 		h, z := targetHarness(t, app.Flags{NonInteractive: true})
 		args := append([]string{"dns", "record", "delete", "example.com"}, c.args...)
@@ -213,6 +215,7 @@ func TestDNSRecordUpdateByName(t *testing.T) {
 		{"nothing to change", []string{"api"}, app.ErrUsage, "nothing to change: pass --value, --ttl, --priority, --line, --name, --type"},
 		{"only the domain", []string{"--ttl", "900"}, app.ErrUsage, "a record or --id <record-id> is required: usage: aliyun dns record update <domain> <name> [<type> [<value>]]"},
 		{"--id beside --current-line", []string{"--id", "g2", "--current-line", "telecom", "--ttl", "900"}, app.ErrUsage, "it cannot be combined with --current-line"},
+		{"the former form beside a line the record is not on", []string{"g1", "--current-line", "telecom", "--ttl", "900"}, platform.ErrNotFound, "the record with the id g1 in zone example.com has the line default, not telecom (--current-line)"},
 	} {
 		h, z := targetHarness(t, app.Flags{NonInteractive: true, Yes: true})
 		err := h.run(append([]string{"dns", "record", "update", "example.com"}, c.args...)...)
