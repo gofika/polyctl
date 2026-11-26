@@ -217,22 +217,22 @@ Amazon-issued certificates are renewed by ACM and never replaced.`,
 					}
 					amb := &app.AmbiguousError{What: "imported certificate of " + domain + " in " + region, Candidates: names,
 						Hint: "pass --arn <arn> to choose, or --new to import another certificate"}
-					if !rt.Interactive() {
-						return amb
-					}
 					// The interactive flow asks which one, or to import a
-					// new certificate (--new).
-					var opts []prompt.Option
-					for _, e := range cands {
-						opts = append(opts, prompt.Option{Label: reimportOptionLabel(e), Value: e.ID})
-					}
-					opts = append(opts, prompt.Option{Label: "Import as a new certificate (a new ARN)", Value: ""})
-					pick, err := rt.Pick().Select("Re-import into which certificate?", opts, "")
+					// new certificate (--new): one more candidate, without
+					// an ARN.
+					pick, err := app.OneOfBy(rt, amb, append(cands[:len(cands):len(cands)], platform.Certificate{}),
+						func(e platform.Certificate) string { return e.ID },
+						func(e platform.Certificate) string {
+							if e.ID == "" {
+								return "Import as a new certificate (a new ARN)"
+							}
+							return reimportOptionLabel(e)
+						})
 					if err != nil {
 						return err
 					}
-					if pick != "" {
-						if into, err = c.DescribeCertificate(ctx, region, pick); err != nil {
+					if pick.ID != "" {
+						if into, err = c.DescribeCertificate(ctx, region, pick.ID); err != nil {
 							return err
 						}
 					}
