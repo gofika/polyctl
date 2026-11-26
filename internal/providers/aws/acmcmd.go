@@ -497,8 +497,9 @@ func certInventoryHits(ctx context.Context, rt *app.Runtime, accounts []config.A
 // acmProfileForAccount returns the AWS profile of the account id of an ARN:
 // --profile when given, the only AWS account, the profile whose metadata
 // or cached certificates name the account id, else the profile whose
-// credentials belong to it (asked live). No profile of that account is
-// ErrNotFound.
+// credentials belong to it (asked live). Several profiles of that account
+// are the same target: the current profile, else the first by name, is
+// used and named in a note. No profile of that account is ErrNotFound.
 func acmProfileForAccount(ctx context.Context, rt *app.Runtime, account string) (string, error) {
 	if rt.Flags.Profile != "" {
 		return rt.ProfileFor(platform.AWS)
@@ -556,7 +557,16 @@ func acmProfileForAccount(ctx context.Context, rt *app.Runtime, account string) 
 	case 1:
 		return hits[0], nil
 	}
-	return "", &app.AmbiguousError{What: "profile of AWS account " + account, Candidates: hits}
+	// Several profiles of one AWS account reach the same certificate:
+	// nothing tells targets apart, so nothing is asked. The current
+	// profile is used when it is one of them, else the first by name.
+	slices.Sort(hits)
+	use := hits[0]
+	if slices.Contains(hits, cfg.CurrentProfile) {
+		use = cfg.CurrentProfile
+	}
+	rt.Infof("note: the profiles %s belong to AWS account %s; using aws/%s (pass --profile <name> for another)", strings.Join(hits, ", "), account, use)
+	return use, nil
 }
 
 // ---------------------------------------------------------------- list

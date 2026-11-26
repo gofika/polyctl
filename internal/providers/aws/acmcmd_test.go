@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gofika/polyctl/internal/app"
+	"github.com/gofika/polyctl/internal/config"
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/platform"
 )
@@ -261,5 +262,42 @@ func TestCheckCertName(t *testing.T) {
 		if err := checkCertName("domain", bad); !errors.Is(err, app.ErrUsage) {
 			t.Errorf("%q = %v, want a usage error", bad, err)
 		}
+	}
+}
+
+// Two profiles of one AWS account reach the same certificate: an ARN is
+// not ambiguous, the current profile is used and named.
+func TestACMGetByARNWithTwoProfilesOfOneAccount(t *testing.T) {
+	h, _ := newACMHarness(t, app.Flags{}, nil)
+	h.addProfile(t)
+	c := h.addCert(&fakeCert{region: "ap-east-1", domain: "example.com", status: acmIssued})
+	arn, _ := parseACMARN(c.arn)
+	cfg, err := config.Load(h.dir + "/config.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"lab", "prod"} {
+		cfg.Profiles[name].Platforms[platform.AWS].Metadata[metaAccountID] = arn.Account
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.rt.ReloadConfig(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.run("acm", "certificate", "get", c.arn); err != nil {
+		t.Fatalf("get by ARN = %v", err)
+	}
+	var d acmDetail
+	h.jsonOut(&d)
+	if d.ARN != c.arn {
+		t.Errorf("got %+v", d)
+	}
+	if s := h.stderr.String(); !strings.Contains(s, "the profiles lab, prod belong to AWS account") || !strings.Contains(s, "using aws/lab") {
+		t.Errorf("stderr = %s", s)
+	}
+	h.rt.Flags.Profile = "prod"
+	if err := h.run("acm", "certificate", "get", c.arn); err != nil || strings.Contains(h.stderr.String(), "belong to AWS account") {
+		t.Errorf("--profile prod = %v, %s", err, h.stderr.String())
 	}
 }
