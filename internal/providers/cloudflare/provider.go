@@ -596,7 +596,7 @@ func chooseDefault(in platform.LoginInput, pio *prompt.IO, accounts []account, l
 				}
 			}
 			if enabled > 1 {
-				fmt.Fprintf(pio.Err, "%d accounts are enabled (everything the %s sees); keep the ones that are not used out of every sync with polyctl cloudflare account disable\n", enabled, what)
+				fmt.Fprintf(pio.Err, "%d accounts are enabled (everything the %s sees); choose which ones stay enabled with polyctl cloudflare account enable\n", enabled, what)
 			}
 		}
 		return l, nil

@@ -29,8 +29,12 @@ credentials reach later included. One of them is the default account, where
 new zones are created and which a command works on when nothing names an
 account: use sets it.
 
-disable keeps the accounts that are certainly not used out of every sync,
-list and lookup, and enable takes them back.
+enable manages which accounts are enabled: on a terminal, without arguments,
+it lists every account the credentials see with the enabled ones ticked, and
+what is ticked at the end is enabled and the rest disabled. A disabled account
+is kept out of every sync, list and lookup: disable the ones that are
+certainly not used. "enable <account>..." and "disable <account>..." are the
+shortcuts that change the accounts named, for scripts.
 
 A disabled account can still be named with --account on the cloudflare zone,
 dns, cache, redirect, dev-mode, ssl-mode and r2 commands: it is read live and
@@ -560,7 +564,7 @@ func (b *accountBook) finish(ctx context.Context, def string, disabled []string)
 	return b.apply(ctx, def, disabled)
 }
 
-// pick is enable and disable without arguments on a terminal: one list of
+// pick is enable without arguments on a terminal: one list of
 // every account the credentials see, and of the default and the disabled
 // ones they do not, in which the enabled ones are ticked. What is ticked at
 // the end is enabled and the rest disabled; a default account that was
@@ -731,11 +735,24 @@ func newAccountEnableCmd(rt *app.Runtime, name string, hidden bool) *cobra.Comma
 	cmd := &cobra.Command{
 		Use:    name + " <account>...",
 		Hidden: hidden,
-		Short:  "Enable accounts of the Cloudflare login again, after they were disabled",
-		Long: `Enable accounts, by id or name, of the profile's Cloudflare login that were
-disabled: the inventory, name lookups and domain routing cover them again.
-Nothing needs to be enabled otherwise: every account the credentials see is
-enabled unless it was disabled.
+		Short:  "Choose which accounts of the Cloudflare login are enabled, or enable the ones named",
+		Long: `Manage which accounts of the profile's Cloudflare login are enabled. An
+enabled account is covered by the inventory, name lookups and domain routing;
+a disabled one is kept out of every sync, list and lookup. Every account the
+credentials see is enabled unless it was disabled.
+
+On a terminal, without <account> every account the credentials see is listed
+with the enabled ones ticked: what is ticked at the end is enabled, the rest
+is disabled. A default account that was unticked is replaced by --default
+<account>, or by the answer to a question when it is left out. The list needs
+Cloudflare (not with --offline). Credentials that cannot list their accounts
+are offered the accounts of their zones, which leaves out an account without
+a zone; when they see no zone either there is nothing to offer (exit code 2:
+pass the account ids). Off a terminal the accounts are required (exit code 2).
+
+With <account>... the accounts named, by id or name, are enabled again, and
+the others are left as they are; "polyctl cloudflare account disable
+<account>..." is the opposite shortcut.
 
 An account that is enabled already is left as it is (exit code 0, nothing is
 written). One that is neither disabled nor visible to the credentials is not
@@ -743,14 +760,6 @@ found (exit code 4): name it with --account, or make it the default account
 with "polyctl cloudflare account use". When the credentials cannot list their
 accounts nothing tells that they do not see an id: it counts as enabled
 already. A disabled account that is no longer visible is forgotten.
-
-On a terminal, without <account> every account the credentials see is listed
-with the enabled ones ticked, as "polyctl cloudflare account disable" does:
-what is ticked at the end is enabled, the rest is disabled. The list needs
-Cloudflare (not with --offline). Credentials that cannot list their accounts
-are offered the accounts of their zones, which leaves out an account without
-a zone; when they see no zone either there is nothing to offer (exit code 2:
-pass the account ids).
 
 Only the local configuration changes; the cached inventory of the login is
 synced again on its next use. --dry-run reports what would change and writes
@@ -835,6 +844,17 @@ func (b *accountBook) newDefault(ctx context.Context, disabled, rest []string, c
 	return def, nil
 }
 
+// disableArgs are the arguments of disable, and of remove, its hidden
+// former name, which no release had: one account at least, on a terminal
+// too, since the list in which the enabled accounts are ticked belongs to
+// enable.
+func disableArgs(cmd *cobra.Command, args []string) error {
+	if len(args) == 0 {
+		return app.UsageErrf(`name the accounts to disable, or choose from the list with "polyctl cloudflare account enable"`)
+	}
+	return cobra.RangeArgs(1, 100)(cmd, args)
+}
+
 // newAccountDisableCmd builds disable, and remove, the name it had while a
 // login held a selection, kept hidden.
 func newAccountDisableCmd(rt *app.Runtime, name string, hidden bool) *cobra.Command {
@@ -842,9 +862,9 @@ func newAccountDisableCmd(rt *app.Runtime, name string, hidden bool) *cobra.Comm
 	cmd := &cobra.Command{
 		Use:    name + " <account>...",
 		Hidden: hidden,
-		Short:  "Disable accounts of the Cloudflare login: keep them out of every sync, list and lookup",
-		Long: `Disable accounts, by id or name, of the profile's Cloudflare login: the ones
-that are certainly not used. Nothing at Cloudflare changes and the credentials
+		Short:  "Disable the accounts named: keep them out of every sync, list and lookup",
+		Long: `Disable the accounts named, by id or name, of the profile's Cloudflare login:
+the ones that are certainly not used. Nothing at Cloudflare changes and the credentials
 stay as they are: the accounts are no longer synced, listed or searched, and
 what the inventory cached of them (zones, their records, R2 buckets) is
 dropped. "polyctl cloudflare account enable" takes them back, and --account
@@ -861,14 +881,9 @@ which names the enabled account that becomes the default (on a terminal it is
 asked); without it this is a usage error (exit code 2), as is disabling every
 account (log the login out with "polyctl auth logout cloudflare" instead).
 
-On a terminal, without <account> every account the credentials see is listed
-with the enabled ones ticked, as "polyctl cloudflare account enable" does:
-what is ticked at the end is enabled, the rest is disabled, and a default
-account that was unticked is replaced as above. The list needs Cloudflare
-(not with --offline). Credentials that cannot list their accounts are offered
-the accounts of their zones, which leaves out an account without a zone; when
-they see no zone either there is nothing to offer (exit code 2: pass the
-account ids).
+At least one <account> is required (exit code 2 without one, on a terminal
+too): to choose from a list of the accounts, with the enabled ones ticked, run
+"polyctl cloudflare account enable" without arguments.
 
 No confirmation is asked: only the local configuration and a cache that the
 next sync rebuilds change. --dry-run reports what would change and writes
@@ -876,7 +891,7 @@ nothing. Works with --offline for the accounts named; a name is then one
 the profile knows (that of the default account, or of an account with a
 cached zone), and the accounts are not checked against what the credentials
 see.`,
-		Args: app.RangeArgsOrInteractive(rt, 1, 100, nil),
+		Args: disableArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			b, err := openAccountBook(rt)
@@ -886,9 +901,6 @@ see.`,
 			ids, err := b.resolve(ctx, args)
 			if err != nil {
 				return err
-			}
-			if len(ids) == 0 {
-				return b.pick(ctx, newDefault)
 			}
 			disabled := slices.Clone(b.cur.Disabled)
 			var off []string

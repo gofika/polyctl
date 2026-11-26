@@ -1280,7 +1280,7 @@ func TestLoginInteractiveChoosesAccount(t *testing.T) {
 	if !strings.Contains(stderr, "Default account (new zones are created there; every account is synced unless disabled)") || strings.Contains(stderr, "accounts to work on") {
 		t.Errorf("the question: stderr %q", stderr)
 	}
-	if !strings.Contains(stderr, "2 accounts are enabled (everything the token sees); keep the ones that are not used out of every sync with polyctl cloudflare account disable") {
+	if !strings.Contains(stderr, "2 accounts are enabled (everything the token sees); choose which ones stay enabled with polyctl cloudflare account enable") {
 		t.Errorf("the login does not say what is enabled: %q", stderr)
 	}
 	if res.Label != "ops@example.com (account Beta)" {

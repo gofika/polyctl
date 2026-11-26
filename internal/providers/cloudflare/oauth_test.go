@@ -781,7 +781,7 @@ func TestOAuthLoginSeveralAccounts(t *testing.T) {
 	if strings.Contains(stderrText, "accounts to work on") {
 		t.Errorf("the accounts are asked: %q", stderrText)
 	}
-	if !strings.Contains(stderrText, "2 accounts are enabled (everything the authorization sees)") || !strings.Contains(stderrText, "polyctl cloudflare account disable") {
+	if !strings.Contains(stderrText, "2 accounts are enabled (everything the authorization sees)") || !strings.Contains(stderrText, "polyctl cloudflare account enable") {
 		t.Errorf("the login does not say what is enabled: %q", stderrText)
 	}
 	if res.Label != "ops@example.com (account Beta)" {

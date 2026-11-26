@@ -1471,8 +1471,10 @@ func TestAccountUseEnableDisable(t *testing.T) {
 	if code, out = acct("disable", "No Such Name", "--offline"); code != cli.ExitOffline {
 		t.Errorf("disable of an unknown name --offline: exit %d, %s", code, out)
 	}
-	if code, out = acct("disable"); code != cli.ExitUsage {
-		t.Errorf("disable without an account: exit %d, %s", code, out)
+	for _, sub := range []string{"disable", "remove"} {
+		if code, out = acct(sub); code != cli.ExitUsage || !strings.Contains(out, noAccountsToDisable) {
+			t.Errorf("%s without an account: exit %d, %s", sub, code, out)
+		}
 	}
 	// --dry-run is not taken yet.
 	if code, out = acct("disable", "acc1", "--default", "acc2", "--dry-run"); code != cli.ExitUsage || e.stored("all") != "acc1|Acme|acc2,acc3,acc9" {
@@ -1653,11 +1655,15 @@ func TestAccountDisableDropsRowsWithoutAParent(t *testing.T) {
 	}
 }
 
+// noAccountsToDisable is the usage error of disable without an account.
+const noAccountsToDisable = `name the accounts to disable, or choose from the list with "polyctl cloudflare account enable"`
+
 // On a terminal use offers the visible accounts when none is named, and
-// enable and disable both open one list of every account with the enabled
-// ones ticked: what is ticked at the end is enabled and the rest disabled.
-// A default account that was unticked is replaced by the answer to a
-// question, by --default or by the only account left.
+// enable opens one list of every account with the enabled ones ticked: what
+// is ticked at the end is enabled and the rest disabled. A default account
+// that was unticked is replaced by the answer to a question, by --default
+// or by the only account left. disable never opens the list: without an
+// account it is a usage error that names the list of enable.
 func TestAccountCommandsPick(t *testing.T) {
 	e := newR2Env(t)
 	e.loginAll()
@@ -1679,7 +1685,7 @@ func TestAccountCommandsPick(t *testing.T) {
 		prompttest.Labels(a.Options) != "Acme  acc1  default\nBeta  acc2\nGamma  acc3" || !reflect.DeepEqual(a.Preset, []string{"acc1", "acc2", "acc3"}) {
 		t.Errorf("enable offered %+v", a)
 	}
-	// Unticking disables, through either command.
+	// Unticking disables.
 	if _, code, stderr = pick("enable", []string{"acc1", "acc3"}); code != cli.ExitOK || e.stored("all") != "acc1|Acme|acc2" || !strings.Contains(stderr, "disabled acc2 for cloudflare/all") {
 		t.Fatalf("untick in enable: exit %d, %s, %s", code, e.stored("all"), stderr)
 	}
@@ -1695,25 +1701,25 @@ func TestAccountCommandsPick(t *testing.T) {
 		t.Errorf("use asked %+v", a)
 	}
 
-	// Both directions at once, in disable: acc2 is ticked again and acc1
-	// unticked. The ticks shown are the enabled accounts.
-	p, code, stderr = pick("disable", []string{"acc2", "acc3"})
+	// Both directions at once: acc2 is ticked again and acc1 unticked. The
+	// ticks shown are the enabled accounts.
+	p, code, stderr = pick("enable", []string{"acc2", "acc3"})
 	if code != cli.ExitOK || e.stored("all") != "acc3|Gamma|acc1" || !strings.Contains(stderr, "disabled acc1 for cloudflare/all") || !strings.Contains(stderr, "enabled acc2 for cloudflare/all") {
 		t.Fatalf("both directions: exit %d, %s, %s", code, e.stored("all"), stderr)
 	}
 	if a := p.Asked[0]; a.Kind != "multi" || a.Title != title || prompttest.Labels(a.Options) != "Acme  acc1\nBeta  acc2\nGamma  acc3  default" || !reflect.DeepEqual(a.Preset, []string{"acc1", "acc3"}) {
-		t.Errorf("disable offered %+v", a)
+		t.Errorf("both directions offered %+v", a)
 	}
 
 	// The default account unticked: the new one is asked among the ticked.
-	p, code, stderr = pick("disable", []string{"acc1", "acc2"}, "acc2")
+	p, code, stderr = pick("enable", []string{"acc1", "acc2"}, "acc2")
 	if code != cli.ExitOK || e.stored("all") != "acc2|Beta|acc3" || !strings.Contains(stderr, "account acc2 is now the default account of cloudflare/all") {
 		t.Fatalf("default unticked: exit %d, %s, %s", code, e.stored("all"), stderr)
 	}
 	if a := p.Asked[1]; a.Title != "New default account" || prompttest.Values(a.Options) != "acc1 acc2" || !strings.Contains(prompttest.Labels(a.Options), "Acme  acc1") {
 		t.Errorf("new default asked %+v", a)
 	}
-	// --default answers it, by name, in enable too; it must be ticked.
+	// --default answers it, by id or name; it must be ticked.
 	p = prompttest.New(t, []string{"acc1", "acc3"})
 	if code, _, stderr := e.runPick(p, "cloudflare", "account", "enable", "--profile", "all", "--default", "acc2"); code != cli.ExitUsage ||
 		!strings.Contains(stderr, "--default acc2: not one of the accounts that stay enabled (acc1, acc3)") || e.stored("all") != "acc2|Beta|acc3" {
@@ -1726,11 +1732,11 @@ func TestAccountCommandsPick(t *testing.T) {
 	}
 	p.Done()
 	// With one account left ticked it is taken without a question.
-	if _, code, stderr = pick("disable", []string{"acc1"}); code != cli.ExitOK || e.stored("all") != "acc1|Acme|acc2,acc3" {
+	if _, code, stderr = pick("enable", []string{"acc1"}); code != cli.ExitOK || e.stored("all") != "acc1|Acme|acc2,acc3" {
 		t.Fatalf("one left: exit %d, %s, %s", code, e.stored("all"), stderr)
 	}
 	// Ticking nothing writes nothing.
-	if _, code, stderr = pick("disable", []string{}); code != cli.ExitOK || e.stored("all") != "acc1|Acme|acc2,acc3" {
+	if _, code, stderr = pick("enable", []string{}); code != cli.ExitOK || e.stored("all") != "acc1|Acme|acc2,acc3" {
 		t.Errorf("nothing ticked: exit %d, %s, %s", code, e.stored("all"), stderr)
 	}
 
@@ -1749,8 +1755,28 @@ func TestAccountCommandsPick(t *testing.T) {
 		t.Errorf("forget an account that is not visible: exit %d, %s, %s", code, e.stored("all"), stderr)
 	}
 
+	// disable, and remove, its hidden former name, never open the list:
+	// without an account they are a usage error on a terminal and away
+	// from one, which says where the list is. Nothing is asked or stored.
+	for _, sub := range []string{"disable", "remove"} {
+		for _, more := range [][]string{nil, {"--default", "acc1"}, {"--offline"}} {
+			args := append([]string{"cloudflare", "account", sub, "--profile", "all"}, more...)
+			p = prompttest.New(t)
+			if code, _, stderr := e.runPick(p, args...); code != cli.ExitUsage || !strings.Contains(stderr, noAccountsToDisable) || e.stored("all") != "acc1|Acme|acc2" {
+				t.Errorf("%s %v without an account on a terminal: exit %d, %s, %s", sub, more, code, e.stored("all"), stderr)
+			}
+			p.Done()
+			if len(p.Asked) != 0 {
+				t.Errorf("%s %v without an account asked %+v", sub, more, p.Asked)
+			}
+			if code, _, stderr := e.run(args...); code != cli.ExitUsage || !strings.Contains(stderr, noAccountsToDisable) {
+				t.Errorf("%s %v without an account, non-interactive: exit %d, %s", sub, more, code, stderr)
+			}
+		}
+	}
+
 	// The list needs Cloudflare, and credentials that can list accounts.
-	for _, sub := range []string{"enable", "disable"} {
+	for _, sub := range []string{"enable", "add"} {
 		p = prompttest.New(t)
 		if code, _, stderr := e.runPick(p, "cloudflare", "account", sub, "--profile", "all", "--offline"); code != cli.ExitOffline {
 			t.Errorf("%s --offline without an account: exit %d, %s", sub, code, stderr)
@@ -1763,14 +1789,12 @@ func TestAccountCommandsPick(t *testing.T) {
 	}
 	zones := e.f.zones
 	e.f.accountsStatus, e.f.zones = http.StatusForbidden, nil
-	for _, sub := range []string{"enable", "disable"} {
-		if _, code, stderr = pick(sub); code != cli.ExitUsage || !strings.Contains(stderr, "the credentials of cloudflare/all cannot list accounts: pass the account id") {
-			t.Errorf("%s with credentials that cannot list accounts: exit %d, %s", sub, code, stderr)
-		}
+	if _, code, stderr = pick("enable"); code != cli.ExitUsage || !strings.Contains(stderr, "the credentials of cloudflare/all cannot list accounts: pass the account id") {
+		t.Errorf("enable with credentials that cannot list accounts: exit %d, %s", code, stderr)
 	}
 	// A list read off the zones is not complete, but it is a list.
 	e.f.zones = zones
-	if _, code, stderr = pick("disable", []string{"acc1"}); code != cli.ExitOK || !strings.Contains(stderr, "are unchanged") || e.stored("all") != "acc1|Acme|acc2" {
+	if _, code, stderr = pick("enable", []string{"acc1"}); code != cli.ExitOK || !strings.Contains(stderr, "are unchanged") || e.stored("all") != "acc1|Acme|acc2" {
 		t.Errorf("pick over the accounts of the zones: exit %d, %s, %s", code, e.stored("all"), stderr)
 	}
 }
@@ -1835,7 +1859,7 @@ func TestAccountEnableDisableDryRun(t *testing.T) {
 	}
 	// The pick reports what its ticks would change, in both directions.
 	p := prompttest.New(t, []string{"acc2", "acc3"}, "acc3")
-	code, stdout, stderr := e.runPick(p, "cloudflare", "account", "disable", "--profile", "all", "--dry-run", "-o", "json")
+	code, stdout, stderr := e.runPick(p, "cloudflare", "account", "enable", "--profile", "all", "--dry-run", "-o", "json")
 	p.Done()
 	check("pick", stdout, code, "account/acc1 would_update disabled", "account/acc3 would_update enabled", "account/acc3 would_update default")
 	_ = stderr

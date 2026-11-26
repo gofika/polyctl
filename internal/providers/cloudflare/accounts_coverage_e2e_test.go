@@ -407,14 +407,14 @@ func TestAccountEnableAsksNothingForTheDefaultName(t *testing.T) {
 }
 
 // A token without Account:Read that sees zones is offered the accounts of
-// those zones by enable and disable on a terminal, and an id nobody can
-// check counts as enabled already; the help of both commands says so.
+// those zones by enable on a terminal, and an id nobody can check counts
+// as enabled already; the help of enable says so.
 func TestAccountListOfCredentialsThatCannotListThem(t *testing.T) {
 	e := newR2Env(t)
 	e.loginAll()
 	e.f.accountsStatus = http.StatusForbidden
 	p := prompttest.New(t, []string{"acc1", "acc3"})
-	code, _, stderr := e.runPick(p, "cloudflare", "account", "disable", "--profile", "all")
+	code, _, stderr := e.runPick(p, "cloudflare", "account", "enable", "--profile", "all")
 	p.Done()
 	if code != cli.ExitOK || e.stored("all") != "acc1|Acme|acc2" {
 		t.Fatalf("pick: exit %d, %s, %s", code, e.stored("all"), stderr)
@@ -425,12 +425,16 @@ func TestAccountListOfCredentialsThatCannotListThem(t *testing.T) {
 	if code, _, stderr := e.run("cloudflare", "account", "enable", "acc9", "--profile", "all"); code != cli.ExitOK || !strings.Contains(stderr, "acc9: already enabled for cloudflare/all") {
 		t.Errorf("enable of an id that cannot be checked: exit %d, %s", code, stderr)
 	}
-	for _, sub := range []string{"enable", "disable"} {
-		_, stdout, stderr := e.run("cloudflare", "account", sub, "--help")
-		help := strings.Join(strings.Fields(stdout+stderr), " ")
-		if strings.Contains(help, "and credentials that can list their accounts") || !strings.Contains(help, "are offered the accounts of their zones") {
-			t.Errorf("help of account %s: %s", sub, help)
-		}
+	_, stdout, stderr := e.run("cloudflare", "account", "enable", "--help")
+	help := strings.Join(strings.Fields(stdout+stderr), " ")
+	if strings.Contains(help, "and credentials that can list their accounts") || !strings.Contains(help, "are offered the accounts of their zones") {
+		t.Errorf("help of account enable: %s", help)
+	}
+	// disable has no list: its help sends to the one of enable.
+	_, stdout, stderr = e.run("cloudflare", "account", "disable", "--help")
+	help = strings.Join(strings.Fields(stdout+stderr), " ")
+	if strings.Contains(help, "are offered the accounts of their zones") || !strings.Contains(help, `run "polyctl cloudflare account enable" without arguments`) {
+		t.Errorf("help of account disable: %s", help)
 	}
 }
 
