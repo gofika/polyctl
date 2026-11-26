@@ -543,14 +543,17 @@ func pickRecordToDelete(rt *app.Runtime, z *zoneRef, recs []platform.Record) (re
 	if len(s.Records) == 1 {
 		return s, nil, nil
 	}
-	vopts := []prompt.Option{{Label: fmt.Sprintf("The whole set (%d values)", len(s.Records)), Value: "all"}}
-	for j, r := range s.Records {
-		vopts = append(vopts, prompt.Option{Label: "Only " + recordValue(r), Value: strconv.Itoa(j)})
+	// The whole set (nil) comes first, then each value.
+	values := []*platform.Record{nil}
+	for j := range s.Records {
+		values = append(values, &s.Records[j])
 	}
-	w, err := rt.Pick().Select("Delete which values of "+s.Name+" "+s.Type+"?", vopts, "all")
-	if err != nil || w == "all" {
-		return s, nil, err
-	}
-	j, _ := strconv.Atoi(w)
-	return s, &s.Records[j], nil
+	one, err := app.PickOf(rt, app.Choice{Title: "Delete which values of " + s.Name + " " + s.Type + "?", Arg: "<value>"}, values,
+		func(r *platform.Record) string {
+			if r == nil {
+				return fmt.Sprintf("The whole set (%d values)", len(s.Records))
+			}
+			return "Only " + recordValue(*r)
+		})
+	return s, one, err
 }

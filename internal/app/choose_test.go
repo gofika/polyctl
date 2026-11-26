@@ -203,25 +203,30 @@ func TestPickResource(t *testing.T) {
 	}
 }
 
-// PickRecordID labels the records, every fact in its cell ("-" for what a
-// record does not have), and leaves the SOA out.
-func TestPickRecordID(t *testing.T) {
+// The list of a command that acts on one record labels the records, every
+// fact in its cell ("-" for what a record does not have), and leaves the
+// SOA out.
+func TestSelectRecordsListsOne(t *testing.T) {
 	rt, p := interactiveRT(t, "r2")
 	on := true
 	recs := []platform.Record{{ID: "soa", Name: "example.com", Type: "SOA", Value: "x"},
 		{ID: "r1", Name: "www.example.com", Type: "A", Value: "203.0.113.10", TTL: 300},
 		{ID: "r2", Name: "cdn.example.com", Type: "CNAME", Value: "b.r2.dev", Proxied: &on}}
-	got, err := rt.PickRecordID("Delete which record?", recs, func(r platform.Record) string {
+	got, err := rt.SelectRecords(app.RecordSelect{Zone: "example.com", Records: recs, One: true, Verb: "Update", Mark: func(r platform.Record) string {
 		if r.ID == "r2" {
 			return "R2 bucket b"
 		}
 		return ""
-	})
-	if err != nil || got != "r2" {
-		t.Fatalf("pick = %q, %v", got, err)
+	}})
+	if err != nil || len(got.Records) != 1 || got.Records[0].ID != "r2" || !got.Listed {
+		t.Fatalf("pick = %+v, %v", got, err)
 	}
-	if l := prompttest.Labels(p.Find("Delete which record?").Options); l != "www.example.com  A  203.0.113.10  ttl 300  -  -  r1\ncdn.example.com  CNAME  b.r2.dev  -  proxied  [R2 bucket b]  r2" {
+	a := p.Find("Update which record of example.com?")
+	if l := prompttest.Labels(a.Options); l != "www.example.com  A  203.0.113.10  ttl 300  -  -  r1\ncdn.example.com  CNAME  b.r2.dev  -  proxied  [R2 bucket b]  r2" {
 		t.Errorf("labels:\n%s", l)
+	}
+	if v := prompttest.Values(a.Options); v != "r1 r2" {
+		t.Errorf("the options are valued by the record ids: %q", v)
 	}
 }
 

@@ -279,21 +279,34 @@ func OneOfBy[T any](rt *Runtime, amb *AmbiguousError, found []T, value, label fu
 // labelled by label, and the item chosen is returned. c.Options is not
 // used; c.Default is not supported (nothing is preselected).
 func PickOf[T any](rt *Runtime, c Choice, items []T, label func(T) string) (T, error) {
+	return PickOfBy(rt, c, items, nil, label)
+}
+
+// PickOfBy is PickOf with options whose value is value of the item (its id)
+// instead of its position; the values must differ.
+func PickOfBy[T any](rt *Runtime, c Choice, items []T, value, label func(T) string) (T, error) {
 	var zero T
+	valueOf := func(i int) string {
+		if value == nil {
+			return strconv.Itoa(i)
+		}
+		return value(items[i])
+	}
 	c.Options = make([]prompt.Option, 0, len(items))
 	for i, it := range items {
-		c.Options = append(c.Options, prompt.Option{Label: label(it), Value: strconv.Itoa(i)})
+		c.Options = append(c.Options, prompt.Option{Label: label(it), Value: valueOf(i)})
 	}
 	c.Default, c.Create = "", nil
 	v, err := rt.Choose(c)
 	if err != nil {
 		return zero, err
 	}
-	i, err := strconv.Atoi(v)
-	if err != nil || i < 0 || i >= len(items) {
-		return zero, fmt.Errorf("unexpected choice %q", v)
+	for i := range items {
+		if valueOf(i) == v {
+			return items[i], nil
+		}
 	}
-	return items[i], nil
+	return zero, fmt.Errorf("unexpected choice %q", v)
 }
 
 // Arg returns args[i], or "" when the argument was left out (the

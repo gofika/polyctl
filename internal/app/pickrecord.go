@@ -64,21 +64,6 @@ func RecordLabel(r platform.Record, more ...string) string {
 	return prompt.Cells(append([]string{r.Name, r.Type, r.Value, ttl, proxied}, more...)...)
 }
 
-// PickRecordID asks for one record of a zone (the <record-id> of an
-// update or delete command), labelled "name  type  value  ttl 300  proxied
-// [note]  id" ("-" for what a record does not have). mark, when set, adds
-// a note to a record (the service owning it).
-func (rt *Runtime) PickRecordID(title string, recs []platform.Record, mark func(platform.Record) string) (string, error) {
-	var opts []prompt.Option
-	for _, r := range recs {
-		if r.Type == "SOA" || strings.TrimSpace(r.ID) == "" {
-			continue
-		}
-		opts = append(opts, prompt.Option{Label: recordOptionLabel(r, mark), Value: r.ID})
-	}
-	return rt.Choose(Choice{Title: title, Options: opts, Arg: "<record-id>", What: "record"})
-}
-
 // PickOnOff asks to switch something on or off, the opposite of the
 // current state (nil: unknown) preselected; it returns "on" or "off".
 func (rt *Runtime) PickOnOff(title string, current *bool) (string, error) {

@@ -111,8 +111,8 @@ func ExactRecordHint(typeArg string, byValue, byID bool, more ...string) string 
 }
 
 // PickRecords asks which of recs to act on (a multiple choice, nothing
-// ticked), labelled as PickRecordID labels them: "name  type  value  ttl
-// 300  proxied  [note]  id". A record without an id cannot be picked and is
+// ticked), labelled "name  type  value  ttl 300  proxied  [note]  id" ("-"
+// for what a record does not have). A record without an id cannot be picked and is
 // left out. Ticking nothing is "nothing to do" (exit code 0).
 func (rt *Runtime) PickRecords(title, what string, recs []platform.Record, mark func(platform.Record) string) ([]platform.Record, error) {
 	byID := map[string]platform.Record{}
@@ -135,8 +135,8 @@ func (rt *Runtime) PickRecords(title, what string, recs []platform.Record, mark 
 	return out, nil
 }
 
-// recordOptionLabel is the label of a record in PickRecordID and
-// PickRecords: RecordLabel, the note of mark in brackets, and the id.
+// recordOptionLabel is the label of a record in a list of records (the
+// one of SelectRecords, PickRecords): RecordLabel, the note of mark in brackets, and the id.
 func recordOptionLabel(r platform.Record, mark func(platform.Record) string) string {
 	note := ""
 	if mark != nil {
@@ -463,15 +463,19 @@ func (s RecordSelect) list(rt *Runtime, zone, of string, recs []platform.Record)
 	case s.List != nil:
 		chosen, err = s.List(of, recs)
 	case s.One:
-		var id string
-		if id, err = rt.PickRecordID(s.Verb+" which record of "+of+"?", recs, s.Mark); err == nil {
-			for _, r := range recs {
-				if r.ID == id {
-					chosen = []platform.Record{r}
-					break
-				}
+		// A record without an id cannot be named in the change, and the
+		// SOA of a zone is not a record to update.
+		var offered []platform.Record
+		for _, r := range recs {
+			if r.Type != "SOA" && strings.TrimSpace(r.ID) != "" {
+				offered = append(offered, r)
 			}
 		}
+		var one platform.Record
+		one, err = PickOfBy(rt, Choice{Title: s.Verb + " which record of " + of + "?", Arg: "<name> or --id", What: "record"}, offered,
+			func(r platform.Record) string { return r.ID },
+			func(r platform.Record) string { return recordOptionLabel(r, s.Mark) })
+		chosen = []platform.Record{one}
 	default:
 		chosen, err = rt.PickRecords(s.Verb+" which records of "+of+"?", "record in zone "+zone, recs, s.Mark)
 	}
