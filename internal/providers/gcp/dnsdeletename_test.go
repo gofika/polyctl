@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"google.golang.org/api/dns/v1"
+
 	"github.com/gofika/polyctl/internal/prompt/prompttest"
 )
 
@@ -18,9 +20,9 @@ func TestDNSRecordDeleteByNameOfOneSet(t *testing.T) {
 	}
 	h, g := positionalHarness(t)
 	before := setsOf(g, "example-zone")
-	// Without --yes the whole set is refused before anything is read; a dry
-	// run reports it and asks nothing.
-	if err := h.run("dns", "record", "delete", "example-zone", "www"); exitClass(err) != "usage" || !strings.Contains(err.Error(), "would delete the record set of www") {
+	// Without --yes the whole set is refused once the name is known to mean
+	// one record set; a dry run reports it and asks nothing.
+	if err := h.run("dns", "record", "delete", "example-zone", "www"); exitClass(err) != "usage" || !strings.Contains(err.Error(), "pass --yes to proceed (would delete the A record set of www.example.com)") {
 		t.Errorf("no --yes = %v", err)
 	}
 	h.rt.Flags.DryRun = true
@@ -45,19 +47,20 @@ func TestDNSRecordDeleteByNameOfOneSet(t *testing.T) {
 
 // A name with record sets of several types (the apex: MX and TXT, its NS
 // and SOA not counted) is exit code 5 where nothing can be asked, also with
-// --yes and in a dry run, and nothing is deleted.
+// --yes, without it and in a dry run, and nothing is deleted.
 func TestDNSRecordDeleteByNameOfSeveralTypesIsAmbiguous(t *testing.T) {
 	h, g := positionalHarness(t)
 	before := setsOf(g, "example-zone")
 	for arg, form := range map[string][]string{"<type>": {"@"}, "--type": {"--name", "@"}} {
-		for _, yes := range []bool{true, false} {
+		for _, flag := range []string{"--yes", "--dry-run", ""} {
+			yes := flag
 			args := append([]string{"dns", "record", "delete", "example-zone"}, form...)
-			if h.rt.Flags.DryRun = !yes; yes {
-				args = append(args, "--yes")
+			if h.rt.Flags.DryRun = flag == "--dry-run"; flag == "--yes" {
+				args = append(args, flag)
 			}
 			err := h.run(args...)
 			if exitClass(err) != "ambiguous" || !strings.Contains(err.Error(), "example.com has records of 2 types in zone example.com (MX, TXT); give "+arg) {
-				t.Errorf("%v (yes %v) = %v", form, yes, err)
+				t.Errorf("%v %q = %v", form, yes, err)
 			}
 		}
 	}
@@ -96,5 +99,27 @@ func TestDNSRecordDeleteByNameOffersTheSets(t *testing.T) {
 		if !strings.Contains(s, want) {
 			t.Errorf("the question lacks %q: %s", want, s)
 		}
+	}
+}
+
+// What a name alone means is decided on the zone as it is, not on the
+// inventory: a record set created after the records were cached counts.
+func TestDNSRecordDeleteByNameReadsTheZoneLive(t *testing.T) {
+	h, g := positionalHarness(t)
+	if err := h.run("dns", "record", "list", "example-zone"); err != nil {
+		t.Fatal(err)
+	}
+	add := func(name, typ, value string) {
+		g.rrsets["example-zone"] = append(g.rrsets["example-zone"], &dns.ResourceRecordSet{Name: name, Type: typ, Ttl: 300, Rrdatas: []string{value}})
+	}
+	add("www.example.com.", "TXT", `"later"`)
+	before := setsOf(g, "example-zone")
+	err := h.run("dns", "record", "delete", "example-zone", "www", "--yes")
+	if exitClass(err) != "ambiguous" || !strings.Contains(err.Error(), "www.example.com has records of 2 types in zone example.com (A, TXT)") || setsOf(g, "example-zone") != before {
+		t.Errorf("a type added after the cache = %v, sets %s", err, setsOf(g, "example-zone"))
+	}
+	add("fresh.example.com.", "A", "203.0.113.9")
+	if err := h.run("dns", "record", "delete", "example-zone", "fresh", "--yes"); err != nil || g.rrset("example-zone", "fresh.example.com.", "A") != nil {
+		t.Errorf("a name added after the cache = %v, sets %s", err, setsOf(g, "example-zone"))
 	}
 }

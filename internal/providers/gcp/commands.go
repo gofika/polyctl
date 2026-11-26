@@ -444,11 +444,7 @@ func sortRecords(recs []platform.Record) {
 // read live and not stored.
 func cachedRecords(ctx context.Context, rt *app.Runtime, profile string, z *zoneRef) ([]platform.Record, bool, error) {
 	fetch := func(ctx context.Context) ([]platform.Resource, error) {
-		c, err := openAccount(ctx, rt, profile)
-		if err != nil {
-			return nil, err
-		}
-		recs, err := c.ListRecords(ctx, z.ID)
+		recs, err := liveRecords(ctx, rt, profile, z)
 		if err != nil {
 			return nil, err
 		}
@@ -514,6 +510,16 @@ func zoneCached(ctx context.Context, rt *app.Runtime, c *client, profile string,
 	}
 	ok, err := c.covers(ctx, z.Project)
 	return err == nil && ok
+}
+
+// liveRecords reads the records of a zone from Cloud DNS, past the
+// inventory: for a command that decides on them what to delete.
+func liveRecords(ctx context.Context, rt *app.Runtime, profile string, z *zoneRef) ([]platform.Record, error) {
+	c, err := openAccount(ctx, rt, profile)
+	if err != nil {
+		return nil, err
+	}
+	return c.ListRecords(ctx, z.ID)
 }
 
 // refreshRecords re-reads a zone after a mutation so the inventory matches.
@@ -749,9 +755,11 @@ set or one value.
 Deleting a whole record set lists its values with their ids and, for several
 values, says how to delete one of them only (<value> or --id), then asks one
 yes/no question (default no; --yes skips it). The non-interactive flow asks
-nothing: --yes is required (exit code 2 without it, before anything is
-read). Declining changes nothing; a missing set is not found (exit code 4)
-before the question. Removing one value (<value>, --id) asks nothing, like
+nothing: --yes is required (exit code 2 without it: for <name> <type> before
+anything is read, for a name alone once it is known to mean one record set).
+A name alone is looked up in the zone as it is, not in the inventory.
+Declining changes nothing; a missing set is not found (exit code 4) before
+the question. Removing one value (<value>, --id) asks nothing, like
 dns delete of one record. --dry-run asks nothing.`,
 		Example: `  polyctl gcp dns record delete example-zone _acme-challenge --yes
   polyctl gcp dns record delete example-zone _acme-challenge TXT --yes
@@ -762,14 +770,14 @@ dns delete of one record. --dry-run asks nothing.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The record is positional (<name> [<type> [<value>]]) or, in
 			// the former form, given with --name, --type and --value.
-			typeArg, valueHint := "--type", "give its value with --value, or its id with --id <id>"
+			typeArg := "--type"
 			if len(args) > 1 {
 				rec, err := app.ParseRecordSelector(cmd, args[1:], 1)
 				if err != nil {
 					return err
 				}
 				name, typ, value = rec.Name, rec.Type, rec.Value()
-				typeArg, valueHint = "<type>", "give its <value> after the <type>, or its id with --id <id>"
+				typeArg = "<type>"
 				args = args[:1]
 			}
 			if id != "" && (typ != "" || name != "" || value != "" || cmd.Flags().Changed("priority")) {
@@ -784,12 +792,12 @@ dns delete of one record. --dry-run asks nothing.`,
 			if pick && !rt.Interactive() {
 				return app.UsageErrf("a record or --id is required: %s", app.RecordSelectorUsage(cmd, 1))
 			}
-			if !rt.Flags.DryRun && !pick && id == "" && value == "" {
-				what := fmt.Sprintf("delete the %s record set of %s", strings.ToUpper(typ), platform.FQDN(name, "<zone>"))
-				if byName {
-					what = "delete the record set of " + platform.FQDN(name, "<zone>")
-				}
-				if err := rt.CanConfirm(what); err != nil {
+			// A whole record set that is named needs --yes where nothing can
+			// be asked: refused before anything is read. A name alone is read
+			// first: what it means (one set, several types, nothing) comes
+			// before the confirmation.
+			if !rt.Flags.DryRun && !pick && !byName && id == "" && value == "" {
+				if err := rt.CanConfirm(fmt.Sprintf("delete the %s record set of %s", strings.ToUpper(typ), platform.FQDN(name, "<zone>"))); err != nil {
 					return err
 				}
 			}
@@ -807,8 +815,21 @@ dns delete of one record. --dry-run asks nothing.`,
 			if err != nil {
 				return err
 			}
+			// onlyValue narrows the deletion to one value picked from a set.
+			onlyValue := func(one *platform.Record) {
+				if one == nil {
+					return
+				}
+				value = one.Value
+				if one.Priority != nil {
+					priority = *one.Priority
+					_ = cmd.Flags().Set("priority", strconv.Itoa(priority))
+				}
+			}
 			if byName {
-				recs, _, err := cachedRecords(cmd.Context(), rt, profile, z)
+				// What the name means is decided on the zone as it is now,
+				// not on the inventory: a cached list may miss a record set.
+				recs, err := liveRecords(cmd.Context(), rt, profile, z)
 				if err != nil {
 					return err
 				}
@@ -827,13 +848,8 @@ dns delete of one record. --dry-run asks nothing.`,
 					if err != nil {
 						return err
 					}
-					if typ = set.Type; one != nil {
-						value = one.Value
-						if one.Priority != nil {
-							priority = *one.Priority
-							_ = cmd.Flags().Set("priority", strconv.Itoa(priority))
-						}
-					}
+					typ = set.Type
+					onlyValue(one)
 				} else {
 					typ = found.Type()
 				}
@@ -860,13 +876,7 @@ dns delete of one record. --dry-run asks nothing.`,
 					return err
 				}
 				name, typ = set.Name, set.Type
-				if one != nil {
-					value = one.Value
-					if one.Priority != nil {
-						priority = *one.Priority
-						_ = cmd.Flags().Set("priority", strconv.Itoa(priority))
-					}
-				}
+				onlyValue(one)
 			}
 			change := platform.Change{Resource: app.RecordResource(platform.FQDN(name, z.Name), typ), Action: platform.Deleted, Detail: "the whole record set"}
 			switch {
@@ -914,8 +924,9 @@ dns delete of one record. --dry-run asks nothing.`,
 					if err != nil {
 						return err
 					}
-					if err := rt.ConfirmRecordDelete(cmd.Context(), app.RecordDelete{Records: recordGrid(recs), Exact: valueHint,
-						Question: fmt.Sprintf("Delete the %s record set of %s (%d value(s))?", strings.ToUpper(typ), fqdn, len(recs))}); err != nil {
+					if err := rt.ConfirmRecordDelete(cmd.Context(), app.RecordDelete{Records: recordGrid(recs), Exact: app.ExactRecordHint(typeArg, true, true),
+						Question: fmt.Sprintf("Delete the %s record set of %s (%d value(s))?", strings.ToUpper(typ), fqdn, len(recs)),
+						Refusal:  fmt.Sprintf("delete the %s record set of %s", strings.ToUpper(typ), fqdn)}); err != nil {
 						return err
 					}
 				}
