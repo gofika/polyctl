@@ -100,7 +100,7 @@ func TestRoute53RecordPositionalUsage(t *testing.T) {
 	h, r53, _ := positionalHarness(t)
 	h.rt.Flags.Yes = true
 	const upsert = "route53 record upsert <zone> <name> <type> <value>..."
-	const del = "route53 record delete <zone> <name> <type>"
+	const del = "route53 record delete <zone> <name> [<type>]"
 	before := setsOf(r53, "Z3")
 	for _, c := range []struct {
 		args []string
@@ -119,9 +119,7 @@ func TestRoute53RecordPositionalUsage(t *testing.T) {
 		{[]string{"upsert", "other.org", "www", "A", "203.0.113.10", ""}, "<value> must not be empty"},
 		{[]string{"delete"}, "usage: aws " + del},
 		{[]string{"delete", "other.org"}, "usage: aws " + del},
-		{[]string{"delete", "other.org", "www"}, del},
 		{[]string{"delete", "other.org", "www", "A", "198.51.100.7"}, del},
-		{[]string{"delete", "other.org", "--name", "www"}, del},
 		{[]string{"delete", "other.org", "www", "A", "--name", "www"}, "with --name; use one form: usage: aws " + del},
 		{[]string{"delete", "other.org", "www", "A", "--type", "A"}, "with --type; use one form"},
 	} {
@@ -155,7 +153,7 @@ func TestRoute53RecordUpsertWithOnlyTheZoneAsks(t *testing.T) {
 // and the <type> position completes the record types.
 func TestRoute53RecordPositionalHelp(t *testing.T) {
 	h, _, _ := positionalHarness(t)
-	for verb, use := range map[string]string{"upsert": "upsert <zone> <name> <type> <value>...", "delete": "delete <zone> <name> <type>"} {
+	for verb, use := range map[string]string{"upsert": "upsert <zone> <name> <type> <value>...", "delete": "delete <zone> <name> [<type>]"} {
 		cmd, _, err := Command(h.rt).Find([]string{"route53", "record", verb})
 		if err != nil {
 			t.Fatal(err)

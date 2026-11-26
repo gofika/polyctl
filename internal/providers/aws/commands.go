@@ -530,11 +530,17 @@ func hideFormerRecordFlags(cmd *cobra.Command) {
 func recordDeleteCmd(rt *app.Runtime) *cobra.Command {
 	var typ, name, setID string
 	cmd := &cobra.Command{
-		Use:   "delete <zone> <name> <type>",
+		Use:   "delete <zone> <name> [<type>]",
 		Short: "Delete a whole record set (name + type)",
 		Long: `Delete the record set of <name> and <type>, with every value in it. <name> is
 relative to the zone (www, a.b), @ for the zone apex, or a full name inside
 the zone (www.example.com). <type> is case-insensitive.
+
+<type> is needed only to tell record sets apart: a name with one record set
+needs none. A name with record sets of several types is not deleted as a
+whole: on a terminal its record sets are offered to pick one, and the
+non-interactive flow names the types and exits with code 5, also with --yes.
+The SOA and NS sets of the zone apex are never meant by the name alone.
 
 A routing-policy set (weighted, latency, failover, geolocation...) is
 chosen with --set-identifier; without it, a name and type that hold only
@@ -546,27 +552,31 @@ no; --yes skips it). The non-interactive flow asks nothing: --yes is required
 (exit code 2 without it, before anything is read). Declining changes nothing.
 A missing set is not found (exit code 4) before the question. --dry-run
 reports what would be deleted and asks nothing.`,
-		Example:           "  polyctl aws route53 record delete example.com _acme-challenge TXT\n  polyctl aws route53 record delete example.com www A --set-identifier eu --yes",
-		Args:              app.RecordArgsOrInteractive(rt, 0, 0),
+		Example:           "  polyctl aws route53 record delete example.com _acme-challenge\n  polyctl aws route53 record delete example.com _acme-challenge TXT\n  polyctl aws route53 record delete example.com www A --set-identifier eu --yes",
+		Args:              app.RecordSelectorArgsOrInteractive(rt, 0),
 		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.AWS), platform.AWS),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// The record set is positional (<name> <type>) or, in the former
-			// form, given with --name and --type.
+			// The record set is positional (<name> [<type>]) or, in the
+			// former form, given with --name and --type.
+			typeArg, named := "--type", cmd.Flags().Changed("name")
 			if len(args) > 1 {
-				rec, err := app.ParseRecordArgs(cmd, args[1:], 0, 0)
+				rec, err := app.ParseRecordSelector(cmd, args[1:], 0)
 				if err != nil {
 					return err
 				}
-				name, typ = rec.Name, rec.Type
+				name, typ, typeArg, named = rec.Name, rec.Type, "<type>", true
 				args = args[:1]
 			}
-			if typ == "" && !rt.Interactive() {
-				return app.UsageErrf("%s", app.RecordUsage(cmd, 0, 0))
+			if typ == "" && !named && !rt.Interactive() {
+				return app.UsageErrf("%s", app.RecordSelectorUsage(cmd, 0))
 			}
 			if !rt.Flags.DryRun {
 				what := "delete the picked record set"
-				if typ != "" {
+				switch {
+				case typ != "":
 					what = fmt.Sprintf("delete the %s record set of %s", strings.ToUpper(typ), nameOrApex(name))
+				case named:
+					what = "delete the record set of " + nameOrApex(name)
 				}
 				if err := rt.CanConfirm(what); err != nil {
 					return err
@@ -592,10 +602,43 @@ reports what would be deleted and asks nothing.`,
 			}
 			fqdn := platform.FQDN(name, z.Name)
 			if typ == "" {
-				// The interactive flow: the record set, from those of the
-				// zone (of --name when given; the apex NS and SOA left out).
-				if fqdn, typ, setID, err = pickRecordSet(cmd.Context(), rt, c, z, name); err != nil {
+				recs, err := c.ListRecords(cmd.Context(), z.ID)
+				if err != nil {
 					return err
+				}
+				// pick: the record set is chosen from a list, of the zone
+				// or of the name.
+				pick := !named
+				if named {
+					// The name alone: its one record set, or, with several,
+					// a list on a terminal and exit code 5 without one.
+					found, err := app.RecordsOfName(z.Name, recs, fqdn, "", "")
+					if err != nil {
+						return err
+					}
+					recs = found.Records
+					sets := recordSetKeys(recs)
+					if pick, err = rt.NeedsType(found, typeArg); err != nil {
+						return err
+					}
+					switch {
+					case len(sets) == 1:
+						typ = sets[0].typ
+						if setID == "" {
+							setID = sets[0].setID
+						}
+					case !pick && !rt.Interactive():
+						// One type in several routed sets: LookupSet lists
+						// the identifiers (exit code 5).
+						typ = found.Type()
+					default:
+						pick = true
+					}
+				}
+				if pick {
+					if fqdn, typ, setID, err = pickRecordSet(rt, z, recs); err != nil {
+						return err
+					}
 				}
 			}
 			rs, err := c.LookupSet(cmd.Context(), z.ID, fqdn, typ, setID)
@@ -609,16 +652,12 @@ reports what would be deleted and asks nothing.`,
 			if done, err := rt.WouldWrite(platform.Target{Platform: platform.AWS, Profile: prof.Name, Domain: z.Name}, platform.Change{Resource: app.RecordResource(fqdn, typ), Action: platform.Deleted, Detail: detail}); done || err != nil {
 				return err
 			}
-			if !rt.Flags.Yes {
-				recs := recordsFromSet(zoneID(z.ID), *rs)
-				_ = output.RenderGrid(rt.Stderr, recordGrid(recs))
-				ok, err := rt.Confirm(cmd.Context(), fmt.Sprintf("Delete the %s record set of %s (%d value(s))?", strings.ToUpper(typ), platform.NormalizeDomain(fqdn), len(recs)), false)
-				if err != nil {
-					return err
-				}
-				if !ok {
-					return app.NothingToDof("cancelled, no record was deleted")
-				}
+			// A record set is one object here: there is no way to delete one
+			// of its values only, so the confirmation names none.
+			cur := recordsFromSet(zoneID(z.ID), *rs)
+			if err := rt.ConfirmRecordDelete(cmd.Context(), app.RecordDelete{Records: recordGrid(cur),
+				Question: fmt.Sprintf("Delete the %s record set of %s (%d value(s))?", strings.ToUpper(typ), platform.NormalizeDomain(fqdn), len(cur))}); err != nil {
+				return err
 			}
 			recs, err := c.DeleteSet(cmd.Context(), z.ID, fqdn, typ, setID)
 			if err != nil {
@@ -634,6 +673,24 @@ reports what would be deleted and asks nothing.`,
 	cmd.Flags().StringVar(&setID, "set-identifier", "", "set identifier of a routing-policy record set (weighted, latency, failover...)")
 	hideFormerRecordFlags(cmd)
 	return cmd
+}
+
+// recordSetKey tells the record sets of one name apart: the type and, for
+// a routing-policy set, the set identifier.
+type recordSetKey struct{ typ, setID string }
+
+// recordSetKeys are the record sets recs (the records of one name) are in.
+func recordSetKeys(recs []platform.Record) []recordSetKey {
+	var keys []recordSetKey
+	seen := map[recordSetKey]bool{}
+	for _, r := range recs {
+		k := recordSetKey{strings.ToUpper(r.Type), extraString(r.Extra, "set_identifier")}
+		if !seen[k] {
+			seen[k] = true
+			keys = append(keys, k)
+		}
+	}
+	return keys
 }
 
 // nameOrApex names --name for a message: the zone apex when it is empty.
@@ -1124,16 +1181,8 @@ yet: the command first waits (at most --timeout) until it is running.`
 // values and TTL; those of name only when it is given; the apex NS and SOA,
 // which the zone cannot do without, left out). It returns the name, type
 // and set identifier. None is nothing to do.
-func pickRecordSet(ctx context.Context, rt *app.Runtime, c *client, z *platform.Zone, name string) (string, string, string, error) {
-	recs, err := c.ListRecords(ctx, z.ID)
-	if err != nil {
-		return "", "", "", err
-	}
+func pickRecordSet(rt *app.Runtime, z *platform.Zone, recs []platform.Record) (string, string, string, error) {
 	apex := platform.NormalizeDomain(z.Name)
-	want := ""
-	if name != "" {
-		want = platform.NormalizeDomain(platform.FQDN(name, z.Name))
-	}
 	type set struct {
 		name, typ, setID string
 		values           []string
@@ -1143,7 +1192,7 @@ func pickRecordSet(ctx context.Context, rt *app.Runtime, c *client, z *platform.
 	byKey := map[string]*set{}
 	for _, r := range recs {
 		n := platform.NormalizeDomain(r.Name)
-		if (n == apex && (r.Type == "NS" || r.Type == "SOA")) || (want != "" && n != want) {
+		if n == apex && (r.Type == "NS" || r.Type == "SOA") {
 			continue
 		}
 		setID := extraString(r.Extra, "set_identifier")
