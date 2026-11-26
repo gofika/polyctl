@@ -1074,6 +1074,20 @@ func TestProjectUseEnableDisable(t *testing.T) {
 		if sub != "use" && c.Flags().Lookup("default") == nil {
 			t.Errorf("project %s has no --default", sub)
 		}
+		// The usage line shows the project ids as optional where the
+		// command opens the list without them, and the help of remove,
+		// which still opens it, does not repeat that disable never does.
+		list := sub != "disable"
+		if optional := strings.Contains(c.Use, "[<project-id>"); sub != "use" && optional != list {
+			t.Errorf("project %s: usage %q", sub, c.Use)
+		}
+		long := strings.Join(strings.Fields(c.Long), " ")
+		if sub != "use" && strings.Contains(long, "on a terminal too") == list {
+			t.Errorf("project %s: help says a project is required on a terminal = %v:\n%s", sub, !list, c.Long)
+		}
+		if sub == "remove" && (strings.Contains(long, "it does the same.") || !strings.Contains(long, `still opens the list of "polyctl gcp project enable"`)) {
+			t.Errorf("project remove: %s", c.Long)
+		}
 	}
 }
 

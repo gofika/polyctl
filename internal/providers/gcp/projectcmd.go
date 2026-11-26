@@ -554,7 +554,7 @@ func formerName(cmd *cobra.Command, now string) {
 func newProjectEnableCmd(rt *app.Runtime, name string, hidden bool) *cobra.Command {
 	var newDefault string
 	cmd := &cobra.Command{
-		Use:    name + " <project-id>...",
+		Use:    name + " [<project-id>...]",
 		Hidden: hidden,
 		Short:  "Choose which projects of the gcp account are enabled, or enable the ones named",
 		Long: `Manage which projects of the profile's gcp account are enabled. An enabled
@@ -668,6 +668,20 @@ func disableArgs(rt *app.Runtime, name string) cobra.PositionalArgs {
 	}
 }
 
+// disableNeedsProject is the paragraph of the help of disable about running
+// it without a project, and removeNeedsProject the one that takes its place
+// in the help of remove, which still opens the list on a terminal.
+const (
+	disableNeedsProject = `At least one <project-id> is required (exit code 2 without one, on a terminal
+too): to choose from a list of the projects, with the enabled ones ticked, run
+"polyctl gcp project enable" without arguments.`
+	removeNeedsProject = `On a terminal, without <project-id>, this former name still opens the list of
+"polyctl gcp project enable", in which the enabled projects are ticked. Off a
+terminal at least one <project-id> is required (exit code 2 without one).`
+	removeFormerName = `The name "polyctl gcp project disable" had in polyctl 0.4.0. It does the same
+with the projects named; without one it differs, as said below.`
+)
+
 // newProjectDisableCmd builds disable, and remove, the name it had in
 // polyctl 0.4.0, kept hidden for the scripts written then.
 func newProjectDisableCmd(rt *app.Runtime, name string, hidden bool) *cobra.Command {
@@ -690,9 +704,7 @@ names the enabled project that becomes the default (on a terminal it is
 asked); without it this is a usage error (exit code 2), as is disabling every
 project (log the account out with "polyctl auth logout gcp" instead).
 
-At least one <project-id> is required (exit code 2 without one, on a terminal
-too): to choose from a list of the projects, with the enabled ones ticked, run
-"polyctl gcp project enable" without arguments.
+` + disableNeedsProject + `
 
 No confirmation is asked: only the local configuration and a cache that the
 next sync rebuilds change. --dry-run reports what would change and writes
@@ -776,12 +788,11 @@ credentials see.`,
 		},
 	}
 	cmd.Flags().StringVar(&newDefault, "default", "", "the enabled project that becomes the default, when the default project is disabled")
-	formerName(cmd, "disable")
 	if cmd.Hidden {
-		cmd.Long += `
-
-On a terminal, without <project-id>, this former name still opens the list of
-"polyctl gcp project enable".`
+		// remove is not disable under another name in one respect: say it
+		// once, in place of the paragraph that is true of disable alone.
+		cmd.Use = name + " [<project-id>...]"
+		cmd.Long = removeFormerName + "\n\n" + strings.Replace(cmd.Long, disableNeedsProject, removeNeedsProject, 1)
 	}
 	return cmd
 }
