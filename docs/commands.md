@@ -68,7 +68,7 @@ Every command that writes a record (`dns add`, `dns ensure`, and the `create`, `
 - An invalid value is exit code 2: the message says what is wrong and shows a valid value of the type.
 - A valid value is sent in a normal form: host names in lower case without the trailing dot (internationalized names in punycode), addresses canonical, hex in lower case, the value of CAA and the strings of NAPTR and URI quoted. Each platform gets it in the fields of its API (the components of Cloudflare's `data`, the priority field of name.com, the SRV fields of GoDaddy, the trailing dots Cloud DNS expects).
 - The priority of an MX record goes in front of its value (`"10 mail.example.com"`) or in `--priority` / `priority`; a new MX record needs one. SRV, HTTPS, SVCB, URI and NAPTR carry theirs as a field of the value: `--priority` with them is exit code 2, and the message says which field it is. Other types take no priority.
-- Records that cannot share a name are refused: a CNAME beside any other record (on Cloudflare beside A, AAAA or NS records), NS beside anything but DS on Cloudflare and Alibaba Cloud, ALIAS / ANAME beside A, AAAA or CNAME records. `dns ensure` checks its records among themselves, `dns add` against the zone.
+- Records that cannot share a name are refused: a CNAME beside any other record (on Cloudflare beside A, AAAA or NS records), NS below the zone apex beside anything but DS on Cloudflare and Alibaba Cloud, ALIAS / ANAME beside A, AAAA or CNAME records. `dns ensure` checks its records among themselves, `dns add` against the zone.
 
 | Type | Value | Example | Cloudflare | Route 53 | Cloud DNS | Alibaba Cloud | name.com | GoDaddy |
 |---|---|---|:-:|:-:|:-:|:-:|:-:|:-:|

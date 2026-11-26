@@ -244,9 +244,14 @@ func TestRecordTypesConflict(t *testing.T) {
 		{AWS, "CNAME", "CNAME", false},
 		{AWS, "A", "TXT", false},
 	} {
-		if got := RecordTypesConflict(c.p, c.a, c.b); got != c.conflict {
+		if got := RecordTypesConflict(c.p, false, c.a, c.b); got != c.conflict {
 			t.Errorf("%s %s/%s = %v", c.p, c.a, c.b, got)
 		}
+	}
+	// The NS records of the apex are the zone's own: other records sit
+	// beside them, but a CNAME does not.
+	if RecordTypesConflict(Aliyun, true, "NS", "TXT") || !RecordTypesConflict(Aliyun, true, "NS", "CNAME") || RecordTypesConflict(Cloudflare, true, "TXT", "NS") {
+		t.Error("apex NS conflicts")
 	}
 	// dns ensure refuses records of its input that cannot share a name.
 	if _, err := NormalizeRecordSpecs("example.com", AWS, []RecordSpec{{Name: "www", Type: "CNAME", Value: "a.example.net"}, {Name: "www", Type: "TXT", Value: "x"}}, nil, nil); !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "cannot coexist with any other record") {

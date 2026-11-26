@@ -270,12 +270,14 @@ func RecordFields(typ, value string) ([]string, error) {
 }
 
 // RecordTypesConflict reports whether records of the types a and b cannot
-// share a name on platform p. A CNAME stands alone (Cloudflare lets one sit
-// beside records other than A, AAAA and NS); NS delegates the name, which
-// Cloudflare and Alibaba Cloud then let hold nothing else but DS; an ALIAS or
+// share a name on platform p; apex says the name is the zone apex. A CNAME
+// stands alone (Cloudflare lets one sit beside records other than A, AAAA
+// and NS); NS below the apex delegates the name, which Cloudflare and
+// Alibaba Cloud then let hold nothing else but DS (the NS records of the
+// apex are the zone's own and sit beside anything but a CNAME); an ALIAS or
 // ANAME answers for A and AAAA. Two CNAMEs of one name are not a type
 // conflict but one too many, which the callers report themselves.
-func RecordTypesConflict(p ID, a, b string) bool {
+func RecordTypesConflict(p ID, apex bool, a, b string) bool {
 	a, b = strings.ToUpper(a), strings.ToUpper(b)
 	conflict := func(x, y string) bool {
 		switch x {
@@ -288,7 +290,7 @@ func RecordTypesConflict(p ID, a, b string) bool {
 			}
 			return true
 		case "NS":
-			if p == Cloudflare || p == Aliyun {
+			if (p == Cloudflare || p == Aliyun) && !apex {
 				return y != "NS" && y != "DS"
 			}
 			return y == "CNAME"

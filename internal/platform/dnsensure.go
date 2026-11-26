@@ -118,7 +118,7 @@ func NormalizeRecordSpecs(zone string, p ID, specs []RecordSpec, types []string,
 			case o.Index <= d.Index:
 			case o.Type == "CNAME" && d.Type == "CNAME":
 				return nil, invalid("records %d and %d are both a CNAME of %s; a name has at most one CNAME", d.Index, o.Index, d.Name)
-			case RecordTypesConflict(p, d.Type, o.Type):
+			case RecordTypesConflict(p, d.FQDN == zone, d.Type, o.Type):
 				return nil, invalid("record %d is %s %s record of %s and record %d %s %s record of it; %s", d.Index, article(d.Type), d.Type, d.Name, o.Index, article(o.Type), o.Type, conflictReason(p, d.Type, o.Type))
 			}
 		}

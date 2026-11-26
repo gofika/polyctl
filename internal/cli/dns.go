@@ -278,7 +278,7 @@ func addConflict(t *app.Target, existing []platform.Record, fqdn, typ string) er
 		if typ == "CNAME" && other == "CNAME" {
 			return fmt.Errorf("%s already has a CNAME record, and a name has at most one; change it with `polyctl dns ensure`", fqdn)
 		}
-		if platform.RecordTypesConflict(t.Platform, typ, other) {
+		if platform.RecordTypesConflict(t.Platform, fqdn == platform.NormalizeDomain(t.Domain), typ, other) {
 			return fmt.Errorf("%s already has %s %s record, which %s %s record cannot share its name with on %s; remove it first with `polyctl dns delete`", fqdn, article(other), other, article(typ), typ, t.Platform)
 		}
 	}
