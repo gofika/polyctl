@@ -84,9 +84,11 @@ func (*provider) LoginOptions() []string {
 	return []string{"method", metaRegion, metaStartURL, metaSSORegion, metaAccountID, metaRoleName, metaAWSProfile, secretAccessKeyID, secretSecretAccessKey, secretSessionToken}
 }
 
-// RecordTypes are the record types Route 53 can write.
+// RecordTypes are the record types Route 53 can write: the types of its
+// record sets but SOA. DNSKEY is published by Route 53 DNSSEC signing, and
+// an alias is a record set with an alias target, not a type.
 func (*provider) RecordTypes() []string {
-	return []string{"A", "AAAA", "CNAME", "MX", "NS", "TXT", "SRV", "CAA", "PTR", "NAPTR", "SPF", "DS", "TLSA"}
+	return []string{"A", "AAAA", "CNAME", "MX", "NS", "TXT", "SPF", "SRV", "CAA", "PTR", "NAPTR", "HTTPS", "SVCB", "TLSA", "SSHFP", "DS"}
 }
 
 var _ platform.RecordTyper = (*provider)(nil)

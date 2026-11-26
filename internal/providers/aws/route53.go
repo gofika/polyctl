@@ -112,18 +112,24 @@ func isTXT(typ string) bool {
 
 // quoteTXT turns a plain TXT/SPF value into the form Route 53 requires:
 // one or more double-quoted strings of at most 255 characters, inner
-// quotes and backslashes escaped. Values that already start with a quote
-// are passed through unchanged, and other types are never touched.
+// quotes and backslashes escaped, control characters and bytes outside
+// ASCII written as \ooo octal escapes. Values that already start with a
+// quote (checked as a list of quoted strings before they get here) are
+// passed through unchanged, and other types are never touched.
 func quoteTXT(typ, v string) string {
 	if !isTXT(typ) || strings.HasPrefix(v, `"`) {
 		return v
 	}
 	var chunks []string
 	var cur strings.Builder
-	for _, r := range v {
-		tok := string(r)
-		if r == '"' || r == '\\' {
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		tok := string(c)
+		switch {
+		case c == '"' || c == '\\':
 			tok = `\` + tok
+		case c < 0x20 || c >= 0x7f:
+			tok = fmt.Sprintf(`\%03o`, c)
 		}
 		if cur.Len()+len(tok) > txtChunk {
 			chunks = append(chunks, cur.String())
