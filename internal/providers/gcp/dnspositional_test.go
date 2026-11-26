@@ -97,7 +97,7 @@ func TestDNSRecordPositionalMatchesFlagForm(t *testing.T) {
 func TestDNSRecordPositionalUsage(t *testing.T) {
 	h, g := positionalHarness(t)
 	const upsert = "dns record upsert <zone> <name> <type> <value>..."
-	const del = "dns record delete <zone> <name> <type> [<value>]"
+	const del = "dns record delete <zone> <name> [<type> [<value>]]"
 	const id = "example-zone|A|www.example.com|1.1.1.1"
 	before := setsOf(g, "example-zone")
 	for _, c := range []struct {
@@ -117,9 +117,9 @@ func TestDNSRecordPositionalUsage(t *testing.T) {
 		{[]string{"upsert", "example-zone", "www", "A", "203.0.113.10", ""}, "<value> must not be empty"},
 		{[]string{"delete"}, "usage: gcp " + del},
 		{[]string{"delete", "example-zone"}, "a record or --id is required: usage: gcp " + del},
-		{[]string{"delete", "example-zone", "www"}, del},
+		{[]string{"delete", "example-zone", "www"}, "--yes"},
 		{[]string{"delete", "example-zone", "www", "A", "1.1.1.1", "2.2.2.2"}, del},
-		{[]string{"delete", "example-zone", "--name", "www"}, del},
+		{[]string{"delete", "example-zone", "--name", "www"}, "--yes"},
 		{[]string{"delete", "example-zone", "www", "A", "--yes", "--name", "www"}, "with --name; use one form: usage: gcp " + del},
 		{[]string{"delete", "example-zone", "www", "A", "--yes", "--type", "A"}, "with --type; use one form"},
 		{[]string{"delete", "example-zone", "www", "A", "--value", "1.1.1.1"}, "with --value; use one form"},
@@ -168,7 +168,7 @@ func TestDNSRecordWithOnlyTheZoneAsks(t *testing.T) {
 // and the <type> position completes the record types.
 func TestDNSRecordPositionalHelp(t *testing.T) {
 	h, _ := positionalHarness(t)
-	for verb, use := range map[string]string{"upsert": "upsert <zone> <name> <type> <value>...", "delete": "delete <zone> [<name> <type> [<value>]]"} {
+	for verb, use := range map[string]string{"upsert": "upsert <zone> <name> <type> <value>...", "delete": "delete <zone> [<name> [<type> [<value>]]]"} {
 		cmd, _, err := Command(h.rt).Find([]string{"dns", "record", verb})
 		if err != nil {
 			t.Fatal(err)

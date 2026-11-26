@@ -128,7 +128,8 @@ type RecordDelete struct {
 	// non-interactive flow: "delete 3 records in zone example.com".
 	Question string
 	// Exact says how to delete one of the records only: "give its <value>,
-	// or --id <id>". "" for a command that has no way to.
+	// or --id <id>". "" for a command that has no way to; it is not shown
+	// for a single record.
 	Exact string
 }
 
@@ -144,7 +145,7 @@ func (rt *Runtime) ConfirmRecordDelete(ctx context.Context, d RecordDelete) erro
 	}
 	_ = output.RenderGrid(rt.Stderr, d.Records)
 	hint := ""
-	if d.Exact != "" {
+	if d.Exact != "" && len(d.Records.Rows) > 1 {
 		hint = "to delete one of them only, " + d.Exact
 		rt.Infof("%d records match; %s", len(d.Records.Rows), hint)
 	}

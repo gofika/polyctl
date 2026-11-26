@@ -726,8 +726,8 @@ func newRecordDeleteCmd(rt *app.Runtime) *cobra.Command {
 	var typ, name, value, id string
 	var priority int
 	cmd := &cobra.Command{
-		Use:   "delete <zone> [<name> <type> [<value>]]",
-		Short: "Delete a record set (<name> <type>), one value of it (<value>) or a record by --id",
+		Use:   "delete <zone> [<name> [<type> [<value>]]]",
+		Short: "Delete the record set of a name (<name> [<type>]), one value of it (<value>) or a record by --id",
 		Long: `Delete the record set of <name> and <type>, only one of its values (<value>),
 or the record value given with --id. Cloud DNS addresses records by name and
 type, so the id is an optional second way to pick one value here, not a
@@ -735,45 +735,61 @@ required argument.
 
 ` + recordArgsHelp + `
 
+<type> is needed only to tell record sets apart: a name with one record set
+needs none. A name with record sets of several types is not deleted as a
+whole: on a terminal its record sets are offered to pick one, and the
+non-interactive flow names the types and exits with code 5, also with --yes.
+The SOA and NS sets of the zone apex are never meant by the name alone.
+
 On a terminal, a missing <zone> is picked from the managed zones of the
 profile, and with only the zone the record sets of the zone are offered (the
 apex SOA and NS sets left out), then, for a set of several values, the whole
 set or one value.
 
-Deleting a whole record set lists its values, then asks one yes/no question
-(default no; --yes skips it). The non-interactive flow asks nothing: --yes
-is required (exit code 2 without it, before anything is read). Declining
-changes nothing; a missing set is not found (exit code 4) before the
-question. Removing one value (<value>, --id) asks nothing, like dns delete
-of one record. --dry-run asks nothing.`,
-		Example: `  polyctl gcp dns record delete example-zone _acme-challenge TXT --yes
+Deleting a whole record set lists its values with their ids and, for several
+values, says how to delete one of them only (<value> or --id), then asks one
+yes/no question (default no; --yes skips it). The non-interactive flow asks
+nothing: --yes is required (exit code 2 without it, before anything is
+read). Declining changes nothing; a missing set is not found (exit code 4)
+before the question. Removing one value (<value>, --id) asks nothing, like
+dns delete of one record. --dry-run asks nothing.`,
+		Example: `  polyctl gcp dns record delete example-zone _acme-challenge --yes
+  polyctl gcp dns record delete example-zone _acme-challenge TXT --yes
   polyctl gcp dns record delete example-zone www A 203.0.113.11
   polyctl gcp dns record delete example-zone --id 'acme-prod/example-zone|A|www.example.com|203.0.113.11'`,
-		Args:              app.RecordArgsOrInteractive(rt, 0, 1),
+		Args:              app.RecordSelectorArgsOrInteractive(rt, 1),
 		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.GCP), platform.GCP),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// The record is positional (<name> <type> [<value>]) or, in the
-			// former form, given with --name, --type and --value.
+			// The record is positional (<name> [<type> [<value>]]) or, in
+			// the former form, given with --name, --type and --value.
+			typeArg, valueHint := "--type", "give its value with --value, or its id with --id <id>"
 			if len(args) > 1 {
-				rec, err := app.ParseRecordArgs(cmd, args[1:], 0, 1)
+				rec, err := app.ParseRecordSelector(cmd, args[1:], 1)
 				if err != nil {
 					return err
 				}
 				name, typ, value = rec.Name, rec.Type, rec.Value()
+				typeArg, valueHint = "<type>", "give its <value> after the <type>, or its id with --id <id>"
 				args = args[:1]
 			}
 			if id != "" && (typ != "" || name != "" || value != "" || cmd.Flags().Changed("priority")) {
 				// The id selects one value; a filter beside it would be
 				// ignored, and a wrong id would delete an unrelated value
 				// without asking.
-				return app.UsageErrf("--id selects one record value; it cannot be combined with a record (<name> <type> [<value>]) or --priority")
+				return app.UsageErrf("--id selects one record value; it cannot be combined with a record (<name> [<type> [<value>]]) or --priority")
 			}
-			pick := id == "" && (typ == "" || name == "")
+			// byName: the name alone says which record set, when it has one.
+			byName := id == "" && name != "" && typ == ""
+			pick := id == "" && !byName && (typ == "" || name == "")
 			if pick && !rt.Interactive() {
-				return app.UsageErrf("a record or --id is required: %s", app.RecordUsage(cmd, 0, 1))
+				return app.UsageErrf("a record or --id is required: %s", app.RecordSelectorUsage(cmd, 1))
 			}
 			if !rt.Flags.DryRun && !pick && id == "" && value == "" {
-				if err := rt.CanConfirm(fmt.Sprintf("delete the %s record set of %s", strings.ToUpper(typ), platform.FQDN(name, "<zone>"))); err != nil {
+				what := fmt.Sprintf("delete the %s record set of %s", strings.ToUpper(typ), platform.FQDN(name, "<zone>"))
+				if byName {
+					what = "delete the record set of " + platform.FQDN(name, "<zone>")
+				}
+				if err := rt.CanConfirm(what); err != nil {
 					return err
 				}
 			}
@@ -790,6 +806,37 @@ of one record. --dry-run asks nothing.`,
 			z, err := resolveZone(cmd.Context(), rt, profile, args[0])
 			if err != nil {
 				return err
+			}
+			if byName {
+				recs, _, err := cachedRecords(cmd.Context(), rt, profile, z)
+				if err != nil {
+					return err
+				}
+				found, err := app.RecordsOfName(z.Name, recs, platform.FQDN(name, z.Name), "", value)
+				if err != nil {
+					return err
+				}
+				// Record sets of several types: a list on a terminal, exit
+				// code 5 without one.
+				open, err := rt.NeedsType(found, typeArg)
+				if err != nil {
+					return err
+				}
+				if open {
+					set, one, err := pickRecordToDelete(rt, z, found.Records)
+					if err != nil {
+						return err
+					}
+					if typ = set.Type; one != nil {
+						value = one.Value
+						if one.Priority != nil {
+							priority = *one.Priority
+							_ = cmd.Flags().Set("priority", strconv.Itoa(priority))
+						}
+					}
+				} else {
+					typ = found.Type()
+				}
 			}
 			if pick {
 				recs, _, err := cachedRecords(cmd.Context(), rt, profile, z)
@@ -867,13 +914,9 @@ of one record. --dry-run asks nothing.`,
 					if err != nil {
 						return err
 					}
-					_ = output.RenderGrid(rt.Stderr, recordGrid(recs))
-					ok, err := rt.Confirm(cmd.Context(), fmt.Sprintf("Delete the %s record set of %s (%d value(s))?", strings.ToUpper(typ), fqdn, len(recs)), false)
-					if err != nil {
+					if err := rt.ConfirmRecordDelete(cmd.Context(), app.RecordDelete{Records: recordGrid(recs), Exact: valueHint,
+						Question: fmt.Sprintf("Delete the %s record set of %s (%d value(s))?", strings.ToUpper(typ), fqdn, len(recs))}); err != nil {
 						return err
-					}
-					if !ok {
-						return app.NothingToDof("cancelled, no record was deleted")
 					}
 				}
 				if err := c.DeleteRRSet(cmd.Context(), z.ID, fqdn, typ); err != nil {
