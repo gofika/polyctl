@@ -211,7 +211,8 @@ func visibleAccounts(ctx context.Context, a *api) (accounts []account, complete 
 //   - an id or a name the profile knows (see knownAccount), without the
 //     network;
 //   - else among the accounts the credentials see, by id, then by name: a
-//     name several of them carry is ambiguous (exit code 5), and an account
+//     name several of them carry is a list to choose from in the
+//     interactive flow and ambiguous (exit code 5) otherwise, and an account
 //     that is not among them is not found (exit code 4);
 //   - credentials that cannot list their accounts have the reference taken
 //     as the id.
@@ -234,14 +235,16 @@ func resolveAccountRef(ctx context.Context, rt *app.Runtime, profile, ref string
 	if err != nil {
 		return "", fmt.Errorf("look up account %q: %w", ref, err)
 	}
-	return matchAccount(profile, ref, "--account: ", accounts, complete)
+	return matchAccount(rt, profile, ref, "--account: ", accounts, complete)
 }
 
 // matchAccount finds the account a reference names among the accounts the
 // credentials of a profile see (see resolveAccountRef); complete says the
 // list is not one read off the zones. prefix starts the usage error of a
-// name that cannot be looked up.
-func matchAccount(profile, ref, prefix string, accounts []account, complete bool) (string, error) {
+// name that cannot be looked up. A name several accounts carry is a list
+// to choose from in the interactive flow and ambiguous (exit code 5)
+// otherwise.
+func matchAccount(rt *app.Runtime, profile, ref, prefix string, accounts []account, complete bool) (string, error) {
 	if len(accounts) == 0 {
 		if cerr := checkAccountID(ref); cerr != nil {
 			return "", app.UsageErrf("%sthe credentials of cloudflare/%s cannot list accounts, so an account name cannot be looked up: pass the account id", prefix, profile)
@@ -267,7 +270,14 @@ func matchAccount(profile, ref, prefix string, accounts []account, complete bool
 		for _, a := range named {
 			cands = append(cands, fmt.Sprintf("%s (%s)", a.Name, a.ID))
 		}
-		return "", &app.AmbiguousError{What: fmt.Sprintf("account %q", ref), Candidates: cands, Hint: "pass the account id to choose"}
+		amb := &app.AmbiguousError{What: fmt.Sprintf("account %q", ref), Candidates: cands, Hint: "pass the account id to choose"}
+		a, err := app.OneOfBy(rt, amb, named, func(a account) string { return a.ID }, func(a account) string {
+			return accountOption(a.ID, a.Name, "cloudflare/"+profile).Label
+		})
+		if err != nil {
+			return "", err
+		}
+		return a.ID, nil
 	case !complete && checkAccountID(ref) == nil:
 		// The list holds the accounts with a zone only: the reference may
 		// be the id of one without.

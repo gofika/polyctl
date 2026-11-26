@@ -555,6 +555,47 @@ func TestAccountNameOfTwoAccounts(t *testing.T) {
 	if code, out := acct("enable", "acc3"); code != cli.ExitOK || e.stored("all") != "acc1|Acme|" {
 		t.Errorf("enable by id: exit %d, %s, %s", code, e.stored("all"), out)
 	}
+
+	// On a terminal the accounts of the name are a list to choose from, in
+	// the account commands and for --account.
+	asked := func(p *prompttest.Picker) {
+		t.Helper()
+		a := p.Find(`Ambiguous account "acme"; use which one?`)
+		if a == nil || prompttest.Values(a.Options) != "acc1 acc3" || !strings.Contains(prompttest.Labels(a.Options), "Acme  acc3") {
+			t.Errorf("questions asked: %v", p.Titles())
+		}
+		p.Done()
+	}
+	p := prompttest.New(t, "acc3")
+	if code, _, stderr := e.runPick(p, "cloudflare", "account", "--profile", "all", "disable", "acme"); code != cli.ExitOK || e.stored("all") != "acc1|Acme|acc3" {
+		t.Errorf("disable picked on a terminal: exit %d, %s, %s", code, e.stored("all"), stderr)
+	}
+	asked(p)
+	p = prompttest.New(t, "acc3")
+	if code, _, stderr := e.runPick(p, "cloudflare", "account", "--profile", "all", "enable", "acme"); code != cli.ExitOK || e.stored("all") != "acc1|Acme|" {
+		t.Errorf("enable picked on a terminal: exit %d, %s, %s", code, e.stored("all"), stderr)
+	}
+	asked(p)
+	p = prompttest.New(t, "acc3")
+	if code, _, stderr := e.runPick(p, "cloudflare", "account", "--profile", "all", "use", "acme"); code != cli.ExitOK || !strings.HasPrefix(e.stored("all"), "acc3|") {
+		t.Errorf("use picked on a terminal: exit %d, %s, %s", code, e.stored("all"), stderr)
+	}
+	asked(p)
+	// --account: a name the profile does not know is looked up among the
+	// visible accounts.
+	e.f.accounts["acc2"].name = "Twin"
+	e.f.accounts["acc3"].name = "Twin"
+	p = prompttest.New(t, "acc2")
+	if code, stdout, stderr := e.runPick(p, "cloudflare", "zone", "list", "--profile", "all", "--account", "twin", "-o", "json"); code != cli.ExitOK {
+		t.Errorf("--account picked on a terminal: exit %d, %s%s", code, stdout, stderr)
+	}
+	if a := p.Find(`Ambiguous account "twin"; use which one?`); a == nil || prompttest.Values(a.Options) != "acc2 acc3" {
+		t.Errorf("questions asked: %v", p.Titles())
+	}
+	p.Done()
+	if code, _, stderr := e.run("cloudflare", "zone", "list", "--profile", "all", "--account", "twin"); code != cli.ExitAmbiguous || !strings.Contains(stderr, "pass the account id to choose") {
+		t.Errorf("--account, non-interactive: exit %d, %s", code, stderr)
+	}
 }
 
 // After an account was enabled, the commands that find their zone through

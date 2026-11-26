@@ -270,8 +270,9 @@ func (b *accountBook) stored(id string) bool {
 // resolve turns the accounts named on the command line, by id or by name,
 // into ids. The id of the default account or of a disabled one needs no
 // request. Anything else is looked up among the accounts the credentials
-// see, so that a name two of them carry is ambiguous (exit code 5)
-// whatever the profile knows, and an account they do not see is not found
+// see, so that a name two of them carry is ambiguous (a list to choose
+// from in the interactive flow, exit code 5 otherwise) whatever the profile
+// knows, and an account they do not see is not found
 // (exit code 4). Credentials that cannot list their accounts leave that to
 // the profile first. With --offline only the profile is asked, and what it
 // does not know is taken as an id.
@@ -303,7 +304,7 @@ func (b *accountBook) resolve(ctx context.Context, args []string) ([]string, err
 				id = known
 				break
 			}
-			if id, err = matchAccount(b.profile, ref, "", accounts, b.complete); err != nil {
+			if id, err = matchAccount(b.rt, b.profile, ref, "", accounts, b.complete); err != nil {
 				var amb *app.AmbiguousError
 				if errors.As(err, &amb) || !ok {
 					return nil, err
