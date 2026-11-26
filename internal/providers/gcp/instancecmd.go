@@ -392,7 +392,7 @@ func chooseHit(rt *app.Runtime, what, ref string, hits []instanceHit) (instanceH
 		cands = append(cands, cand{profile: h.profile, project: h.inst.Project, where: h.inst.Zone, id: h.inst.ID, detail: h.inst.Status})
 	}
 	amb := ambiguous(what, ref, cands, "--zone <zone>", "the instance id")
-	return disambiguate(rt, amb, hits, func(h instanceHit) string { return instanceOptionLabel(h.inst, h.profile) })
+	return app.OneOf(rt, amb, hits, func(h instanceHit) string { return instanceOptionLabel(h.inst, h.profile) })
 }
 
 // storeInstance writes an instance to the inventory.

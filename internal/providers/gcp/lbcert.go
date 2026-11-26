@@ -178,7 +178,7 @@ func resolveLB(ctx context.Context, rt *app.Runtime, ref, region string, all boo
 		for _, h := range inScope {
 			cands = append(cands, cand{profile: h.profile, project: h.rule.Project, where: (certScope{region: h.rule.Region}).label(), id: h.rule.ID})
 		}
-		h, err := disambiguate(rt, ambiguous("load balancer", ref, cands, regionFlags, ""), inScope, func(h ruleHit) string {
+		h, err := app.OneOf(rt, ambiguous("load balancer", ref, cands, regionFlags, ""), inScope, func(h ruleHit) string {
 			return prompt.Cells(h.rule.Name, (certScope{region: h.rule.Region}).label(), h.rule.IPAddress, "project "+h.rule.Project, "gcp/"+h.profile)
 		})
 		if err != nil {
@@ -258,7 +258,7 @@ func resolveLB(ctx context.Context, rt *app.Runtime, ref, region string, all boo
 	for _, h := range hits {
 		cands = append(cands, cand{profile: h.profile, project: h.c.project, where: (certScope{region: h.region}).label()})
 	}
-	h, err := disambiguate(rt, ambiguous("load balancer", ref, cands, regionFlags, ""), hits, func(h hit) string {
+	h, err := app.OneOf(rt, ambiguous("load balancer", ref, cands, regionFlags, ""), hits, func(h hit) string {
 		return prompt.Cells(ref, (certScope{region: h.region}).label(), "project "+h.c.project, "gcp/"+h.profile)
 	})
 	if err != nil {

@@ -14,7 +14,6 @@ import (
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/output"
 	"github.com/gofika/polyctl/internal/platform"
-	"github.com/gofika/polyctl/internal/prompt"
 )
 
 // newSecurityGroupCmd is `aliyun ecs security-group`: list, get, create,
@@ -62,27 +61,18 @@ type ecsScope struct {
 }
 
 // pickAmong resolves an ambiguous name: in the interactive flow the user
-// picks one of found (labelled by label, chosen by id); otherwise, and
-// when the user's answer is not among them, amb is returned (exit code 5).
+// picks one of found (labelled by label, chosen by id); otherwise amb is
+// returned (exit code 5). It is app.OneOfBy for a scope that may have no
+// runtime.
 func pickAmong[T any](s *ecsScope, amb *app.AmbiguousError, found []T, id, label func(T) string) (*T, error) {
 	if s == nil || s.rt == nil {
 		return nil, amb
 	}
-	if len(amb.Options) == 0 {
-		for _, x := range found {
-			amb.Options = append(amb.Options, prompt.Option{Label: label(x), Value: id(x)})
-		}
-	}
-	v, err := s.rt.Disambiguate(amb)
+	x, err := app.OneOfBy(s.rt, amb, found, id, label)
 	if err != nil {
 		return nil, err
 	}
-	for i := range found {
-		if id(found[i]) == v {
-			return &found[i], nil
-		}
-	}
-	return nil, amb
+	return &x, nil
 }
 
 func (s *ecsScope) target() platform.Target {

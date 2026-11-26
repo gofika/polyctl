@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"time"
 
 	"github.com/gofika/polyctl/internal/config"
@@ -182,24 +181,17 @@ func (rt *Runtime) ResolveResourceWith(ctx context.Context, l ResourceLookup) (i
 		}
 	}
 	amb := &AmbiguousError{What: fmt.Sprintf("%s %q", what, ref), Candidates: names, Hint: hint}
-	for i, r := range found {
-		label := candidateLabel(r)
-		switch {
-		case l.Option != nil:
-			label = l.Option(r)
-		case l.Candidate != nil:
-			label = l.Candidate(r)
-		}
-		amb.Options = append(amb.Options, prompt.Option{Label: label, Value: strconv.Itoa(i)})
-	}
 	// The interactive flow asks which one; the non-interactive flow keeps
 	// the error (exit code 5).
-	v, err := rt.Disambiguate(amb)
-	if err != nil {
-		return inventory.Resource{}, err
-	}
-	i, _ := strconv.Atoi(v)
-	return found[i], nil
+	return OneOf(rt, amb, found, func(r inventory.Resource) string {
+		switch {
+		case l.Option != nil:
+			return l.Option(r)
+		case l.Candidate != nil:
+			return l.Candidate(r)
+		}
+		return candidateLabel(r)
+	})
 }
 
 // resourceAccounts returns the accounts able to hold kind on platform id

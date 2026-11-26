@@ -237,3 +237,65 @@ func TestNamesArgs(t *testing.T) {
 		t.Errorf("given names = %v", got)
 	}
 }
+
+func TestOneOf(t *testing.T) {
+	type vol struct{ id, dev string }
+	found := []vol{{"vol-1", "/dev/sda1"}, {"vol-2", "/dev/sdf"}}
+	label := func(v vol) string { return v.id + "  " + v.dev }
+	amb := func() *app.AmbiguousError {
+		return &app.AmbiguousError{What: "volume of web-1", Candidates: []string{"vol-1", "vol-2"}, Hint: "pass --device <dev> to choose"}
+	}
+
+	// One candidate is the answer and nothing is asked.
+	rt, p := interactiveRT(t)
+	if got, err := app.OneOf(rt, amb(), found[:1], label); err != nil || got.id != "vol-1" {
+		t.Errorf("one = %+v, %v", got, err)
+	}
+	p.Done()
+
+	// Several: a list on a terminal.
+	rt, p = interactiveRT(t, prompttest.Label("vol-2"))
+	if got, err := app.OneOf(rt, amb(), found, label); err != nil || got.id != "vol-2" {
+		t.Errorf("pick = %+v, %v", got, err)
+	}
+	if a := p.Find("Ambiguous volume of web-1; use which one?"); len(a.Options) != 2 || a.Options[0].Label != "vol-1  /dev/sda1" {
+		t.Errorf("offered %+v", a.Options)
+	}
+	p.Done()
+
+	// OneOfBy: the value of an option is what the caller says.
+	rt, p = interactiveRT(t, "vol-2")
+	if got, err := app.OneOfBy(rt, amb(), found, func(v vol) string { return v.id }, label); err != nil || got.dev != "/dev/sdf" {
+		t.Errorf("pick by value = %+v, %v", got, err)
+	}
+	p.Done()
+
+	// Several, non-interactive: the error with the candidates and the hint.
+	rt.Flags.NonInteractive = true
+	_, err := app.OneOf(rt, amb(), found, label)
+	var a *app.AmbiguousError
+	if !errors.As(err, &a) || !strings.Contains(err.Error(), "vol-1 vol-2") || !strings.Contains(err.Error(), "--device") {
+		t.Errorf("non-interactive = %v", err)
+	}
+	// No candidate is the caller's case: the error, never a question.
+	if _, err := app.OneOf(rt, amb(), nil, label); !errors.As(err, &a) {
+		t.Errorf("none = %v", err)
+	}
+}
+
+func TestPickOf(t *testing.T) {
+	items := []string{"a", "b"}
+	rt, p := interactiveRT(t, prompttest.Label("b!"))
+	got, err := app.PickOf(rt, app.Choice{Title: "Letter", Arg: "<letter>"}, items, func(s string) string { return s + "!" })
+	if err != nil || got != "b" {
+		t.Errorf("pick = %q, %v", got, err)
+	}
+	p.Done()
+	if _, err := app.PickOf(rt, app.Choice{Title: "Letter", Arg: "<letter>", What: "letter"}, nil, func(s string) string { return s }); !errors.Is(err, platform.ErrNothingToDo) {
+		t.Errorf("empty = %v", err)
+	}
+	rt.Flags.NonInteractive = true
+	if _, err := app.PickOf(rt, app.Choice{Title: "Letter", Arg: "<letter>"}, items, func(s string) string { return s }); !errors.Is(err, app.ErrUsage) {
+		t.Errorf("non-interactive = %v", err)
+	}
+}

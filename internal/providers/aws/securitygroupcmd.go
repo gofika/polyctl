@@ -153,7 +153,7 @@ func findSG(ctx context.Context, rt *app.Runtime, s *sgScope, ref, vpc string) (
 	amb := &app.AmbiguousError{What: fmt.Sprintf("security group %q in %s", ref, s.where()), Candidates: names,
 		Hint: "the name is used in several VPCs; pass --vpc <vpc-id> or the security group id"}
 	// The interactive flow asks which one.
-	sg, err := disambiguate(rt, amb, found, sgOptionLabel)
+	sg, err := app.OneOf(rt, amb, found, sgOptionLabel)
 	if err != nil {
 		return nil, err
 	}

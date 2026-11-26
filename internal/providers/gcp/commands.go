@@ -290,7 +290,7 @@ func chooseZone(rt *app.Runtime, profile, arg string, found []platform.Zone) (*z
 		project, name := splitZoneID(z.ID)
 		cands = append(cands, cand{profile: profile, project: project, id: "zone " + name, detail: prompt.Cells(z.Name, z.Status)})
 	}
-	z, err := disambiguate(rt, ambiguous("managed zone", arg, cands, "", "the zone id <project>/<managed zone>"), found, func(z platform.Zone) string {
+	z, err := app.OneOf(rt, ambiguous("managed zone", arg, cands, "", "the zone id <project>/<managed zone>"), found, func(z platform.Zone) string {
 		return zoneLabel(z)
 	})
 	if err != nil {

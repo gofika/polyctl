@@ -96,7 +96,7 @@ func pickZone(rt *app.Runtime, zones []platform.Zone, arg string) (*platform.Zon
 		amb := &app.AmbiguousError{What: fmt.Sprintf("hosted zone %q", platform.NormalizeDomain(arg)), Candidates: ids, Hint: "pass the hosted zone id"}
 		// The interactive flow asks which one (a public and a private
 		// zone of one name, say).
-		z, err := disambiguate(rt, amb, byName, func(z platform.Zone) string {
+		z, err := app.OneOf(rt, amb, byName, func(z platform.Zone) string {
 			count := ""
 			if n, ok := z.Extra["record_count"]; ok {
 				count = fmt.Sprintf("%v records", n)

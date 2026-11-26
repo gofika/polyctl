@@ -887,7 +887,7 @@ them while the certificate is in use (ACM renews it through them).`,
 					slices.Sort(names)
 					amb := &app.AmbiguousError{What: "certificate of " + domain, Candidates: names, Hint: "pass --profile <name> and/or --region <region> to choose"}
 					// The interactive flow asks which one.
-					h, err := disambiguate(rt, amb, hits, func(h certHit) string {
+					h, err := app.OneOf(rt, amb, hits, func(h certHit) string {
 						return certOptionLabel(h.cert, "aws/"+h.profile+"/"+h.cert.Region)
 					})
 					if err != nil {

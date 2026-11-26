@@ -232,7 +232,7 @@ func (c cand) String() string {
 // locFlag (the flag of the location: "--zone <zone>", "--region <r> or
 // --global"); alt is another way to name one ("the instance id").
 //
-// The interactive flow turns it into a pick (disambiguate); the
+// The interactive flow turns it into a pick (app.OneOf); the
 // non-interactive flow returns it (exit code 5).
 func ambiguous(what, ref string, cands []cand, locFlag, alt string) *app.AmbiguousError {
 	distinct := func(get func(cand) string) bool {
@@ -308,7 +308,7 @@ func locateProject(ctx context.Context, rt *app.Runtime, c *client, profile, wha
 	for _, f := range found {
 		cands = append(cands, cand{profile: profile, project: f.project})
 	}
-	return disambiguate(rt, ambiguous(what, name, cands, "", ""), found, func(f *client) string {
+	return app.OneOf(rt, ambiguous(what, name, cands, "", ""), found, func(f *client) string {
 		return prompt.Cells(name, "project "+f.project, "gcp/"+profile)
 	})
 }

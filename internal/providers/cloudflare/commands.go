@@ -202,7 +202,7 @@ func resolveZone(ctx context.Context, rt *app.Runtime, arg string) (*platform.Zo
 		for _, z := range found {
 			cands = append(cands, candOfZone(profile, z))
 		}
-		z, err := disambiguate(rt, ambiguousZone(platform.NormalizeDomain(arg), cands, true), found, func(z platform.Zone) string { return candOfZone(profile, z).cells() })
+		z, err := app.OneOf(rt, ambiguousZone(platform.NormalizeDomain(arg), cands, true), found, func(z platform.Zone) string { return candOfZone(profile, z).cells() })
 		if err != nil {
 			return nil, profile, err
 		}

@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -230,6 +231,69 @@ func (rt *Runtime) Disambiguate(err error) (string, error) {
 		return "", err
 	}
 	return rt.Pick().Select("Ambiguous "+amb.What+"; use which one?", amb.Options, "")
+}
+
+// OneOf settles a lookup that found several candidates, the one way every
+// command does it: one candidate is the answer; several are a list to
+// choose from in the interactive flow (one option per candidate, labelled
+// by label) and amb, which names the candidates and how to choose (exit
+// code 5), in the non-interactive flow. No candidate is the caller's case
+// (not found, or nothing to do) and is not expected here.
+func OneOf[T any](rt *Runtime, amb *AmbiguousError, found []T, label func(T) string) (T, error) {
+	return OneOfBy(rt, amb, found, nil, label)
+}
+
+// OneOfBy is OneOf with options whose value is value of the candidate (its
+// id, its name) instead of its position; the values must differ.
+func OneOfBy[T any](rt *Runtime, amb *AmbiguousError, found []T, value, label func(T) string) (T, error) {
+	var zero T
+	if len(found) == 1 {
+		return found[0], nil
+	}
+	if len(found) == 0 || rt == nil {
+		return zero, amb
+	}
+	valueOf := func(i int) string {
+		if value == nil {
+			return strconv.Itoa(i)
+		}
+		return value(found[i])
+	}
+	amb.Options = make([]prompt.Option, 0, len(found))
+	for i, f := range found {
+		amb.Options = append(amb.Options, prompt.Option{Label: label(f), Value: valueOf(i)})
+	}
+	v, err := rt.Disambiguate(amb)
+	if err != nil {
+		return zero, err
+	}
+	for i := range found {
+		if valueOf(i) == v {
+			return found[i], nil
+		}
+	}
+	return zero, fmt.Errorf("unexpected choice %q", v)
+}
+
+// PickOf is Choose over items of any type: the options are the items,
+// labelled by label, and the item chosen is returned. c.Options is not
+// used; c.Default is not supported (nothing is preselected).
+func PickOf[T any](rt *Runtime, c Choice, items []T, label func(T) string) (T, error) {
+	var zero T
+	c.Options = make([]prompt.Option, 0, len(items))
+	for i, it := range items {
+		c.Options = append(c.Options, prompt.Option{Label: label(it), Value: strconv.Itoa(i)})
+	}
+	c.Default, c.Create = "", nil
+	v, err := rt.Choose(c)
+	if err != nil {
+		return zero, err
+	}
+	i, err := strconv.Atoi(v)
+	if err != nil || i < 0 || i >= len(items) {
+		return zero, fmt.Errorf("unexpected choice %q", v)
+	}
+	return items[i], nil
 }
 
 // Arg returns args[i], or "" when the argument was left out (the

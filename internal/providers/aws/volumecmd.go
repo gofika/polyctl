@@ -215,7 +215,7 @@ func pickVolumeHit(rt *app.Runtime, ref string, hits []volumeHit) (volumeHit, er
 	}
 	amb := &app.AmbiguousError{What: fmt.Sprintf("volume %q", ref), Candidates: names, Hint: "pass --profile <name> and/or --region <r> to choose"}
 	// The interactive flow asks which one.
-	return disambiguate(rt, amb, hits, func(h volumeHit) string { return volumeOptionLabel(h.profile, h.v) })
+	return app.OneOf(rt, amb, hits, func(h volumeHit) string { return volumeOptionLabel(h.profile, h.v) })
 }
 
 // volumeMatcher matches inventory volumes by id, or by Name tag; region,
@@ -335,7 +335,7 @@ func resolveVolume(ctx context.Context, rt *app.Runtime, ref, region string) (*l
 		}
 		amb := &app.AmbiguousError{What: fmt.Sprintf("volume %q", ref), Candidates: names, Hint: hint}
 		// The interactive flow asks which one.
-		return disambiguate(rt, amb, found, func(l *locatedVolume) string { return volumeOptionLabel(l.profile, volumeFrom(l.region, l.vol)) })
+		return app.OneOf(rt, amb, found, func(l *locatedVolume) string { return volumeOptionLabel(l.profile, volumeFrom(l.region, l.vol)) })
 	case failure != nil:
 		return nil, fmt.Errorf("cannot tell where volume %q is: %w", ref, failure)
 	}

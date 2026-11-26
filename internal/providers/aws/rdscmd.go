@@ -270,7 +270,7 @@ func pickDBHit(rt *app.Runtime, ref string, hits []dbHit) (dbHit, error) {
 	}
 	amb := &app.AmbiguousError{What: fmt.Sprintf("RDS instance %q", ref), Candidates: names, Hint: "pass --profile <name> and/or --region <r> to choose"}
 	// The interactive flow asks which one.
-	return disambiguate(rt, amb, hits, func(h dbHit) string { return dbOptionLabel(h.profile, h.d) })
+	return app.OneOf(rt, amb, hits, func(h dbHit) string { return dbOptionLabel(h.profile, h.d) })
 }
 
 // resolveDB finds the instance ref names (an identifier or an endpoint DNS

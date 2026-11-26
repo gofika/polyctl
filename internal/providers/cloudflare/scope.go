@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -424,25 +423,6 @@ func cacheable(rt *app.Runtime, profile, account string) bool {
 	return err != nil || account == "" || !slices.Contains(disabled, account)
 }
 
-// disambiguate settles an ambiguous lookup of the interactive flow by
-// asking which of the candidates found is meant; the non-interactive flow
-// gets the error (exit code 5).
-func disambiguate[T any](rt *app.Runtime, amb *app.AmbiguousError, found []T, label func(T) string) (T, error) {
-	var zero T
-	for i, f := range found {
-		amb.Options = append(amb.Options, prompt.Option{Label: label(f), Value: strconv.Itoa(i)})
-	}
-	v, err := rt.Disambiguate(amb)
-	if err != nil {
-		return zero, err
-	}
-	i, err := strconv.Atoi(v)
-	if err != nil || i < 0 || i >= len(found) {
-		return zero, fmt.Errorf("unexpected choice %q", v)
-	}
-	return found[i], nil
-}
-
 // zoneCand is one candidate of an ambiguous zone lookup.
 type zoneCand struct {
 	profile              string
@@ -527,7 +507,7 @@ func zoneHint(cands []zoneCand, byID bool) string {
 // ambiguousZone is the error of a zone name several accounts hold a zone
 // of: every candidate with its account, and what chooses one (byID: the
 // command takes a zone id as well). The interactive flow turns it into a
-// pick (disambiguate); the non-interactive flow returns it (exit code 5).
+// pick (app.OneOf); the non-interactive flow returns it (exit code 5).
 func ambiguousZone(ref string, cands []zoneCand, byID bool) *app.AmbiguousError {
 	names := make([]string, 0, len(cands))
 	for _, c := range cands {
@@ -543,7 +523,7 @@ func pickAmbiguousZone(rt *app.Runtime, profile, ref string, zs []apiZone, byID 
 	for _, z := range zs {
 		cands = append(cands, candOfAPIZone(profile, z))
 	}
-	z, err := disambiguate(rt, ambiguousZone(ref, cands, byID), zs, func(z apiZone) string { return candOfAPIZone(profile, z).cells() })
+	z, err := app.OneOf(rt, ambiguousZone(ref, cands, byID), zs, func(z apiZone) string { return candOfAPIZone(profile, z).cells() })
 	if err != nil {
 		return nil, err
 	}

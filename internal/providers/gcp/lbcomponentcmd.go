@@ -230,7 +230,7 @@ func locateComponent(ctx context.Context, rt *app.Runtime, kind lbKind, name str
 	if kind == kindInstanceGroup {
 		locFlag = "--zone <z>"
 	}
-	h, err := disambiguate(rt, ambiguous(string(kind), name, cands, locFlag, ""), hits, func(h located) string {
+	h, err := app.OneOf(rt, ambiguous(string(kind), name, cands, locFlag, ""), hits, func(h located) string {
 		return prompt.Cells(h.name, h.where(), "project "+h.c.project, "gcp/"+h.profile)
 	})
 	if err != nil {

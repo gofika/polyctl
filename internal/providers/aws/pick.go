@@ -100,26 +100,6 @@ func instanceArg(ctx context.Context, rt *app.Runtime, args []string, region, wh
 	return []string{id}, nil
 }
 
-// disambiguate turns an ambiguous lookup into a pick in the interactive
-// flow: amb gets one option per candidate (value: its index, label: label
-// of it) and the index chosen is returned. The non-interactive flow gets
-// amb back (exit code 5).
-func disambiguate[T any](rt *app.Runtime, amb *app.AmbiguousError, found []T, label func(T) string) (T, error) {
-	var zero T
-	for i, f := range found {
-		amb.Options = append(amb.Options, prompt.Option{Label: label(f), Value: strconv.Itoa(i)})
-	}
-	v, err := rt.Disambiguate(amb)
-	if err != nil {
-		return zero, err
-	}
-	i, err := strconv.Atoi(v)
-	if err != nil || i < 0 || i >= len(found) {
-		return zero, fmt.Errorf("unexpected choice %q", v)
-	}
-	return found[i], nil
-}
-
 // locatedLabel shows a live instance found by a lookup: "web-01  i-0abc
 // running  t3.medium  ap-east-1a  10.0.1.23  198.51.100.7
 // aws/lab/ap-east-1" ("-" for an address it does not have).

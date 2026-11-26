@@ -587,7 +587,7 @@ func resolveLBTarget(ctx context.Context, rt *app.Runtime, ref, region string, a
 	for _, h := range hits {
 		cands = append(cands, cand{profile: h.profile, project: h.c.project, where: (certScope{region: h.region}).label()})
 	}
-	return disambiguate(rt, ambiguous("load balancer", ref, cands, regionFlags, ""), hits, lbTargetLabel)
+	return app.OneOf(rt, ambiguous("load balancer", ref, cands, regionFlags, ""), hits, lbTargetLabel)
 }
 
 // ---------------------------------------------------------------- get

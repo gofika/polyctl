@@ -248,7 +248,7 @@ func pickInstance(rt *app.Runtime, ref string, found []*locatedInstance, failure
 			hint = "the account holds several instances with this name; pass the instance id"
 		}
 		amb := &app.AmbiguousError{What: fmt.Sprintf("instance %q", ref), Candidates: names, Hint: hint}
-		return disambiguate(rt, amb, live, locatedLabel)
+		return app.OneOf(rt, amb, live, locatedLabel)
 	}
 	if allowTerminated && len(found) > 0 {
 		return found[0], nil

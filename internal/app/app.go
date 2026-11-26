@@ -888,12 +888,9 @@ func (rt *Runtime) ProfileFor(id platform.ID) (string, error) {
 		return p, nil
 	}
 	amb := &AmbiguousError{What: fmt.Sprintf("profile for %s", id), Candidates: names}
-	for _, n := range names {
-		amb.Options = append(amb.Options, prompt.Option{Label: n + "  (" + string(id) + " account)", Value: n})
-	}
 	// The interactive flow asks once per command run; the answer holds for
 	// every later lookup of the same platform.
-	p, err := rt.Disambiguate(amb)
+	p, err := OneOfBy(rt, amb, names, func(n string) string { return n }, func(n string) string { return n + "  (" + string(id) + " account)" })
 	if err != nil {
 		return "", err
 	}

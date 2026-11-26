@@ -295,7 +295,7 @@ func findBucket(ctx context.Context, rt *app.Runtime, bucket, jurisdiction strin
 		return hits[0], nil
 	case 0:
 	default:
-		a, err := disambiguate(rt, ambiguousBucket(bucket, hits), hits, (*r2Acct).candCells)
+		a, err := app.OneOf(rt, ambiguousBucket(bucket, hits), hits, (*r2Acct).candCells)
 		if err != nil {
 			return nil, err
 		}

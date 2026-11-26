@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/gofika/polyctl/internal/config"
@@ -168,16 +167,16 @@ func (rt *Runtime) ResolveDomain(ctx context.Context, domain string, kind platfo
 				}
 			}
 			amb := &AmbiguousError{What: fmt.Sprintf("owner of %s %q", kind, best), Candidates: names, Hint: hint}
-			for i := range owners {
-				amb.Options = append(amb.Options, prompt.Option{Label: labels[i], Value: strconv.Itoa(i)})
-			}
 			// The interactive flow asks which owner; the non-interactive
 			// flow keeps the error (exit code 5).
-			v, err := rt.Disambiguate(amb)
+			idx := make([]int, len(owners))
+			for i := range idx {
+				idx[i] = i
+			}
+			i, err := OneOf(rt, amb, idx, func(i int) string { return labels[i] })
 			if err != nil {
 				return nil, err
 			}
-			i, _ := strconv.Atoi(v)
 			owners = owners[i : i+1]
 		}
 		o := owners[0]

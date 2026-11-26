@@ -366,24 +366,17 @@ func InstancePasswordCommand(rt *Runtime, pc PasswordCommand) *cobra.Command {
 					hint += " or --" + pc.LocationFlag
 				}
 				amb := &AmbiguousError{What: "instance " + ref, Candidates: cands, Hint: hint}
-				for _, c := range found {
+				one, err := OneOfBy(rt, amb, found, func(c secrets.Credentials) string { return c.InstanceID }, func(c secrets.Credentials) string {
 					project := ""
 					if p := projects[c.InstanceID]; p != "" {
 						project = "project " + p
 					}
-					label := storedLabel(c.Name, c.InstanceID, c.Location, c.User, project)
-					amb.Options = append(amb.Options, prompt.Option{Label: label, Value: c.InstanceID})
-				}
-				id, err := rt.Disambiguate(amb)
+					return storedLabel(c.Name, c.InstanceID, c.Location, c.User, project)
+				})
 				if err != nil {
 					return err
 				}
-				for _, c := range found {
-					if c.InstanceID == id {
-						found = []secrets.Credentials{c}
-						break
-					}
-				}
+				found = []secrets.Credentials{one}
 			}
 			var cur *secrets.Credentials
 			if len(found) == 1 {

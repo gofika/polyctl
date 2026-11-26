@@ -224,7 +224,7 @@ func resolveLB(ctx context.Context, rt *app.Runtime, ref, region string) (*lbSco
 	}
 	amb := &app.AmbiguousError{What: fmt.Sprintf("load balancer %q", ref), Candidates: names, Hint: hint}
 	// The interactive flow asks which one.
-	f, err := disambiguate(rt, amb, found, func(f lbCandidate) string {
+	f, err := app.OneOf(rt, amb, found, func(f lbCandidate) string {
 		return prompt.Cells(f.lb.Name, f.lb.Type, f.lb.Scheme, f.lb.State, f.lb.VPC, f.lb.DNSName, f.s.where())
 	})
 	if err != nil {

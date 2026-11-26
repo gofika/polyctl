@@ -91,26 +91,6 @@ func instanceArg(ctx context.Context, rt *app.Runtime, args []string, zone, what
 	return []string{id}, nil
 }
 
-// disambiguate turns an ambiguous lookup into a pick in the interactive
-// flow: amb gets one option per candidate (value: its index, label: label
-// of it) and the candidate chosen is returned. The non-interactive flow
-// gets amb back (exit code 5).
-func disambiguate[T any](rt *app.Runtime, amb *app.AmbiguousError, found []T, label func(T) string) (T, error) {
-	var zero T
-	for i, f := range found {
-		amb.Options = append(amb.Options, prompt.Option{Label: label(f), Value: strconv.Itoa(i)})
-	}
-	v, err := rt.Disambiguate(amb)
-	if err != nil {
-		return zero, err
-	}
-	i, err := strconv.Atoi(v)
-	if err != nil || i < 0 || i >= len(found) {
-		return zero, fmt.Errorf("unexpected choice %q", v)
-	}
-	return found[i], nil
-}
-
 // defaultPickMachineType is the type preselected by the machine type pick
 // of create.
 const defaultPickMachineType = "e2-medium"
