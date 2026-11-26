@@ -90,9 +90,10 @@ func (*provider) LoginOptions() []string {
 	return []string{"method", "project", "disabled_projects", "projects", "key_file", "client_id", "client_secret"}
 }
 
-// RecordTypes are the record types Cloud DNS can write.
+// RecordTypes are the record types Cloud DNS can write: its supported types
+// but SOA, which it manages. ALIAS is its own type (apex only).
 func (*provider) RecordTypes() []string {
-	return []string{"A", "AAAA", "CNAME", "MX", "NS", "TXT", "SRV", "CAA", "PTR", "NAPTR", "SPF", "TLSA", "DNSKEY", "DS"}
+	return []string{"A", "AAAA", "CNAME", "ALIAS", "MX", "NS", "TXT", "SPF", "SRV", "CAA", "PTR", "NAPTR", "HTTPS", "SVCB", "TLSA", "SSHFP", "DS", "DNSKEY", "IPSECKEY"}
 }
 
 var _ platform.RecordTyper = (*provider)(nil)

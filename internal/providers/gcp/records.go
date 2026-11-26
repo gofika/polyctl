@@ -206,6 +206,33 @@ func rrdataFromRecord(r platform.Record) (string, error) {
 		// SPF rrdata is TXT-shaped: unquoted, Cloud DNS would split it at
 		// white space.
 		return quoteTXT(content), nil
+	case "HTTPS", "SVCB", "NAPTR", "IPSECKEY":
+		// The host name in the value is fully qualified: the target of
+		// HTTPS / SVCB (the second field), the replacement of NAPTR (the
+		// last), the gateway of IPSECKEY when its type is 3 (a name).
+		fs, err := platform.RecordFields(typ, content)
+		if err != nil {
+			return "", err
+		}
+		v, err := platform.CheckRecord(platform.RecordCheck{Type: typ, Value: content})
+		if err != nil {
+			return "", err
+		}
+		parts := strings.Split(v.Value, " ")
+		switch typ {
+		case "HTTPS", "SVCB":
+			parts[1] = ensureDot(fs[1])
+		case "NAPTR":
+			// The quoted fields hold no white space split here: the
+			// replacement is the last field of the normal form.
+			i := strings.LastIndexByte(v.Value, ' ')
+			return v.Value[:i+1] + ensureDot(fs[5]), nil
+		case "IPSECKEY":
+			if fs[1] == "3" {
+				parts[3] = ensureDot(fs[3])
+			}
+		}
+		return strings.Join(parts, " "), nil
 	}
 	if isHostType(typ) {
 		return ensureDot(content), nil
