@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -32,11 +31,6 @@ type RecordSpec struct {
 // RecordSpecFormat is the inline syntax, for error messages.
 const RecordSpecFormat = "name:type:value[:ttl[:proxied]], e.g. www:A:203.0.113.10:300:true or @:CNAME:example.com"
 
-// RecordSpecTypes are the record types a spec may name. SOA is managed by
-// the platforms and never accepted. Whether a platform can create a type is
-// for its provider to say.
-var RecordSpecTypes = []string{"A", "AAAA", "CNAME", "MX", "NS", "TXT", "SRV", "CAA", "PTR", "NAPTR", "SPF", "TLSA", "URI", "CERT", "DNSKEY", "DS"}
-
 // proxiableTypes are the types Cloudflare can proxy.
 var proxiableTypes = []string{"A", "AAAA", "CNAME"}
 
@@ -62,7 +56,7 @@ func ParseRecordSpec(s string) (RecordSpec, error) {
 		return bad("expected at least name, type and value")
 	}
 	spec := RecordSpec{Name: strings.TrimSpace(parts[0]), Type: strings.ToUpper(strings.TrimSpace(parts[1]))}
-	if err := checkSpecType(spec.Type); err != nil {
+	if err := checkType(spec.Type); err != nil {
 		return bad("%v", err)
 	}
 	rest := parts[2]
@@ -103,10 +97,8 @@ func ParseRecordSpec(s string) (RecordSpec, error) {
 		if spec.Type == "A" || spec.Type == "AAAA" {
 			return bad("the value is not an IPv%s address", map[string]string{"A": "4", "AAAA": "6"}[spec.Type])
 		}
-		if strings.TrimSpace(rest) == "" {
-			return bad("the value is empty")
-		}
-		return bad("value %q is not valid for a %s record", rest, spec.Type)
+		_, err := checkValue(spec.Type, rest, nil)
+		return bad("%v", err)
 	}
 	if len(valid) > 1 && (spec.Type == "A" || spec.Type == "AAAA") {
 		return bad("the value can be read in more than one way (%q or %q); write this record in a records file (--file)", valid[0].value, valid[len(valid)-1].value)
@@ -145,34 +137,11 @@ func isTTLField(s string) bool {
 	return true
 }
 
+// validSpecValue reports whether v is a valid value of a record of type typ:
+// a reading of an inline spec is taken only when it is.
 func validSpecValue(typ, v string) bool {
-	v = strings.TrimSpace(v)
-	if v == "" {
-		return false
-	}
-	switch typ {
-	case "A":
-		a, err := netip.ParseAddr(v)
-		return err == nil && a.Is4()
-	case "AAAA":
-		a, err := netip.ParseAddr(v)
-		return err == nil && a.Is6() && !a.Is4In6()
-	case "CNAME", "NS", "PTR":
-		return !strings.ContainsAny(v, ": ")
-	}
-	return true
-}
-
-func checkSpecType(t string) error {
-	switch {
-	case t == "":
-		return errors.New("the type is empty")
-	case t == "SOA":
-		return errors.New("SOA records are managed by the platform and cannot be set")
-	case !slices.Contains(RecordSpecTypes, t):
-		return fmt.Errorf("unknown record type %q (expected one of %s)", t, strings.Join(RecordSpecTypes, " "))
-	}
-	return nil
+	_, err := checkValue(typ, v, nil)
+	return err == nil
 }
 
 // Validate checks a spec that did not come through ParseRecordSpec (a
@@ -188,23 +157,17 @@ func (r RecordSpec) validate() error {
 	if strings.TrimSpace(r.Name) == "" {
 		return errors.New("the name is empty (use @ for the zone apex)")
 	}
-	if err := checkSpecType(r.Type); err != nil {
+	if err := checkType(r.Type); err != nil {
 		return err
 	}
-	if !validSpecValue(r.Type, r.Value) {
-		if r.Type == "A" || r.Type == "AAAA" {
-			return fmt.Errorf("value %q is not an IPv%s address", r.Value, map[string]string{"A": "4", "AAAA": "6"}[r.Type])
-		}
-		return fmt.Errorf("value %q is not valid for a %s record", r.Value, r.Type)
+	if _, err := checkValue(r.Type, r.Value, r.Priority); err != nil {
+		return err
 	}
 	if r.TTL != nil && *r.TTL < 0 {
 		return fmt.Errorf("TTL %d is negative", *r.TTL)
 	}
 	if r.Proxied != nil && !slices.Contains(proxiableTypes, r.Type) {
 		return fmt.Errorf("proxied applies to A, AAAA and CNAME records only, not %s", r.Type)
-	}
-	if r.Priority != nil && r.Type != "MX" {
-		return fmt.Errorf("priority applies to MX records only (an SRV record carries it in its value)")
 	}
 	return nil
 }

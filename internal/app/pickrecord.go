@@ -15,7 +15,7 @@ import (
 func (rt *Runtime) pickRecordType(id platform.ID, def string) (string, error) {
 	types := platform.WritableRecordTypes(id)
 	if types == nil {
-		types = platform.RecordSpecTypes
+		types = platform.KnownRecordTypes
 	}
 	var opts []prompt.Option
 	pre := "A"

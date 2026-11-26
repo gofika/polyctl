@@ -217,7 +217,7 @@ func TestDNSPositionalRecordUsage(t *testing.T) {
 		{[]string{"dns", "add", "example.com", "--proxied", "false", "www", "A", "192.0.2.9"}, "--proxied takes no separate value"},
 		{[]string{"dns", "ensure", "example.com", "-r", "www:A:192.0.2.9", "--proxied", "true"}, "--proxied takes no separate value"},
 		// Among the values of ensure it is a value, refused as one.
-		{[]string{"dns", "ensure", "example.com", "www", "A", "192.0.2.9", "--proxied", "true"}, `value "true" is not an IPv4 address`},
+		{[]string{"dns", "ensure", "example.com", "www", "A", "192.0.2.9", "--proxied", "true"}, `value "true" is not valid for type A: it is not an IPv4 address`},
 	} {
 		code, _, stderr := mainRun(cfgPath, c.args...)
 		if code != ExitUsage || !strings.Contains(stderr, c.want) {
@@ -418,7 +418,7 @@ func TestDNSRecordTypeCompletion(t *testing.T) {
 	_, cfgPath, _ := ensureZone(t)
 	for _, verb := range []string{"add", "ensure"} {
 		code, stdout, stderr := mainRun(cfgPath, "__complete", "dns", verb, "example.com", "www", "")
-		if code != ExitOK || !strings.HasPrefix(stdout, strings.Join(platform.RecordSpecTypes, "\n")+"\n:") {
+		if code != ExitOK || !strings.HasPrefix(stdout, strings.Join(platform.KnownRecordTypes, "\n")+"\n:") {
 			t.Errorf("%s: exit %d, completion %q (%s)", verb, code, stdout, stderr)
 		}
 		code, stdout, _ = mainRun(cfgPath, "__complete", "dns", verb, "example.com", "www", "A", "")

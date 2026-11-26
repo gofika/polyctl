@@ -113,16 +113,13 @@ func NormalizeRecordSpecs(zone string, p ID, specs []RecordSpec, types []string,
 		names[d.FQDN] = append(names[d.FQDN], d)
 	}
 	for _, d := range out {
-		if d.Type != "CNAME" {
-			continue
-		}
 		for _, o := range names[d.FQDN] {
 			switch {
-			case o.Index == d.Index:
-			case o.Type == "CNAME":
-				return nil, invalid("records %d and %d are both a CNAME of %s; a name has at most one CNAME", min(o.Index, d.Index), max(o.Index, d.Index), d.Name)
-			case o.Type == "A" || o.Type == "AAAA":
-				return nil, invalid("record %d is a CNAME of %s and record %d an %s record of it; a CNAME cannot coexist with A or AAAA records", d.Index, d.Name, o.Index, o.Type)
+			case o.Index <= d.Index:
+			case o.Type == "CNAME" && d.Type == "CNAME":
+				return nil, invalid("records %d and %d are both a CNAME of %s; a name has at most one CNAME", d.Index, o.Index, d.Name)
+			case RecordTypesConflict(p, d.Type, o.Type):
+				return nil, invalid("record %d is %s %s record of %s and record %d %s %s record of it; %s", d.Index, article(d.Type), d.Type, d.Name, o.Index, article(o.Type), o.Type, conflictReason(p, d.Type, o.Type))
 			}
 		}
 	}
@@ -141,7 +138,7 @@ func normalizeSpec(zone string, p ID, idx int, s RecordSpec, types []string, war
 	}
 	d := DesiredRecord{Index: idx, FQDN: fqdn, Name: RelativeName(fqdn, zone), Type: s.Type, TTL: s.TTL, Proxied: s.Proxied, Priority: s.Priority}
 	if types != nil && !slices.Contains(types, d.Type) {
-		return DesiredRecord{}, fmt.Errorf("%w: %s cannot write %s records (record %d)", ErrNotSupported, p, d.Type, idx)
+		return DesiredRecord{}, fmt.Errorf("%w (record %d)", notWritable(p, d.Type, types), idx)
 	}
 	switch {
 	case s.TTLAuto && d.TTL == nil && p == Cloudflare:
@@ -241,89 +238,22 @@ func checkHostName(name string, recordName bool) error {
 	return nil
 }
 
-// normalizeValue checks the value of d and returns the form sent to the
-// platform; it also takes the priority out of an MX value.
+// normalizeValue checks the value of d with CheckRecord and returns the
+// form sent to the platform; it also takes the priority out of an MX value.
+// A host name of a single label is accepted with a warning.
 func normalizeValue(d *DesiredRecord, v string, warn func(string, ...any)) (string, error) {
-	if v == "" {
-		return "", errors.New("the value is empty")
+	rv, err := checkValue(d.Type, v, d.Priority)
+	if err != nil {
+		return "", err
 	}
-	host := func(h string) (string, error) {
-		if h == "." {
-			return h, nil
-		}
-		if err := checkHostName(h, false); err != nil {
-			return "", fmt.Errorf("value %q: %v", h, err)
-		}
-		return strings.TrimSuffix(h, "."), nil
-	}
-	singleLabel := func(h string) {
-		if h != "." && !strings.Contains(strings.TrimSuffix(h, "."), ".") {
+	d.Priority = rv.Priority
+	switch d.Type {
+	case "CNAME", "NS", "MX", "ALIAS", "ANAME":
+		if h := rv.Value; h != "." && !strings.Contains(h, ".") {
 			warn("warning: %s: value %q is a single label; it is not completed with the zone name (write the full host name)", d.label(), h)
 		}
 	}
-	switch d.Type {
-	case "A", "AAAA":
-		a, err := netip.ParseAddr(v)
-		if err != nil || a.Zone() != "" {
-			return "", fmt.Errorf("value %q is not an address", v)
-		}
-		return a.String(), nil
-	case "CNAME", "NS", "PTR":
-		h, err := host(v)
-		if err != nil {
-			return "", err
-		}
-		if d.Type != "PTR" {
-			singleLabel(v)
-		}
-		return h, nil
-	case "MX":
-		f := strings.Fields(v)
-		switch {
-		case len(f) == 2:
-			n, err := strconv.Atoi(f[0])
-			if err != nil || n < 0 {
-				return "", fmt.Errorf("value %q is not \"<priority> <host>\"", v)
-			}
-			if d.Priority != nil && *d.Priority != n {
-				return "", fmt.Errorf("the priority is given twice (%d in the value, %d as priority)", n, *d.Priority)
-			}
-			d.Priority = &n
-			v = f[1]
-		case len(f) != 1:
-			return "", fmt.Errorf("value %q is not a host name or \"<priority> <host>\"", v)
-		}
-		h, err := host(v)
-		if err != nil {
-			return "", err
-		}
-		singleLabel(v)
-		return h, nil
-	case "SRV":
-		f := strings.Fields(v)
-		if len(f) != 4 {
-			return "", fmt.Errorf("value %q is not \"<priority> <weight> <port> <target>\"", v)
-		}
-		for _, x := range f[:3] {
-			if n, err := strconv.Atoi(x); err != nil || n < 0 || n > 65535 {
-				return "", fmt.Errorf("value %q is not \"<priority> <weight> <port> <target>\"", v)
-			}
-		}
-		h, err := host(f[3])
-		if err != nil {
-			return "", err
-		}
-		return strings.Join(append(f[:3:3], h), " "), nil
-	case "CAA":
-		f := strings.Fields(v)
-		if len(f) < 3 {
-			return "", fmt.Errorf("value %q is not \"<flags> <tag> <value>\"", v)
-		}
-		if n, err := strconv.Atoi(f[0]); err != nil || n < 0 || n > 255 {
-			return "", fmt.Errorf("value %q is not \"<flags> <tag> <value>\"", v)
-		}
-	}
-	return v, nil
+	return rv.Value, nil
 }
 
 // compareValue is the form two values of a type are compared in: host
@@ -341,11 +271,21 @@ func compareValue(typ, v string, priority *int) string {
 			return a.String()
 		}
 		return strings.ToLower(v)
-	case "CNAME", "NS", "PTR", "MX":
+	case "CNAME", "NS", "PTR", "MX", "ALIAS", "ANAME":
 		if v == "." {
 			return v
 		}
 		return strings.TrimSuffix(strings.ToLower(v), ".")
+	case "HTTPS", "SVCB", "SSHFP", "SMIMEA", "LOC", "IPSECKEY", "OPENPGPKEY":
+		// The types polyctl came to write later compare in their normal
+		// form, so that a platform's rendering (quotes, the trailing dot, the
+		// default fields of LOC) equals the value given.
+		if rv, err := checkValue(typ, v, nil); err == nil {
+			if typ == "OPENPGPKEY" {
+				return rv.Value
+			}
+			return strings.ToLower(rv.Value)
+		}
 	case "SRV", "NAPTR":
 		f := strings.Fields(strings.ToLower(v))
 		if typ == "SRV" && len(f) == 3 && priority != nil {
@@ -419,8 +359,14 @@ func isDigits(s string) bool {
 }
 
 // existingCompareValue is compareValue of a record read from a platform.
-// A Cloudflare SRV record carries its components in data.
+// A Cloudflare SRV record carries its components in data; a GoDaddy one its
+// weight and port in fields of their own beside the target.
 func existingCompareValue(r Record) string {
+	if strings.EqualFold(r.Type, "SRV") && r.Priority != nil && len(strings.Fields(r.Value)) == 1 {
+		if w, p := r.Extra["weight"], r.Extra["port"]; w != nil && p != nil {
+			return compareValue("SRV", fmt.Sprintf("%d %v %v %s", *r.Priority, w, p, r.Value), nil)
+		}
+	}
 	if strings.EqualFold(r.Type, "SRV") {
 		if d, ok := r.Extra["data"].(map[string]any); ok {
 			var f []string

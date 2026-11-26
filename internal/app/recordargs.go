@@ -178,7 +178,7 @@ func CompleteRecordArgs(first CompletionFunc, id platform.ID) CompletionFunc {
 					return types, cobra.ShellCompDirectiveNoFileComp
 				}
 			}
-			return platform.RecordSpecTypes, cobra.ShellCompDirectiveNoFileComp
+			return platform.KnownRecordTypes, cobra.ShellCompDirectiveNoFileComp
 		}
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
