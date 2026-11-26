@@ -79,42 +79,62 @@ const (
 	allRecords = "A www 203.0.113.1,A www 203.0.113.2,TXT www hello"
 )
 
-var deleteForms = []struct {
-	name     string
-	args     []string
-	question string
-	left     string // the records left after a yes
-}{
-	{"set", []string{"godaddy", "dns", "delete", "example.com", "--type", "A", "--name", "www"},
-		"Delete 2 A record(s) of www.example.com? (y/N)", "TXT www hello"},
-	{"id", []string{"godaddy", "dns", "delete", "example.com", "--id", recordID},
-		"Delete the A record 203.0.113.1 of www.example.com? (y/N)", "A www 203.0.113.2,TXT www hello"},
-	// The id older versions printed, without the zone, still works.
-	{"old id", []string{"godaddy", "dns", "delete", "example.com", "--id", "A|www|203.0.113.1"},
-		"Delete the A record 203.0.113.1 of www.example.com? (y/N)", "A www 203.0.113.2,TXT www hello"},
-}
+// setForms name the two A records of www; idForms name one of them.
+var (
+	setForms = [][]string{
+		{"godaddy", "dns", "delete", "example.com", "www", "A"},
+		// The former form.
+		{"godaddy", "dns", "delete", "example.com", "--type", "A", "--name", "www"},
+	}
+	idForms = [][]string{
+		{"godaddy", "dns", "delete", "example.com", "--id", recordID},
+		// The id older versions printed, without the zone, still works.
+		{"godaddy", "dns", "delete", "example.com", "--id", "A|www|203.0.113.1"},
+		{"godaddy", "dns", "delete", "example.com", "www", "A", "203.0.113.1"},
+	}
+)
 
-// godaddy dns delete lists what it deletes and asks one question (default
+const (
+	question = "delete 2 records in zone example.com (y/N)"
+	oneLeft  = "A www 203.0.113.2,TXT www hello"
+)
+
+// godaddy dns delete lists several records and asks one question (default
 // no); a yes deletes, a no or leaving the question (Ctrl-D) deletes nothing.
 func TestDNSDeleteConfirms(t *testing.T) {
 	e := newDeleteEnv(t)
-	for _, form := range deleteForms {
-		code, _, stderr := e.run(prompttest.New(t), "y\n", form.args...)
-		if code != cli.ExitOK || e.records() != form.left {
-			t.Errorf("%s, yes: exit %d, records %s, %s", form.name, code, e.records(), stderr)
+	for _, form := range setForms {
+		code, _, stderr := e.run(prompttest.New(t), "y\n", form...)
+		if code != cli.ExitOK || e.records() != "TXT www hello" {
+			t.Errorf("%v, yes: exit %d, records %s, %s", form, code, e.records(), stderr)
 		}
 		list := strings.Index(stderr, "203.0.113.1")
-		if q := strings.Index(stderr, form.question); q < 0 || list < 0 || list > q {
-			t.Errorf("%s: the records are not listed before the question %q: %s", form.name, form.question, stderr)
+		if q := strings.Index(stderr, question); q < 0 || list < 0 || list > q {
+			t.Errorf("%v: the records are not listed before the question: %s", form, stderr)
 		}
 		for _, answer := range []string{"\n", "n\n", ""} {
 			e.reset()
-			code, _, stderr := e.run(prompttest.New(t), answer, form.args...)
+			code, _, stderr := e.run(prompttest.New(t), answer, form...)
 			if code != cli.ExitOK || e.records() != allRecords || len(e.f.Writes()) != 0 || !strings.Contains(stderr, "no record was deleted") {
-				t.Errorf("%s, answer %q: exit %d, records %s, writes %v, %s", form.name, answer, code, e.records(), e.f.Writes(), stderr)
+				t.Errorf("%v, answer %q: exit %d, records %s, writes %v, %s", form, answer, code, e.records(), e.f.Writes(), stderr)
 			}
 		}
 		e.reset()
+	}
+}
+
+// One record (--id, or a name, type and value that match one) is deleted
+// at once in both flows, as by every record delete command.
+func TestDNSDeleteOneRecord(t *testing.T) {
+	e := newDeleteEnv(t)
+	for _, form := range idForms {
+		for _, p := range []*prompttest.Picker{nil, prompttest.New(t)} {
+			code, stdout, stderr := e.run(p, "", append(form, "-o", "json")...)
+			if code != cli.ExitOK || e.records() != oneLeft || strings.Contains(stderr, "(y/N)") || !strings.Contains(stdout, `"deleted": [`) || !strings.Contains(stdout, recordID) {
+				t.Errorf("%v: exit %d, records %s, %s%s", form, code, e.records(), stdout, stderr)
+			}
+			e.reset()
+		}
 	}
 }
 
@@ -123,59 +143,70 @@ func TestDNSDeleteMissing(t *testing.T) {
 	e := newDeleteEnv(t)
 	for _, args := range [][]string{
 		{"godaddy", "dns", "delete", "example.com", "--type", "MX", "--name", "www"},
+		{"godaddy", "dns", "delete", "example.com", "www", "A", "198.51.100.9"},
 		{"godaddy", "dns", "delete", "example.com", "--id", "example.com|A|www|198.51.100.9"},
+		// An id of another domain names no record of this one.
+		{"godaddy", "dns", "delete", "example.com", "--id", "other.com|A|www|203.0.113.1"},
 	} {
 		code, _, stderr := e.run(prompttest.New(t), "y\n", args...)
 		if code != cli.ExitNotFound || strings.Contains(stderr, "(y/N)") || len(e.f.Writes()) != 0 {
 			t.Errorf("%v: exit %d, writes %v, %s", args, code, e.f.Writes(), stderr)
 		}
 	}
-}
-
-// An id of another domain is a usage error, and nothing is asked.
-func TestDNSDeleteIDOfAnotherZone(t *testing.T) {
-	e := newDeleteEnv(t)
-	code, _, stderr := e.run(prompttest.New(t), "y\n", "godaddy", "dns", "delete", "example.com", "--id", "other.com|A|www|203.0.113.1")
-	if code != cli.ExitUsage || strings.Contains(stderr, "(y/N)") || len(e.f.Writes()) != 0 || !strings.Contains(stderr, "belongs to zone other.com") {
-		t.Errorf("exit %d, writes %v, %s", code, e.f.Writes(), stderr)
-	}
-	// The neutral dns delete finds no record with that id in the zone named.
-	code, _, stderr = e.run(nil, "", "dns", "delete", "example.com", "--id", "other.com|A|www|203.0.113.1", "--yes")
+	// So does the neutral dns delete.
+	code, _, stderr := e.run(nil, "", "dns", "delete", "example.com", "--id", "other.com|A|www|203.0.113.1", "--yes")
 	if code != cli.ExitNotFound || len(e.f.Writes()) != 0 {
 		t.Errorf("neutral: exit %d, writes %v, %s", code, e.f.Writes(), stderr)
 	}
 }
 
-// The record picked in the interactive flow is confirmed too.
-func TestDNSDeletePickConfirms(t *testing.T) {
+// With only the domain a terminal lists the records to tick; several are
+// confirmed, one is deleted at once.
+func TestDNSDeleteLists(t *testing.T) {
 	e := newDeleteEnv(t)
-	p := prompttest.New(t, recordID)
-	if code, _, stderr := e.run(p, "n\n", "godaddy", "dns", "delete", "example.com"); code != cli.ExitOK || e.records() != allRecords || !strings.Contains(stderr, deleteForms[1].question) {
+	both := []string{recordID, "example.com|A|www|203.0.113.2"}
+	p := prompttest.New(t, both)
+	if code, _, stderr := e.run(p, "n\n", "godaddy", "dns", "delete", "example.com"); code != cli.ExitOK || e.records() != allRecords || !strings.Contains(stderr, question) {
 		t.Errorf("no: exit %d, records %s, %s", code, e.records(), stderr)
 	}
 	p.Done()
-	p = prompttest.New(t, recordID)
-	if code, _, stderr := e.run(p, "y\n", "godaddy", "dns", "delete", "example.com"); code != cli.ExitOK || e.records() != deleteForms[1].left {
+	if a := p.Find("Delete which records of example.com?"); a == nil || len(a.Options) != 3 {
+		t.Errorf("options %+v", a)
+	}
+	p = prompttest.New(t, both)
+	if code, _, stderr := e.run(p, "y\n", "godaddy", "dns", "delete", "example.com"); code != cli.ExitOK || e.records() != "TXT www hello" {
 		t.Errorf("yes: exit %d, records %s, %s", code, e.records(), stderr)
 	}
 	p.Done()
+	e.reset()
+	p = prompttest.New(t, []string{recordID})
+	if code, _, stderr := e.run(p, "", "godaddy", "dns", "delete", "example.com"); code != cli.ExitOK || e.records() != oneLeft || strings.Contains(stderr, "(y/N)") {
+		t.Errorf("one ticked: exit %d, records %s, %s", code, e.records(), stderr)
+	}
+	p.Done()
+	// Where nothing can be asked the domain alone is a usage error before
+	// anything is read.
+	e.reset()
+	if code, _, stderr := e.run(nil, "", "godaddy", "dns", "delete", "example.com"); code != cli.ExitUsage || !strings.Contains(stderr, "a record or --id <record-id> is required: usage: polyctl godaddy dns delete <domain> <name> [<type> [<value>]]") {
+		t.Errorf("only the domain: exit %d, %s", code, stderr)
+	}
 }
 
-// --yes deletes without a question in both flows; the non-interactive flow
-// without it is a usage error naming --yes, before anything is read.
+// --yes deletes several records without a question in both flows; the
+// non-interactive flow without it is a usage error naming --yes.
 func TestDNSDeleteYes(t *testing.T) {
 	e := newDeleteEnv(t)
-	for _, form := range deleteForms {
-		code, _, stderr := e.run(nil, "y\n", form.args...)
-		if code != cli.ExitUsage || !strings.Contains(stderr, "--yes") || e.records() != allRecords || len(e.f.Writes()) != 0 {
-			t.Errorf("%s, non-interactive without --yes: exit %d, records %s, %s", form.name, code, e.records(), stderr)
+	for _, form := range setForms {
+		code, _, stderr := e.run(nil, "y\n", form...)
+		if code != cli.ExitUsage || !strings.Contains(stderr, "pass --yes to proceed (would delete 2 records in zone example.com)") || e.records() != allRecords || len(e.f.Writes()) != 0 {
+			t.Errorf("%v, non-interactive without --yes: exit %d, records %s, %s", form, code, e.records(), stderr)
 		}
-		if code, _, stderr := e.run(nil, "", append(form.args, "--yes")...); code != cli.ExitOK || e.records() != form.left {
-			t.Errorf("%s, non-interactive --yes: exit %d, records %s, %s", form.name, code, e.records(), stderr)
+		if code, _, stderr := e.run(nil, "", append(form, "--yes")...); code != cli.ExitOK || e.records() != "TXT www hello" {
+			t.Errorf("%v, non-interactive --yes: exit %d, records %s, %s", form, code, e.records(), stderr)
 		}
 		e.reset()
-		if code, _, stderr := e.run(prompttest.New(t), "", append(form.args, "--yes")...); code != cli.ExitOK || e.records() != form.left || strings.Contains(stderr, "(y/N)") {
-			t.Errorf("%s, interactive --yes: exit %d, records %s, %s", form.name, code, e.records(), stderr)
+		if code, _, stderr := e.run(prompttest.New(t), "", append(form, "--yes")...); code != cli.ExitOK || e.records() != "TXT www hello" || strings.Contains(stderr, "(y/N)") {
+			t.Errorf("%v, interactive --yes: exit %d, records %s, %s", form, code, e.records(), stderr)
 		}
 		e.reset()
 	}
@@ -184,14 +215,14 @@ func TestDNSDeleteYes(t *testing.T) {
 // A dry run asks nothing and needs no --yes, in both flows.
 func TestDNSDeleteDryRun(t *testing.T) {
 	e := newDeleteEnv(t)
-	for _, form := range deleteForms {
-		code, stdout, stderr := e.run(nil, "", append(form.args, "--dry-run")...)
+	for _, form := range append(append([][]string{}, setForms...), idForms...) {
+		code, stdout, stderr := e.run(nil, "", append(form, "--dry-run")...)
 		if code != cli.ExitOK || !strings.Contains(stdout, "would delete") || len(e.f.Writes()) != 0 {
-			t.Errorf("%s, non-interactive dry run: exit %d, %q, writes %v, %s", form.name, code, stdout, e.f.Writes(), stderr)
+			t.Errorf("%v, non-interactive dry run: exit %d, %q, writes %v, %s", form, code, stdout, e.f.Writes(), stderr)
 		}
-		code, _, stderr = e.run(prompttest.New(t), "", append(form.args, "--dry-run")...)
+		code, _, stderr = e.run(prompttest.New(t), "", append(form, "--dry-run")...)
 		if code != cli.ExitOK || strings.Contains(stderr, "(y/N)") || len(e.f.Writes()) != 0 {
-			t.Errorf("%s, interactive dry run: exit %d, writes %v, %s", form.name, code, e.f.Writes(), stderr)
+			t.Errorf("%v, interactive dry run: exit %d, writes %v, %s", form, code, e.f.Writes(), stderr)
 		}
 	}
 }
@@ -236,6 +267,8 @@ func TestDNSDeleteIDWithFilters(t *testing.T) {
 		{"--type", "TXT", "--name", "www"},
 		{"--type", "TXT"},
 		{"--name", "mail"},
+		{"www"},
+		{"--id", ""},
 	} {
 		args := append([]string{"godaddy", "dns", "delete", "example.com", "--id", recordID, "--yes"}, extra...)
 		if code, _, stderr := e.run(nil, "", args...); code != cli.ExitUsage || !strings.Contains(stderr, "--id") || e.records() != allRecords {

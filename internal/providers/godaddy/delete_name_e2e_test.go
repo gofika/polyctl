@@ -20,9 +20,14 @@ func TestDNSDeleteByNameOfOneType(t *testing.T) {
 	}
 	for _, form := range [][]string{{"www"}, {"--name", "www"}} {
 		oneType()
+		// The former form has no --value: the hint names the id only.
+		hint := "to delete one of them only, give its <value> after the <type>, or its id with --id <id>"
+		if form[0] == "--name" {
+			hint = "to delete one of them only, give its id with --id <id>"
+		}
 		args := append([]string{"godaddy", "dns", "delete", "example.com"}, form...)
 		// Non-interactive without --yes: refused, nothing written.
-		if code, _, stderr := e.run(nil, "", args...); code != cli.ExitUsage || !strings.Contains(stderr, "pass --yes to proceed (would delete every A record of www.example.com)") || len(e.f.Writes()) != 0 {
+		if code, _, stderr := e.run(nil, "", args...); code != cli.ExitUsage || !strings.Contains(stderr, "pass --yes to proceed (would delete 2 records in zone example.com)") || len(e.f.Writes()) != 0 {
 			t.Errorf("%v without --yes: exit %d, %s", form, code, stderr)
 		}
 		// A dry run reports and asks nothing.
@@ -30,12 +35,11 @@ func TestDNSDeleteByNameOfOneType(t *testing.T) {
 			t.Errorf("%v --dry-run: exit %d, %s", form, code, stderr)
 		}
 		// A no deletes nothing and says how to delete one record.
-		const hint = "to delete one of them only, give its id with --id <id>"
 		code, _, stderr := e.run(prompttest.New(t), "n\n", args...)
 		if code != cli.ExitOK || len(e.f.Writes()) != 0 || !strings.Contains(stderr, "nothing to do: no record was deleted; "+hint) {
 			t.Errorf("%v, no: exit %d, writes %v, %s", form, code, e.f.Writes(), stderr)
 		}
-		for _, want := range []string{"example.com|A|www|203.0.113.1", "example.com|A|www|203.0.113.2", "2 records match; " + hint, "Delete 2 A record(s) of www.example.com? (y/N)"} {
+		for _, want := range []string{"example.com|A|www|203.0.113.1", "example.com|A|www|203.0.113.2", "2 records match; " + hint, "delete 2 records in zone example.com (y/N)"} {
 			if !strings.Contains(stderr, want) {
 				t.Errorf("%v: the question lacks %q: %s", form, want, stderr)
 			}
@@ -51,8 +55,8 @@ func TestDNSDeleteByNameOfOneType(t *testing.T) {
 }
 
 // A name with records of several types is exit code 5 where nothing can be
-// asked, with --yes, without it and in a dry run; a terminal offers its
-// records, after a line that names the types.
+// asked, with --yes, without it and in a dry run; a terminal lists its
+// records to tick, after a line that names the types.
 func TestDNSDeleteByNameOfSeveralTypes(t *testing.T) {
 	e := newDeleteEnv(t)
 	for arg, form := range map[string][]string{"<type>": {"www"}, "--type": {"--name", "www"}} {
@@ -68,8 +72,8 @@ func TestDNSDeleteByNameOfSeveralTypes(t *testing.T) {
 			}
 		}
 	}
-	p := prompttest.New(t, prompttest.Label("hello"))
-	code, _, stderr := e.run(p, "y\n", "godaddy", "dns", "delete", "example.com", "www")
+	p := prompttest.New(t, []string{"example.com|TXT|www|hello"})
+	code, _, stderr := e.run(p, "", "godaddy", "dns", "delete", "example.com", "www")
 	if code != cli.ExitOK || e.records() != "A www 203.0.113.1,A www 203.0.113.2" {
 		t.Fatalf("picked: exit %d, records %s, %s", code, e.records(), stderr)
 	}
@@ -77,7 +81,7 @@ func TestDNSDeleteByNameOfSeveralTypes(t *testing.T) {
 	if !strings.Contains(stderr, "www.example.com has records of 2 types (A, TXT)") {
 		t.Errorf("the types are not announced: %s", stderr)
 	}
-	if a := p.Find("Delete which record of www.example.com?"); len(a.Options) != 3 || !strings.Contains(a.Options[0].Label, "example.com|A|www|203.0.113.1") {
+	if a := p.Find("Delete which records of www.example.com?"); len(a.Options) != 3 || !strings.Contains(a.Options[0].Label, "example.com|A|www|203.0.113.1") {
 		t.Errorf("options %+v", a.Options)
 	}
 }

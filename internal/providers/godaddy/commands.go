@@ -756,78 +756,52 @@ existing ones use ` + "`polyctl godaddy dns add`" + `.
 	return cmd
 }
 
+// deleteForm is the form of dns delete: the record by name or --id, or with
+// the former --name and --type.
+var deleteForm = app.RecordTargetForm{FormerFlags: []string{"name", "type"}}
+
+// deleteResult is the output of dns delete: the ids and the records
+// deleted, and the name and the type when they are those of one record set
+// (as the command printed them when it deleted a record set as a whole).
+type deleteResult struct {
+	Profile string            `json:"profile" yaml:"profile"`
+	Zone    string            `json:"zone" yaml:"zone"`
+	Type    string            `json:"type,omitempty" yaml:"type,omitempty"`
+	Name    string            `json:"name,omitempty" yaml:"name,omitempty"`
+	Deleted []string          `json:"deleted" yaml:"deleted"`
+	Records []platform.Record `json:"records" yaml:"records"`
+}
+
 func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 	var typ, name, id string
 	cmd := &cobra.Command{
-		Use:   "delete <domain> [<name> [<type>]]",
-		Short: "Delete the records of a name (optionally of one type), or one record by --id",
-		Long: `Delete every record of <name> and <type>, or the one record given with --id
-(it cannot be combined with a positional record). GoDaddy addresses records
-by name and type, so the id is an optional second way to pick a single
-record here, not a required argument.
+		Use:   "delete <domain> [<name> [<type> [<value>]]]",
+		Short: "Delete the DNS records of a name (optionally of one type and value), or one record by --id",
+		Long: `Delete the records of <name> in <domain>, or the one record with --id.
+GoDaddy addresses records by name and type; the id is the synthesized
+zone|TYPE|name|value that ` + "`polyctl godaddy dns list`" + ` shows.
 
-<name> is relative to the domain (www, a.b), @ for the apex, or a full name
-inside the domain (www.example.com). <type> is case-insensitive.
+` + deleteForm.Help("domain", "polyctl godaddy dns list") + `
 
-<type> is needed only to tell records apart: a name whose records all have
-one type needs none. A name with records of several types is not deleted as
-a whole: on a terminal its records are offered to pick one, and the
-non-interactive flow names the types and exits with code 5, also with --yes.
-The NS and SOA records of the apex are never meant by the name alone.
+` + app.RecordDeleteHelp + `
 
-The records to delete are listed with their ids and, for several, a note on
-how to delete one of them only (--id); then one yes/no question is asked
-(default no; --yes skips it). The non-interactive flow asks nothing: --yes
-is required (exit code 2 without it: for <name> <type> and --id before
-anything is read, for a name alone once its records are known to have one
-type). Declining changes nothing. --dry-run reports what would be deleted and asks nothing.`,
-		Example:           "  polyctl godaddy dns delete example.com www\n  polyctl godaddy dns delete example.com www A\n  polyctl godaddy dns delete example.com www A --yes\n  polyctl godaddy dns delete example.com --id 'example.com|A|www|203.0.113.10' --yes",
-		Args:              app.RecordSelectorArgsOrInteractive(rt, 0),
-		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.GoDaddy), platform.GoDaddy),
+--dry-run reports what would be deleted and asks nothing.`,
+		Example: `  polyctl godaddy dns delete example.com www
+  polyctl godaddy dns delete example.com www A
+  polyctl godaddy dns delete example.com www A 203.0.113.10
+  polyctl godaddy dns delete example.com --id 'example.com|A|www|203.0.113.10'`,
+		Args:              deleteForm.ArgsOrInteractive(rt),
+		ValidArgsFunction: deleteForm.Complete(rt, app.CompleteDomainArg(rt, platform.GoDaddy), platform.GoDaddy),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// The record set is positional (<name> [<type>]) or, in the
-			// former form, given with --name and --type.
-			typeArg, named := "--type", cmd.Flags().Changed("name")
-			if len(args) > 1 {
-				rec, err := app.ParseRecordSelector(cmd, args[1:], 0)
-				if err != nil {
-					return err
-				}
-				if id != "" {
-					return app.UsageErrf("--id selects one record; it cannot be combined with <name> [<type>]")
-				}
-				name, typ, typeArg, named = rec.Name, rec.Type, "<type>", true
-				args = args[:1]
-			}
-			if id != "" && (typ != "" || cmd.Flags().Changed("name")) {
-				// The id selects one record; --type / --name beside it
-				// would be ignored.
-				return app.UsageErrf("--id selects one record; it cannot be combined with --type or --name")
-			}
-			// byName: the name alone says which records, when they have one
-			// type.
-			byName := id == "" && typ == "" && named
-			if id == "" && typ == "" && !named && !rt.Interactive() {
-				return app.UsageErrf("a record or --id is required: %s", app.RecordSelectorUsage(cmd, 0))
-			}
-			args, err := rt.DomainArg(cmd.Context(), args, platform.GoDaddy, platform.ResZone, nil)
+			target, err := deleteForm.Parse(cmd, args)
 			if err != nil {
 				return err
 			}
-			zone := platform.NormalizeDomain(args[0])
-			// Records that are named (<name> <type>, --id) need --yes where
-			// nothing can be asked: refused before anything is read. A name
-			// alone is read first: what it means (one type, several types,
-			// nothing) comes before the confirmation.
-			if !rt.Flags.DryRun && (id != "" || typ != "") {
-				what := "delete record " + id + " of zone " + zone
-				if id == "" {
-					what = fmt.Sprintf("delete every %s record of %s", strings.ToUpper(typ), platform.FQDN(name, zone))
-				}
-				if err := rt.CanConfirm(what); err != nil {
-					return err
-				}
+			args, err = rt.DomainArg(cmd.Context(), args[:min(len(args), 1)], platform.GoDaddy, platform.ResZone, nil)
+			if err != nil {
+				return err
 			}
+			domain := platform.NormalizeDomain(args[0])
 			if rt.Flags.Offline {
 				return app.ErrOffline
 			}
@@ -835,101 +809,36 @@ type). Declining changes nothing. --dry-run reports what would be deleted and as
 			if err != nil {
 				return err
 			}
-			if id == "" && typ == "" {
-				recs, err := c.ListRecords(cmd.Context(), zone)
-				if err != nil {
-					return err
-				}
-				// The interactive flow lists the records to pick one: those
-				// of the zone, or of a name with records of several types
-				// (exit code 5 where nothing can be asked). A list picks one
-				// record here, deleted by its id.
-				sel := app.RecordSelect{Zone: zone, Records: recs, Verb: "Delete", TypeArg: typeArg,
-					List: func(of string, recs []platform.Record) ([]platform.Record, error) {
-						var err error
-						id, err = rt.PickRecordID("Delete which record of "+of+"?", recs, nil)
-						return recs, err
-					}}
-				if byName {
-					sel.Name = platform.FQDN(name, zone)
-				}
-				chosen, err := rt.SelectRecords(sel)
-				if err != nil {
-					return err
-				}
-				if !chosen.Listed {
-					typ = chosen.Type()
-				}
-			}
-			target := platform.Target{Platform: platform.GoDaddy, Profile: p.Name, Domain: zone}
-			if id != "" {
-				k, err := decodeRecordID(id, zone)
-				if err != nil {
-					return err
-				}
-				t, n, d := k.Type, k.Name, k.Data
-				// A dry run neither asks nor needs --yes: nothing is deleted.
-				if done, err := rt.WouldWrite(target, platform.Change{Resource: app.RecordResource(platform.FQDN(n, zone), t), Action: platform.Deleted, ID: id, Detail: d}); done || err != nil {
-					return err
-				}
-				if !rt.Flags.Yes {
-					set, err := c.api.recordSet(cmd.Context(), zone, t, n)
-					if err != nil {
-						return err
-					}
-					i, err := k.find(set, zone, id)
-					if err != nil {
-						return err
-					}
-					if i < 0 {
-						return fmt.Errorf("%w: %s %s %q in zone %s", platform.ErrNotFound, t, n, d, zone)
-					}
-					if err := rt.ConfirmRecordDelete(cmd.Context(), app.RecordDelete{Records: recordGrid([]platform.Record{recordFromAPI(zone, set[i])}),
-						Question: fmt.Sprintf("Delete the %s record %s of %s?", t, d, platform.FQDN(n, zone))}); err != nil {
-						return err
-					}
-				}
-				if err := c.DeleteRecord(cmd.Context(), zone, id); err != nil {
-					return err
-				}
-				refreshZoneCache(cmd.Context(), rt, c, p.Name, zone)
-				rt.Infof("deleted %s %s %s via godaddy/%s", platform.FQDN(n, zone), t, d, p.Name)
-				return rt.Render(map[string]any{"profile": p.Name, "zone": zone, "deleted": []string{id}}, func() output.Grid { return output.Grid{} })
-			}
-			rel := platform.RelativeName(platform.FQDN(name, zone), zone)
-			upper := strings.ToUpper(typ)
-			if done, err := rt.WouldWrite(target, platform.Change{Resource: app.RecordResource(platform.FQDN(rel, zone), typ), Action: platform.Deleted, Detail: "every record of the set"}); done || err != nil {
+			existing, err := c.ListRecords(cmd.Context(), domain)
+			if err != nil {
 				return err
 			}
-			if !rt.Flags.Yes {
-				set, err := c.api.recordSet(cmd.Context(), zone, upper, rel)
-				if err != nil {
-					return err
-				}
-				if len(set) == 0 {
-					return fmt.Errorf("%w: no %s records of %s in zone %s", platform.ErrNotFound, upper, platform.FQDN(rel, zone), zone)
-				}
-				recs := make([]platform.Record, 0, len(set))
-				for _, r := range set {
-					recs = append(recs, recordFromAPI(zone, r))
-				}
-				if err := rt.ConfirmRecordDelete(cmd.Context(), app.RecordDelete{Records: recordGrid(recs), Exact: app.ExactRecordHint(typeArg, false, true),
-					Question: fmt.Sprintf("Delete %d %s record(s) of %s?", len(recs), upper, platform.FQDN(rel, zone)),
-					Refusal:  fmt.Sprintf("delete every %s record of %s", upper, platform.FQDN(rel, zone))}); err != nil {
-					return err
-				}
-			}
-			if err := c.DeleteRecordSet(cmd.Context(), zone, typ, rel); err != nil {
+			zone := platform.Zone{ID: domain, Name: domain}
+			sel := target.Select(app.RecordSelect{Zone: domain, Records: existing, ID: id, IDMatches: c.RecordIDMatches, Verb: "Delete", Grid: recordGrid})
+			sel.Offer, sel.Mark = app.DeletableRecords(c, zone)
+			chosen, err := rt.SelectRecords(sel)
+			if err != nil {
 				return err
 			}
-			refreshZoneCache(cmd.Context(), rt, c, p.Name, zone)
-			rt.Infof("deleted all %s records of %s via godaddy/%s", upper, platform.FQDN(rel, zone), p.Name)
-			return rt.Render(map[string]any{"profile": p.Name, "zone": zone, "type": upper, "name": platform.FQDN(rel, zone)}, func() output.Grid { return output.Grid{} })
+			del := app.RecordsDelete{Target: platform.Target{Platform: platform.GoDaddy, Profile: p.Name, Domain: domain},
+				Zone: zone, DNS: c, Records: chosen.Records, Grid: recordGrid, Exact: sel.Exact(chosen)}
+			if done, err := rt.DeleteRecords(cmd.Context(), del); !done || err != nil {
+				return err
+			}
+			refreshZoneCache(cmd.Context(), rt, c, p.Name, domain)
+			res := deleteResult{Profile: p.Name, Zone: domain, Records: chosen.Records}
+			for _, r := range chosen.Records {
+				res.Deleted = append(res.Deleted, r.ID)
+			}
+			if !chosen.ByID && !chosen.Listed && chosen.Type() != "" {
+				res.Type, res.Name = chosen.Type(), chosen.Records[0].Name
+			}
+			return rt.Render(res, func() output.Grid { return output.Grid{} })
 		},
 	}
 	cmd.Flags().StringVar(&typ, "type", "", "record type")
 	cmd.Flags().StringVar(&name, "name", "@", "record name relative to the domain (www, @)")
-	cmd.Flags().StringVar(&id, "id", "", "delete the single record with this id (zone|TYPE|name|value, as dns list shows it)")
+	cmd.Flags().StringVar(&id, "id", "", "delete the record with this id (zone|TYPE|name|value, as dns list shows it)")
 	app.HideFormerRecordFlags(cmd)
 	return cmd
 }

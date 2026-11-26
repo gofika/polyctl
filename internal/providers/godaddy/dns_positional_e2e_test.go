@@ -68,7 +68,7 @@ func TestDNSPositionalRecordUsage(t *testing.T) {
 	const (
 		add    = "usage: polyctl godaddy dns add <domain> <name> <type> <value>"
 		upsert = "usage: polyctl godaddy dns upsert <domain> <name> <type> <value>..."
-		del    = "usage: polyctl godaddy dns delete <domain> <name> [<type>]"
+		del    = "usage: polyctl godaddy dns delete <domain> <name> [<type> [<value>]]"
 	)
 	for _, c := range []struct {
 		args []string
@@ -93,11 +93,12 @@ func TestDNSPositionalRecordUsage(t *testing.T) {
 		{[]string{"upsert", "example.com", "www", "A", "203.0.113.3", "--value", "203.0.113.4"}, "with --value; use one form: " + upsert},
 		{[]string{"upsert", "example.com", "www", "A", "203.0.113.3", "--name", "www", "--type", "A"}, "with --name, --type; use one form: " + upsert},
 		{[]string{"delete", "--yes"}, del},
-		{[]string{"delete", "example.com", "--yes"}, "a record or --id is required: " + del},
-		{[]string{"delete", "example.com", "www", "A", "203.0.113.1", "--yes"}, del},
+		{[]string{"delete", "example.com", "--yes"}, "a record or --id <record-id> is required: " + del},
+		{[]string{"delete", "example.com", "www", "A", "203.0.113.1", "203.0.113.2", "--yes"}, del},
+		{[]string{"delete", "example.com", "--id", "", "--yes"}, "--id must not be empty"},
 		{[]string{"delete", "example.com", "www", "A", "--name", "www", "--yes"}, "with --name; use one form: " + del},
 		{[]string{"delete", "example.com", "www", "A", "--type", "A", "--yes"}, "with --type; use one form: " + del},
-		{[]string{"delete", "example.com", "www", "A", "--id", recordID, "--yes"}, "--id selects one record; it cannot be combined with <name> [<type>]"},
+		{[]string{"delete", "example.com", "www", "A", "--id", recordID, "--yes"}, "--id selects one record; it cannot be combined with <name> [<type> [<value>]]"},
 	} {
 		e.reset()
 		code, _, stderr := e.run(nil, "", append([]string{"godaddy", "dns"}, c.args...)...)
@@ -112,7 +113,7 @@ func TestDNSPositionalRecordUsage(t *testing.T) {
 
 // With only the domain the interactive flow asks: add and upsert for the
 // name (never taken to be the apex), the type and the value (upsert for
-// values until one is left empty), delete for the record. A record that
+// values until one is left empty), delete for the records to delete. A record that
 // stops after its name or its type is completed.
 func TestDNSRecordWithOnlyTheDomainAsks(t *testing.T) {
 	e := newDeleteEnv(t)
@@ -169,8 +170,8 @@ func TestDNSRecordWithOnlyTheDomainAsks(t *testing.T) {
 		t.Errorf("upsert <name> wrote %q", got)
 	}
 	e.reset()
-	p := prompttest.New(t, prompttest.Label("hello"))
-	code, _, stderr := e.run(p, "y\n", "godaddy", "dns", "delete", "example.com")
+	p := prompttest.New(t, []string{"example.com|TXT|www|hello"})
+	code, _, stderr := e.run(p, "", "godaddy", "dns", "delete", "example.com")
 	if code != cli.ExitOK {
 		t.Fatalf("delete: exit %d, %s", code, stderr)
 	}
@@ -181,13 +182,14 @@ func TestDNSRecordWithOnlyTheDomainAsks(t *testing.T) {
 }
 
 // The help shows the positional form and no longer lists the former flags,
-// and the <type> position completes the record types.
+// and the <type> position of a command that writes a record completes the
+// record types.
 func TestDNSPositionalRecordHelp(t *testing.T) {
 	root := cli.NewRoot(app.New(app.Flags{}, strings.NewReader(""), new(strings.Builder), new(strings.Builder)))
 	for verb, use := range map[string]string{
 		"add":    "add <domain> <name> <type> <value>",
 		"upsert": "upsert <domain> <name> <type> <value>...",
-		"delete": "delete <domain> [<name> [<type>]]",
+		"delete": "delete <domain> [<name> [<type> [<value>]]]",
 	} {
 		cmd, _, err := root.Find([]string{"godaddy", "dns", verb})
 		if err != nil {
@@ -206,6 +208,9 @@ func TestDNSPositionalRecordHelp(t *testing.T) {
 				t.Errorf("%s: --%s should be listed", verb, name)
 			}
 		}
+		if verb == "delete" {
+			continue
+		}
 		types, dir := cmd.ValidArgsFunction(cmd, []string{"example.com", "www"}, "")
 		if dir != cobra.ShellCompDirectiveNoFileComp || !strings.Contains(" "+strings.Join(types, " ")+" ", " CNAME ") {
 			t.Errorf("%s: type completion %v, %v", verb, types, dir)
@@ -217,13 +222,15 @@ func TestDNSPositionalRecordHelp(t *testing.T) {
 }
 
 // The <type> position completes the record types GoDaddy can write, not
-// every type a record spec knows.
+// every type a record spec knows. delete completes what the domain holds in
+// the inventory: the names, the types of a name and the values of a type.
 func TestDNSRecordTypeCompletion(t *testing.T) {
 	e := newDeleteEnv(t)
-	for _, verb := range []string{"add", "upsert", "delete"} {
-		code, stdout, stderr := e.run(nil, "", "__complete", "godaddy", "dns", verb, "example.com", "www", "")
+	complete := func(args ...string) string {
+		t.Helper()
+		code, stdout, stderr := e.run(nil, "", append([]string{"__complete", "godaddy", "dns"}, args...)...)
 		if code != cli.ExitOK {
-			t.Fatalf("%s: exit %d, %s", verb, code, stderr)
+			t.Fatalf("%v: exit %d, %s", args, code, stderr)
 		}
 		var got []string
 		for _, l := range strings.Split(stdout, "\n") {
@@ -231,8 +238,30 @@ func TestDNSRecordTypeCompletion(t *testing.T) {
 				got = append(got, l)
 			}
 		}
-		if strings.Join(got, " ") != "A AAAA CNAME MX NS TXT CAA" {
+		return strings.Join(got, " | ")
+	}
+	for _, verb := range []string{"add", "upsert"} {
+		if got := complete(verb, "example.com", "www", ""); got != "A | AAAA | CNAME | MX | NS | TXT | CAA" {
 			t.Errorf("%s completes <type> with %q", verb, got)
+		}
+	}
+	if got := complete("delete", "example.com", ""); got != "" {
+		t.Errorf("delete without an inventory completes <name> with %q", got)
+	}
+	if code, _, stderr := e.run(nil, "", "godaddy", "dns", "list", "example.com"); code != cli.ExitOK {
+		t.Fatalf("list: exit %d, %s", code, stderr)
+	}
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"example.com", ""}, "www\tA 203.0.113.1, A 203.0.113.2, TXT hello"},
+		{[]string{"example.com", "www", ""}, "A | TXT"},
+		{[]string{"example.com", "www", "A", ""}, "203.0.113.1 | 203.0.113.2"},
+		{[]string{"example.com", "www", "A", "203.0.113.1", ""}, ""},
+	} {
+		if got := complete(append([]string{"delete"}, c.args...)...); got != c.want {
+			t.Errorf("delete %v completes with %q, want %q", c.args, got, c.want)
 		}
 	}
 }
