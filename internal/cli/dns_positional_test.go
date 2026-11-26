@@ -96,6 +96,23 @@ func TestDNSPositionalRecordMatchesFlagForm(t *testing.T) {
 			[]string{"dns", "ensure", "example.com", "-r", "www:A:203.0.113.1:auto:true"},
 			`www.example.com A "203.0.113.1" ttl=300 prio=- proxied=true`,
 		},
+		// "true" and "false" are a name or a value like any other, also
+		// beside --proxied.
+		"set a name true, proxied": {
+			[]string{"dns", "set", "example.com", "true", "A", "203.0.113.4", "--proxied"},
+			[]string{"dns", "set", "example.com", "--name", "true", "--type", "A", "--value", "203.0.113.4", "--proxied"},
+			`true.example.com A "203.0.113.4" ttl=0 prio=- proxied=true`,
+		},
+		"add a value true, not proxied": {
+			[]string{"dns", "add", "example.com", "flag", "TXT", "true", "--proxied=false"},
+			[]string{"dns", "add", "example.com", "--name", "flag", "--type", "TXT", "--value", "true", "--proxied=false"},
+			`flag.example.com TXT "true" ttl=0 prio=- proxied=false`,
+		},
+		"ensure a value false, proxied": {
+			[]string{"dns", "ensure", "example.com", "flag", "CNAME", "false", "--ttl", "auto", "--proxied"},
+			[]string{"dns", "ensure", "example.com", "-r", "flag:CNAME:false:auto:true"},
+			`flag.example.com CNAME "false" ttl=1 prio=- proxied=true`,
+		},
 		"ensure with --record": {
 			[]string{"dns", "ensure", "example.com", "api", "A", "203.0.113.7", "-r", "api2:A:203.0.113.8"},
 			[]string{"dns", "ensure", "example.com", "-r", "api:A:203.0.113.7", "-r", "api2:A:203.0.113.8"},
@@ -179,7 +196,13 @@ func TestDNSPositionalRecordUsage(t *testing.T) {
 		{[]string{"dns", "ensure", "example.com", "-r", "www:A:192.0.2.9", "--priority", "10"}, "--priority applies to a positional record"},
 		{[]string{"dns", "ensure", "example.com", "-r", "www:A:192.0.2.9", "--proxied"}, "--proxied applies to a positional record"},
 		{[]string{"dns", "ensure", "example.com", "www", "A", "192.0.2.9", "--ttl", "soon"}, `--ttl "soon" is not a number of seconds or auto`},
-		{[]string{"dns", "ensure", "example.com", "www", "A", "192.0.2.9", "--proxied", "true"}, "--proxied takes no separate value"},
+		// A stray value of --proxied is named where it cannot be part of
+		// the record.
+		{[]string{"dns", "set", "example.com", "www", "A", "192.0.2.9", "--proxied", "true"}, "--proxied takes no separate value"},
+		{[]string{"dns", "add", "example.com", "--proxied", "false", "www", "A", "192.0.2.9"}, "--proxied takes no separate value"},
+		{[]string{"dns", "ensure", "example.com", "-r", "www:A:192.0.2.9", "--proxied", "true"}, "--proxied takes no separate value"},
+		// Among the values of ensure it is a value, refused as one.
+		{[]string{"dns", "ensure", "example.com", "www", "A", "192.0.2.9", "--proxied", "true"}, `value "true" is not an IPv4 address`},
 	} {
 		code, _, stderr := mainRun(cfgPath, c.args...)
 		if code != ExitUsage || !strings.Contains(stderr, c.want) {

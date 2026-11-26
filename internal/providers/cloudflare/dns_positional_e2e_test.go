@@ -39,6 +39,10 @@ func TestDNSCreatePositionalMatchesFlagForm(t *testing.T) {
 			map[string]any{"name": "mail.example.com", "type": "MX", "content": "mx.example.net", "priority": float64(10), "ttl": float64(300), "comment": "mail"}},
 		{"proxied before the record", []string{"--proxied", "www", "CNAME", "target.example.net"}, []string{"--proxied", "--name", "www", "--type", "CNAME", "--value", "target.example.net"},
 			map[string]any{"name": "www.example.com", "type": "CNAME", "content": "target.example.net", "proxied": true}},
+		{"a name true beside --proxied", []string{"true", "A", "203.0.113.10", "--proxied"}, []string{"--name", "true", "--type", "A", "--value", "203.0.113.10", "--proxied"},
+			map[string]any{"name": "true.example.com", "type": "A", "content": "203.0.113.10", "proxied": true}},
+		{"a value false beside --proxied", []string{"flag", "CNAME", "false", "--proxied=false"}, []string{"--name", "flag", "--type", "CNAME", "--value", "false", "--proxied=false"},
+			map[string]any{"name": "flag.example.com", "type": "CNAME", "content": "false", "proxied": false}},
 		{"value after --", []string{"www", "TXT", "--", "-dash"}, []string{"--name", "www", "--type", "TXT", "--value=-dash"},
 			map[string]any{"name": "www.example.com", "type": "TXT", "content": "-dash"}},
 	} {

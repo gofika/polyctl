@@ -153,6 +153,22 @@ func ProxiedArgs(v cobra.PositionalArgs) cobra.PositionalArgs {
 	}
 }
 
+// ProxiedRecordArgs is ProxiedArgs for a command that takes a positional
+// record of up to maxValues values (maxValues < 0: any number) after the
+// <domain> or <zone>. A complete record may hold "true" or "false" as its
+// name or as a value (a TXT value, say): those arguments are the record and
+// go to v. Only arguments that do not form such a record are searched for
+// the stray value of --proxied.
+func ProxiedRecordArgs(v cobra.PositionalArgs, maxValues int) cobra.PositionalArgs {
+	stray := ProxiedArgs(v)
+	return func(cmd *cobra.Command, args []string) error {
+		if len(args) >= 4 && (maxValues < 0 || len(args) <= 3+maxValues) {
+			return v(cmd, args)
+		}
+		return stray(cmd, args)
+	}
+}
+
 // CompletionFunc is the signature of cobra's argument completion.
 type CompletionFunc = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective)
 

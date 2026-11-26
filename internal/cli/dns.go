@@ -195,7 +195,7 @@ func newDNSWriteCmd(rt *app.Runtime, add bool, cmd *cobra.Command) *cobra.Comman
 	var typ, name, value string
 	var ttl, priority int
 	var proxied bool
-	cmd.Args = app.ProxiedArgs(app.RecordArgsOrInteractive(rt, 1, 1))
+	cmd.Args = app.ProxiedRecordArgs(app.RecordArgsOrInteractive(rt, 1, 1), 1)
 	cmd.ValidArgsFunction = app.CompleteRecordArgs(completeDomains(rt))
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		// The record is positional (<name> <type> <value>) or, in the
@@ -767,7 +767,7 @@ skipped. The zone is always read live: --offline is refused (exit code 6).`,
   polyctl dns ensure example.com @ TXT "v=spf1 -all" "google-site-verification=abc"
   polyctl dns ensure example.com -r www:A:203.0.113.10:300 -r '@:MX:10 mail.example.com'
   polyctl dns ensure example.com -f records.yaml --dry-run`,
-		Args:              app.ProxiedArgs(app.RecordArgsOrInteractive(rt, 1, -1)),
+		Args:              app.ProxiedRecordArgs(app.RecordArgsOrInteractive(rt, 1, -1), -1),
 		ValidArgsFunction: app.CompleteRecordArgs(completeDomains(rt)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
