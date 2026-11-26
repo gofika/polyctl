@@ -269,7 +269,7 @@ polyctl cert deploy example.com --deployer gcp-lb --region asia-east2
 
 **Failures** are handled per target and the run goes on. Each is sent to `hooks.on_failure` as `{"event": "cert.deploy.failed", "platform", "profile", "deployer", "target", "domain", "error", "time"}`. Exit code 1 when anything failed, 3 when every failure was a credential or permission error, 0 otherwise (no targets at all is 0). Nothing is rolled back; the next run finishes the job.
 
-**Report rows**: `<deployer>/<profile>/<target>` (for example `aliyun-alb/acme/lb-example(HTTPS:443)`, `gcp-lb/acme/acme-prod/global/proxy-web`, `aws-acm/acme/us-east-1/<arn>`). A `gcp-lb` target starts with its project: the deployer covers every enabled project of the account ([GCP: Projects](platforms/gcp.md#projects)); until this version the target had no project part. Each JSON row's `attrs` holds `deployer`, `platform`, `profile`, `region`, `domain`, `old_cert_id`, `old_days_left`, `new_not_after` and `cert_name`.
+**Report rows**: `<deployer>/<profile>/<target>` (for example `aliyun-alb/acme/lb-example(HTTPS:443)`, `gcp-lb/acme/acme-prod/global/proxy-web`, `aws-acm/acme/us-east-1/<arn>`). A `gcp-lb` target starts with its project: the deployer covers every enabled project of the account ([GCP: Projects](platforms/gcp.md#projects)); before 0.4.0 the target had no project part. Each JSON row's `attrs` holds `deployer`, `platform`, `profile`, `region`, `domain`, `old_cert_id`, `old_days_left`, `new_not_after` and `cert_name`.
 
 ## Finding resources by IP or DNS name
 
@@ -300,7 +300,7 @@ Platform coverage:
 - **GCP**: instances, forwarding rules (regional and global), reserved addresses, of every enabled project of an account. JSON matches carry `project`, and the console link opens the resource in its own project.
 - **Alibaba Cloud**: ECS instances, ALB load balancers, EIPs. Every region is synced; a failing region is reported and the others are kept.
 
-`-o json` fields: `query`, `kind` (`ip` / `dns`), `cached`, `synced_at`, `matches` and `errors`. Each match has `platform`, `profile`, `type`, `id`, `name`, `region`, `zone`, `state`, `matched_field`, `internal_ips`, `external_ips`, `network`, `url` and, where they apply, `dns_names`, `subnet`, `note`, `addresses` and `detail`.
+`-o json` fields: `query`, `kind` (`ip` / `dns`), `cached`, `synced_at`, `matches`, `errors` and, when there is one, `hint`. Each match has `platform`, `profile`, `type`, `id`, `name`, `region`, `zone`, `state`, `matched_field`, `internal_ips`, `external_ips`, `network`, `url` and, where they apply, `project` (GCP), `dns_names`, `subnet`, `note`, `addresses` and `detail`.
 
 ## Routing rules
 
