@@ -142,7 +142,7 @@ records:
 - `proxied=true` on a platform other than Cloudflare is reported `skipped`; `proxied=false` there is ignored. On a proxied Cloudflare record the TTL is not compared.
 - Usage errors (exit code 2), found before the zone is read: unknown fields, a record given twice, an invalid value or type, two CNAMEs of one name, records of types that cannot share a name (see [Record types](#record-types)), `proxied` on types other than A / AAAA / CNAME, and `SOA`. A type the platform cannot write is exit code 7.
 - The zone is always read live, so `--offline` is refused (exit code 6).
-- The first failed write stops the run. Run the command again to continue from there. When the write that fails comes after the records it replaces were deleted, the error says so, names each deleted record with its type, value and TTL, and prints the `polyctl dns add ...` command that restores it (exit code 1).
+- The first failed write stops the run. Run the command again to continue from there. When the write that fails (a create, an update, or a later delete of the same replace) comes after records it replaces were deleted, the error says so, names each deleted record with its type, value and TTL, and prints the `polyctl dns add ...` command that restores it (exit code 1).
 - Report rows are `dns-record/<name>/<TYPE>`. An update lists its changed fields (`value a -> b; ttl 300 -> 600`); in JSON, `attrs.changed` holds the old and new `value`, `ttl`, `proxied` and `priority`. A replaced record is a `deleted` row of its own type before the rows of the records that replace it; its `attrs` keep its `value`, `ttl`, `priority` and `proxied`, and `replaced_by` the types that replace it.
 
 #### What ensure changes
