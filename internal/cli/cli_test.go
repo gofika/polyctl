@@ -235,17 +235,17 @@ func TestDNSListOfflineFromInventory(t *testing.T) {
 
 func intp(i int) *int { return &i }
 
-func TestDNSSetCreatesRecord(t *testing.T) {
+func TestDNSAddCreatesRecord(t *testing.T) {
 	dir, cfgPath := setup(t, true)
 	seed(t, dir, []platform.Zone{{ID: "z1", Name: "example.com"}}, nil)
 	fc := client("a")
 	fc.zones = []platform.Zone{{ID: "z1", Name: "example.com"}}
 
-	stdout, stderr, err := run(t, cfgPath, "dns", "set", "example.com", "--type", "A", "--name", "www", "--value", "1.2.3.4")
+	stdout, stderr, err := run(t, cfgPath, "dns", "add", "example.com", "--type", "A", "--name", "www", "--value", "1.2.3.4")
 	if err != nil {
-		t.Fatalf("dns set: %v (stderr %q)", err, stderr)
+		t.Fatalf("dns add: %v (stderr %q)", err, stderr)
 	}
-	if fc.count("ListRecords:z1") != 1 || fc.count("CreateRecord:www.example.com:A") != 1 || fc.count("UpdateRecord") != 0 {
+	if fc.count("ListRecords") != 0 || fc.count("CreateRecord:www.example.com:A") != 1 || fc.count("UpdateRecord") != 0 {
 		t.Errorf("calls = %v", fc.calls)
 	}
 	if got := fc.records["z1"]; len(got) != 1 || got[0].Value != "1.2.3.4" || got[0].Name != "www.example.com" {
@@ -281,7 +281,7 @@ func TestDNSSetCreatesRecord(t *testing.T) {
 	}
 }
 
-func TestDNSSetExistingRecord(t *testing.T) {
+func TestDNSEnsureUpdatesExistingRecord(t *testing.T) {
 	dir, cfgPath := setup(t, true)
 	existing := platform.Record{ID: "r7", ZoneID: "z1", Name: "www.example.com", Type: "A", Value: "9.9.9.9", TTL: 600}
 	seed(t, dir, []platform.Zone{{ID: "z1", Name: "example.com"}}, map[string][]platform.Record{"z1": {existing}})
@@ -289,9 +289,9 @@ func TestDNSSetExistingRecord(t *testing.T) {
 	fc.zones = []platform.Zone{{ID: "z1", Name: "example.com"}}
 	fc.records["z1"] = []platform.Record{existing}
 
-	_, stderr, err := run(t, cfgPath, "dns", "set", "www.example.com", "--type", "a", "--value", "1.2.3.4")
+	stdout, stderr, err := run(t, cfgPath, "dns", "ensure", "example.com", "www", "a", "1.2.3.4")
 	if err != nil {
-		t.Fatalf("dns set: %v (stderr %q)", err, stderr)
+		t.Fatalf("dns ensure: %v (stderr %q)", err, stderr)
 	}
 	if fc.count("UpdateRecord:r7") != 1 || fc.count("CreateRecord") != 0 {
 		t.Errorf("calls = %v", fc.calls)
@@ -300,8 +300,8 @@ func TestDNSSetExistingRecord(t *testing.T) {
 	if got.Value != "1.2.3.4" || got.TTL != 600 || got.Type != "A" {
 		t.Errorf("updated record = %+v (TTL must be kept)", got)
 	}
-	if !strings.Contains(stderr, "updated www.example.com A -> 1.2.3.4") {
-		t.Errorf("stderr = %q", stderr)
+	if !strings.Contains(stdout, "updated") || !strings.Contains(stdout, "9.9.9.9 -> 1.2.3.4") {
+		t.Errorf("stdout = %q", stdout)
 	}
 	db := openInventory(t, dir)
 	defer db.Close()
@@ -314,10 +314,11 @@ func TestDNSSetExistingRecord(t *testing.T) {
 		t.Errorf("inventory record = %+v, %v", rec, err)
 	}
 
-	// Several matches refuse to guess; `dns add` creates one more record.
+	// Several records, none with the desired value, refuse to guess;
+	// `dns add` creates one more record.
 	fc.records["z1"] = append(fc.records["z1"], platform.Record{ID: "r8", Name: "www.example.com", Type: "A", Value: "8.8.8.8"})
-	_, _, err = run(t, cfgPath, "dns", "set", "example.com", "--type", "A", "--name", "www", "--value", "1.1.1.1")
-	if err == nil || !strings.Contains(err.Error(), "`polyctl dns add`") || fc.count("CreateRecord") != 0 || fc.count("UpdateRecord") != 1 {
+	_, _, err = run(t, cfgPath, "dns", "ensure", "example.com", "www", "A", "1.1.1.1")
+	if ExitCodeFor(err) != ExitAmbiguous || !strings.Contains(err.Error(), "--prune-duplicates") || fc.count("CreateRecord") != 0 || fc.count("UpdateRecord") != 1 {
 		t.Errorf("multiple matches = %v calls=%v", err, fc.calls)
 	}
 	_, _, err = run(t, cfgPath, "dns", "add", "example.com", "--type", "A", "--name", "www", "--value", "1.1.1.1")
@@ -327,7 +328,8 @@ func TestDNSSetExistingRecord(t *testing.T) {
 	// The old spellings are gone, not aliased.
 	for _, args := range [][]string{
 		{"dns", "update", "example.com", "--type", "A", "--value", "1.1.1.1"},
-		{"dns", "set", "example.com", "--type", "A", "--value", "1.1.1.1", "--add"},
+		{"dns", "set", "example.com", "www", "A", "1.1.1.1"},
+		{"dns", "add", "example.com", "--type", "A", "--value", "1.1.1.1", "--add"},
 	} {
 		if _, _, err := run(t, cfgPath, args...); ExitCodeFor(err) != ExitUsage {
 			t.Errorf("%v = %v (exit %d), want a usage error", args, err, ExitCodeFor(err))
@@ -338,15 +340,53 @@ func TestDNSSetExistingRecord(t *testing.T) {
 	}
 }
 
-func TestDNSSetUsageAndOffline(t *testing.T) {
+// `dns set` was removed in favour of `dns ensure`: it is an unknown command
+// (exit code 2, not zero), and nothing is read or written. With a flag the
+// dns group does not have (--ttl, the former --name) the first such flag is
+// named instead, as for any unknown command of a group; the exit code is the
+// same.
+func TestDNSSetIsAnUnknownCommand(t *testing.T) {
+	_, cfgPath, fc := ensureZone(t, platform.Record{ID: "r1", ZoneID: "z1", Name: "www.example.com", Type: "A", Value: "203.0.113.10"})
+	const unknown = "error: usage error: unknown command \"set\" for \"polyctl dns\"; see `polyctl dns --help`\n"
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"dns", "set"}, unknown},
+		{[]string{"dns", "set", "example.com", "www", "A", "203.0.113.11"}, unknown},
+		{[]string{"dns", "set", "example.com", "www", "A", "203.0.113.11", "--dry-run", "-o", "json"}, unknown},
+		{[]string{"dns", "set", "example.com", "www", "A", "203.0.113.11", "--ttl", "300"},
+			"error: usage error: unknown flag: --ttl for \"polyctl dns\", which takes a subcommand; see `polyctl dns --help`\n"},
+		{[]string{"dns", "set", "example.com", "--name", "www", "--type", "A", "--value", "203.0.113.11"},
+			"error: usage error: unknown flag: --name for \"polyctl dns\", which takes a subcommand; see `polyctl dns --help`\n"},
+	} {
+		code, stdout, stderr := mainRun(cfgPath, c.args...)
+		if code != ExitUsage || code == ExitOK || stderr != c.want || stdout != "" {
+			t.Errorf("%v: exit %d, stdout %q, stderr %q; want exit %d with %q", c.args, code, stdout, stderr, ExitUsage, c.want)
+		}
+	}
+	if len(fc.calls) != 0 {
+		t.Errorf("the removed command reached the platform: %v", fc.calls)
+	}
+	// The help of the group no longer lists it.
+	if code, stdout, _ := mainRun(cfgPath, "dns", "--help"); code != ExitOK || strings.Contains(stdout, "\n  set ") || !strings.Contains(stdout, "\n  ensure ") {
+		t.Errorf("dns --help: exit %d\n%s", code, stdout)
+	}
+	rt := app.New(app.Flags{}, strings.NewReader(""), &strings.Builder{}, &strings.Builder{})
+	if c, _, err := NewRoot(rt).Find([]string{"dns", "set"}); err != nil || c.Name() != "dns" {
+		t.Errorf("dns set resolves to %q (%v), want the dns group itself", c.CommandPath(), err)
+	}
+}
+
+func TestDNSAddUsageAndOffline(t *testing.T) {
 	dir, cfgPath := setup(t, true)
 	seed(t, dir, []platform.Zone{{ID: "z1", Name: "example.com"}}, nil)
 
-	_, _, err := run(t, cfgPath, "dns", "set", "example.com", "--name", "www")
+	_, _, err := run(t, cfgPath, "dns", "add", "example.com", "--name", "www")
 	if ExitCodeFor(err) != ExitUsage {
 		t.Errorf("missing --type/--value = %v (exit %d)", err, ExitCodeFor(err))
 	}
-	_, _, err = run(t, cfgPath, "dns", "set", "example.com", "--type", "A", "--value", "1.2.3.4", "--offline")
+	_, _, err = run(t, cfgPath, "dns", "add", "example.com", "--type", "A", "--value", "1.2.3.4", "--offline")
 	if !errors.Is(err, app.ErrOffline) || ExitCodeFor(err) != ExitOffline {
 		t.Errorf("--offline mutation = %v (exit %d)", err, ExitCodeFor(err))
 	}
@@ -385,7 +425,7 @@ func TestDNSDeleteRecord(t *testing.T) {
 	}
 }
 
-// --name of dns set/add/delete/list is read as dns ensure reads it: a name
+// --name of dns add/delete/list is read as dns ensure reads it: a name
 // outside the zone is a usage error, not a name put inside the zone; an
 // absolute name in the zone is accepted.
 func TestDNSNameOutsideZoneIsUsageError(t *testing.T) {
@@ -397,9 +437,8 @@ func TestDNSNameOutsideZoneIsUsageError(t *testing.T) {
 	fc.records["z1"] = []platform.Record{rec}
 
 	for _, args := range [][]string{
-		{"dns", "set", "example.com", "--type", "A", "--name", "www.other.org", "--value", "1.1.1.1"},
-		{"dns", "set", "example.com", "--type", "A", "--name", "www.other.org.", "--value", "1.1.1.1"},
 		{"dns", "add", "example.com", "--type", "A", "--name", "www.other.org", "--value", "1.1.1.1"},
+		{"dns", "add", "example.com", "--type", "A", "--name", "www.other.org.", "--value", "1.1.1.1"},
 		{"dns", "delete", "example.com", "--type", "A", "--name", "www.other.org."},
 		{"dns", "list", "example.com", "--name", "www.other.org"},
 	} {
@@ -559,7 +598,7 @@ func TestSyncCommand(t *testing.T) {
 	}
 }
 
-func TestDNSSetDropsOldInventoryRowWhenIDChanges(t *testing.T) {
+func TestDNSEnsureDropsOldInventoryRowWhenIDChanges(t *testing.T) {
 	dir, cfgPath := setup(t, true)
 	existing := platform.Record{ID: "r7", ZoneID: "z1", Name: "www.example.com", Type: "A", Value: "9.9.9.9", TTL: 600}
 	seed(t, dir, []platform.Zone{{ID: "z1", Name: "example.com"}}, map[string][]platform.Record{"z1": {existing}})
@@ -569,9 +608,9 @@ func TestDNSSetDropsOldInventoryRowWhenIDChanges(t *testing.T) {
 	fc.nextID = 7
 	fc.newIDOnUpdate = true
 
-	_, stderr, err := run(t, cfgPath, "dns", "set", "www.example.com", "--type", "A", "--value", "1.2.3.4")
+	_, stderr, err := run(t, cfgPath, "dns", "ensure", "example.com", "www", "A", "1.2.3.4")
 	if err != nil {
-		t.Fatalf("dns set: %v (stderr %q)", err, stderr)
+		t.Fatalf("dns ensure: %v (stderr %q)", err, stderr)
 	}
 	if fc.count("UpdateRecord:r7") != 1 || fc.records["z1"][0].ID != "r8" {
 		t.Fatalf("calls = %v records = %+v", fc.calls, fc.records["z1"])

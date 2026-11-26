@@ -190,7 +190,7 @@ func TestHelpCommandRejectsUnknownCommands(t *testing.T) {
 	for args, want := range map[string]string{
 		"help":                 "Platform-specific Commands:",
 		"help dns":             "polyctl dns [command]",
-		"help dns set":         "polyctl dns set <domain>",
+		"help dns add":         "polyctl dns add <domain>",
 		"help aws whoami":      "polyctl aws whoami",
 		"help cf dns":          "polyctl cloudflare dns [command]",
 		"help help":            "polyctl help [command]",
@@ -202,7 +202,7 @@ func TestHelpCommandRejectsUnknownCommands(t *testing.T) {
 			t.Errorf("%s: exit %d, stderr %q, want %q in\n%s", args, code, stderr, want, stdout)
 		}
 	}
-	if stdout, _, err := run(t, filepath.Join(dir, "config.yaml"), cobra.ShellCompRequestCmd, "help", "dns", ""); err != nil || !strings.Contains(stdout, "set\t") || strings.Contains("\n"+stdout, "\nupdate\t") {
+	if stdout, _, err := run(t, filepath.Join(dir, "config.yaml"), cobra.ShellCompRequestCmd, "help", "dns", ""); err != nil || !strings.Contains(stdout, "ensure\t") || strings.Contains("\n"+stdout, "\nset\t") || strings.Contains("\n"+stdout, "\nupdate\t") {
 		t.Errorf("completion of help dns: %v\n%s", err, stdout)
 	}
 }
@@ -264,7 +264,6 @@ func TestBareGroupOnlyPrintsHelp(t *testing.T) {
 func TestProxiedSeparateValueIsNamed(t *testing.T) {
 	dir, _ := setup(t, true)
 	for _, args := range [][]string{
-		{"dns", "set", "example.com", "--type", "A", "--value", "1.1.1.1", "--proxied", "true"},
 		{"dns", "add", "example.com", "--type", "A", "--value", "1.1.1.1", "--proxied", "false"},
 		{"cloudflare", "dns", "create", "example.com", "--type", "A", "--name", "www", "--value", "1.1.1.1", "--proxied", "true"},
 		{"cloudflare", "dns", "create", "example.com", "www", "A", "1.1.1.1", "--proxied", "true"},
@@ -281,16 +280,16 @@ func TestProxiedSeparateValueIsNamed(t *testing.T) {
 		}
 	}
 	// Without --proxied a wrong count is still the plain count error.
-	if code, _, stderr := mainExit(dir, "dns", "set", "example.com", "true", "--type", "A", "--value", "1.1.1.1"); code != ExitUsage || strings.Contains(stderr, "--proxied") {
+	if code, _, stderr := mainExit(dir, "dns", "add", "example.com", "true", "--type", "A", "--value", "1.1.1.1"); code != ExitUsage || strings.Contains(stderr, "--proxied") {
 		t.Errorf("extra argument without --proxied: exit %d, stderr %q", code, stderr)
 	}
 	_, add, _ := mainExit(dir, "dns", "add", "--help")
-	_, set, _ := mainExit(dir, "dns", "set", "--help")
+	_, ensure, _ := mainExit(dir, "dns", "ensure", "--help")
 	if !strings.Contains(add, "--proxied=false (default: the platform default)") || strings.Contains(add, "keep the current value") {
 		t.Errorf("dns add --help describes --proxied as:\n%s", add)
 	}
-	if !strings.Contains(set, "keep the current value") {
-		t.Errorf("dns set --help describes --proxied as:\n%s", set)
+	if !strings.Contains(ensure, "--proxied=false (default: keep the current value") {
+		t.Errorf("dns ensure --help describes --proxied as:\n%s", ensure)
 	}
 }
 

@@ -39,9 +39,9 @@ func TestDryRunWritesNothing(t *testing.T) {
 	fc.records["z1"] = append([]platform.Record(nil), recs...)
 
 	// A new record: would_create, in json.
-	out, stderr, err := run(t, cfgPath, "dns", "set", "example.com", "--type", "A", "--name", "new", "--value", "1.1.1.1", "--dry-run", "-o", "json")
+	out, stderr, err := run(t, cfgPath, "dns", "add", "example.com", "--type", "A", "--name", "new", "--value", "1.1.1.1", "--dry-run", "-o", "json")
 	if err != nil {
-		t.Fatalf("dns set --dry-run: %v (%s)", err, stderr)
+		t.Fatalf("dns add --dry-run: %v (%s)", err, stderr)
 	}
 	rep := decodeReport(t, out)
 	if !rep.DryRun || len(rep.Changes) != 1 || rep.Changes[0].Action != platform.WouldCreate || rep.Changes[0].Resource != "record/new.example.com/A" ||
@@ -52,9 +52,9 @@ func TestDryRunWritesNothing(t *testing.T) {
 		t.Errorf("stderr = %q", stderr)
 	}
 	// An existing record: would_update, as a table.
-	out, _, err = run(t, cfgPath, "dns", "set", "example.com", "--type", "A", "--name", "api", "--value", "2.2.2.2", "--dry-run")
+	out, _, err = run(t, cfgPath, "dns", "ensure", "example.com", "api", "A", "2.2.2.2", "--dry-run")
 	if err != nil || !strings.HasPrefix(out, "RESOURCE") || !strings.Contains(out, "would update") || !strings.Contains(out, "9.9.9.9 -> 2.2.2.2") {
-		t.Errorf("dns set (update) --dry-run = %q, %v", out, err)
+		t.Errorf("dns ensure (update) --dry-run = %q, %v", out, err)
 	}
 	if _, _, err := run(t, cfgPath, "dns", "add", "example.com", "--type", "A", "--name", "www", "--value", "3.3.3.3", "--dry-run"); err != nil {
 		t.Errorf("dns add --dry-run: %v", err)
@@ -79,7 +79,7 @@ func TestDryRunWritesNothing(t *testing.T) {
 		t.Errorf("dns list --dry-run = %q, %v", out, err)
 	}
 	// Without --dry-run the same command writes.
-	if _, _, err := run(t, cfgPath, "dns", "set", "example.com", "--type", "A", "--name", "new", "--value", "1.1.1.1"); err != nil || fc.count("CreateRecord") != 1 {
+	if _, _, err := run(t, cfgPath, "dns", "add", "example.com", "--type", "A", "--name", "new", "--value", "1.1.1.1"); err != nil || fc.count("CreateRecord") != 1 {
 		t.Errorf("real write: %v, %v", err, fc.calls)
 	}
 }

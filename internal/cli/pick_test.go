@@ -41,9 +41,9 @@ func TestDNSPickWithEmptyIndex(t *testing.T) {
 	if r.code != ExitOK || !strings.Contains(r.err.Error(), "nothing to do: no indexed zone") {
 		t.Errorf("list: exit %d, %v", r.code, r.err)
 	}
-	r = runFlow(t, context.Background(), cfgPath, prompttest.New(t), strings.NewReader(""), "dns", "set", "--offline")
+	r = runFlow(t, context.Background(), cfgPath, prompttest.New(t), strings.NewReader(""), "dns", "add", "--offline")
 	if r.code != ExitUsage || !strings.Contains(r.err.Error(), "<domain> is required") {
-		t.Errorf("set: exit %d, %v", r.code, r.err)
+		t.Errorf("add: exit %d, %v", r.code, r.err)
 	}
 	// dns delete and domain ns set act on an existing zone or domain:
 	// nothing to do.
@@ -57,22 +57,22 @@ func TestDNSPickWithEmptyIndex(t *testing.T) {
 	}
 }
 
-// dns set without a record asks for the name, the type and the value, the
-// value checked as it is typed and prefilled with the current one.
-func TestDNSSetAsksTypeAndValue(t *testing.T) {
+// dns ensure without a record asks for the name, the type and the value,
+// the value checked as it is typed and prefilled with the current one.
+func TestDNSEnsureAsksTypeAndValue(t *testing.T) {
 	_, cfgPath, fc := ensureZone(t, platform.Record{ID: "r1", ZoneID: "z1", Name: "example.com", Type: "A", Value: "203.0.113.10", TTL: 300})
-	p := prompttest.New(t, "@", "A", "not-an-ip", "203.0.113.20")
-	r := runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), "dns", "set", "example.com")
+	p := prompttest.New(t, "@", "A", "not-an-ip", "203.0.113.20", "")
+	r := runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), "dns", "ensure", "example.com")
 	if r.err != nil || fc.count("UpdateRecord") != 1 || fc.records["z1"][0].Value != "203.0.113.20" {
-		t.Fatalf("set: %v, %q, calls %v", r.err, r.stderr, fc.calls)
+		t.Fatalf("ensure: %v, %q, calls %v", r.err, r.stderr, fc.calls)
 	}
 	if a := p.Find("Value of the A record"); a.Default != "203.0.113.10" {
 		t.Errorf("value default %q", a.Default)
 	}
 	p.Done()
-	// Non-interactive: unchanged.
-	r = runFlow(t, context.Background(), cfgPath, nil, strings.NewReader(""), "dns", "set", "example.com", "--type", "A")
-	if r.code != ExitUsage || !strings.Contains(r.err.Error(), "usage: polyctl dns set <domain> <name> <type> <value>") {
+	// Non-interactive: nothing is asked.
+	r = runFlow(t, context.Background(), cfgPath, nil, strings.NewReader(""), "dns", "ensure", "example.com", "@", "A")
+	if r.code != ExitUsage || !strings.Contains(r.err.Error(), "usage: polyctl dns ensure <domain> <name> <type> <value>...") {
 		t.Errorf("non-interactive: exit %d, %v", r.code, r.err)
 	}
 }

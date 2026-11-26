@@ -46,29 +46,34 @@ func TestDNSPositionalRecordMatchesFlagForm(t *testing.T) {
 		positional, flags []string
 		want              string
 	}{
-		"set create": {
-			[]string{"dns", "set", "example.com", "api", "a", "203.0.113.10", "--ttl", "120"},
-			[]string{"dns", "set", "example.com", "--name", "api", "--type", "A", "--value", "203.0.113.10", "--ttl", "120"},
+		"add with a TTL": {
+			[]string{"dns", "add", "example.com", "api", "a", "203.0.113.10", "--ttl", "120"},
+			[]string{"dns", "add", "example.com", "--name", "api", "--type", "A", "--value", "203.0.113.10", "--ttl", "120"},
 			`api.example.com A "203.0.113.10" ttl=120`,
 		},
-		"set update": {
-			[]string{"dns", "set", "example.com", "www", "A", "203.0.113.9"},
-			[]string{"dns", "set", "example.com", "--name", "www", "--type", "A", "--value", "203.0.113.9"},
-			`www.example.com A "203.0.113.9" ttl=300`,
-		},
-		"set apex with priority": {
-			[]string{"dns", "set", "example.com", "@", "MX", "mail.example.com", "--priority", "10"},
-			[]string{"dns", "set", "example.com", "--name", "@", "--type", "MX", "--value", "mail.example.com", "--priority", "10"},
+		"add apex with priority": {
+			[]string{"dns", "add", "example.com", "@", "MX", "mail.example.com", "--priority", "10"},
+			[]string{"dns", "add", "example.com", "--name", "@", "--type", "MX", "--value", "mail.example.com", "--priority", "10"},
 			`example.com MX "mail.example.com" ttl=0 prio=10`,
 		},
-		"set full name, proxied": {
-			[]string{"dns", "set", "example.com", "cdn.example.com", "CNAME", "target.example.net", "--proxied"},
-			[]string{"dns", "set", "example.com", "--name", "cdn.example.com", "--type", "CNAME", "--value", "target.example.net", "--proxied"},
+		"add full name, proxied": {
+			[]string{"dns", "add", "example.com", "cdn.example.com", "CNAME", "target.example.net", "--proxied"},
+			[]string{"dns", "add", "example.com", "--name", "cdn.example.com", "--type", "CNAME", "--value", "target.example.net", "--proxied"},
 			`cdn.example.com CNAME "target.example.net" ttl=0 prio=- proxied=true`,
 		},
-		"set value after --": {
-			[]string{"dns", "set", "example.com", "dash", "TXT", "--", "-starts-with-a-dash"},
-			[]string{"dns", "set", "example.com", "--name", "dash", "--type", "TXT", "--value", "-starts-with-a-dash"},
+		"add value after --": {
+			[]string{"dns", "add", "example.com", "dash", "TXT", "--", "-starts-with-a-dash"},
+			[]string{"dns", "add", "example.com", "--name", "dash", "--type", "TXT", "--value", "-starts-with-a-dash"},
+			`dash.example.com TXT "-starts-with-a-dash"`,
+		},
+		"ensure an update": {
+			[]string{"dns", "ensure", "example.com", "www", "A", "203.0.113.9"},
+			[]string{"dns", "ensure", "example.com", "-r", "www:A:203.0.113.9"},
+			`www.example.com A "203.0.113.9" ttl=300`,
+		},
+		"ensure value after --": {
+			[]string{"dns", "ensure", "example.com", "dash", "TXT", "--", "-starts-with-a-dash"},
+			[]string{"dns", "ensure", "example.com", "-r", "dash:TXT:-starts-with-a-dash"},
 			`dash.example.com TXT "-starts-with-a-dash"`,
 		},
 		"add": {
@@ -103,9 +108,9 @@ func TestDNSPositionalRecordMatchesFlagForm(t *testing.T) {
 		},
 		// "true" and "false" are a name or a value like any other, also
 		// beside --proxied.
-		"set a name true, proxied": {
-			[]string{"dns", "set", "example.com", "true", "A", "203.0.113.4", "--proxied"},
-			[]string{"dns", "set", "example.com", "--name", "true", "--type", "A", "--value", "203.0.113.4", "--proxied"},
+		"add a name true, proxied": {
+			[]string{"dns", "add", "example.com", "true", "A", "203.0.113.4", "--proxied"},
+			[]string{"dns", "add", "example.com", "--name", "true", "--type", "A", "--value", "203.0.113.4", "--proxied"},
 			`true.example.com A "203.0.113.4" ttl=0 prio=- proxied=true`,
 		},
 		"add a value true, not proxied": {
@@ -157,7 +162,6 @@ func TestDNSPositionalRecordMatchesFlagForm(t *testing.T) {
 func TestDNSPositionalRecordUsage(t *testing.T) {
 	_, cfgPath, fc := ensureZone(t, fiveRecords()...)
 	const (
-		setUsage    = "usage: polyctl dns set <domain> <name> <type> <value>"
 		addUsage    = "usage: polyctl dns add <domain> <name> <type> <value>"
 		ensureUsage = "usage: polyctl dns ensure <domain> <name> <type> <value>..."
 		deleteUsage = "usage: polyctl dns delete <domain> <name> [<type> [<value>]]"
@@ -167,18 +171,16 @@ func TestDNSPositionalRecordUsage(t *testing.T) {
 		want string
 	}{
 		// Both forms.
-		{[]string{"dns", "set", "example.com", "www", "A", "192.0.2.9", "--name", "www"}, "use one form"},
-		{[]string{"dns", "set", "example.com", "www", "A", "192.0.2.9", "--type", "A"}, "use one form"},
+		{[]string{"dns", "add", "example.com", "www", "A", "192.0.2.9", "--name", "www"}, "use one form"},
+		{[]string{"dns", "add", "example.com", "www", "A", "192.0.2.9", "--type", "A"}, "use one form"},
 		{[]string{"dns", "add", "example.com", "www", "A", "192.0.2.9", "--value", "192.0.2.9"}, "use one form"},
 		{[]string{"dns", "delete", "example.com", "h1", "A", "--name", "h1"}, "use one form"},
 		{[]string{"dns", "delete", "example.com", "h1", "A", "--type", "A"}, "use one form"},
 		{[]string{"dns", "delete", "example.com", "h1", "A", "--value", "192.0.2.1"}, "use one form"},
 		// Wrong counts.
-		{[]string{"dns", "set"}, setUsage},
-		{[]string{"dns", "set", "example.com"}, setUsage},
-		{[]string{"dns", "set", "example.com", "www"}, setUsage},
-		{[]string{"dns", "set", "example.com", "www", "A"}, setUsage},
-		{[]string{"dns", "set", "example.com", "www", "A", "192.0.2.9", "192.0.2.10"}, setUsage},
+		{[]string{"dns", "add"}, addUsage},
+		{[]string{"dns", "add", "example.com"}, addUsage},
+		{[]string{"dns", "add", "example.com", "www"}, addUsage},
 		{[]string{"dns", "add", "example.com", "www", "A"}, addUsage},
 		{[]string{"dns", "add", "example.com", "www", "A", "192.0.2.9", "192.0.2.10"}, addUsage},
 		{[]string{"dns", "ensure", "example.com"}, ensureUsage},
@@ -187,10 +189,12 @@ func TestDNSPositionalRecordUsage(t *testing.T) {
 		{[]string{"dns", "delete", "example.com"}, deleteUsage},
 		{[]string{"dns", "delete", "example.com", "h1", "A", "192.0.2.1", "192.0.2.2"}, deleteUsage},
 		// Empty arguments.
-		{[]string{"dns", "set", "example.com", "", "A", "192.0.2.9"}, "<name> must not be empty"},
-		{[]string{"dns", "set", "example.com", "www", "A", ""}, "<value> must not be empty"},
+		{[]string{"dns", "add", "example.com", "", "A", "192.0.2.9"}, "<name> must not be empty"},
+		{[]string{"dns", "add", "example.com", "www", "A", ""}, "<value> must not be empty"},
+		{[]string{"dns", "ensure", "example.com", "", "A", "192.0.2.9"}, "<name> must not be empty"},
+		{[]string{"dns", "ensure", "example.com", "www", "A", ""}, "<value> must not be empty"},
 		// A name outside the zone is named as the argument.
-		{[]string{"dns", "set", "example.com", "www.other.org", "A", "192.0.2.9"}, "<name>:"},
+		{[]string{"dns", "add", "example.com", "www.other.org", "A", "192.0.2.9"}, "<name>:"},
 		{[]string{"dns", "delete", "example.com", "www.other.org.", "A"}, "<name>:"},
 		// --all and --id select on their own.
 		{[]string{"dns", "delete", "example.com", "h1", "A", "--all", "-y"}, "--all cannot be combined with a positional record (<name> [<type> [<value>]])"},
@@ -209,7 +213,7 @@ func TestDNSPositionalRecordUsage(t *testing.T) {
 		{[]string{"dns", "ensure", "example.com", "@", "MX", "10 mail.example.com", "--priority", "20"}, "the priority is given twice (10 in the value, 20 as priority)"},
 		// A stray value of --proxied is named where it cannot be part of
 		// the record.
-		{[]string{"dns", "set", "example.com", "www", "A", "192.0.2.9", "--proxied", "true"}, "--proxied takes no separate value"},
+		{[]string{"dns", "add", "example.com", "www", "A", "192.0.2.9", "--proxied", "true"}, "--proxied takes no separate value"},
 		{[]string{"dns", "add", "example.com", "--proxied", "false", "www", "A", "192.0.2.9"}, "--proxied takes no separate value"},
 		{[]string{"dns", "ensure", "example.com", "-r", "www:A:192.0.2.9", "--proxied", "true"}, "--proxied takes no separate value"},
 		// Among the values of ensure it is a value, refused as one.
@@ -251,15 +255,15 @@ func TestDNSAddWithOnlyTheDomainAsks(t *testing.T) {
 }
 
 // A record that stops after its name or its type is completed on a
-// terminal: the type the name already has is preselected, and dns set
+// terminal: the type the name already has is preselected, and dns ensure
 // proposes the current value. A name can be typed in.
 func TestDNSWriteCompletesAPartialRecord(t *testing.T) {
 	_, cfgPath, fc := ensureZone(t,
 		platform.Record{ID: "r1", ZoneID: "z1", Name: "mail.example.com", Type: "MX", Value: "mx.example.net", TTL: 300})
-	p := prompttest.New(t, "MX", prompttest.KeepDefault{})
-	r := runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), "dns", "set", "example.com", "mail", "--dry-run")
+	p := prompttest.New(t, "MX", prompttest.KeepDefault{}, "")
+	r := runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), "dns", "ensure", "example.com", "mail", "--dry-run")
 	if r.err != nil {
-		t.Fatalf("set <name>: %v, %q", r.err, r.stderr)
+		t.Fatalf("ensure <name>: %v, %q", r.err, r.stderr)
 	}
 	p.Done()
 	if a := p.Find("Record type"); a.Default != "MX" {
@@ -277,7 +281,7 @@ func TestDNSWriteCompletesAPartialRecord(t *testing.T) {
 	// A name typed in, checked as it is typed: one outside the zone is
 	// asked again.
 	p = prompttest.New(t, prompttest.Label("Another name"), "www.example.org.", "api", "A", "192.0.2.10")
-	r = runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), "dns", "set", "example.com")
+	r = runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), "dns", "add", "example.com")
 	if r.err != nil || fc.count("CreateRecord:api.example.com:A") != 1 {
 		t.Fatalf("typed name: %v, %q, calls %v", r.err, r.stderr, fc.calls)
 	}
@@ -300,8 +304,8 @@ func TestDNSWriteCompletesAPartialRecord(t *testing.T) {
 	// apex.
 	writesBefore := writes(fc)
 	for _, args := range [][]string{{"example.com", "www"}, {"example.com", "www", "A"}} {
-		r = runFlow(t, context.Background(), cfgPath, nil, strings.NewReader(""), append([]string{"dns", "set"}, args...)...)
-		if r.code != ExitUsage || !strings.Contains(r.err.Error(), "usage: polyctl dns set <domain> <name> <type> <value>") {
+		r = runFlow(t, context.Background(), cfgPath, nil, strings.NewReader(""), append([]string{"dns", "add"}, args...)...)
+		if r.code != ExitUsage || !strings.Contains(r.err.Error(), "usage: polyctl dns add <domain> <name> <type> <value>") {
 			t.Errorf("non-interactive %v: exit %d, %v", args, r.code, r.err)
 		}
 	}
@@ -353,7 +357,6 @@ func TestDNSEnsureAsksForARecord(t *testing.T) {
 func TestDNSPositionalRecordHelp(t *testing.T) {
 	dir, cfgPath := setup(t, true)
 	for cmd, use := range map[string]string{
-		"set":    "polyctl dns set <domain> <name> <type> <value> [flags]",
 		"add":    "polyctl dns add <domain> <name> <type> <value> [flags]",
 		"ensure": "polyctl dns ensure <domain> [<name> <type> <value>...] [flags]",
 		"delete": "polyctl dns delete <domain> [<name> [<type> [<value>]]] [flags]",
@@ -373,7 +376,7 @@ func TestDNSPositionalRecordHelp(t *testing.T) {
 	}
 	// The <type> position completes record types; the name and the values
 	// complete to nothing rather than to file names.
-	for _, cmd := range []string{"set", "add", "ensure"} {
+	for _, cmd := range []string{"add", "ensure"} {
 		out, _, err := run(t, cfgPath, cobra.ShellCompRequestCmd, "dns", cmd, "example.com", "www", "")
 		if err != nil || !strings.Contains(out, "CNAME\n") || !strings.Contains(out, ":4\n") {
 			t.Errorf("completion of the type of dns %s: %v\n%s", cmd, err, out)
@@ -413,7 +416,7 @@ func TestDNSDeleteCompletion(t *testing.T) {
 // spec; the name and the values complete to nothing.
 func TestDNSRecordTypeCompletion(t *testing.T) {
 	_, cfgPath, _ := ensureZone(t)
-	for _, verb := range []string{"set", "add", "ensure"} {
+	for _, verb := range []string{"add", "ensure"} {
 		code, stdout, stderr := mainRun(cfgPath, "__complete", "dns", verb, "example.com", "www", "")
 		if code != ExitOK || !strings.HasPrefix(stdout, strings.Join(platform.RecordSpecTypes, "\n")+"\n:") {
 			t.Errorf("%s: exit %d, completion %q (%s)", verb, code, stdout, stderr)

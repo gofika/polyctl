@@ -192,20 +192,20 @@ func TestDNSProxiedIsABooleanFlag(t *testing.T) {
 		t.Errorf("without --proxied the record must not carry one: %+v", r)
 	}
 	// An update without the flag keeps the setting; with it, changes it.
-	set("set", "example.com", "--type", "A", "--name", "on", "--value", "192.0.2.9")
+	set("ensure", "example.com", "on", "A", "192.0.2.9")
 	if r := find("on.example.com"); r.Value != "192.0.2.9" || r.Proxied == nil || !*r.Proxied {
-		t.Errorf("set without --proxied: %+v", r)
+		t.Errorf("ensure without --proxied: %+v", r)
 	}
-	set("set", "example.com", "--type", "A", "--name", "on", "--value", "192.0.2.9", "--proxied=false")
+	set("ensure", "example.com", "on", "A", "192.0.2.9", "--proxied=false")
 	if r := find("on.example.com"); r.Proxied == nil || *r.Proxied {
-		t.Errorf("set --proxied=false: %+v", r)
+		t.Errorf("ensure --proxied=false: %+v", r)
 	}
 	// The old string form took its value from the next argument; a boolean
 	// flag does not, so that argument is one too many.
-	if _, _, err := run(t, cfgPath, "dns", "set", "example.com", "--type", "A", "--name", "on", "--value", "192.0.2.9", "--proxied", "false"); ExitCodeFor(err) != ExitUsage {
+	if _, _, err := run(t, cfgPath, "dns", "add", "example.com", "--type", "A", "--name", "on", "--value", "192.0.2.9", "--proxied", "false"); ExitCodeFor(err) != ExitUsage {
 		t.Errorf("--proxied false (two arguments) = %v, want a usage error", err)
 	}
-	if _, _, err := run(t, cfgPath, "dns", "set", "example.com", "--type", "A", "--name", "on", "--value", "192.0.2.9", "--proxied=maybe"); ExitCodeFor(err) != ExitUsage {
+	if _, _, err := run(t, cfgPath, "dns", "ensure", "example.com", "on", "A", "192.0.2.9", "--proxied=maybe"); ExitCodeFor(err) != ExitUsage {
 		t.Errorf("--proxied=maybe = %v, want a usage error", err)
 	}
 }
@@ -436,7 +436,7 @@ func TestPlatformTreeShapes(t *testing.T) {
 		// Record-set platforms: upsert.
 		"aws route53 record upsert", "gcp dns record upsert", "godaddy dns upsert", "godaddy dns add",
 		// Core.
-		"dns set", "dns add", "dns list", "dns delete", "domain ns set", "domain which",
+		"dns add", "dns ensure", "dns list", "dns delete", "domain ns set", "domain which",
 		"cert ensure", "cert get", "cert deploy",
 	}
 	for _, path := range exists {
@@ -498,7 +498,7 @@ func TestPlatformTreeShapes(t *testing.T) {
 	// its former form, and one paragraph on what a terminal asks. Without
 	// a terminal a record that stops early is a usage error.
 	interactive := readDoc(t, "docs/interactive.md")
-	for path, many := range map[string]bool{"dns set": false, "dns add": false, "cloudflare dns create": false, "namecom dns create": false,
+	for path, many := range map[string]bool{"dns add": false, "cloudflare dns create": false, "namecom dns create": false,
 		"aliyun dns record create": false, "godaddy dns add": false, "godaddy dns upsert": true, "aws route53 record upsert": true, "gcp dns record upsert": true} {
 		c := find(root, path)
 		if c == nil {
@@ -529,13 +529,13 @@ func TestPlatformTreeShapes(t *testing.T) {
 		if err := c.Args(c, []string{"example.com", "www", "A", "192.0.2.1"}); err != nil {
 			t.Errorf("%s with a whole record = %v", path, err)
 		}
-		if doc := strings.TrimPrefix(path, "dns "); !strings.Contains(interactive, "`"+path+"`") && !strings.Contains(interactive, "`dns set` / `"+doc+"`") {
+		if !strings.Contains(interactive, "`"+path+"`") {
 			t.Errorf("docs/interactive.md does not say what %s asks", path)
 		}
 	}
 	// Every record command says the same about <name> and <type>.
 	for first, paths := range map[string][]string{
-		"zone": {"dns set", "dns add", "dns ensure", "dns delete", "cloudflare dns create", "cloudflare dns update", "cloudflare dns delete",
+		"zone": {"dns add", "dns ensure", "dns delete", "cloudflare dns create", "cloudflare dns update", "cloudflare dns delete",
 			"aws route53 record upsert", "aws route53 record delete", "gcp dns record upsert", "gcp dns record delete"},
 		"domain": {"namecom dns create", "namecom dns update", "namecom dns delete", "godaddy dns add", "godaddy dns upsert", "godaddy dns delete",
 			"aliyun dns record create", "aliyun dns record update", "aliyun dns record delete"},
@@ -579,17 +579,15 @@ func TestPlatformTreeShapes(t *testing.T) {
 	}
 
 	// --proxied is a boolean wherever it exists.
-	for _, path := range []string{"dns set", "dns add", "cloudflare dns create", "cloudflare dns update"} {
+	for _, path := range []string{"dns add", "dns ensure", "cloudflare dns create", "cloudflare dns update"} {
 		c := find(root, path)
 		if f := c.Flags().Lookup("proxied"); f == nil || f.Value.Type() != "bool" {
 			t.Errorf("%s --proxied = %+v", path, f)
 		}
 	}
-	// --add went away with `dns add`.
-	for _, path := range []string{"dns set", "dns add"} {
-		if find(root, path).Flags().Lookup("add") != nil {
-			t.Errorf("%s still has --add", path)
-		}
+	// `dns set` went away with `dns ensure`.
+	if find(root, "dns set") != nil {
+		t.Errorf("dns set is still a command")
 	}
 }
 
@@ -806,8 +804,8 @@ func TestDomainNSSetReindexesTheRegistrarZones(t *testing.T) {
 	if err != nil || strings.Contains(stdout, `"zone"`) || !strings.Contains(stdout, `"domain"`) {
 		t.Errorf("which after ns set = %q, %v", stdout, err)
 	}
-	if _, _, err := run(t, cfgPath, "dns", "set", "example.com", "--name", "www", "--type", "A", "--value", "203.0.113.10", "--offline"); !errors.Is(err, app.ErrDomainUnknown) {
-		t.Errorf("dns set after ns set = %v, want the zone no longer routed to the registrar", err)
+	if _, _, err := run(t, cfgPath, "dns", "add", "example.com", "--name", "www", "--type", "A", "--value", "203.0.113.10", "--offline"); !errors.Is(err, app.ErrDomainUnknown) {
+		t.Errorf("dns add after ns set = %v, want the zone no longer routed to the registrar", err)
 	}
 
 	// Back to the registrar's own nameservers: no note.

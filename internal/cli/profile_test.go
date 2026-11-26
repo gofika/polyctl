@@ -675,9 +675,9 @@ func TestDNSRoutesToAccountInsideProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, stderr, err := run(t, cfgPath, "dns", "set", "two.example", "--type", "A", "--name", "www", "--value", "192.0.2.1")
+	_, stderr, err := run(t, cfgPath, "dns", "add", "two.example", "--type", "A", "--name", "www", "--value", "192.0.2.1")
 	if err != nil {
-		t.Fatalf("dns set: %v (stderr %q)", err, stderr)
+		t.Fatalf("dns add: %v (stderr %q)", err, stderr)
 	}
 	if gd.count("CreateRecord:www.two.example:A") != 1 || client("a").count("CreateRecord") != 0 || clientOn("b", fakePlatform2).count("CreateRecord") != 0 {
 		t.Errorf("record created on the wrong account (stderr %q)", stderr)
@@ -910,9 +910,9 @@ func TestDNSPlatformFlagPicksAccountInsideProfile(t *testing.T) {
 	if gd.count("ListRecords:z-"+zoneName) != 1 || cf.count("") != 0 {
 		t.Errorf("records listed on the wrong account: godaddy %v, cloudflare %v", gd.calls, cf.calls)
 	}
-	_, stderr, err = run(t, cfgPath, "dns", "set", zoneName, "--type", "A", "--name", "www", "--value", "192.0.2.1", "--platform", "gd")
+	_, stderr, err = run(t, cfgPath, "dns", "add", zoneName, "--type", "A", "--name", "www", "--value", "192.0.2.1", "--platform", "gd")
 	if err != nil {
-		t.Fatalf("dns set --platform gd: %v (stderr %q)", err, stderr)
+		t.Fatalf("dns add --platform gd: %v (stderr %q)", err, stderr)
 	}
 	if gd.count("CreateRecord:www."+zoneName+":A") != 1 || cf.count("") != 0 {
 		t.Errorf("record created on the wrong account: godaddy %v, cloudflare %v", gd.calls, cf.calls)
@@ -920,9 +920,9 @@ func TestDNSPlatformFlagPicksAccountInsideProfile(t *testing.T) {
 	if !strings.Contains(stderr, "via "+p2+"/a") {
 		t.Errorf("stderr = %q", stderr)
 	}
-	_, stderr, err = run(t, cfgPath, "dns", "--platform", "cf", "set", zoneName, "--type", "A", "--name", "www", "--value", "192.0.2.2", "--profile", "a")
+	_, stderr, err = run(t, cfgPath, "dns", "--platform", "cf", "add", zoneName, "--type", "A", "--name", "www", "--value", "192.0.2.2", "--profile", "a")
 	if err != nil {
-		t.Fatalf("dns --platform cf set: %v (stderr %q)", err, stderr)
+		t.Fatalf("dns --platform cf add: %v (stderr %q)", err, stderr)
 	}
 	if cf.count("CreateRecord:www."+zoneName+":A") != 1 || gd.count("CreateRecord") != 1 {
 		t.Errorf("record created on the wrong account: godaddy %v, cloudflare %v", gd.calls, cf.calls)
@@ -1024,7 +1024,8 @@ func TestInvalidPlatformFlagIsUsageError(t *testing.T) {
 	cases := [][]string{
 		{"dns", "list", "one.example", "--platform", "nosuch"},
 		{"dns", "list", "one.example", "--platform", "nosuch", "--offline"},
-		{"dns", "set", "one.example", "--type", "A", "--name", "www", "--value", "192.0.2.1", "--platform", "nosuch"},
+		{"dns", "add", "one.example", "--type", "A", "--name", "www", "--value", "192.0.2.1", "--platform", "nosuch"},
+		{"dns", "ensure", "one.example", "www", "A", "192.0.2.1", "--platform", "nosuch"},
 		{"dns", "delete", "one.example", "--type", "A", "--name", "www", "--platform", "nosuch"},
 		{"domain", "ns", "get", "one.example", "--platform", "nosuch"},
 		{"domain", "index", "--platform", "nosuch"},

@@ -27,7 +27,7 @@ account (profile and platform) is looked up in the local domain index; pass
 the platform, --offline to never touch the network.`,
 	}
 	addRouteFlags(rt, cmd)
-	cmd.AddCommand(newDNSListCmd(rt), newDNSSetCmd(rt), newDNSAddCmd(rt), newDNSEnsureCmd(rt), newDNSDeleteCmd(rt))
+	cmd.AddCommand(newDNSListCmd(rt), newDNSAddCmd(rt), newDNSEnsureCmd(rt), newDNSDeleteCmd(rt))
 	return cmd
 }
 
@@ -142,43 +142,17 @@ func cacheNote(cached bool) string {
 	return ""
 }
 
-// newDNSSetCmd is `dns set`: create the record, or update the one that has
-// the same name and type.
-func newDNSSetCmd(rt *app.Runtime) *cobra.Command {
-	return newDNSWriteCmd(rt, false, &cobra.Command{
-		Use:   "set <domain> <name> <type> <value>",
-		Short: "Create or update a DNS record (matched by name + type)",
-		Long: `Create or update a record in the zone serving <domain>.
-
-` + recordHelp + `
-
-If exactly one record with the same name and type exists it is updated;
-if none exists it is created. If several exist the command fails: use
-` + "`polyctl dns add`" + ` to create one more record of that name and type, or
-` + "`polyctl dns delete`" + ` to remove the ones that should go.
-
-` + app.RecordAskHelp("zone") + `
-
-The value of the record that is updated is proposed.
-
---proxied (Cloudflare) is a boolean: --proxied switches the proxy on,
---proxied=false switches it off, and without it an updated record keeps its
-current setting.`,
-		Example: `  polyctl dns set example.com www A 203.0.113.10
-  polyctl dns set example.com @ MX mail.example.com --priority 10
-  polyctl dns set example.com www CNAME target.example.net --ttl 300`,
-	})
-}
-
 // newDNSAddCmd is `dns add`: always create one more record.
 func newDNSAddCmd(rt *app.Runtime) *cobra.Command {
-	return newDNSWriteCmd(rt, true, &cobra.Command{
+	var ttl, priority int
+	var proxied bool
+	cmd := &cobra.Command{
 		Use:   "add <domain> <name> <type> <value>",
 		Short: "Add a DNS record, keeping the existing ones of that name + type",
 		Long: `Create one more record in the zone serving <domain>. Records that already
 have the same name and type are left alone, which is how round-robin A
 records or several TXT or MX records are built up. To change an existing
-record use ` + "`polyctl dns set`" + `.
+record use ` + "`polyctl dns ensure`" + `.
 
 ` + recordHelp + `
 
@@ -188,145 +162,82 @@ record use ` + "`polyctl dns set`" + `.
 --proxied=false switches it off, and without it the platform default applies.`,
 		Example: `  polyctl dns add example.com www A 203.0.113.11
   polyctl dns add example.com @ TXT "v=spf1 include:_spf.example.net ~all"`,
-	})
-}
-
-// newDNSWriteCmd completes cmd as a record-writing command. With add it
-// always creates a record; without, it updates the one record that has the
-// same name and type and creates it when there is none.
-func newDNSWriteCmd(rt *app.Runtime, add bool, cmd *cobra.Command) *cobra.Command {
-	var ttl, priority int
-	var proxied bool
-	cmd.Args = app.ProxiedRecordArgs(app.RecordArgsOrInteractive(rt, 1, 1), 1)
-	cmd.ValidArgsFunction = app.CompleteRecordArgs(completeDomains(rt), "")
-	cmd.RunE = func(cmd *cobra.Command, args []string) error {
-		// The record is positional (<name> <type> <value>) or, in the
-		// former form, given with --name, --type and --value. The
-		// interactive flow asks for what is missing: the zone, then the
-		// name, the type and the value.
-		in, err := rt.RecordInput(cmd, args, app.RecordForm{MinValues: 1, MaxValues: 1})
-		if err != nil {
-			return err
-		}
-		args, err = domainArgs(cmd, rt, args[:min(len(args), 1)], app.DomainPick{Title: "Zone", Kinds: zoneKinds, Required: true})
-		if err != nil {
-			return err
-		}
-		t, err := rt.ResolveDomain(cmd.Context(), args[0], platform.ResZone)
-		if err != nil {
-			return err
-		}
-		if rt.Flags.Offline {
-			return app.ErrOffline
-		}
-		// A <domain> below its zone names the record (the former form
-		// `dns set www.example.com --type A --value ...`). The zone itself
-		// names none: the interactive flow asks, and the former form
-		// without --name keeps writing to the apex.
-		fqdn := platform.NormalizeDomain(args[0])
-		if in.Name != "" {
-			if fqdn, err = dnsNameOf(t, in.Name, in.NameArg); err != nil {
+		Args:              app.ProxiedRecordArgs(app.RecordArgsOrInteractive(rt, 1, 1), 1),
+		ValidArgsFunction: app.CompleteRecordArgs(completeDomains(rt), ""),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// The record is positional (<name> <type> <value>) or, in the
+			// former form, given with --name, --type and --value. The
+			// interactive flow asks for what is missing: the zone, then the
+			// name, the type and the value.
+			in, err := rt.RecordInput(cmd, args, app.RecordForm{MinValues: 1, MaxValues: 1})
+			if err != nil {
 				return err
 			}
-		} else if fqdn != platform.NormalizeDomain(t.Domain) {
-			in.Name = fqdn
-		}
-		dns, err := rt.OpenDNS(cmd.Context(), t)
-		if err != nil {
-			return err
-		}
-		existing, err := dns.ListRecords(cmd.Context(), t.ResourceID)
-		if err != nil {
-			return err
-		}
-		asked := in.Name == ""
-		if err := rt.CompleteRecord(in, app.RecordPrompt{Platform: t.Platform, Zone: t.Domain, Replaces: !add,
-			Existing: func() ([]platform.Record, error) { return existing, nil }}); err != nil {
-			return err
-		}
-		if asked && in.Name != "" {
-			if fqdn, err = dnsNameOf(t, in.Name, in.NameArg); err != nil {
+			args, err = domainArgs(cmd, rt, args[:min(len(args), 1)], app.DomainPick{Title: "Zone", Kinds: zoneKinds, Required: true})
+			if err != nil {
 				return err
 			}
-		}
-		typ, value := in.Type, in.Value()
-		matches := app.MatchRecords(existing, fqdn, typ, "")
-		rec := platform.Record{ZoneID: t.ResourceID, Name: fqdn, Type: typ, Value: value, TTL: ttl}
-		if cmd.Flags().Changed("priority") {
-			p := priority
-			rec.Priority = &p
-		}
-		if cmd.Flags().Changed("proxied") {
-			b := proxied
-			rec.Proxied = &b
-		}
-		create := add || len(matches) == 0
-		if !create && len(matches) > 1 {
-			return fmt.Errorf("%d records named %s %s exist; use `polyctl dns add` to create another, or `polyctl dns delete` first", len(matches), fqdn, typ)
-		}
-		change := platform.Change{Resource: app.RecordResource(fqdn, typ), Action: platform.Created, Detail: value}
-		if !create {
-			change.Action, change.ID = platform.Updated, matches[0].ID
-			change.Detail = matches[0].Value + " -> " + value
-		}
-		if done, err := rt.WouldWrite(t.ReportTarget(), change); done || err != nil {
-			return err
-		}
-		var out *platform.Record
-		oldID := ""
-		if create {
-			out, err = dns.CreateRecord(cmd.Context(), t.ResourceID, rec)
-		} else {
-			rec.ID = matches[0].ID
-			oldID = rec.ID
-			if rec.TTL == 0 {
-				rec.TTL = matches[0].TTL
+			t, err := rt.ResolveDomain(cmd.Context(), args[0], platform.ResZone)
+			if err != nil {
+				return err
 			}
-			if rec.Priority == nil {
-				rec.Priority = matches[0].Priority
+			if rt.Flags.Offline {
+				return app.ErrOffline
 			}
-			if rec.Proxied == nil {
-				rec.Proxied = matches[0].Proxied
+			// A <domain> below its zone names the record (the former form
+			// `dns add www.example.com --type A --value ...`). The zone itself
+			// names none: the interactive flow asks, and the former form
+			// without --name keeps writing to the apex.
+			fqdn := platform.NormalizeDomain(args[0])
+			if in.Name != "" {
+				if fqdn, err = dnsNameOf(t, in.Name, in.NameArg); err != nil {
+					return err
+				}
+			} else if fqdn != platform.NormalizeDomain(t.Domain) {
+				in.Name = fqdn
 			}
-			rec.Extra = matches[0].Extra
-			out, err = dns.UpdateRecord(cmd.Context(), t.ResourceID, rec)
-		}
-		if err != nil {
-			return err
-		}
-		// Keep the local inventory in sync with the mutation. Platforms
-		// whose record ids encode the value (Route 53, Cloud DNS,
-		// GoDaddy) hand back a new id after an update, so the row under
-		// the old id must go or the cache lists both.
-		if db, err := rt.DB(); err == nil {
-			cfg, _ := rt.Config()
-			set := inventory.Set{Platform: t.Platform, Profile: t.Profile, Type: platform.ResDNSRecord}
-			if oldID != "" && out.ID != oldID {
-				if err := db.Delete(cmd.Context(), set, platform.ResDNSRecord, oldID); err != nil {
-					rt.Verbosef("inventory: %v", err)
+			dns, err := rt.OpenDNS(cmd.Context(), t)
+			if err != nil {
+				return err
+			}
+			asked := in.Name == ""
+			if err := rt.CompleteRecord(in, app.RecordPrompt{Platform: t.Platform, Zone: t.Domain,
+				Existing: func() ([]platform.Record, error) { return dns.ListRecords(cmd.Context(), t.ResourceID) }}); err != nil {
+				return err
+			}
+			if asked && in.Name != "" {
+				if fqdn, err = dnsNameOf(t, in.Name, in.NameArg); err != nil {
+					return err
 				}
 			}
-			if err := db.Upsert(cmd.Context(), set, app.RecordResources(t.ResourceID, t.Domain, []platform.Record{*out})[0], cfg.TTLFor(platform.ResDNSRecord)); err != nil {
-				rt.Verbosef("inventory: %v", err)
+			rec := platform.Record{ZoneID: t.ResourceID, Name: fqdn, Type: in.Type, Value: in.Value(), TTL: ttl}
+			if cmd.Flags().Changed("priority") {
+				p := priority
+				rec.Priority = &p
 			}
-		}
-		rt.Infof("%s %s %s -> %s via %s/%s", map[bool]string{true: "created", false: "updated"}[rec.ID == ""], out.Name, out.Type, out.Value, t.Platform, t.Profile)
-		return rt.Render(dnsResult{Target: t, Records: []platform.Record{*out}}, func() output.Grid {
-			return recordGrid([]platform.Record{*out}, t.Platform)
-		})
-	}
-	ttlHelp := "TTL in seconds (0 = platform default / keep existing)"
-	if add {
-		ttlHelp = "TTL in seconds (0 = platform default)"
+			if cmd.Flags().Changed("proxied") {
+				b := proxied
+				rec.Proxied = &b
+			}
+			change := platform.Change{Resource: app.RecordResource(fqdn, rec.Type), Action: platform.Created, Detail: rec.Value}
+			if done, err := rt.WouldWrite(t.ReportTarget(), change); done || err != nil {
+				return err
+			}
+			out, err := dns.CreateRecord(cmd.Context(), t.ResourceID, rec)
+			if err != nil {
+				return err
+			}
+			rememberRecord(cmd.Context(), rt, t, "", *out)
+			rt.Infof("created %s %s -> %s via %s/%s", out.Name, out.Type, out.Value, t.Platform, t.Profile)
+			return rt.Render(dnsResult{Target: t, Records: []platform.Record{*out}}, func() output.Grid {
+				return recordGrid([]platform.Record{*out}, t.Platform)
+			})
+		},
 	}
 	app.FormerRecordFlags(cmd, false)
-	cmd.Flags().IntVar(&ttl, "ttl", 0, ttlHelp)
+	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 = platform default)")
 	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX/SRV records")
-	proxiedHelp := "Cloudflare proxy status: --proxied or --proxied=false (default: keep the current value; the platform default for a new record)"
-	if add {
-		proxiedHelp = "Cloudflare proxy status: --proxied or --proxied=false (default: the platform default)"
-	}
-	cmd.Flags().BoolVar(&proxied, "proxied", false, proxiedHelp)
+	cmd.Flags().BoolVar(&proxied, "proxied", false, "Cloudflare proxy status: --proxied or --proxied=false (default: the platform default)")
 	return cmd
 }
 
