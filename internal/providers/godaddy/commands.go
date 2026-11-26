@@ -798,35 +798,43 @@ existing ones use ` + "`polyctl godaddy dns add`" + `.
 func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 	var typ, name, id string
 	cmd := &cobra.Command{
-		Use:   "delete <domain> [<name> <type>]",
+		Use:   "delete <domain> [<name> [<type>]]",
 		Short: "Delete every record of a name and type (or one record by --id)",
 		Long: `Delete every record of <name> and <type>, or the one record given with --id
-(it cannot be combined with <name> <type>). GoDaddy addresses records by name
-and type, so the id is an optional second way to pick a single record here,
-not a required argument.
+(it cannot be combined with a positional record). GoDaddy addresses records
+by name and type, so the id is an optional second way to pick a single
+record here, not a required argument.
 
 <name> is relative to the domain (www, a.b), @ for the apex, or a full name
 inside the domain (www.example.com). <type> is case-insensitive.
 
-The records to delete are listed, then one yes/no question is asked (default
-no; --yes skips it). The non-interactive flow asks nothing: --yes is required
-(exit code 2 without it, before anything is read). Declining changes nothing.
---dry-run reports what would be deleted and asks nothing.`,
-		Example:           "  polyctl godaddy dns delete example.com www A\n  polyctl godaddy dns delete example.com www A --yes\n  polyctl godaddy dns delete example.com --id 'example.com|A|www|203.0.113.10' --yes",
-		Args:              app.RecordArgsOrInteractive(rt, 0, 0),
+<type> is needed only to tell records apart: a name whose records all have
+one type needs none. A name with records of several types is not deleted as
+a whole: on a terminal its records are offered to pick one, and the
+non-interactive flow names the types and exits with code 5, also with --yes.
+The NS and SOA records of the apex are never meant by the name alone.
+
+The records to delete are listed with their ids and, for several, a note on
+how to delete one of them only (--id); then one yes/no question is asked
+(default no; --yes skips it). The non-interactive flow asks nothing: --yes
+is required (exit code 2 without it, before anything is read). Declining
+changes nothing. --dry-run reports what would be deleted and asks nothing.`,
+		Example:           "  polyctl godaddy dns delete example.com www\n  polyctl godaddy dns delete example.com www A\n  polyctl godaddy dns delete example.com www A --yes\n  polyctl godaddy dns delete example.com --id 'example.com|A|www|203.0.113.10' --yes",
+		Args:              app.RecordSelectorArgsOrInteractive(rt, 0),
 		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.GoDaddy), platform.GoDaddy),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// The record set is positional (<name> <type>) or, in the former
-			// form, given with --name and --type.
+			// The record set is positional (<name> [<type>]) or, in the
+			// former form, given with --name and --type.
+			typeArg, named := "--type", cmd.Flags().Changed("name")
 			if len(args) > 1 {
-				rec, err := app.ParseRecordArgs(cmd, args[1:], 0, 0)
+				rec, err := app.ParseRecordSelector(cmd, args[1:], 0)
 				if err != nil {
 					return err
 				}
 				if id != "" {
-					return app.UsageErrf("--id selects one record; it cannot be combined with <name> <type>")
+					return app.UsageErrf("--id selects one record; it cannot be combined with <name> [<type>]")
 				}
-				name, typ = rec.Name, rec.Type
+				name, typ, typeArg, named = rec.Name, rec.Type, "<type>", true
 				args = args[:1]
 			}
 			if id != "" && (typ != "" || cmd.Flags().Changed("name")) {
@@ -834,8 +842,11 @@ no; --yes skips it). The non-interactive flow asks nothing: --yes is required
 				// would be ignored.
 				return app.UsageErrf("--id selects one record; it cannot be combined with --type or --name")
 			}
-			if id == "" && typ == "" && !rt.Interactive() {
-				return app.UsageErrf("a record or --id is required: %s", app.RecordUsage(cmd, 0, 0))
+			// byName: the name alone says which records, when they have one
+			// type.
+			byName := id == "" && typ == "" && named
+			if id == "" && typ == "" && !named && !rt.Interactive() {
+				return app.UsageErrf("a record or --id is required: %s", app.RecordSelectorUsage(cmd, 0))
 			}
 			args, err := rt.DomainArg(cmd.Context(), args, platform.GoDaddy, platform.ResZone, nil)
 			if err != nil {
@@ -849,6 +860,8 @@ no; --yes skips it). The non-interactive flow asks nothing: --yes is required
 					what = "delete record " + id + " of zone " + zone
 				case typ != "":
 					what = fmt.Sprintf("delete every %s record of %s", strings.ToUpper(typ), platform.FQDN(name, zone))
+				case byName:
+					what = "delete every record of " + platform.FQDN(name, zone)
 				}
 				if err := rt.CanConfirm(what); err != nil {
 					return err
@@ -862,13 +875,28 @@ no; --yes skips it). The non-interactive flow asks nothing: --yes is required
 				return err
 			}
 			if id == "" && typ == "" {
-				// The interactive flow lists the records to pick one.
 				recs, err := c.ListRecords(cmd.Context(), zone)
 				if err != nil {
 					return err
 				}
-				if id, err = rt.PickRecordID("Delete which record of "+zone+"?", recs, nil); err != nil {
-					return err
+				// The interactive flow lists the records to pick one: those
+				// of the zone, or of a name with records of several types
+				// (exit code 5 where nothing can be asked).
+				pick, title := !byName, "Delete which record of "+zone+"?"
+				if byName {
+					found, err := app.RecordsOfName(zone, recs, platform.FQDN(name, zone), "", "")
+					if err != nil {
+						return err
+					}
+					if pick, err = rt.NeedsType(found, typeArg); err != nil {
+						return err
+					}
+					recs, typ, title = found.Records, found.Type(), "Delete which record of "+found.Name+"?"
+				}
+				if pick {
+					if id, err = rt.PickRecordID(title, recs, nil); err != nil {
+						return err
+					}
 				}
 			}
 			target := platform.Target{Platform: platform.GoDaddy, Profile: p.Name, Domain: zone}
@@ -894,9 +922,8 @@ no; --yes skips it). The non-interactive flow asks nothing: --yes is required
 					if i < 0 {
 						return fmt.Errorf("%w: %s %s %q in zone %s", platform.ErrNotFound, t, n, d, zone)
 					}
-					ok, err := confirmDelete(cmd.Context(), rt, []platform.Record{recordFromAPI(zone, set[i])},
-						fmt.Sprintf("Delete the %s record %s of %s?", t, d, platform.FQDN(n, zone)))
-					if err != nil || !ok {
+					if err := rt.ConfirmRecordDelete(cmd.Context(), app.RecordDelete{Records: recordGrid([]platform.Record{recordFromAPI(zone, set[i])}),
+						Question: fmt.Sprintf("Delete the %s record %s of %s?", t, d, platform.FQDN(n, zone))}); err != nil {
 						return err
 					}
 				}
@@ -924,9 +951,8 @@ no; --yes skips it). The non-interactive flow asks nothing: --yes is required
 				for _, r := range set {
 					recs = append(recs, recordFromAPI(zone, r))
 				}
-				ok, err := confirmDelete(cmd.Context(), rt, recs,
-					fmt.Sprintf("Delete %d %s record(s) of %s?", len(recs), upper, platform.FQDN(rel, zone)))
-				if err != nil || !ok {
+				if err := rt.ConfirmRecordDelete(cmd.Context(), app.RecordDelete{Records: recordGrid(recs), Exact: "give its id with --id <id>",
+					Question: fmt.Sprintf("Delete %d %s record(s) of %s?", len(recs), upper, platform.FQDN(rel, zone))}); err != nil {
 					return err
 				}
 			}
@@ -943,19 +969,4 @@ no; --yes skips it). The non-interactive flow asks nothing: --yes is required
 	cmd.Flags().StringVar(&id, "id", "", "delete the single record with this id (zone|TYPE|name|value, as dns list shows it)")
 	hideFormerRecordFlags(cmd)
 	return cmd
-}
-
-// confirmDelete lists recs on stderr and asks question (default no). A no,
-// or leaving the question, is the note that nothing was deleted (exit code
-// 0); ok is true only for a yes.
-func confirmDelete(ctx context.Context, rt *app.Runtime, recs []platform.Record, question string) (bool, error) {
-	_ = output.RenderGrid(rt.Stderr, recordGrid(recs))
-	ok, err := rt.Confirm(ctx, question, false)
-	if err != nil {
-		return false, err
-	}
-	if !ok {
-		return false, app.NothingToDof("cancelled, no record was deleted")
-	}
-	return true, nil
 }

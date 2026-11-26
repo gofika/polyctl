@@ -68,7 +68,7 @@ func TestDNSPositionalRecordUsage(t *testing.T) {
 	const (
 		add    = "usage: polyctl godaddy dns add <domain> <name> <type> <value>"
 		upsert = "usage: polyctl godaddy dns upsert <domain> <name> <type> <value>..."
-		del    = "usage: polyctl godaddy dns delete <domain> <name> <type>"
+		del    = "usage: polyctl godaddy dns delete <domain> <name> [<type>]"
 	)
 	for _, c := range []struct {
 		args []string
@@ -94,11 +94,10 @@ func TestDNSPositionalRecordUsage(t *testing.T) {
 		{[]string{"upsert", "example.com", "www", "A", "203.0.113.3", "--name", "www", "--type", "A"}, "with --name, --type; use one form: " + upsert},
 		{[]string{"delete", "--yes"}, del},
 		{[]string{"delete", "example.com", "--yes"}, "a record or --id is required: " + del},
-		{[]string{"delete", "example.com", "www", "--yes"}, del},
 		{[]string{"delete", "example.com", "www", "A", "203.0.113.1", "--yes"}, del},
 		{[]string{"delete", "example.com", "www", "A", "--name", "www", "--yes"}, "with --name; use one form: " + del},
 		{[]string{"delete", "example.com", "www", "A", "--type", "A", "--yes"}, "with --type; use one form: " + del},
-		{[]string{"delete", "example.com", "www", "A", "--id", recordID, "--yes"}, "--id selects one record; it cannot be combined with <name> <type>"},
+		{[]string{"delete", "example.com", "www", "A", "--id", recordID, "--yes"}, "--id selects one record; it cannot be combined with <name> [<type>]"},
 	} {
 		e.reset()
 		code, _, stderr := e.run(nil, "", append([]string{"godaddy", "dns"}, c.args...)...)
@@ -147,7 +146,7 @@ func TestDNSPositionalRecordHelp(t *testing.T) {
 	for verb, use := range map[string]string{
 		"add":    "add <domain> <name> <type> <value>",
 		"upsert": "upsert <domain> <name> <type> <value>...",
-		"delete": "delete <domain> [<name> <type>]",
+		"delete": "delete <domain> [<name> [<type>]]",
 	} {
 		cmd, _, err := root.Find([]string{"godaddy", "dns", verb})
 		if err != nil {
