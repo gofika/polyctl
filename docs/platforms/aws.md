@@ -258,7 +258,7 @@ ACM certificates belong to one region of one account. CloudFront uses `us-east-1
 **Key types**: ACM lists only RSA certificates unless key types are named, so `list` and `get` take `--key-type` (repeatable or comma-separated; default `EC_prime256v1,RSA_2048` from `defaults.aws.acm.default_key_types`). Values: `RSA_1024`, `RSA_2048`, `RSA_3072`, `RSA_4096`, `EC_prime256v1`, `EC_secp384r1`, `EC_secp521r1`, `ML_DSA_44`, `ML_DSA_65`, `ML_DSA_87`.
 
 - `certificate list` reads the inventory of the profile's region; `--region <r>` asks AWS, `--region all` lists every cached region. Filters: `--status` (`PENDING_VALIDATION`, `ISSUED`, `INACTIVE`, `EXPIRED`, `VALIDATION_TIMED_OUT`, `REVOKED`, `FAILED`), `--domain`.
-- `certificate get <domain|arn>` — a domain matches certificates whose primary name is the domain or its wildcard (other names are not matched); of several, the best (issued, latest expiry) is shown. `--validation-records` adds the DNS validation records; they are always shown for `PENDING_VALIDATION`, with the hours left of ACM's 72-hour window and the `dns ensure` command to write them.
+- `certificate get <domain|arn>` — a domain matches certificates whose primary name is the domain or its wildcard (other names are not matched); of several, the best (issued, latest expiry) is shown. `--validation-records` adds the DNS validation records; they are always shown for `PENDING_VALIDATION`, with the hours left of ACM's 72-hour window and the `dns ensure` command to write them. An ARN whose account several profiles log in to is read through the current profile (else the first by name), named in a note; `--profile` picks another.
 - `certificate request <domain>` requests a DNS-validated public certificate:
 
   ```sh
