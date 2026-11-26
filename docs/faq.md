@@ -44,8 +44,8 @@ Not with IAM Identity Center: 90 days is the longest session, and after it a new
 
 | Choice | Lasts | Notes |
 | --- | --- | --- |
-| `method=sso` with a longer session duration | up to 90 days per login | No long-lived secret on the machine. Needs an administrator of the IAM Identity Center instance to change the setting. |
-| `method=keys` with the access key of an IAM user | until the key is deleted or deactivated | `polyctl auth login aws --profile <name> --set method=keys`. A leaked key works until someone revokes it: give the IAM user only the permissions it needs. Suits scripts and machines nobody logs in on. |
+| `method=sso` with a longer session duration | up to 90 days per login | Needs an administrator of the IAM Identity Center instance to change the setting. |
+| `method=keys` with the access key of an IAM user | until the key is deleted or deactivated | `polyctl auth login aws --profile <name> --set method=keys`. Suits scripts and machines nobody logs in on. |
 | `method=profile` | as the profile of `~/.aws/config` it names | Nothing is gained when that profile is an IAM Identity Center one: its session has the same duration. |
 
 See [Accounts: AWS](accounts.md#aws) for the login flows.
