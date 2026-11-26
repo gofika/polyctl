@@ -72,7 +72,7 @@ func TestDNSSetAsksTypeAndValue(t *testing.T) {
 	p.Done()
 	// Non-interactive: unchanged.
 	r = runFlow(t, context.Background(), cfgPath, nil, strings.NewReader(""), "dns", "set", "example.com", "--type", "A")
-	if r.code != ExitUsage || !strings.Contains(r.err.Error(), "--type and --value are required") {
+	if r.code != ExitUsage || !strings.Contains(r.err.Error(), "usage: polyctl dns set <domain> <name> <type> <value>") {
 		t.Errorf("non-interactive: exit %d, %v", r.code, r.err)
 	}
 }
@@ -110,7 +110,7 @@ func TestDNSDeletePicksRecords(t *testing.T) {
 		t.Errorf("nothing ticked: exit %d, %v", r.code, r.err)
 	}
 	r = runFlow(t, context.Background(), cfgPath, nil, strings.NewReader(""), "dns", "delete", "example.com")
-	if r.code != ExitUsage || !strings.Contains(r.err.Error(), "--type (with --name), --id or --all is required") {
+	if r.code != ExitUsage || !strings.Contains(r.err.Error(), "a record, --id or --all is required: usage: polyctl dns delete <domain> <name> <type> [<value>]") {
 		t.Errorf("non-interactive: exit %d, %v", r.code, r.err)
 	}
 }
