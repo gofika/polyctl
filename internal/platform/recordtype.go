@@ -410,9 +410,11 @@ func checkA(v string) (string, *int, error) {
 	return a.String(), nil, nil
 }
 
+// checkAAAA takes any IPv6 address, an IPv4-mapped one (::ffff:192.0.2.1)
+// too: it is a 128-bit address like any other.
 func checkAAAA(v string) (string, *int, error) {
 	a, err := netip.ParseAddr(v)
-	if err != nil || !a.Is6() || a.Is4In6() || a.Zone() != "" {
+	if err != nil || !a.Is6() || a.Zone() != "" {
 		return "", nil, errors.New("it is not an IPv6 address")
 	}
 	return a.String(), nil, nil
@@ -624,7 +626,7 @@ func checkSVCB(v string) (string, *int, error) {
 		case "ipv4hint", "ipv6hint":
 			for _, a := range strings.Split(val, ",") {
 				ip, err := netip.ParseAddr(a)
-				if err != nil || (key == "ipv4hint" && !ip.Is4()) || (key == "ipv6hint" && (!ip.Is6() || ip.Is4In6())) {
+				if err != nil || (key == "ipv4hint" && !ip.Is4()) || (key == "ipv6hint" && !ip.Is6()) {
 					return "", nil, fmt.Errorf("%q in %s is not an IPv%s address", a, key, map[string]string{"ipv4hint": "4", "ipv6hint": "6"}[key])
 				}
 			}
@@ -837,7 +839,7 @@ func checkIPSECKEY(v string) (string, *int, error) {
 		}
 	case "1", "2":
 		a, err := netip.ParseAddr(gw)
-		if err != nil || (n[1] == "1" && !a.Is4()) || (n[1] == "2" && (!a.Is6() || a.Is4In6())) {
+		if err != nil || (n[1] == "1" && !a.Is4()) || (n[1] == "2" && !a.Is6()) {
 			return "", nil, fmt.Errorf("the gateway %q is not an IPv%s address", gw, map[string]string{"1": "4", "2": "6"}[n[1]])
 		}
 		gw = a.String()

@@ -14,6 +14,8 @@ func TestCheckRecordValues(t *testing.T) {
 	valid := []struct{ typ, in, want string }{
 		{"A", "203.0.113.10", "203.0.113.10"},
 		{"AAAA", "2001:DB8:0:0::10", "2001:db8::10"},
+		{"AAAA", "::ffff:192.0.2.1", "::ffff:192.0.2.1"},
+		{"AAAA", "::ffff:c000:201", "::ffff:192.0.2.1"},
 		{"CNAME", "Target.Example.NET.", "target.example.net"},
 		{"CNAME", "_dkim.example.net", "_dkim.example.net"},
 		{"CNAME", "bücher.example", "xn--bcher-kva.example"},
@@ -67,7 +69,6 @@ func TestCheckRecordValues(t *testing.T) {
 		{"A", "2001:db8::1", "not an IPv4 address"},
 		{"A", "example.com", "not an IPv4 address"},
 		{"AAAA", "192.0.2.1", "not an IPv6 address"},
-		{"AAAA", "::ffff:192.0.2.1", "not an IPv6 address"},
 		{"CNAME", "a..example.net", "empty label"},
 		{"CNAME", ".", "root"},
 		{"CNAME", "a b", "one host name"},
