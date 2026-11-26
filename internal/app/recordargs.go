@@ -19,6 +19,13 @@ type RecordArgs struct {
 	Type string
 	// Values holds one value per argument, in the order given.
 	Values []string
+	// TypeArg names the type in messages, for a record read by
+	// RecordTargetForm.Parse: "<type>" for the positional form, "--type"
+	// for the former flags.
+	TypeArg string
+	// formerID says a name alone may be the record id of a former form, and
+	// noValue that the form the record was given in takes no value.
+	formerID, noValue bool
 }
 
 // Value is the first value, "" when the record was given without one.
@@ -208,39 +215,103 @@ func CompleteRecordArgs(first CompletionFunc, id platform.ID) CompletionFunc {
 // they are the new values): a positional record beside them is no mistake.
 const NoFormerFlags = ""
 
-// recordTarget is the positional record of a command that acts on existing
-// records of a platform with record ids: <name> [<type> [<value>]].
-var recordTarget = recordShape{maxValues: 1, typeOptional: true}
+// RecordTargetForm is the form of a command that acts on existing records
+// (update, delete): `<zone> [<name> [<type> [<value>]]]`, with the flag --id
+// as the exact selector when the command defines one. The zero value is that
+// form and nothing else; the fields say what else the command takes. The
+// commands validate their arguments (ArgsOrInteractive), read the record
+// (Parse) and complete it (Complete) through it, so the checks and their
+// messages are the same everywhere.
+type RecordTargetForm struct {
+	// FormerID says the command once took `<zone> <record-id>`: a single
+	// argument after the zone may be that id (see RecordSelect.IDOrName).
+	FormerID bool
+	// FormerFlags are the flags of the former form that name the record,
+	// of "name", "type" and "value" those the command still reads. A record
+	// is given with them or positionally, not both, and never beside --id.
+	// With one of them and no --name the record is the zone apex.
+	FormerFlags []string
+	// Instead are the flags that say what to act on without a record
+	// ("all"): one of them cannot stand beside a positional record, and it
+	// satisfies the non-interactive flow, which otherwise needs a record or
+	// --id. What else it excludes is the command's to say.
+	Instead []string
+	// NoValue says the record is `<name> [<type>]` only: the command acts on
+	// record sets as a whole.
+	NoValue bool
+}
 
-// RecordTargetArgsOrInteractive validates the arguments of an update or
-// delete command of a platform with record ids, `<zone> [<name> [<type>
-// [<value>]]]` with the flag --id as the exact selector. The record after
-// the zone is read as ParseRecordSelector reads it; it cannot stand beside
-// --id, and --id cannot be empty. The interactive flow may leave out the
-// record and the zone: the command lists what there is. The non-interactive
-// flow needs the zone and a record or --id.
-func RecordTargetArgsOrInteractive(rt *Runtime) cobra.PositionalArgs {
-	return func(cmd *cobra.Command, args []string) error {
-		usage := recordTarget.usage(cmd)
-		byID := false
-		if f := cmd.Flags().Lookup("id"); f != nil && f.Changed {
-			// An empty id (--id "$ID" with the variable unset) names no
-			// record: it is not "no --id", which would list the zone.
-			if strings.TrimSpace(f.Value.String()) == "" {
-				return UsageErrf("--id must not be empty")
-			}
-			byID = true
+func (f RecordTargetForm) shape() recordShape {
+	sh := recordShape{maxValues: 1, typeOptional: true}
+	if f.NoValue {
+		sh.maxValues = 0
+	}
+	return sh
+}
+
+// record is the positional record of the form as usage text names it,
+// "<name> [<type> [<value>]]".
+func (f RecordTargetForm) record() string {
+	if f.NoValue {
+		return "<name> [<type>]"
+	}
+	return "<name> [<type> [<value>]]"
+}
+
+// Usage is the usage text of the positional form, "usage: polyctl dns
+// delete <domain> <name> [<type> [<value>]]". The first argument is named as
+// the usage line of cmd names it (<domain>, <zone>).
+func (f RecordTargetForm) Usage(cmd *cobra.Command) string { return f.shape().usage(cmd) }
+
+// changed are those of flags that were given, as "--name".
+func changedFlags(cmd *cobra.Command, flags []string) []string {
+	var given []string
+	for _, name := range flags {
+		if fl := cmd.Flags().Lookup(name); fl != nil && fl.Changed {
+			given = append(given, "--"+name)
 		}
-		if len(args) > 1 {
-			if _, err := recordTarget.parse(cmd, args[1:], []string{NoFormerFlags}); err != nil {
-				return err
-			}
-			if byID {
-				return UsageErrf("--id selects one record; it cannot be combined with <name> [<type> [<value>]]")
-			}
-			return nil
+	}
+	return given
+}
+
+// orList joins items as "a", "a or b", "a, b or c".
+func orList(items []string) string {
+	if len(items) < 2 {
+		return strings.Join(items, "")
+	}
+	return strings.Join(items[:len(items)-1], ", ") + " or " + items[len(items)-1]
+}
+
+// byID reports whether --id was given. An empty id (--id "$ID" with the
+// variable unset) names no record and is a usage error: it is not "no
+// --id", which would list the zone.
+func (f RecordTargetForm) byID(cmd *cobra.Command) (bool, error) {
+	fl := cmd.Flags().Lookup("id")
+	if fl == nil || !fl.Changed {
+		return false, nil
+	}
+	if strings.TrimSpace(fl.Value.String()) == "" {
+		return false, UsageErrf("--id must not be empty")
+	}
+	return true, nil
+}
+
+// ArgsOrInteractive validates the arguments of the command: everything
+// Parse refuses, and that the non-interactive flow was given the zone and a
+// record, --id or one of the Instead flags, before anything is read. The
+// interactive flow may leave out the record and the zone: the command lists
+// what there is.
+func (f RecordTargetForm) ArgsOrInteractive(rt *Runtime) cobra.PositionalArgs {
+	return func(cmd *cobra.Command, args []string) error {
+		rec, err := f.Parse(cmd, args)
+		if err != nil {
+			return err
 		}
 		if rt.Interactive() {
+			return nil
+		}
+		byID, _ := f.byID(cmd)
+		if len(args) > 0 && (rec != nil || byID || len(changedFlags(cmd, f.Instead)) > 0) {
 			return nil
 		}
 		// See RangeArgsOrInteractive: an invalid POLYCTL_NON_INTERACTIVE
@@ -248,46 +319,129 @@ func RecordTargetArgsOrInteractive(rt *Runtime) cobra.PositionalArgs {
 		if err := CheckNonInteractiveEnv(); err != nil {
 			return UsageErrf("%v", err)
 		}
-		if len(args) == 1 && byID {
-			return nil
+		need := []string{"a record"}
+		if cmd.Flags().Lookup("id") != nil {
+			need = append(need, "--id <record-id>")
 		}
-		return UsageErrf("a record or --id <record-id> is required: %s", usage)
+		for _, name := range f.Instead {
+			need = append(need, "--"+name)
+		}
+		return UsageErrf("%s is required: %s", orList(need), f.Usage(cmd))
 	}
 }
 
-// ParseRecordTarget reads the record of a command validated by
-// RecordTargetArgsOrInteractive from its arguments (the zone first); nil
-// when no record follows the zone.
-func ParseRecordTarget(cmd *cobra.Command, args []string) (*RecordArgs, error) {
-	if len(args) < 2 {
+// Parse reads the record the command was given, from its arguments (the
+// zone first) or from the flags of the former form; nil when there is none
+// (the record is named by --id, by an Instead flag, or listed). Every
+// mistake is a usage error: a malformed record, a record given in both
+// forms, a record beside --id or beside an Instead flag, an empty --id, and
+// a <type> that is not one type.
+func (f RecordTargetForm) Parse(cmd *cobra.Command, args []string) (*RecordArgs, error) {
+	byID, err := f.byID(cmd)
+	if err != nil {
+		return nil, err
+	}
+	former := f.FormerFlags
+	if len(former) == 0 {
+		former = []string{NoFormerFlags}
+	}
+	instead := changedFlags(cmd, f.Instead)
+	if len(args) > 1 {
+		rec, err := f.shape().parse(cmd, args[1:], former)
+		if err != nil {
+			return nil, err
+		}
+		if strings.Contains(rec.Type, ",") {
+			return nil, UsageErrf("<type> is one record type: %s", f.Usage(cmd))
+		}
+		if byID {
+			return nil, UsageErrf("--id selects one record; it cannot be combined with %s", f.record())
+		}
+		if len(instead) > 0 {
+			return nil, UsageErrf("%s cannot be combined with a positional record (%s)", orList(instead), f.record())
+		}
+		rec.TypeArg, rec.formerID, rec.noValue = "<type>", f.FormerID, f.NoValue
+		return rec, nil
+	}
+	given := changedFlags(cmd, f.FormerFlags)
+	if len(instead) > 0 || len(given) == 0 {
 		return nil, nil
 	}
-	return recordTarget.parse(cmd, args[1:], []string{NoFormerFlags})
+	if byID {
+		// The id selects one record; a filter beside it would be ignored,
+		// and a wrong id would then act on an unrelated record.
+		all := make([]string, len(f.FormerFlags))
+		for i, name := range f.FormerFlags {
+			all[i] = "--" + name
+		}
+		return nil, UsageErrf("--id selects one record; it cannot be combined with %s", orList(all))
+	}
+	rec := &RecordArgs{Name: "@", TypeArg: "--type", noValue: true}
+	for _, name := range f.FormerFlags {
+		if name == "value" {
+			rec.noValue = false
+		}
+		fl := cmd.Flags().Lookup(name)
+		if fl == nil || !fl.Changed {
+			continue
+		}
+		v := strings.TrimSpace(fl.Value.String())
+		if sv, ok := fl.Value.(interface{ GetSlice() []string }); ok {
+			// A flag that takes several types for another mode (--all).
+			vs := sv.GetSlice()
+			if len(vs) != 1 || strings.Contains(vs[0], ",") {
+				return nil, UsageErrf("--%s takes one record %s here", name, name)
+			}
+			v = strings.TrimSpace(vs[0])
+		}
+		switch name {
+		case "name":
+			if v != "" {
+				rec.Name = v
+			}
+		case "type":
+			rec.Type = strings.ToUpper(v)
+		case "value":
+			if v != "" {
+				rec.Values = []string{v}
+			}
+		}
+	}
+	return rec, nil
 }
 
-// Select fills in what the positional record r says about the records
-// meant in s, whose Zone is set: the full name, the type and the value. A
-// name alone may also be the record id of the former form `<zone>
-// <record-id>` (see RecordSelect.IDOrName). A nil r leaves s as it is: the
-// records are named by s.ID, or listed.
+// Select fills in what the record r says about the records meant in s,
+// whose Zone is set: the full name, the type and the value, and how the
+// type is named in messages (the form r was given in). For a command that
+// once took `<zone> <record-id>`, a name alone may also be that record id
+// (see RecordSelect.IDOrName). A nil r leaves s as it is: the records are
+// named by s.ID, or listed.
 func (r *RecordArgs) Select(s RecordSelect) RecordSelect {
 	if r == nil {
 		return s
 	}
 	s.Name, s.Type, s.Value = platform.FQDN(r.Name, s.Zone), r.Type, r.Value()
-	if r.Type == "" && s.ID == "" {
+	if r.TypeArg != "" {
+		s.TypeArg = r.TypeArg
+	}
+	s.NoValue = r.noValue
+	if r.formerID && r.Type == "" && s.ID == "" {
 		s.IDOrName = r.Name
 	}
 	return s
 }
 
-// CompleteRecordTargetArgs completes `<zone> [<name> [<type> [<value>]]]`
-// of a command that acts on existing records: the first argument with first
+// Complete completes the arguments of the command: the first with first
 // (the zones or domains), then the names of the records of the zone in the
 // local inventory (relative to the zone, described by their types and
 // values), the types the name has there and the values of the name and
-// type.
-func CompleteRecordTargetArgs(rt *Runtime, first CompletionFunc, id platform.ID) CompletionFunc {
+// type. The records are those of the profile of platform id, or of every
+// platform for a command that is not tied to one (id "").
+func (f RecordTargetForm) Complete(rt *Runtime, first CompletionFunc, id platform.ID) CompletionFunc {
+	max := 3
+	if f.NoValue {
+		max = 2
+	}
 	return func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) == 0 {
 			if first != nil {
@@ -295,7 +449,7 @@ func CompleteRecordTargetArgs(rt *Runtime, first CompletionFunc, id platform.ID)
 			}
 			return nil, cobra.ShellCompDirectiveNoFileComp
 		}
-		if len(args) > 3 {
+		if len(args) > max {
 			return nil, cobra.ShellCompDirectiveNoFileComp
 		}
 		var names []string

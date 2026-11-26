@@ -248,6 +248,9 @@ type RecordSelect struct {
 	// TypeArg names the type argument in messages: "<type>" (the default)
 	// or "--type".
 	TypeArg string
+	// NoValue says the form the command was called in has no way to give a
+	// value: none is named as a way to say which record is meant.
+	NoValue bool
 	// Offer filters the records a list offers (the records a delete may
 	// touch, see DeletableRecords); nil offers every record. Mark adds a
 	// note to a record in a list (the service owning it).
@@ -434,7 +437,7 @@ func (s RecordSelect) Exact(chosen RecordSelection) string {
 	if typeArg == "" {
 		typeArg = "<type>"
 	}
-	return ExactRecordHint(typeArg, true, true, s.openQualifiers(chosen.Records)...)
+	return ExactRecordHint(typeArg, !s.NoValue, true, s.openQualifiers(chosen.Records)...)
 }
 
 // withID are the records id names.
@@ -499,7 +502,7 @@ func (s RecordSelect) exactHint(n NameRecords) string {
 	if s.Type == "" && len(n.Types) > 1 {
 		ways = append(ways, "its "+s.TypeArg)
 	}
-	if s.Value == "" {
+	if s.Value == "" && !s.NoValue {
 		ways = append(ways, "its <value> after the <type>")
 	}
 	ways = append(ways, s.openQualifiers(n.Records)...)

@@ -305,8 +305,12 @@ goes after "--". The priority of an MX record goes in --priority.
 	return cmd
 }
 
-// recordTargetHelp says how record update and delete find their record.
-var recordTargetHelp = app.RecordTargetHelp("domain", "polyctl aliyun dns record list")
+// recordTargetForm is the form of update and delete: the record by name,
+// --id, or the former <record-id> after the first argument.
+var recordTargetForm = app.RecordTargetForm{FormerID: true}
+
+// recordTargetHelp says how update and delete find their record.
+var recordTargetHelp = recordTargetForm.Help("domain", "polyctl aliyun dns record list")
 
 // lineQualifier is the resolution line as one more way to tell records
 // apart: alidns holds a record of one name, type and value once per line.
@@ -354,10 +358,10 @@ nothing else; --line is the line the record is moved to.
   polyctl aliyun dns record update example.com www A 203.0.113.10 --value 203.0.113.20
   polyctl aliyun dns record update example.com www A --current-line telecom --ttl 900
   polyctl aliyun dns record update example.com --id 9001 --line unicom`,
-		Args:              app.RecordTargetArgsOrInteractive(rt),
-		ValidArgsFunction: app.CompleteRecordTargetArgs(rt, app.CompleteDomainArg(rt, platform.Aliyun), platform.Aliyun),
+		Args:              recordTargetForm.ArgsOrInteractive(rt),
+		ValidArgsFunction: recordTargetForm.Complete(rt, app.CompleteDomainArg(rt, platform.Aliyun), platform.Aliyun),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			target, err := app.ParseRecordTarget(cmd, args)
+			target, err := recordTargetForm.Parse(cmd, args)
 			if err != nil {
 				return err
 			}
@@ -475,10 +479,10 @@ else.
   polyctl aliyun dns record delete example.com www A 203.0.113.10
   polyctl aliyun dns record delete example.com www A --line telecom
   polyctl aliyun dns record delete example.com --id 9001`,
-		Args:              app.RecordTargetArgsOrInteractive(rt),
-		ValidArgsFunction: app.CompleteRecordTargetArgs(rt, app.CompleteDomainArg(rt, platform.Aliyun), platform.Aliyun),
+		Args:              recordTargetForm.ArgsOrInteractive(rt),
+		ValidArgsFunction: recordTargetForm.Complete(rt, app.CompleteDomainArg(rt, platform.Aliyun), platform.Aliyun),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			target, err := app.ParseRecordTarget(cmd, args)
+			target, err := recordTargetForm.Parse(cmd, args)
 			if err != nil {
 				return err
 			}

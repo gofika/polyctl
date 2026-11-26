@@ -586,8 +586,12 @@ switches it off, and without it Cloudflare's default applies.
 	return cmd
 }
 
+// recordTargetForm is the form of update and delete: the record by name,
+// --id, or the former <record-id> after the first argument.
+var recordTargetForm = app.RecordTargetForm{FormerID: true}
+
 // recordTargetHelp says how update and delete find their record.
-var recordTargetHelp = app.RecordTargetHelp("zone", "polyctl cloudflare dns list")
+var recordTargetHelp = recordTargetForm.Help("zone", "polyctl cloudflare dns list")
 
 func newDNSUpdateCmd(rt *app.Runtime) *cobra.Command {
 	var typ, name, value, comment, id string
@@ -611,10 +615,10 @@ switches it off, and without it the record keeps its current setting.`,
   polyctl cloudflare dns update example.com www A --proxied=false
   polyctl cloudflare dns update example.com www A 203.0.113.10 --value 203.0.113.20
   polyctl cloudflare dns update example.com --id 372e67954025e0ba6aaa6d586b9e0b59 --ttl 300`,
-		Args:              app.ProxiedTargetArgs(app.RecordTargetArgsOrInteractive(rt)),
-		ValidArgsFunction: app.CompleteRecordTargetArgs(rt, completeZones(rt), platform.Cloudflare),
+		Args:              app.ProxiedTargetArgs(recordTargetForm.ArgsOrInteractive(rt)),
+		ValidArgsFunction: recordTargetForm.Complete(rt, completeZones(rt), platform.Cloudflare),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			target, err := app.ParseRecordTarget(cmd, args)
+			target, err := recordTargetForm.Parse(cmd, args)
 			if err != nil {
 				return err
 			}
@@ -732,10 +736,10 @@ bucket. --dry-run reports what would be deleted and asks nothing.`,
   polyctl cloudflare dns delete example.com www A
   polyctl cloudflare dns delete example.com www A 203.0.113.10
   polyctl cloudflare dns delete example.com --id 372e67954025e0ba6aaa6d586b9e0b59`,
-		Args:              app.RecordTargetArgsOrInteractive(rt),
-		ValidArgsFunction: app.CompleteRecordTargetArgs(rt, completeZones(rt), platform.Cloudflare),
+		Args:              recordTargetForm.ArgsOrInteractive(rt),
+		ValidArgsFunction: recordTargetForm.Complete(rt, completeZones(rt), platform.Cloudflare),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			target, err := app.ParseRecordTarget(cmd, args)
+			target, err := recordTargetForm.Parse(cmd, args)
 			if err != nil {
 				return err
 			}

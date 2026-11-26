@@ -654,8 +654,12 @@ after "--".
 	return cmd
 }
 
+// recordTargetForm is the form of update and delete: the record by name,
+// --id, or the former <record-id> after the first argument.
+var recordTargetForm = app.RecordTargetForm{FormerID: true}
+
 // recordTargetHelp says how update and delete find their record.
-var recordTargetHelp = app.RecordTargetHelp("domain", "polyctl namecom dns list")
+var recordTargetHelp = recordTargetForm.Help("domain", "polyctl namecom dns list")
 
 // recordIDMatches reports whether id names r: a name.com record id is a
 // number, and "0123" is the record 123.
@@ -682,10 +686,10 @@ Only the fields given with flags are changed; the positional <type> and
   polyctl namecom dns update example.com www A 203.0.113.10 --value 203.0.113.20
   polyctl namecom dns update example.com @ MX --priority 20
   polyctl namecom dns update example.com --id 12345 --ttl 600`,
-		Args:              app.RecordTargetArgsOrInteractive(rt),
-		ValidArgsFunction: app.CompleteRecordTargetArgs(rt, app.CompleteDomainArg(rt, platform.NameCom), platform.NameCom),
+		Args:              recordTargetForm.ArgsOrInteractive(rt),
+		ValidArgsFunction: recordTargetForm.Complete(rt, app.CompleteDomainArg(rt, platform.NameCom), platform.NameCom),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			target, err := app.ParseRecordTarget(cmd, args)
+			target, err := recordTargetForm.Parse(cmd, args)
 			if err != nil {
 				return err
 			}
@@ -782,10 +786,10 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
   polyctl namecom dns delete example.com www A
   polyctl namecom dns delete example.com www A 203.0.113.10
   polyctl namecom dns delete example.com --id 12345`,
-		Args:              app.RecordTargetArgsOrInteractive(rt),
-		ValidArgsFunction: app.CompleteRecordTargetArgs(rt, app.CompleteDomainArg(rt, platform.NameCom), platform.NameCom),
+		Args:              recordTargetForm.ArgsOrInteractive(rt),
+		ValidArgsFunction: recordTargetForm.Complete(rt, app.CompleteDomainArg(rt, platform.NameCom), platform.NameCom),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			target, err := app.ParseRecordTarget(cmd, args)
+			target, err := recordTargetForm.Parse(cmd, args)
 			if err != nil {
 				return err
 			}

@@ -177,18 +177,21 @@ func CompleteDomainArg(rt *Runtime, id platform.ID) CompletionFunc {
 }
 
 // completionRows lists inventory rows of the account a platform command
-// would use. Completion never fails loudly: without an account or a cache
+// would use, or of every account for a command that is not tied to a
+// platform (id ""). Completion never fails loudly: without an account or a cache
 // there is simply nothing to offer.
 func completionRows(cmd *cobra.Command, rt *Runtime, id platform.ID, q inventory.Query) []inventory.Resource {
-	profile, err := rt.ProfileFor(id)
-	if err != nil {
-		return nil
+	if id != "" {
+		profile, err := rt.ProfileFor(id)
+		if err != nil {
+			return nil
+		}
+		q.Platform, q.Profile = id, profile
 	}
 	db, err := rt.DB()
 	if err != nil {
 		return nil
 	}
-	q.Platform, q.Profile = id, profile
 	rows, err := db.List(cmd.Context(), q)
 	if err != nil {
 		return nil

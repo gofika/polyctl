@@ -8,23 +8,45 @@ import (
 	"github.com/gofika/polyctl/internal/platform"
 )
 
-// RecordTargetHelp is the paragraph the update and delete commands of a
-// platform with record ids show about how they find their record. first is
-// what the first argument is called ("zone", "domain"), and list the
-// command that shows the ids.
-func RecordTargetHelp(first, list string) string {
-	return strings.NewReplacer("{first}", first, "{list}", list).Replace(
-		`<name> is relative to the {first} (www, a.b), @ for the apex, or a full name
-inside the {first} (www.example.com). <type> and <value> narrow the
-selection and are needed only to tell records apart; <type> is
-case-insensitive. --id names one record by its id, as
-` + "`{list}`" + ` shows it, and cannot be combined with a
-positional record. The former form <{first}> <record-id> still works: a
-single argument after the {first} that is the id of a record of the
-{first}, and not the name of one, is taken for that id.
+// RecordNameHelp is the sentence every record command shows about its
+// <name> and <type>; first is what the first argument is called ("zone",
+// "domain").
+func RecordNameHelp(first string) string {
+	return strings.ReplaceAll(`<name> is relative to the {first} (www, a.b), @ for the apex, or a full name
+inside the {first} (www.example.com). <type> is case-insensitive.`, "{first}", first)
+}
+
+// RecordArgsHelp is the paragraph the commands that write a record show
+// about their positional record: RecordNameHelp, and how a value is typed.
+func RecordArgsHelp(first string) string {
+	return RecordNameHelp(first) + `
+A value is one argument: quote one that contains spaces. A value that starts
+with "-" goes after "--".`
+}
+
+// Help is the paragraph an update or delete command of the form shows about
+// how it finds its record. first is what the first argument is called
+// ("zone", "domain"), and list the command that shows the ids.
+func (f RecordTargetForm) Help(first, list string) string {
+	text := RecordNameHelp(first) + `
+<type> and <value> narrow the selection and are needed only to tell records
+apart. --id names one record by its id, as ` + "`{list}`" + `
+shows it, and cannot be combined with a positional record.`
+	if f.NoValue {
+		text = RecordNameHelp(first) + `
+<type> is needed only to tell record sets apart.`
+	}
+	if f.FormerID {
+		text += `
+The former form <{first}> <record-id> still works: a single argument after
+the {first} that is the id of a record of the {first}, and not the name of
+one, is taken for that id.`
+	}
+	text += `
 
 On a terminal, a missing <{first}> is picked from the {first}s of the
-profile, and with only the {first} its records are listed to choose from.`)
+profile, and with only the {first} its records are listed to choose from.`
+	return strings.NewReplacer("{first}", first, "{list}", list).Replace(text)
 }
 
 // RecordUpdateHelp is the paragraph of an update command about the one
