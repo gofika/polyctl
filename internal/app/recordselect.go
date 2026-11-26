@@ -69,8 +69,9 @@ func (n NameRecords) AmbiguousType(typeArg string) error {
 // NeedsType reports whether the type of the records is still open: false
 // when they have one type. With several, the non-interactive flow gets
 // AmbiguousType (also with --yes: several types are never deleted in one
-// go by a name alone) and the interactive flow true: the command then
-// offers its list (PickRecords, or the record sets of the name).
+// go by a name alone) and the interactive flow true, after a line that says
+// that the name has records of several types: the command then offers its
+// list (PickRecords, or the record sets of the name).
 func (rt *Runtime) NeedsType(n NameRecords, typeArg string) (bool, error) {
 	if len(n.Types) <= 1 {
 		return false, nil
@@ -78,7 +79,32 @@ func (rt *Runtime) NeedsType(n NameRecords, typeArg string) (bool, error) {
 	if !rt.Interactive() {
 		return false, n.AmbiguousType(typeArg)
 	}
+	rt.Infof("%s has records of %d types (%s)", n.Name, len(n.Types), strings.Join(n.Types, ", "))
 	return true, nil
+}
+
+// ExactRecordHint says how to delete one record of several, for
+// RecordDelete.Exact: by its value when the command takes one (byValue),
+// by its id with --id when it takes that (byID). typeArg is the type
+// argument of the form the command was called in: "<type>" names the
+// positional <value>, "--type" the former --value. "" for a command that
+// has neither.
+func ExactRecordHint(typeArg string, byValue, byID bool) string {
+	var ways []string
+	if byValue {
+		if typeArg == "--type" {
+			ways = append(ways, "its value with --value")
+		} else {
+			ways = append(ways, "its <value> after the <type>")
+		}
+	}
+	if byID {
+		ways = append(ways, "its id with --id <id>")
+	}
+	if len(ways) == 0 {
+		return ""
+	}
+	return "give " + strings.Join(ways, ", or ")
 }
 
 // PickRecords asks which of recs to act on (a multiple choice, nothing
@@ -124,9 +150,14 @@ type RecordDelete struct {
 	// Records lists what would be deleted, with the ids (the record grid
 	// of the command).
 	Records output.Grid
-	// Question is asked (default no) and names the refusal of the
-	// non-interactive flow: "delete 3 records in zone example.com".
+	// Question is asked (default no): "delete 3 records in zone
+	// example.com".
 	Question string
+	// Refusal names the deletion in the refusal of the non-interactive
+	// flow without --yes ("would <Refusal>"), for a Question that does not
+	// read as one: "delete the A record set of www.example.com". Default:
+	// Question.
+	Refusal string
 	// Exact says how to delete one of the records only: "give its <value>,
 	// or --id <id>". "" for a command that has no way to; it is not shown
 	// for a single record.
@@ -149,15 +180,27 @@ func (rt *Runtime) ConfirmRecordDelete(ctx context.Context, d RecordDelete) erro
 		hint = "to delete one of them only, " + d.Exact
 		rt.Infof("%d records match; %s", len(d.Records.Rows), hint)
 	}
+	if d.Refusal != "" {
+		if err := rt.CanConfirm(d.Refusal); err != nil {
+			return err
+		}
+	}
 	ok, err := rt.Confirm(ctx, d.Question, false)
 	if err != nil {
 		return err
 	}
 	if !ok {
-		if hint != "" {
-			return NothingToDof("no record was deleted; %s", hint)
-		}
-		return NothingToDof("no record was deleted")
+		return NoRecordDeleted(hint)
 	}
 	return nil
+}
+
+// NoRecordDeleted is the declined confirmation of every record delete
+// command: "nothing to do" (exit code 0), with hint (how to delete one
+// record only) when there is one.
+func NoRecordDeleted(hint string) error {
+	if hint != "" {
+		return NothingToDof("no record was deleted; %s", hint)
+	}
+	return NothingToDof("no record was deleted")
 }

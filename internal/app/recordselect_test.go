@@ -149,3 +149,38 @@ func TestConfirmRecordDelete(t *testing.T) {
 		t.Errorf("no hint: %v, %q", err, errb.String())
 	}
 }
+
+// ExactRecordHint names the ways a command has to delete one record, in the
+// form the command was called in.
+func TestExactRecordHint(t *testing.T) {
+	for _, c := range []struct {
+		typeArg     string
+		value, byID bool
+		want        string
+	}{
+		{"<type>", true, true, "give its <value> after the <type>, or its id with --id <id>"},
+		{"--type", true, true, "give its value with --value, or its id with --id <id>"},
+		{"<type>", false, true, "give its id with --id <id>"},
+		{"--type", true, false, "give its value with --value"},
+		{"<type>", false, false, ""},
+	} {
+		if got := app.ExactRecordHint(c.typeArg, c.value, c.byID); got != c.want {
+			t.Errorf("ExactRecordHint(%q, %v, %v) = %q, want %q", c.typeArg, c.value, c.byID, got, c.want)
+		}
+	}
+}
+
+// The refusal of the non-interactive flow names Refusal when a command
+// gives one, after the list; the question stays the Question.
+func TestConfirmRecordDeleteRefusal(t *testing.T) {
+	var errb bytes.Buffer
+	rt := app.New(app.Flags{}, strings.NewReader(""), &bytes.Buffer{}, &errb)
+	err := rt.ConfirmRecordDelete(context.Background(), app.RecordDelete{
+		Records:  output.Grid{Headers: []string{"NAME", "ID"}, Rows: [][]string{{"www.example.com", "a1"}}},
+		Question: "Delete the A record set of www.example.com (1 value(s))?",
+		Refusal:  "delete the A record set of www.example.com",
+	})
+	if !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "pass --yes to proceed (would delete the A record set of www.example.com)") || !strings.Contains(errb.String(), "a1") {
+		t.Errorf("refusal = %v, stderr %q", err, errb.String())
+	}
+}

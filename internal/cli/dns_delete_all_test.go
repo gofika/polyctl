@@ -89,7 +89,7 @@ func TestDNSDeleteAllInteractive(t *testing.T) {
 		_, cfgPath, fc := ensureZone(t, recs...)
 		p := &scriptedPicker{T: t}
 		r := runFlow(t, context.Background(), cfgPath, p, strings.NewReader(typed), "dns", "delete", "example.com", "--all")
-		if r.code != ExitOK || writes(fc) != 0 || !strings.Contains(fmt.Sprint(r.err), "cancelled") {
+		if r.code != ExitOK || writes(fc) != 0 || fmt.Sprint(r.err) != "nothing to do: no record was deleted" {
 			t.Errorf("answer %q: exit %d, %v, stderr %q, calls %v", typed, r.code, r.err, r.stderr, fc.calls)
 		}
 		for _, want := range []string{"about to delete 3 DNS records of example.com", "cannot be undone", "A 2, TXT 1", "kept (system records): NS 1", "delete 3 records in zone example.com (y/N)"} {

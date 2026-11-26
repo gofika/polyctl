@@ -507,7 +507,6 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 					return err
 				}
 				if open {
-					rt.Infof("%s has records of %d types (%s)", found.Name, len(found.Types), strings.Join(found.Types, ", "))
 					if matches, err = pickRecords(rt, dns, zone, "Delete which records of "+found.Name+"?", found.Records); err != nil {
 						return err
 					}
@@ -548,10 +547,7 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 				}
 				confirm := app.RecordDelete{Records: recordGrid(matches, t.Platform), Question: question}
 				if !ticked {
-					confirm.Exact = "give its <value> after the <type>, or its id with --id <id>"
-					if typeArg == "--type" {
-						confirm.Exact = "give its value with --value, or its id with --id <id>"
-					}
+					confirm.Exact = app.ExactRecordHint(typeArg, true, true)
 				}
 				if err := rt.ConfirmRecordDelete(cmd.Context(), confirm); err != nil {
 					return err
@@ -663,7 +659,7 @@ func runDNSDeleteAll(ctx context.Context, rt *app.Runtime, domain string, rawTyp
 			return err
 		}
 		if !ok {
-			return nothingToDo("cancelled, no record was deleted")
+			return app.NoRecordDeleted("")
 		}
 	}
 	changes, runErr := plan.Run(ctx, dryRun)
