@@ -609,7 +609,7 @@ asked: the set is then at the zone apex.`,
   polyctl gcp dns record upsert example-zone @ MX "10 mx1.example.net" "20 mx2.example.net" --ttl 300
   polyctl gcp dns record upsert example-zone @ TXT "v=spf1 include:_spf.example.net ~all"`,
 		Args:              app.RecordArgsOrInteractive(rt, 1, -1),
-		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.GCP)),
+		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.GCP), platform.GCP),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The record is positional (<name> <type> <value>...) or, in the
 			// former form, given with --name, --type and --value.
@@ -750,7 +750,7 @@ of one record. --dry-run asks nothing.`,
   polyctl gcp dns record delete example-zone www A 203.0.113.11
   polyctl gcp dns record delete example-zone --id 'acme-prod/example-zone|A|www.example.com|203.0.113.11'`,
 		Args:              app.RecordArgsOrInteractive(rt, 0, 1),
-		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.GCP)),
+		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.GCP), platform.GCP),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The record is positional (<name> <type> [<value>]) or, in the
 			// former form, given with --name, --type and --value.

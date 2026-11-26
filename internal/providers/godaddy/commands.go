@@ -636,7 +636,7 @@ are kept.
   polyctl godaddy dns add example.com @ MX mail.example.com --priority 10
   polyctl godaddy dns add example.com @ TXT "v=spf1 include:_spf.example.net ~all"`,
 		Args:              app.RecordArgsOrInteractive(rt, 1, 1),
-		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.GoDaddy)),
+		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.GoDaddy), platform.GoDaddy),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The record is positional (<name> <type> <value>) or, in the
 			// former form, given with --name, --type and --value.
@@ -729,7 +729,7 @@ existing ones use ` + "`polyctl godaddy dns add`" + `.
 		Example: `  polyctl godaddy dns upsert example.com www A 203.0.113.10 203.0.113.11
   polyctl godaddy dns upsert example.com @ MX mail.example.com --priority 10 --ttl 3600`,
 		Args:              app.RecordArgsOrInteractive(rt, 1, -1),
-		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.GoDaddy)),
+		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.GoDaddy), platform.GoDaddy),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The record set is positional (<name> <type> <value>...) or, in
 			// the former form, given with --name, --type and --value.
@@ -814,7 +814,7 @@ no; --yes skips it). The non-interactive flow asks nothing: --yes is required
 --dry-run reports what would be deleted and asks nothing.`,
 		Example:           "  polyctl godaddy dns delete example.com www A\n  polyctl godaddy dns delete example.com www A --yes\n  polyctl godaddy dns delete example.com --id 'example.com|A|www|203.0.113.10' --yes",
 		Args:              app.RecordArgsOrInteractive(rt, 0, 0),
-		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.GoDaddy)),
+		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.GoDaddy), platform.GoDaddy),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The record set is positional (<name> <type>) or, in the former
 			// form, given with --name and --type.

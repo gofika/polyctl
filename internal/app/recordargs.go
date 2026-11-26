@@ -124,7 +124,9 @@ func RecordArgsOrInteractive(rt *Runtime, minValues, maxValues int, formerFlags 
 // CompleteRecordArgs completes the arguments of a record command: the first
 // with first (the domains or zones), the <type> position with the record
 // types, and the name and the values with nothing rather than file names.
-func CompleteRecordArgs(first CompletionFunc) CompletionFunc {
+// The types are those the provider of platform id can write when it says
+// so; id is "" for a command that is not tied to one platform.
+func CompleteRecordArgs(first CompletionFunc, id platform.ID) CompletionFunc {
 	return func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		switch len(args) {
 		case 0:
@@ -132,6 +134,11 @@ func CompleteRecordArgs(first CompletionFunc) CompletionFunc {
 				return first(cmd, args, toComplete)
 			}
 		case 2:
+			if id != "" {
+				if types := platform.WritableRecordTypes(id); len(types) > 0 {
+					return types, cobra.ShellCompDirectiveNoFileComp
+				}
+			}
 			return platform.RecordSpecTypes, cobra.ShellCompDirectiveNoFileComp
 		}
 		return nil, cobra.ShellCompDirectiveNoFileComp

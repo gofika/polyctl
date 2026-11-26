@@ -618,7 +618,7 @@ after "--".`,
   polyctl namecom dns create example.com @ MX mail.example.com --priority 10
   polyctl namecom dns create example.com @ TXT "v=spf1 include:_spf.example.net ~all"`,
 		Args:              app.RecordArgsOrInteractive(rt, 1, 1),
-		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.NameCom)),
+		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.NameCom), platform.NameCom),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The record is positional (<name> <type> <value>) or, in the
 			// former form, given with --name, --type and --value.

@@ -525,7 +525,7 @@ switches it off, and without it Cloudflare's default applies.`,
   polyctl cloudflare dns create example.com @ MX mail.example.com --priority 10
   polyctl cloudflare dns create example.com @ TXT "v=spf1 include:_spf.example.net ~all"`,
 		Args:              app.ProxiedRecordArgs(app.RecordArgsOrInteractive(rt, 1, 1), 1),
-		ValidArgsFunction: app.CompleteRecordArgs(completeZones(rt)),
+		ValidArgsFunction: app.CompleteRecordArgs(completeZones(rt), platform.Cloudflare),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The record is positional (<name> <type> <value>) or, in the
 			// former form, given with --name, --type and --value.

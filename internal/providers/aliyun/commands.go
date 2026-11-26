@@ -253,7 +253,7 @@ The name is not asked: the record is then at the apex.`,
   polyctl aliyun dns record create example.com @ MX mail.example.com --priority 10
   polyctl aliyun dns record create example.com www CNAME target.example.net --line telecom`,
 		Args:              app.RecordArgsOrInteractive(rt, 1, 1),
-		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.Aliyun)),
+		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.Aliyun), platform.Aliyun),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The record is positional (<name> <type> <value>) or, in the
 			// former form, given with --name, --type and --value.

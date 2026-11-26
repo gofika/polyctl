@@ -420,7 +420,7 @@ sets are ambiguous (exit code 5).`,
   polyctl aws route53 record upsert example.com @ MX "10 mx1.example.net" "20 mx2.example.net" --ttl 300
   polyctl aws route53 record upsert example.com www A 203.0.113.12 --set-identifier eu`,
 		Args:              app.RecordArgsOrInteractive(rt, 1, -1),
-		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.AWS)),
+		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.AWS), platform.AWS),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The record is positional (<name> <type> <value>...) or, in the
 			// former form, given with --name, --type and --value.
@@ -548,7 +548,7 @@ A missing set is not found (exit code 4) before the question. --dry-run
 reports what would be deleted and asks nothing.`,
 		Example:           "  polyctl aws route53 record delete example.com _acme-challenge TXT\n  polyctl aws route53 record delete example.com www A --set-identifier eu --yes",
 		Args:              app.RecordArgsOrInteractive(rt, 0, 0),
-		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.AWS)),
+		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.AWS), platform.AWS),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The record set is positional (<name> <type>) or, in the former
 			// form, given with --name and --type.

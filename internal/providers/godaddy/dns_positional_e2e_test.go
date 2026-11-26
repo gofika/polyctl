@@ -175,3 +175,24 @@ func TestDNSPositionalRecordHelp(t *testing.T) {
 		}
 	}
 }
+
+// The <type> position completes the record types GoDaddy can write, not
+// every type a record spec knows.
+func TestDNSRecordTypeCompletion(t *testing.T) {
+	e := newDeleteEnv(t)
+	for _, verb := range []string{"add", "upsert", "delete"} {
+		code, stdout, stderr := e.run(nil, "", "__complete", "godaddy", "dns", verb, "example.com", "www", "")
+		if code != cli.ExitOK {
+			t.Fatalf("%s: exit %d, %s", verb, code, stderr)
+		}
+		var got []string
+		for _, l := range strings.Split(stdout, "\n") {
+			if l != "" && !strings.HasPrefix(l, ":") {
+				got = append(got, l)
+			}
+		}
+		if strings.Join(got, " ") != "A AAAA CNAME MX NS TXT CAA" {
+			t.Errorf("%s completes <type> with %q", verb, got)
+		}
+	}
+}

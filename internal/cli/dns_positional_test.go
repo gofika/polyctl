@@ -273,3 +273,19 @@ func TestDNSPositionalRecordHelp(t *testing.T) {
 		}
 	}
 }
+
+// Without a platform the <type> position completes every type of a record
+// spec; the name and the values complete to nothing.
+func TestDNSRecordTypeCompletion(t *testing.T) {
+	_, cfgPath, _ := ensureZone(t)
+	for _, verb := range []string{"set", "add", "ensure", "delete"} {
+		code, stdout, stderr := mainRun(cfgPath, "__complete", "dns", verb, "example.com", "www", "")
+		if code != ExitOK || !strings.HasPrefix(stdout, strings.Join(platform.RecordSpecTypes, "\n")+"\n:") {
+			t.Errorf("%s: exit %d, completion %q (%s)", verb, code, stdout, stderr)
+		}
+		code, stdout, _ = mainRun(cfgPath, "__complete", "dns", verb, "example.com", "www", "A", "")
+		if code != ExitOK || !strings.HasPrefix(stdout, ":") {
+			t.Errorf("%s: exit %d, a value completes to %q", verb, code, stdout)
+		}
+	}
+}
