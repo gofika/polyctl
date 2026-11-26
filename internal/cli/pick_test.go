@@ -110,7 +110,7 @@ func TestDNSDeletePicksRecords(t *testing.T) {
 		t.Errorf("nothing ticked: exit %d, %v", r.code, r.err)
 	}
 	r = runFlow(t, context.Background(), cfgPath, nil, strings.NewReader(""), "dns", "delete", "example.com")
-	if r.code != ExitUsage || !strings.Contains(r.err.Error(), "a record, --id or --all is required: usage: polyctl dns delete <domain> <name> [<type> [<value>]]") {
+	if r.code != ExitUsage || !strings.Contains(r.err.Error(), "a record, --id <record-id> or --all is required: usage: polyctl dns delete <domain> <name> [<type> [<value>]]") {
 		t.Errorf("non-interactive: exit %d, %v", r.code, r.err)
 	}
 }

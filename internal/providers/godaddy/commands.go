@@ -758,7 +758,7 @@ existing ones use ` + "`polyctl godaddy dns add`" + `.
 
 // deleteForm is the form of dns delete: the record by name or --id, or with
 // the former --name and --type.
-var deleteForm = app.RecordTargetForm{FormerFlags: []string{"name", "type"}}
+var deleteForm = app.RecordTargetForm{FormerFlags: []string{"name", "type"}, FormerApex: true}
 
 // deleteResult is the output of dns delete: the ids and the records
 // deleted, and the name and the type when they are those of one record set

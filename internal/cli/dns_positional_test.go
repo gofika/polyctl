@@ -193,8 +193,12 @@ func TestDNSPositionalRecordUsage(t *testing.T) {
 		{[]string{"dns", "set", "example.com", "www.other.org", "A", "192.0.2.9"}, "<name>:"},
 		{[]string{"dns", "delete", "example.com", "www.other.org.", "A"}, "<name>:"},
 		// --all and --id select on their own.
-		{[]string{"dns", "delete", "example.com", "h1", "A", "--all", "-y"}, "--all and --id cannot be combined with a positional record"},
-		{[]string{"dns", "delete", "example.com", "h1", "A", "--id", "r1"}, "--all and --id cannot be combined with a positional record"},
+		{[]string{"dns", "delete", "example.com", "h1", "A", "--all", "-y"}, "--all cannot be combined with a positional record (<name> [<type> [<value>]])"},
+		{[]string{"dns", "delete", "example.com", "h1", "A", "--id", "r1"}, "--id selects one record; it cannot be combined with <name> [<type> [<value>]]"},
+		{[]string{"dns", "delete", "example.com", "--id", ""}, "--id must not be empty"},
+		{[]string{"dns", "delete", "example.com", "--id", "r1", "--type", "A"}, "--id selects one record; it cannot be combined with --name, --type or --value"},
+		{[]string{"dns", "delete", "example.com", "--type", "A", "--type", "TXT"}, "--type takes one record type without --all"},
+		{[]string{"dns", "delete", "example.com", "www", "A,TXT"}, "<type> is one record type"},
 		// <type> of delete is one type; the text names the argument.
 		{[]string{"dns", "delete", "example.com", "h1", "A,AAAA"}, "<type> is one record type: " + deleteUsage},
 		// The record options of ensure belong to the positional record.
@@ -369,7 +373,7 @@ func TestDNSPositionalRecordHelp(t *testing.T) {
 	}
 	// The <type> position completes record types; the name and the values
 	// complete to nothing rather than to file names.
-	for _, cmd := range []string{"set", "add", "ensure", "delete"} {
+	for _, cmd := range []string{"set", "add", "ensure"} {
 		out, _, err := run(t, cfgPath, cobra.ShellCompRequestCmd, "dns", cmd, "example.com", "www", "")
 		if err != nil || !strings.Contains(out, "CNAME\n") || !strings.Contains(out, ":4\n") {
 			t.Errorf("completion of the type of dns %s: %v\n%s", cmd, err, out)
@@ -381,11 +385,35 @@ func TestDNSPositionalRecordHelp(t *testing.T) {
 	}
 }
 
+// dns delete completes what the zone holds in the inventory, whatever the
+// platform: the names, the types of a name and the values of a type.
+func TestDNSDeleteCompletion(t *testing.T) {
+	_, cfgPath, _ := ensureZone(t,
+		platform.Record{ID: "r1", ZoneID: "z1", Name: "www.example.com", Type: "A", Value: "203.0.113.10"},
+		platform.Record{ID: "r2", ZoneID: "z1", Name: "www.example.com", Type: "TXT", Value: "hello"},
+		platform.Record{ID: "r3", ZoneID: "z1", Name: "example.com", Type: "MX", Value: "mail.example.com"})
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"example.com", ""}, "@\tMX mail.example.com\nwww\tA 203.0.113.10, TXT hello\n:4\n"},
+		{[]string{"example.com", "www", ""}, "A\nTXT\n:4\n"},
+		{[]string{"example.com", "www", "txt", ""}, "hello\n:4\n"},
+		{[]string{"example.com", "www", "A", "203.0.113.10", ""}, ":4\n"},
+		{[]string{"other.org", ""}, ":4\n"},
+	} {
+		code, stdout, stderr := mainRun(cfgPath, append([]string{"__complete", "dns", "delete"}, c.args...)...)
+		if code != ExitOK || stdout != c.want {
+			t.Errorf("%v: exit %d, completion %q, want %q (%s)", c.args, code, stdout, c.want, stderr)
+		}
+	}
+}
+
 // Without a platform the <type> position completes every type of a record
 // spec; the name and the values complete to nothing.
 func TestDNSRecordTypeCompletion(t *testing.T) {
 	_, cfgPath, _ := ensureZone(t)
-	for _, verb := range []string{"set", "add", "ensure", "delete"} {
+	for _, verb := range []string{"set", "add", "ensure"} {
 		code, stdout, stderr := mainRun(cfgPath, "__complete", "dns", verb, "example.com", "www", "")
 		if code != ExitOK || !strings.HasPrefix(stdout, strings.Join(platform.RecordSpecTypes, "\n")+"\n:") {
 			t.Errorf("%s: exit %d, completion %q (%s)", verb, code, stdout, stderr)

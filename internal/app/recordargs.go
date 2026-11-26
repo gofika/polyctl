@@ -229,8 +229,12 @@ type RecordTargetForm struct {
 	// FormerFlags are the flags of the former form that name the record,
 	// of "name", "type" and "value" those the command still reads. A record
 	// is given with them or positionally, not both, and never beside --id.
-	// With one of them and no --name the record is the zone apex.
+	// Without --name they name no record: they filter the list of the
+	// interactive flow.
 	FormerFlags []string
+	// FormerApex says --type without --name meant the records of the zone
+	// apex in the former form (Name is then "@").
+	FormerApex bool
 	// Instead are the flags that say what to act on without a record
 	// ("all"): one of them cannot stand beside a positional record, and it
 	// satisfies the non-interactive flow, which otherwise needs a record or
@@ -311,7 +315,7 @@ func (f RecordTargetForm) ArgsOrInteractive(rt *Runtime) cobra.PositionalArgs {
 			return nil
 		}
 		byID, _ := f.byID(cmd)
-		if len(args) > 0 && (rec != nil || byID || len(changedFlags(cmd, f.Instead)) > 0) {
+		if len(args) > 0 && ((rec != nil && rec.Name != "") || byID || len(changedFlags(cmd, f.Instead)) > 0) {
 			return nil
 		}
 		// See RangeArgsOrInteractive: an invalid POLYCTL_NON_INTERACTIVE
@@ -332,7 +336,9 @@ func (f RecordTargetForm) ArgsOrInteractive(rt *Runtime) cobra.PositionalArgs {
 
 // Parse reads the record the command was given, from its arguments (the
 // zone first) or from the flags of the former form; nil when there is none
-// (the record is named by --id, by an Instead flag, or listed). Every
+// (the record is named by --id, by an Instead flag, or listed). A record of
+// the former flags without a name (Name "") names none either: its type and
+// value filter the list. Every
 // mistake is a usage error: a malformed record, a record given in both
 // forms, a record beside --id or beside an Instead flag, an empty --id, and
 // a <type> that is not one type.
@@ -376,7 +382,7 @@ func (f RecordTargetForm) Parse(cmd *cobra.Command, args []string) (*RecordArgs,
 		}
 		return nil, UsageErrf("--id selects one record; it cannot be combined with %s", orList(all))
 	}
-	rec := &RecordArgs{Name: "@", TypeArg: "--type", noValue: true}
+	rec := &RecordArgs{TypeArg: "--type", noValue: true}
 	for _, name := range f.FormerFlags {
 		if name == "value" {
 			rec.noValue = false
@@ -390,14 +396,17 @@ func (f RecordTargetForm) Parse(cmd *cobra.Command, args []string) (*RecordArgs,
 			// A flag that takes several types for another mode (--all).
 			vs := sv.GetSlice()
 			if len(vs) != 1 || strings.Contains(vs[0], ",") {
-				return nil, UsageErrf("--%s takes one record %s here", name, name)
+				if len(f.Instead) > 0 {
+					return nil, UsageErrf("--%s takes one record %s without --%s", name, name, f.Instead[0])
+				}
+				return nil, UsageErrf("--%s takes one record %s", name, name)
 			}
 			v = strings.TrimSpace(vs[0])
 		}
 		switch name {
 		case "name":
-			if v != "" {
-				rec.Name = v
+			if rec.Name = v; v == "" {
+				rec.Name = "@"
 			}
 		case "type":
 			rec.Type = strings.ToUpper(v)
@@ -406,6 +415,9 @@ func (f RecordTargetForm) Parse(cmd *cobra.Command, args []string) (*RecordArgs,
 				rec.Values = []string{v}
 			}
 		}
+	}
+	if rec.Name == "" && rec.Type != "" && f.FormerApex {
+		rec.Name = "@"
 	}
 	return rec, nil
 }
@@ -420,7 +432,10 @@ func (r *RecordArgs) Select(s RecordSelect) RecordSelect {
 	if r == nil {
 		return s
 	}
-	s.Name, s.Type, s.Value = platform.FQDN(r.Name, s.Zone), r.Type, r.Value()
+	s.Type, s.Value = r.Type, r.Value()
+	if r.Name != "" {
+		s.Name = platform.FQDN(r.Name, s.Zone)
+	}
 	if r.TypeArg != "" {
 		s.TypeArg = r.TypeArg
 	}

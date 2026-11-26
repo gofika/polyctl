@@ -333,6 +333,10 @@ func newDNSWriteCmd(rt *app.Runtime, add bool, cmd *cobra.Command) *cobra.Comman
 	return cmd
 }
 
+// dnsDeleteForm is the form of dns delete: the record by name or --id, with
+// the former --name, --type and --value, or --all in place of a record.
+var dnsDeleteForm = app.RecordTargetForm{FormerFlags: []string{"name", "type", "value"}, FormerApex: true, Instead: []string{"all"}}
+
 func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 	var types []string
 	var name, value, id string
@@ -377,27 +381,16 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
   polyctl dns delete example.com @ TXT "v=spf1 -all" --yes
   polyctl dns delete example.com --id 372e67954025e0ba6aaa6d586b9e0b59
   polyctl dns delete example.com --all --type TXT --dry-run`,
-		Args:              app.RecordSelectorArgsOrInteractive(rt, 1),
-		ValidArgsFunction: app.CompleteRecordArgs(completeDomains(rt), ""),
+		Args:              dnsDeleteForm.ArgsOrInteractive(rt),
+		ValidArgsFunction: dnsDeleteForm.Complete(rt, completeDomains(rt), ""),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The record is positional (<name> [<type> [<value>]]) or, in
 			// the former form, given with --name, --type and --value.
-			nameArg, typeArg := "--name", "--type"
-			if len(args) > 1 {
-				rec, err := app.ParseRecordSelector(cmd, args[1:], 1)
-				if err != nil {
-					return err
-				}
-				if all || id != "" {
-					return usageErr("--all and --id cannot be combined with a positional record (<name> [<type> [<value>]])")
-				}
-				name, value, nameArg, typeArg = rec.Name, rec.Value(), "<name>", "<type>"
-				if rec.Type != "" {
-					types = []string{rec.Type}
-				}
-				args = args[:1]
+			target, err := dnsDeleteForm.Parse(cmd, args)
+			if err != nil {
+				return err
 			}
-			args, err := domainArgs(cmd, rt, args, app.DomainPick{Title: "Zone", Kinds: zoneKinds})
+			args, err = domainArgs(cmd, rt, args[:min(len(args), 1)], app.DomainPick{Title: "Zone", Kinds: zoneKinds})
 			if err != nil {
 				return err
 			}
@@ -410,30 +403,6 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 			if keepBound {
 				return usageErr("--keep-bound only applies with --all")
 			}
-			if id != "" && (name != "" || value != "" || len(types) > 0) {
-				// The id selects one record; a filter beside it would be
-				// ignored, and a wrong id would delete an unrelated record
-				// without asking.
-				return usageErr("--id selects one record; it cannot be combined with --name, --type or --value")
-			}
-			if len(types) > 1 || (len(types) == 1 && strings.Contains(types[0], ",")) {
-				if nameArg == "<name>" {
-					return usageErr("<type> is one record type: %s", app.RecordSelectorUsage(cmd, 1))
-				}
-				return usageErr("--type takes one record type without --all")
-			}
-			typ := ""
-			if len(types) == 1 {
-				typ = types[0]
-			}
-			// Without a selection the interactive flow lists the records
-			// of the zone to tick (of --value when only that is given). A
-			// name selects its records; without a type that is every record
-			// of the name when they have one type.
-			pick := id == "" && typ == "" && name == ""
-			if pick && !rt.Interactive() {
-				return usageErr("a record, --id or --all is required: %s", app.RecordSelectorUsage(cmd, 1))
-			}
 			t, err := rt.ResolveDomain(cmd.Context(), args[0], platform.ResZone)
 			if err != nil {
 				return err
@@ -442,9 +411,17 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 				return app.ErrOffline
 			}
 			// A name outside the zone is refused before the zone is read.
-			fqdn := platform.NormalizeDomain(args[0])
-			if name != "" {
-				if fqdn, err = dnsNameOf(t, name, nameArg); err != nil {
+			if target != nil && target.Name != "" {
+				nameArg := "<name>"
+				if target.TypeArg == "--type" {
+					nameArg = "--name"
+					if !cmd.Flags().Changed("name") {
+						// The former --type without --name: the records of
+						// <domain> itself.
+						target.Name = platform.NormalizeDomain(args[0])
+					}
+				}
+				if _, err := dnsNameOf(t, target.Name, nameArg); err != nil {
 					return err
 				}
 			}
@@ -457,10 +434,11 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 				return err
 			}
 			zone := platform.Zone{ID: t.ResourceID, Name: t.Domain}
-			sel := app.RecordSelect{Zone: t.Domain, Records: existing, Type: typ, Value: value, ID: id, Verb: "Delete", TypeArg: typeArg}
-			if !pick {
-				sel.Name = fqdn
-			}
+			// Without a name the interactive flow lists the records of the
+			// zone to tick (of --value when only that is given). A name
+			// selects its records; without a type that is every record of
+			// the name when they have one type.
+			sel := target.Select(app.RecordSelect{Zone: t.Domain, Records: existing, ID: id, Verb: "Delete"})
 			if matcher, ok := dns.(platform.RecordIDMatcher); ok {
 				sel.IDMatches = matcher.RecordIDMatches
 			}
@@ -470,11 +448,8 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 				return err
 			}
 			matches := chosen.Records
-			del := app.RecordsDelete{Target: t.ReportTarget(), Zone: zone, DNS: dns, Records: matches,
+			del := app.RecordsDelete{Target: t.ReportTarget(), Zone: zone, DNS: dns, Records: matches, Exact: sel.Exact(chosen),
 				Grid: func(recs []platform.Record) output.Grid { return recordGrid(recs, t.Platform) }}
-			if !chosen.Listed {
-				del.Exact = app.ExactRecordHint(typeArg, true, true)
-			}
 			if done, err := rt.DeleteRecords(cmd.Context(), del); !done || err != nil {
 				return err
 			}
