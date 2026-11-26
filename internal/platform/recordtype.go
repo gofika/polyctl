@@ -376,6 +376,12 @@ func numField(name, s string, max int) (int, error) {
 	return n, nil
 }
 
+// hostIDNA turns an internationalized host name into punycode as name
+// lookup does (UTS 46 mapping), without the STD3 rules: a label may hold
+// "_" (_acme-challenge.bücher.example), as the same name in ASCII may.
+// checkHostName checks the result.
+var hostIDNA = idna.New(idna.MapForLookup(), idna.BidiRule(), idna.StrictDomainName(false))
+
 // normalHost checks a host name in a value and returns it in lower case
 // without its trailing dot, an internationalized name in punycode. root
 // allows "." (no target).
@@ -388,7 +394,7 @@ func normalHost(name, h string, root bool) (string, error) {
 	}
 	for i := 0; i < len(h); i++ {
 		if h[i] >= 0x80 {
-			a, err := idna.Lookup.ToASCII(strings.TrimSuffix(h, "."))
+			a, err := hostIDNA.ToASCII(strings.TrimSuffix(h, "."))
 			if err != nil {
 				return "", fmt.Errorf("the %s %q is not a host name: %v", name, h, err)
 			}
