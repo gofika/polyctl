@@ -679,7 +679,6 @@ are kept.
 	app.FormerRecordFlags(cmd, false)
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 = GoDaddy default; minimum 600)")
 	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX/SRV records")
-	app.HideFormerRecordFlags(cmd)
 	return cmd
 }
 
@@ -749,7 +748,6 @@ existing ones use ` + "`polyctl godaddy dns add`" + `.
 	app.FormerRecordFlags(cmd, true)
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 = GoDaddy default; minimum 600)")
 	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX/SRV records")
-	app.HideFormerRecordFlags(cmd)
 	return cmd
 }
 

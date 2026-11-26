@@ -676,7 +676,6 @@ Cloud DNS expects; TXT and SPF values are quoted automatically.
 	app.FormerRecordFlags(cmd, true)
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 = keep existing, or 300 for a new set)")
 	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX/SRV records")
-	app.HideFormerRecordFlags(cmd)
 	return cmd
 }
 

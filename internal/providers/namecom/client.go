@@ -610,21 +610,6 @@ func (c *Client) UpdateRecord(ctx context.Context, zoneID string, r platform.Rec
 	return &out, nil
 }
 
-// GetRecord fetches one record by id.
-func (c *Client) GetRecord(ctx context.Context, zoneID, recordID string) (*platform.Record, error) {
-	domain := platform.NormalizeDomain(zoneID)
-	id, err := parseRecordID(recordID)
-	if err != nil {
-		return nil, err
-	}
-	var resp apiRecord
-	if err := c.api.Get(ctx, domainPath(domain)+"/records/"+strconv.FormatInt(id, 10), nil, &resp); err != nil {
-		return nil, err
-	}
-	out := toRecord(resp, domain)
-	return &out, nil
-}
-
 // DeleteRecord deletes a record by id.
 func (c *Client) DeleteRecord(ctx context.Context, zoneID, recordID string) error {
 	domain := platform.NormalizeDomain(zoneID)

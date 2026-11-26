@@ -493,7 +493,6 @@ in the non-interactive flow.
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 = keep existing, or 300 for a new set)")
 	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX/SRV values that do not start with one")
 	cmd.Flags().StringVar(&setID, "set-identifier", "", "set identifier of a routing-policy record set (weighted, latency, failover...)")
-	app.HideFormerRecordFlags(cmd)
 	return cmd
 }
 
