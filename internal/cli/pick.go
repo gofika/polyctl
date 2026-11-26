@@ -58,25 +58,6 @@ func certStoreOptions(st *cert.Store) ([]prompt.Option, error) {
 	return opts, nil
 }
 
-// pickRecords lets the user tick the records to delete among existing (the
-// records of a zone, or of one name of it), asked with title: every record
-// but the zone's own (SOA, apex NS), labelled "name  type  value  ttl 300
-// proxied  [owner]  id" ("-" for what a record does not have), a record
-// owned by another service marked with that service.
-func pickRecords(rt *app.Runtime, dns platform.DNSService, zone platform.Zone, title string, existing []platform.Record) ([]platform.Record, error) {
-	items := platform.ClassifyDeleteAll(platform.DNSDeleteAll{Zone: zone, DNS: dns, Records: existing})
-	owners := map[string]string{}
-	var recs []platform.Record
-	for _, it := range items {
-		if it.Disposition != platform.DispNormal && it.Disposition != platform.DispBound {
-			continue
-		}
-		recs = append(recs, it.Record)
-		owners[it.Record.ID] = it.Owner
-	}
-	return rt.PickRecords(title, "record in zone "+zone.Name, recs, func(r platform.Record) string { return owners[r.ID] })
-}
-
 // certStoreLabel says what the store holds for the root domain of d:
 // "store: 42 days left", "store: expired" or "store: none".
 func certStoreLabel(rt *app.Runtime, staging bool, d string) string {

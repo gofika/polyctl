@@ -461,135 +461,26 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 				return err
 			}
 			zone := platform.Zone{ID: t.ResourceID, Name: t.Domain}
-			var matches []platform.Record
-			// ticked: the records were chosen in a list, one by one.
-			ticked := false
-			switch {
-			case pick:
-				cands := existing
-				if value != "" {
-					cands = nil
-					for _, r := range existing {
-						if platform.RecordValueMatches(r, value) {
-							cands = append(cands, r)
-						}
-					}
-				}
-				if matches, err = pickRecords(rt, dns, zone, "Delete which records of "+zone.Name+"?", cands); err != nil {
-					return err
-				}
-				ticked = true
-			case id != "":
-				matcher, _ := dns.(platform.RecordIDMatcher)
-				for _, r := range existing {
-					if r.ID == id || (matcher != nil && matcher.RecordIDMatches(id, r)) {
-						matches = append(matches, r)
-					}
-				}
-				if len(matches) > 1 {
-					ids := make([]string, len(matches))
-					for i, r := range matches {
-						ids[i] = r.ID
-					}
-					return fmt.Errorf("%w: record id %q matches %d records in zone %s (%s); pass the id of one, as `polyctl dns list %s` shows it",
-						platform.ErrAmbiguous, id, len(matches), t.Domain, strings.Join(ids, ", "), t.Domain)
-				}
-			default:
-				found, err := app.RecordsOfName(t.Domain, existing, fqdn, typ, value)
-				if err != nil {
-					return err
-				}
-				matches = found.Records
-				// Records of several types are not deleted by the name
-				// alone: the terminal lists them to tick.
-				open, err := rt.NeedsType(found, typeArg)
-				if err != nil {
-					return err
-				}
-				if open {
-					if matches, err = pickRecords(rt, dns, zone, "Delete which records of "+found.Name+"?", found.Records); err != nil {
-						return err
-					}
-					ticked = true
-				}
+			sel := app.RecordSelect{Zone: t.Domain, Records: existing, Type: typ, Value: value, ID: id, Verb: "Delete", TypeArg: typeArg}
+			if !pick {
+				sel.Name = fqdn
 			}
-			if len(matches) == 0 {
-				return fmt.Errorf("%w: no matching record in zone %s", platform.ErrNotFound, t.Domain)
+			if matcher, ok := dns.(platform.RecordIDMatcher); ok {
+				sel.IDMatches = matcher.RecordIDMatches
 			}
-			// Records owned by another service of the platform (the CNAME of
-			// an R2 custom domain) are deleted by unbinding them there.
-			unbinder, _ := dns.(platform.RecordUnbinder)
-			owners := make([]string, len(matches))
-			var bound []string
-			var changes []platform.Change
-			for i, r := range matches {
-				detail := r.Value
-				if unbinder != nil {
-					if owner, ok := unbinder.Match(zone, r); ok {
-						owners[i] = owner
-						bound = append(bound, owner)
-						detail += " (unbound from " + owner + ", which removes the record)"
-					}
-				}
-				changes = append(changes, platform.Change{Resource: app.RecordResource(r.Name, r.Type), Action: platform.Deleted, ID: r.ID, Detail: detail})
-			}
-			// A dry run neither asks nor needs --yes: nothing is deleted.
-			if done, err := rt.WouldWrite(t.ReportTarget(), changes...); done || err != nil {
+			sel.Offer, sel.Mark = app.DeletableRecords(dns, zone)
+			chosen, err := rt.SelectRecords(sel)
+			if err != nil {
 				return err
 			}
-			if len(matches) > 1 {
-				// The list is shown in both flows, so the caller sees what
-				// is affected: before the question, or with the refusal
-				// that asks for --yes.
-				question := fmt.Sprintf("delete %d records in zone %s", len(matches), t.Domain)
-				if len(bound) > 0 {
-					question += fmt.Sprintf(" (%d of them by unbinding them from %s)", len(bound), strings.Join(bound, ", "))
-				}
-				confirm := app.RecordDelete{Records: recordGrid(matches, t.Platform), Question: question}
-				if !ticked {
-					confirm.Exact = app.ExactRecordHint(typeArg, true, true)
-				}
-				if err := rt.ConfirmRecordDelete(cmd.Context(), confirm); err != nil {
-					return err
-				}
+			matches := chosen.Records
+			del := app.RecordsDelete{Target: t.ReportTarget(), Zone: zone, DNS: dns, Records: matches,
+				Grid: func(recs []platform.Record) output.Grid { return recordGrid(recs, t.Platform) }}
+			if !chosen.Listed {
+				del.Exact = app.ExactRecordHint(typeArg, true, true)
 			}
-			db, _ := rt.DB()
-			// A record that cannot be deleted or unbound is left in place;
-			// the other records are still deleted and the command fails at
-			// the end, as `dns delete --all` does.
-			var failed []error
-			fail := func(r platform.Record, err error) {
-				err = fmt.Errorf("delete %s %s (%s): %w", r.Name, r.Type, r.ID, err)
-				if len(matches) > 1 {
-					rt.Infof("failed: %v", err)
-				}
-				failed = append(failed, err)
-			}
-			for i, r := range matches {
-				if owners[i] != "" {
-					rt.Infof("%s %s belongs to %s: unbinding it there removes the record", r.Name, r.Type, owners[i])
-					handled, err := unbinder.Unbind(cmd.Context(), zone, r)
-					if err == nil && !handled {
-						err = fmt.Errorf("%s could not be unbound", owners[i])
-					}
-					if err != nil {
-						fail(r, err)
-						continue
-					}
-				} else if err := dns.DeleteRecord(cmd.Context(), t.ResourceID, r.ID); err != nil {
-					fail(r, err)
-					continue
-				}
-				if db != nil {
-					_ = db.Delete(cmd.Context(), inventory.Set{Platform: t.Platform, Profile: t.Profile}, platform.ResDNSRecord, r.ID)
-				}
-				rt.Infof("deleted %s %s %s via %s/%s", r.Name, r.Type, r.Value, t.Platform, t.Profile)
-			}
-			if len(failed) > 0 {
-				if len(matches) == 1 {
-					return failed[0]
-				}
-				return &platform.PartialError{Failed: len(failed), Total: len(matches), First: failed[0]}
+			if done, err := rt.DeleteRecords(cmd.Context(), del); !done || err != nil {
+				return err
 			}
 			return rt.Render(dnsResult{Target: t, Records: matches}, func() output.Grid { return output.Grid{} })
 		},
