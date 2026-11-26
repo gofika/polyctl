@@ -1500,6 +1500,16 @@ func TestAccountUseEnableDisable(t *testing.T) {
 	if code, out = acct("enable", "acc9", "--offline", "--dry-run"); code != cli.ExitOK || strings.Contains(out, "whether the credentials see") || e.stored("all") != "acc1|Acme|acc2,acc3,acc9" {
 		t.Errorf("enable --offline --dry-run of a disabled account: exit %d, %s, %s", code, e.stored("all"), out)
 	}
+	// --default with nothing to disable is not applied, which a note
+	// says; a --default that names a disabled account offline is refused
+	// without a list of the accounts that stay, which is not known then.
+	if code, out = acct("disable", "acc2", "--default", "acc3"); code != cli.ExitOK || e.stored("all") != "acc1|Acme|acc2,acc3,acc9" ||
+		!strings.Contains(out, "note: --default acc3 was not applied: nothing was disabled (to set the default: polyctl cloudflare account use acc3)") {
+		t.Errorf("disable of a disabled account with --default: exit %d, %s, %s", code, e.stored("all"), out)
+	}
+	if code, out = acct("disable", "acc1", "--default", "acc2", "--offline"); code != cli.ExitUsage || !strings.Contains(out, "--default acc2: not one of the accounts that stay enabled") || strings.Contains(out, "()") {
+		t.Errorf("--default of a disabled account --offline: exit %d, %s", code, out)
+	}
 	for _, sub := range []string{"disable", "remove"} {
 		if code, out = acct(sub); code != cli.ExitUsage || !strings.Contains(out, noAccountsToDisable) {
 			t.Errorf("%s without an account: exit %d, %s", sub, code, out)

@@ -1051,8 +1051,27 @@ func TestProjectUseEnableDisable(t *testing.T) {
 	if err := run("disable", "p2"); exitClass(err) != "usage" || !has(err, "--default <id>") {
 		t.Errorf("disable of the default --offline = %v", err)
 	}
-	if err := run("disable", "p2", "--default", "p3"); exitClass(err) != "usage" {
+	// The projects that stay enabled are not known offline: the message
+	// names none, without empty parentheses.
+	if err := run("disable", "p2", "--default", "p3"); exitClass(err) != "usage" || !has(err, "--default p3: not one of the projects that stay enabled") || has(err, "()") {
 		t.Errorf("--default of a disabled project --offline = %v", err)
+	}
+	// --default is applied when the call disables a project, also when
+	// the default is not one of them; when nothing is disabled nothing is
+	// written and a note says the flag was not applied.
+	h.stderr.Reset()
+	if err := run("disable", "p3", "--default", "p9"); exitClass(err) != "nothing" || h.labProjects() != "p2 [p3,p7]" ||
+		!strings.Contains(h.stderr.String(), "note: --default p9 was not applied: nothing was disabled (to set the default: polyctl gcp project use p9)") {
+		t.Errorf("disable of a disabled project with --default = %v, %s / %s", err, h.labProjects(), h.stderr.String())
+	}
+	if err := run("disable", "p5", "--default", "p9"); err != nil || h.labProjects() != "p9 [p3,p5,p7]" {
+		t.Errorf("disable of another project with --default = %v, %s", err, h.labProjects())
+	}
+	if err := run("use", "p2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := run("enable", "p5"); err != nil || h.labProjects() != "p2 [p3,p7]" {
+		t.Fatalf("restore = %v, %s", err, h.labProjects())
 	}
 	h.rt.Flags.Offline = false
 	// A disabled project that is no longer visible is forgotten by enable.

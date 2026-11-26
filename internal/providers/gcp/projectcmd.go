@@ -351,7 +351,7 @@ func newDefaultProject(rt *app.Runtime, profile string, cur currentProject, disa
 		// With --offline the enabled projects are not known: any project
 		// that is not disabled is taken.
 		if slices.Contains(disabled, newDefault) || (!rt.Flags.Offline && !slices.Contains(rest, newDefault)) {
-			return "", app.UsageErrf("--default %s: not one of the projects that stay enabled (%s)", newDefault, strings.Join(rest, ", "))
+			return "", app.UsageErrf("--default %s: not one of the projects that stay enabled%s", newDefault, listed(rest))
 		}
 		return newDefault, nil
 	case gone && len(rest) == 0:
@@ -366,6 +366,16 @@ func newDefaultProject(rt *app.Runtime, profile string, cur currentProject, disa
 		return rt.Choose(app.Choice{Title: "New default project", Options: opts, Arg: "--default", Missing: needDefault})
 	}
 	return def, nil
+}
+
+// listed is " (a, b)" for the names of a message, "" when there are
+// none: with --offline, or with credentials that cannot list, the ones
+// that stay enabled are not known.
+func listed(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(names, ", ") + ")"
 }
 
 // pickProjects is enable without arguments on a terminal: one
@@ -703,6 +713,9 @@ The default project can be disabled only together with --default <id>, which
 names the enabled project that becomes the default (on a terminal it is
 asked); without it this is a usage error (exit code 2), as is disabling every
 project (log the account out with "polyctl auth logout gcp" instead).
+--default is applied whenever the call disables a project, also when the
+default project is not one of them; when every project named is disabled
+already nothing is written and a note says that --default was not applied.
 
 ` + disableNeedsProject + `
 
@@ -769,6 +782,11 @@ credentials see.`,
 				}
 			}
 			if len(off) == 0 {
+				if strings.TrimSpace(newDefault) != "" {
+					// Nothing is disabled by this call, so nothing is
+					// written, the default included: say so.
+					rt.Infof("note: --default %s was not applied: nothing was disabled (to set the default: polyctl gcp project use %s)", strings.TrimSpace(newDefault), strings.TrimSpace(newDefault))
+				}
 				return app.NothingToDof("%s: already disabled for gcp/%s", strings.Join(ids, ", "), profile)
 			}
 			// rest are the projects that stay enabled, as far as the
@@ -787,7 +805,7 @@ credentials see.`,
 			return finishProjects(ctx, rt, profile, cur, def, disabled)
 		},
 	}
-	cmd.Flags().StringVar(&newDefault, "default", "", "the enabled project that becomes the default, when the default project is disabled")
+	cmd.Flags().StringVar(&newDefault, "default", "", "the enabled project that becomes the default: needed when the default project is disabled, and applied whenever the call disables a project")
 	if cmd.Hidden {
 		// remove is not disable under another name in one respect: say it
 		// once, in place of the paragraph that is true of disable alone.

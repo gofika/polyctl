@@ -843,7 +843,13 @@ func (b *accountBook) newDefault(ctx context.Context, disabled, rest []string, c
 		// A list that is not complete does not tell every enabled account:
 		// any account that is not disabled is taken then.
 		if slices.Contains(disabled, picked[0]) || (complete && !slices.Contains(rest, picked[0])) {
-			return "", app.UsageErrf("--default %s: not one of the accounts that stay enabled (%s)", ref, strings.Join(rest, ", "))
+			// The accounts that stay enabled are not known with
+			// --offline: the message names them when it can.
+			names := ""
+			if len(rest) > 0 {
+				names = " (" + strings.Join(rest, ", ") + ")"
+			}
+			return "", app.UsageErrf("--default %s: not one of the accounts that stay enabled%s", ref, names)
 		}
 		return picked[0], nil
 	case gone && len(rest) == 0:
@@ -896,6 +902,9 @@ The default account can be disabled only together with --default <account>,
 which names the enabled account that becomes the default (on a terminal it is
 asked); without it this is a usage error (exit code 2), as is disabling every
 account (log the login out with "polyctl auth logout cloudflare" instead).
+--default is applied whenever the call disables an account, also when the
+default account is not one of them; when every account named is disabled
+already nothing is written and a note says that --default was not applied.
 
 At least one <account> is required (exit code 2 without one, on a terminal
 too): to choose from a list of the accounts, with the enabled ones ticked, run
@@ -927,6 +936,11 @@ see.`,
 				}
 			}
 			if len(off) == 0 {
+				if ref := strings.TrimSpace(newDefault); ref != "" {
+					// Nothing is disabled by this call, so nothing is
+					// written, the default included: say so.
+					rt.Infof("note: --default %s was not applied: nothing was disabled (to set the default: polyctl cloudflare account use %s)", ref, ref)
+				}
 				return app.NothingToDof("%s: already disabled for cloudflare/%s", strings.Join(ids, ", "), b.profile)
 			}
 			// The default account is known to the login; the others are
@@ -964,7 +978,7 @@ see.`,
 			return b.finish(ctx, def, disabled)
 		},
 	}
-	cmd.Flags().StringVar(&newDefault, "default", "", "the enabled account, by id or name, that becomes the default when the default account is disabled")
+	cmd.Flags().StringVar(&newDefault, "default", "", "the enabled account, by id or name, that becomes the default: needed when the default account is disabled, and applied whenever the call disables an account")
 	formerName(cmd, "disable")
 	return cmd
 }
