@@ -494,6 +494,48 @@ func TestPlatformTreeShapes(t *testing.T) {
 			}
 		}
 	}
+	// Records that are written: the positional record, the hidden flags of
+	// its former form, and one paragraph on what a terminal asks. Without
+	// a terminal a record that stops early is a usage error.
+	interactive := readDoc(t, "docs/interactive.md")
+	for path, many := range map[string]bool{"dns set": false, "dns add": false, "cloudflare dns create": false, "namecom dns create": false,
+		"aliyun dns record create": false, "godaddy dns add": false, "godaddy dns upsert": true, "aws route53 record upsert": true, "gcp dns record upsert": true} {
+		c := find(root, path)
+		if c == nil {
+			t.Errorf("%s is missing", path)
+			continue
+		}
+		use := "> <name> <type> <value>"
+		if many {
+			use += "..."
+		}
+		if !strings.HasSuffix(c.Use, use) || !strings.Contains(c.Long, "On a terminal, what is left out is asked, in the order") {
+			t.Errorf("%s: use %q, or its help does not say what a terminal asks", path, c.Use)
+		}
+		for _, name := range []string{"name", "type", "value"} {
+			f := c.Flags().Lookup(name)
+			if f == nil || !f.Hidden || f.DefValue != "" && f.DefValue != "[]" {
+				t.Errorf("%s --%s = %+v", path, name, f)
+			}
+		}
+		// The zone alone passes here: the former flags may complete it,
+		// and the command refuses it without them.
+		for _, n := range []int{0, 2, 3} {
+			args := []string{"example.com", "www", "A"}[:n]
+			if err := c.Args(c, args); err == nil || ExitCodeFor(err) != ExitUsage {
+				t.Errorf("%s with %d argument(s) = %v", path, n, err)
+			}
+		}
+		if err := c.Args(c, []string{"example.com", "www", "A", "192.0.2.1"}); err != nil {
+			t.Errorf("%s with a whole record = %v", path, err)
+		}
+		if doc := strings.TrimPrefix(path, "dns "); !strings.Contains(interactive, "`"+path+"`") && !strings.Contains(interactive, "`dns set` / `"+doc+"`") {
+			t.Errorf("docs/interactive.md does not say what %s asks", path)
+		}
+	}
+	if c := find(root, "dns ensure"); c == nil || !strings.Contains(c.Long, "one record is asked for") {
+		t.Errorf("dns ensure does not say what a terminal asks")
+	}
 	for _, path := range []string{"dns delete", "godaddy dns delete", "gcp dns record delete"} {
 		if c := find(root, path); c == nil || c.Flags().Lookup("id") == nil {
 			t.Errorf("%s must keep its optional --id", path)

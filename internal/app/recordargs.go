@@ -111,13 +111,6 @@ func (sh recordShape) parse(cmd *cobra.Command, args []string, formerFlags []str
 	return rec, nil
 }
 
-// RecordUsage is the usage text of the positional form of a record command,
-// "usage: polyctl dns set <domain> <name> <type> <value>". The first
-// argument is named as the usage line of cmd names it (<domain>, <zone>).
-func RecordUsage(cmd *cobra.Command, minValues, maxValues int) string {
-	return recordShape{minValues: minValues, maxValues: maxValues}.usage(cmd)
-}
-
 // RecordSelectorUsage is the usage text of the positional form of a command
 // that reads its record with ParseRecordSelector, "usage: polyctl dns
 // delete <domain> <name> [<type> [<value>]]". The first argument is named

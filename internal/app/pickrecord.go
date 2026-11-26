@@ -9,12 +9,6 @@ import (
 	"github.com/gofika/polyctl/internal/prompt"
 )
 
-// PickRecordType asks for a record type the target platform can write, A
-// preselected.
-func (rt *Runtime) PickRecordType(id platform.ID) (string, error) {
-	return rt.pickRecordType(id, "")
-}
-
 // pickRecordType asks for a record type the target platform can write. def
 // is the type preselected (the one the name already has); "" or a type the
 // platform does not write preselects A.
