@@ -216,14 +216,19 @@ var recordTarget = recordShape{maxValues: 1, typeOptional: true}
 // delete command of a platform with record ids, `<zone> [<name> [<type>
 // [<value>]]]` with the flag --id as the exact selector. The record after
 // the zone is read as ParseRecordSelector reads it; it cannot stand beside
-// --id. The interactive flow may leave out the record and the zone: the
-// command lists what there is. The non-interactive flow needs the zone and
-// a record or --id.
+// --id, and --id cannot be empty. The interactive flow may leave out the
+// record and the zone: the command lists what there is. The non-interactive
+// flow needs the zone and a record or --id.
 func RecordTargetArgsOrInteractive(rt *Runtime) cobra.PositionalArgs {
 	return func(cmd *cobra.Command, args []string) error {
 		usage := recordTarget.usage(cmd)
 		byID := false
 		if f := cmd.Flags().Lookup("id"); f != nil && f.Changed {
+			// An empty id (--id "$ID" with the variable unset) names no
+			// record: it is not "no --id", which would list the zone.
+			if strings.TrimSpace(f.Value.String()) == "" {
+				return UsageErrf("--id must not be empty")
+			}
 			byID = true
 		}
 		if len(args) > 1 {
