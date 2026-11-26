@@ -9,32 +9,50 @@ import (
 	"github.com/gofika/polyctl/internal/prompt"
 )
 
-// PickRecordType asks for a record type the target platform can write.
+// PickRecordType asks for a record type the target platform can write, A
+// preselected.
 func (rt *Runtime) PickRecordType(id platform.ID) (string, error) {
+	return rt.pickRecordType(id, "")
+}
+
+// pickRecordType asks for a record type the target platform can write. def
+// is the type preselected (the one the name already has); "" or a type the
+// platform does not write preselects A.
+func (rt *Runtime) pickRecordType(id platform.ID, def string) (string, error) {
 	types := platform.WritableRecordTypes(id)
 	if types == nil {
 		types = platform.RecordSpecTypes
 	}
 	var opts []prompt.Option
+	pre := "A"
 	for _, t := range types {
 		opts = append(opts, prompt.Option{Label: t, Value: t})
+		if def != "" && strings.EqualFold(t, def) {
+			pre = t
+		}
 	}
-	return rt.Choose(Choice{Title: "Record type", Options: opts, Default: "A", Arg: "--type", Required: true, What: "record type"})
+	return rt.Choose(Choice{Title: "Record type", Options: opts, Default: pre, Arg: "<type>", Required: true, What: "record type"})
 }
 
 // AskRecordValue asks for the value of a record of type typ, checked as it
 // is typed (an IPv4 address for A, IPv6 for AAAA, a host name for CNAME,
 // ...); def is the current value of the record, if any.
 func (rt *Runtime) AskRecordValue(typ, def string) (string, error) {
-	return rt.AskInput("--value", "Value of the "+typ+" record", def, func(s string) error {
+	return rt.AskInput("<value>", "Value of the "+typ+" record", def, func(s string) error {
 		if strings.TrimSpace(s) == "" {
 			return fmt.Errorf("a value is required")
 		}
-		if err := (platform.RecordSpec{Name: "@", Type: typ, Value: s}).Validate(); err != nil {
-			return errors.New(strings.TrimPrefix(err.Error(), platform.ErrInvalidInput.Error()+": record @: "))
-		}
-		return nil
+		return recordValueError(typ, s)
 	})
+}
+
+// recordValueError says what is wrong with s as a value of a record of
+// type typ; nil when it is one.
+func recordValueError(typ, s string) error {
+	if err := (platform.RecordSpec{Name: "@", Type: typ, Value: s}).Validate(); err != nil {
+		return errors.New(strings.TrimPrefix(err.Error(), platform.ErrInvalidInput.Error()+": record @: "))
+	}
+	return nil
 }
 
 // RecordLabel is the label of a record in a selection list: the cells

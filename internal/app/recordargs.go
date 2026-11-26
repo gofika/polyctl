@@ -34,10 +34,13 @@ var formerRecordFlags = []string{"name", "type", "value"}
 
 // recordShape says what the positional record of a command takes: minValues
 // to maxValues values (maxValues < 0: any number), and whether the <type>
-// may be left out (a record that is selected, not written).
+// may be left out (a record that is selected, not written). partial lets
+// the record stop after the name or the type: the interactive flow of a
+// command that writes a record asks for the rest (see Runtime.RecordInput).
 type recordShape struct {
 	minValues, maxValues int
 	typeOptional         bool
+	partial              bool
 }
 
 // ParseRecordArgs reads the positional record of cmd. args are the
@@ -47,9 +50,10 @@ type recordShape struct {
 //
 // The record takes minValues to maxValues values (maxValues < 0: any
 // number). Every mistake is a usage error: a wrong number of arguments (the
-// message shows RecordUsage), an empty argument, and a positional record
-// beside one of the flags of the former form. Those flags are --name,
-// --type and --value unless formerFlags names the ones of the command.
+// message shows the usage of the positional form), an empty argument, and a
+// positional record beside one of the flags of the former form. Those
+// flags are --name, --type and --value unless formerFlags names the ones of
+// the command.
 func ParseRecordArgs(cmd *cobra.Command, args []string, minValues, maxValues int, formerFlags ...string) (*RecordArgs, error) {
 	return recordShape{minValues: minValues, maxValues: maxValues}.parse(cmd, args, formerFlags)
 }
@@ -72,7 +76,7 @@ func (sh recordShape) parse(cmd *cobra.Command, args []string, formerFlags []str
 	if sh.typeOptional && len(args) == 1 {
 		n = 0
 	}
-	if n < sh.minValues || (sh.maxValues >= 0 && n > sh.maxValues) {
+	if (n < sh.minValues && !sh.partial) || (sh.maxValues >= 0 && n > sh.maxValues) {
 		return nil, UsageErrf("%s", usage)
 	}
 	if len(formerFlags) == 0 {
@@ -114,9 +118,10 @@ func RecordUsage(cmd *cobra.Command, minValues, maxValues int) string {
 	return recordShape{minValues: minValues, maxValues: maxValues}.usage(cmd)
 }
 
-// RecordSelectorUsage is RecordUsage for a command that reads its record
-// with ParseRecordSelector, "usage: polyctl dns delete <domain> <name>
-// [<type> [<value>]]".
+// RecordSelectorUsage is the usage text of the positional form of a command
+// that reads its record with ParseRecordSelector, "usage: polyctl dns
+// delete <domain> <name> [<type> [<value>]]". The first argument is named
+// as the usage line of cmd names it (<domain>, <zone>).
 func RecordSelectorUsage(cmd *cobra.Command, maxValues int) string {
 	return recordShape{maxValues: maxValues, typeOptional: true}.usage(cmd)
 }
@@ -146,10 +151,15 @@ func (sh recordShape) usage(cmd *cobra.Command) string {
 // RecordArgsOrInteractive validates the arguments of a record command:
 // the <domain> or <zone> alone (the flags of the former form, or the
 // interactive flow, say what to write), or followed by a positional record
-// as ParseRecordArgs reads it. Without any argument the interactive flow
-// asks for the domain; the non-interactive flow gets the usage text.
+// as ParseRecordArgs reads it. The interactive flow asks for what is left
+// out: the domain, and the end of a record that stops after its name or
+// its type (see Runtime.CompleteRecord). The non-interactive flow gets the
+// usage text for both.
 func RecordArgsOrInteractive(rt *Runtime, minValues, maxValues int, formerFlags ...string) cobra.PositionalArgs {
-	return recordShape{minValues: minValues, maxValues: maxValues}.argsOrInteractive(rt, formerFlags)
+	return func(cmd *cobra.Command, args []string) error {
+		sh := recordShape{minValues: minValues, maxValues: maxValues, partial: rt.Interactive()}
+		return sh.argsOrInteractive(rt, formerFlags)(cmd, args)
+	}
 }
 
 // RecordSelectorArgsOrInteractive is RecordArgsOrInteractive for a command
