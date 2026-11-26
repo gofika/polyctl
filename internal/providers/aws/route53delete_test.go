@@ -137,6 +137,39 @@ func TestRoute53RecordSetIdentifiers(t *testing.T) {
 	if len(r53.sets["Z3"]) != 2 {
 		t.Fatalf("sets changed: %+v", r53.sets["Z3"])
 	}
+	// On a terminal the sets of the name and type are a list to choose from,
+	// for delete and for upsert, in the positional and the former form.
+	h.rt.Flags.NonInteractive = false
+	for _, args := range [][]string{
+		{"route53", "record", "delete", "other.org", "www", "A"},
+		{"route53", "record", "delete", "other.org", "--name", "www", "--type", "A"},
+		{"route53", "record", "upsert", "other.org", "www", "A", "203.0.113.9"},
+	} {
+		p := prompttest.New(t, prompttest.Label("set us"))
+		h.rt.Picker = p
+		if err := h.run(args...); err != nil {
+			t.Fatalf("%v on a terminal: %v", args, err)
+		}
+		p.Done()
+		if a := p.Asked[0]; len(a.Options) != 2 || !strings.Contains(prompttest.Labels(a.Options), "www.other.org  A  set eu  198.51.100.1  ttl 60") {
+			t.Errorf("%v: options %s", args, prompttest.Labels(a.Options))
+		}
+		switch sets := r53.sets["Z3"]; args[2] {
+		case "delete":
+			if len(sets) != 1 || awssdk.ToString(sets[0].SetIdentifier) != "eu" {
+				t.Errorf("%v: sets left %+v", args, sets)
+			}
+		default:
+			for _, s := range sets {
+				if id := awssdk.ToString(s.SetIdentifier); (id == "us") != (setValues(&s)[0] == "203.0.113.9") {
+					t.Errorf("%v: set %s holds %v", args, id, setValues(&s))
+				}
+			}
+		}
+		reset()
+	}
+	h.rt.Picker = nil
+	h.rt.Flags.NonInteractive = true
 	if err := h.run("route53", "record", "upsert", "other.org", "--name", "www", "--type", "A", "--set-identifier", "eu", "--value", "203.0.113.9"); err != nil {
 		t.Fatalf("upsert eu: %v", err)
 	}

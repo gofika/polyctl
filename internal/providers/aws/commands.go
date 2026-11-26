@@ -2,12 +2,14 @@ package aws
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
 	"strings"
 
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
+	r53types "github.com/aws/aws-sdk-go-v2/service/route53/types"
 	"github.com/spf13/cobra"
 
 	"github.com/gofika/polyctl/internal/app"
@@ -414,7 +416,8 @@ A routing-policy set (weighted, latency, failover, geolocation...) is
 chosen with --set-identifier and keeps its policy; a set identifier that
 does not exist is not found (exit code 4), since this command sets no
 routing policy. Without it, a name and type that hold only routing-policy
-sets are ambiguous (exit code 5).
+sets are a list to choose from on a terminal and ambiguous (exit code 5)
+in the non-interactive flow.
 
 ` + app.RecordAskHelp("zone") + "\n\n" + app.RecordSetAskHelp,
 		Example: `  polyctl aws route53 record upsert example.com www A 203.0.113.10 203.0.113.11
@@ -470,6 +473,14 @@ sets are ambiguous (exit code 5).
 				return err
 			}
 			recs, err := c.ReplaceSet(cmd.Context(), z.ID, fqdn, typ, setID, values, ttl)
+			var amb *app.AmbiguousError
+			if setID == "" && errors.As(err, &amb) {
+				// Only routing-policy sets and no --set-identifier: a list
+				// on a terminal, exit code 5 with the identifiers otherwise.
+				if setID, err = pickSetID(cmd.Context(), rt, c, z, fqdn, typ, amb); err == nil {
+					recs, err = c.ReplaceSet(cmd.Context(), z.ID, fqdn, typ, setID, values, ttl)
+				}
+			}
 			if err != nil {
 				return err
 			}
@@ -514,8 +525,8 @@ The SOA and NS sets of the zone apex are never meant by the name alone.
 
 A routing-policy set (weighted, latency, failover, geolocation...) is
 chosen with --set-identifier; without it, a name and type that hold only
-routing-policy sets are ambiguous (exit code 5) and the identifiers are
-listed. Beside a name alone, --set-identifier says which set is meant: only
+routing-policy sets are a list to choose from on a terminal, and ambiguous
+(exit code 5, the identifiers listed) in the non-interactive flow. Beside a name alone, --set-identifier says which set is meant: only
 the sets with that identifier count, and only those are offered.
 
 The values to delete are listed, then one yes/no question is asked (default
@@ -594,18 +605,13 @@ nothing. A missing set is not found (exit code 4) before the question.
 					if err != nil {
 						return err
 					}
-					recs = chosen.Records
-					switch sets := recordSetKeys(recs); {
-					case chosen.Listed:
-					case len(sets) == 1:
-						typ, setID = sets[0].typ, sets[0].setID
-					case !rt.Interactive():
-						// One type in several routed sets: LookupSet lists
-						// the identifiers (exit code 5).
+					if sets := recordSetKeys(chosen.Records); !chosen.Listed {
+						// One type; in several routed sets LookupSet says
+						// so, and the set is chosen below.
 						typ = chosen.Type()
-					default:
-						// One type in several routed sets: one is picked.
-						pick = true
+						if len(sets) == 1 {
+							setID = sets[0].setID
+						}
 					}
 				}
 				if pick {
@@ -615,6 +621,14 @@ nothing. A missing set is not found (exit code 4) before the question.
 				}
 			}
 			rs, err := c.LookupSet(cmd.Context(), z.ID, fqdn, typ, setID)
+			var amb *app.AmbiguousError
+			if setID == "" && errors.As(err, &amb) {
+				// Only routing-policy sets and no --set-identifier: a list
+				// on a terminal, exit code 5 with the identifiers otherwise.
+				if setID, err = pickSetID(cmd.Context(), rt, c, z, fqdn, typ, amb); err == nil {
+					rs, err = c.LookupSet(cmd.Context(), z.ID, fqdn, typ, setID)
+				}
+			}
 			if err != nil {
 				return err
 			}
@@ -1191,20 +1205,40 @@ func pickRecordSet(rt *app.Runtime, z *platform.Zone, recs []platform.Record) (s
 		}
 		s.values = append(s.values, r.Value)
 	}
-	var opts []prompt.Option
-	for _, s := range sets {
-		opts = append(opts, prompt.Option{Label: recordSetLabel(s.name, s.typ, s.setID, s.values, s.ttl), Value: s.name + "\x00" + s.typ + "\x00" + s.setID})
-	}
-	v, err := rt.Choose(app.Choice{Title: "Record set to delete from " + z.Name, Options: opts, Arg: "--type",
-		Empty: app.NothingToDof("zone %s has no record set to delete", z.Name)})
+	chosen, err := app.PickOf(rt, app.Choice{Title: "Record set to delete from " + z.Name, Arg: "<name> [<type>]",
+		Empty: app.NothingToDof("zone %s has no record set to delete", z.Name)}, sets,
+		func(s *set) string { return recordSetLabel(s.name, s.typ, s.setID, s.values, s.ttl) })
 	if err != nil {
 		return "", "", "", err
 	}
-	parts := strings.SplitN(v, "\x00", 3)
-	for len(parts) < 3 {
-		parts = append(parts, "")
+	return platform.FQDN(chosen.name, z.Name), chosen.typ, chosen.setID, nil
+}
+
+// pickSetID settles amb, the answer of LookupSet for a name and type that
+// hold only routing-policy sets when no set identifier was given: a
+// terminal lists the sets to choose one, and the non-interactive flow gets
+// amb, which names the identifiers and --set-identifier (exit code 5).
+func pickSetID(ctx context.Context, rt *app.Runtime, c *client, z *platform.Zone, fqdn, typ string, amb *app.AmbiguousError) (string, error) {
+	if !rt.Interactive() {
+		return "", amb
 	}
-	return platform.FQDN(parts[0], z.Name), parts[1], parts[2], nil
+	sets, err := c.recordSets(ctx, zoneID(z.ID), fqdn, typ)
+	if err != nil {
+		return "", err
+	}
+	rs, err := app.OneOf(rt, amb, sets, func(rs r53types.ResourceRecordSet) string {
+		recs := recordsFromSet(zoneID(z.ID), rs)
+		values := make([]string, len(recs))
+		ttl := 0
+		for i, r := range recs {
+			values[i], ttl = r.Value, r.TTL
+		}
+		return recordSetLabel(platform.NormalizeDomain(fqdn), strings.ToUpper(typ), awssdk.ToString(rs.SetIdentifier), values, ttl)
+	})
+	if err != nil {
+		return "", err
+	}
+	return awssdk.ToString(rs.SetIdentifier), nil
 }
 
 // recordSetLabel: "www.example.com  A  set us  198.51.100.2, 198.51.100.3
