@@ -96,7 +96,7 @@ func TestRoute53RecordSetIdentifiers(t *testing.T) {
 	reset()
 
 	// The interactive upsert proposes the value of the set it replaces.
-	up := prompttest.New(t, "A", prompttest.KeepDefault{})
+	up := prompttest.New(t, "A", prompttest.KeepDefault{}, "")
 	h.rt.Picker = up
 	if err := h.run("route53", "record", "upsert", "other.org", "--name", "www", "--set-identifier", "us"); err != nil {
 		t.Fatalf("interactive upsert us: %v", err)

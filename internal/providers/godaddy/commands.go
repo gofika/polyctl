@@ -623,7 +623,6 @@ func buildRecord(cmd *cobra.Command, zone, typ, name, value string, ttl, priorit
 }
 
 func newDNSAddCmd(rt *app.Runtime) *cobra.Command {
-	var typ, name, value string
 	var ttl, priority int
 	cmd := &cobra.Command{
 		Use:   "add <domain> <name> <type> <value>",
@@ -631,7 +630,9 @@ func newDNSAddCmd(rt *app.Runtime) *cobra.Command {
 		Long: `Add one record to <domain>. Records that already have the same name and type
 are kept.
 
-` + recordArgsHelp,
+` + recordArgsHelp + `
+
+` + app.RecordAskHelp("domain"),
 		Example: `  polyctl godaddy dns add example.com www A 203.0.113.10
   polyctl godaddy dns add example.com @ MX mail.example.com --priority 10
   polyctl godaddy dns add example.com @ TXT "v=spf1 include:_spf.example.net ~all"`,
@@ -640,31 +641,14 @@ are kept.
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The record is positional (<name> <type> <value>) or, in the
 			// former form, given with --name, --type and --value.
-			if len(args) > 1 {
-				rec, err := app.ParseRecordArgs(cmd, args[1:], 1, 1)
-				if err != nil {
-					return err
-				}
-				name, typ, value = rec.Name, rec.Type, rec.Value()
-				args = args[:1]
+			in, err := rt.RecordInput(cmd, args, app.RecordForm{MinValues: 1, MaxValues: 1})
+			if err != nil {
+				return err
 			}
-			if (typ == "" || value == "") && !rt.Interactive() {
-				return app.UsageErrf("%s", app.RecordUsage(cmd, 1, 1))
-			}
-			args, err := rt.DomainArg(cmd.Context(), args, platform.GoDaddy, platform.ResZone, nil)
+			args, err = rt.DomainArg(cmd.Context(), args[:min(len(args), 1)], platform.GoDaddy, platform.ResZone, nil)
 			if err != nil {
 				// The record cannot be created without a zone.
 				return app.RequiredPick(err, "<domain>")
-			}
-			if typ == "" {
-				if typ, err = rt.PickRecordType(platform.GoDaddy); err != nil {
-					return err
-				}
-			}
-			if value == "" {
-				if value, err = rt.AskRecordValue(strings.ToUpper(typ), ""); err != nil {
-					return err
-				}
 			}
 			if rt.Flags.Offline {
 				return app.ErrOffline
@@ -674,6 +658,11 @@ are kept.
 				return err
 			}
 			zone := platform.NormalizeDomain(args[0])
+			if err := rt.CompleteRecord(in, app.RecordPrompt{Platform: platform.GoDaddy, Zone: zone,
+				Existing: func() ([]platform.Record, error) { return c.ListRecords(cmd.Context(), zone) }}); err != nil {
+				return err
+			}
+			name, typ, value := in.Name, in.Type, in.Value()
 			rec := buildRecord(cmd, zone, typ, name, value, ttl, priority)
 			if done, err := rt.WouldWrite(platform.Target{Platform: platform.GoDaddy, Profile: p.Name, Domain: zone}, platform.Change{Resource: app.RecordResource(rec.Name, rec.Type), Action: platform.Created, Detail: rec.Value}); done || err != nil {
 				return err
@@ -687,12 +676,10 @@ are kept.
 			return rt.Render(dnsResult{Profile: p.Name, Zone: zone, Records: []platform.Record{*out}}, func() output.Grid { return recordGrid([]platform.Record{*out}) })
 		},
 	}
-	cmd.Flags().StringVar(&typ, "type", "", "record type (A, AAAA, CNAME, TXT, MX, ...)")
-	cmd.Flags().StringVar(&name, "name", "@", "record name relative to the domain (www, @)")
-	cmd.Flags().StringVar(&value, "value", "", "record value")
+	app.FormerRecordFlags(cmd, false)
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 = GoDaddy default; minimum 600)")
 	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX/SRV records")
-	hideFormerRecordFlags(cmd)
+	app.HideFormerRecordFlags(cmd)
 	return cmd
 }
 
@@ -703,19 +690,7 @@ inside the domain (www.example.com). <type> is case-insensitive. A value is
 one argument: quote one that contains spaces. A value that starts with "-" goes
 after "--".`
 
-// hideFormerRecordFlags leaves --name, --type and --value, the former form
-// of the record of a record command, out of its help. They keep working.
-func hideFormerRecordFlags(cmd *cobra.Command) {
-	for _, n := range []string{"name", "type", "value"} {
-		if cmd.Flags().Lookup(n) != nil {
-			_ = cmd.Flags().MarkHidden(n)
-		}
-	}
-}
-
 func newDNSUpsertCmd(rt *app.Runtime) *cobra.Command {
-	var typ, name string
-	var values []string
 	var ttl, priority int
 	cmd := &cobra.Command{
 		Use:   "upsert <domain> <name> <type> <value>...",
@@ -725,7 +700,9 @@ set is created when it does not exist, and every record it holds is replaced
 when it does. Every <value> is one record. To add a record and keep the
 existing ones use ` + "`polyctl godaddy dns add`" + `.
 
-` + recordArgsHelp,
+` + recordArgsHelp + `
+
+` + app.RecordAskHelp("domain") + "\n\n" + app.RecordSetAskHelp,
 		Example: `  polyctl godaddy dns upsert example.com www A 203.0.113.10 203.0.113.11
   polyctl godaddy dns upsert example.com @ MX mail.example.com --priority 10 --ttl 3600`,
 		Args:              app.RecordArgsOrInteractive(rt, 1, -1),
@@ -733,33 +710,14 @@ existing ones use ` + "`polyctl godaddy dns add`" + `.
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The record set is positional (<name> <type> <value>...) or, in
 			// the former form, given with --name, --type and --value.
-			if len(args) > 1 {
-				rec, err := app.ParseRecordArgs(cmd, args[1:], 1, -1)
-				if err != nil {
-					return err
-				}
-				name, typ, values = rec.Name, rec.Type, rec.Values
-				args = args[:1]
+			in, err := rt.RecordInput(cmd, args, app.RecordForm{MinValues: 1, MaxValues: -1})
+			if err != nil {
+				return err
 			}
-			if (typ == "" || len(values) == 0) && !rt.Interactive() {
-				return app.UsageErrf("%s", app.RecordUsage(cmd, 1, -1))
-			}
-			args, err := rt.DomainArg(cmd.Context(), args, platform.GoDaddy, platform.ResZone, nil)
+			args, err = rt.DomainArg(cmd.Context(), args[:min(len(args), 1)], platform.GoDaddy, platform.ResZone, nil)
 			if err != nil {
 				// The record cannot be created without a zone.
 				return app.RequiredPick(err, "<domain>")
-			}
-			if typ == "" {
-				if typ, err = rt.PickRecordType(platform.GoDaddy); err != nil {
-					return err
-				}
-			}
-			if len(values) == 0 {
-				v, err := rt.AskRecordValue(strings.ToUpper(typ), "")
-				if err != nil {
-					return err
-				}
-				values = []string{v}
 			}
 			if rt.Flags.Offline {
 				return app.ErrOffline
@@ -769,6 +727,11 @@ existing ones use ` + "`polyctl godaddy dns add`" + `.
 				return err
 			}
 			zone := platform.NormalizeDomain(args[0])
+			if err := rt.CompleteRecord(in, app.RecordPrompt{Platform: platform.GoDaddy, Zone: zone, WholeSet: true,
+				Existing: func() ([]platform.Record, error) { return c.ListRecords(cmd.Context(), zone) }}); err != nil {
+				return err
+			}
+			name, typ, values := in.Name, in.Type, in.Values
 			rel := platform.RelativeName(platform.FQDN(name, zone), zone)
 			recs := make([]platform.Record, 0, len(values))
 			for _, v := range values {
@@ -786,12 +749,10 @@ existing ones use ` + "`polyctl godaddy dns add`" + `.
 			return rt.Render(dnsResult{Profile: p.Name, Zone: zone, Records: out}, func() output.Grid { return recordGrid(out) })
 		},
 	}
-	cmd.Flags().StringVar(&typ, "type", "", "record type (A, AAAA, CNAME, TXT, MX, ...)")
-	cmd.Flags().StringVar(&name, "name", "@", "record name relative to the domain (www, @)")
-	cmd.Flags().StringArrayVar(&values, "value", nil, "record value (repeat for several records)")
+	app.FormerRecordFlags(cmd, true)
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 = GoDaddy default; minimum 600)")
 	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX/SRV records")
-	hideFormerRecordFlags(cmd)
+	app.HideFormerRecordFlags(cmd)
 	return cmd
 }
 
@@ -969,6 +930,6 @@ type). Declining changes nothing. --dry-run reports what would be deleted and as
 	cmd.Flags().StringVar(&typ, "type", "", "record type")
 	cmd.Flags().StringVar(&name, "name", "@", "record name relative to the domain (www, @)")
 	cmd.Flags().StringVar(&id, "id", "", "delete the single record with this id (zone|TYPE|name|value, as dns list shows it)")
-	hideFormerRecordFlags(cmd)
+	app.HideFormerRecordFlags(cmd)
 	return cmd
 }

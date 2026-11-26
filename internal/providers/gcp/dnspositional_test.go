@@ -140,18 +140,49 @@ func TestDNSRecordPositionalUsage(t *testing.T) {
 	}
 }
 
-// With only the zone, record upsert still asks for the type and the value
-// (the set is then at the zone apex), and record delete still offers the
-// record sets.
+// With only the zone, record upsert asks for the name (never taken to be
+// the zone apex), the type and the values, until one is left empty; a
+// record that stops after its name or type is completed. record delete
+// still offers the record sets.
 func TestDNSRecordWithOnlyTheZoneAsks(t *testing.T) {
 	h, g := dnsHarness(t)
-	p := h.answer("CAA", `0 issue "letsencrypt.org"`)
+	p := h.answer("@", "CAA", `0 issue "letsencrypt.org"`, "")
 	if err := h.run("dns", "record", "upsert", "example-zone"); err != nil {
 		t.Fatalf("upsert: %v\n%s", err, h.stderr.String())
 	}
 	p.Done()
+	if a := p.Find("Record name in example.com"); prompttest.Labels(a.Options) != "@ (apex)  MX NS SOA TXT\ngeo  A\nwww  A\nAnother name..." {
+		t.Errorf("names offered:\n%s", prompttest.Labels(a.Options))
+	}
 	if rs := g.rrset("example-zone", "example.com.", "CAA"); rs == nil || len(rs.Rrdatas) != 1 {
 		t.Errorf("apex CAA = %+v", rs)
+	}
+	// <zone> <name>: the type of the name is preselected, the first value
+	// of the set proposed, and more values are asked.
+	p = h.answer("A", prompttest.KeepDefault{}, "192.0.2.8", "")
+	if err := h.run("dns", "record", "upsert", "example-zone", "www"); err != nil {
+		t.Fatalf("upsert <name>: %v\n%s", err, h.stderr.String())
+	}
+	p.Done()
+	if a := p.Find("Record type"); a.Default != "A" {
+		t.Errorf("type preselected %q", a.Default)
+	}
+	if rs := g.rrset("example-zone", "www.example.com.", "A"); rs == nil || strings.Join(rs.Rrdatas, ",") != "1.1.1.1,192.0.2.8" {
+		t.Errorf("www A = %+v", rs)
+	}
+	// <zone> <name> <type>, the name typed in the list of another run.
+	p = h.answer(prompttest.Label("Another name"), "new", "TXT", "hello", "")
+	if err := h.run("dns", "record", "upsert", "example-zone"); err != nil {
+		t.Fatalf("typed name: %v\n%s", err, h.stderr.String())
+	}
+	p.Done()
+	p = h.answer("192.0.2.9", "")
+	if err := h.run("dns", "record", "upsert", "example-zone", "new", "a"); err != nil {
+		t.Fatalf("upsert <name> <type>: %v\n%s", err, h.stderr.String())
+	}
+	p.Done()
+	if g.rrset("example-zone", "new.example.com.", "TXT") == nil || g.rrset("example-zone", "new.example.com.", "A") == nil {
+		t.Errorf("new.example.com was not written")
 	}
 	p = h.answer(prompttest.Label("TXT"))
 	h.rt.Stdin = strings.NewReader("y\n")

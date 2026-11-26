@@ -110,22 +110,63 @@ func TestDNSPositionalRecordUsage(t *testing.T) {
 	}
 }
 
-// With only the domain the interactive flow still asks: add and upsert for
-// the type and the value (the record is then at the apex), delete for the
-// record.
+// With only the domain the interactive flow asks: add and upsert for the
+// name (never taken to be the apex), the type and the value (upsert for
+// values until one is left empty), delete for the record. A record that
+// stops after its name or its type is completed.
 func TestDNSRecordWithOnlyTheDomainAsks(t *testing.T) {
 	e := newDeleteEnv(t)
 	for _, verb := range []string{"add", "upsert"} {
+		more := []any{}
+		if verb == "upsert" {
+			more = []any{""}
+		}
 		e.reset()
-		p := prompttest.New(t, "TXT", "asked")
+		p := prompttest.New(t, append([]any{"@", "TXT", "asked"}, more...)...)
 		code, _, stderr := e.run(p, "", "godaddy", "dns", verb, "example.com")
 		if code != cli.ExitOK {
 			t.Fatalf("%s: exit %d, %s", verb, code, stderr)
 		}
 		p.Done()
+		if a := p.Find("Record name in example.com"); prompttest.Labels(a.Options) != "@ (apex)\nwww  A TXT\nAnother name..." {
+			t.Errorf("%s: names offered:\n%s", verb, prompttest.Labels(a.Options))
+		}
 		if got := e.records(); got != "A www 203.0.113.1,A www 203.0.113.2,TXT @ asked,TXT www hello" {
 			t.Errorf("%s wrote %q", verb, got)
 		}
+		// <domain> <name> <type>, and a name typed in.
+		e.reset()
+		p = prompttest.New(t, append([]any{"203.0.113.9"}, more...)...)
+		if code, _, stderr := e.run(p, "", "godaddy", "dns", verb, "example.com", "api", "a"); code != cli.ExitOK {
+			t.Fatalf("%s <name> <type>: exit %d, %s", verb, code, stderr)
+		}
+		p.Done()
+		p = prompttest.New(t, append([]any{prompttest.Label("Another name"), "new", "TXT", "typed"}, more...)...)
+		if code, _, stderr := e.run(p, "", "godaddy", "dns", verb, "example.com"); code != cli.ExitOK {
+			t.Fatalf("%s typed name: exit %d, %s", verb, code, stderr)
+		}
+		p.Done()
+		if got := e.records(); got != "A api 203.0.113.9,A www 203.0.113.1,A www 203.0.113.2,TXT new typed,TXT www hello" {
+			t.Errorf("%s wrote %q", verb, got)
+		}
+		// The non-interactive flow asks nothing.
+		for _, args := range [][]string{{"example.com", "www"}, {"example.com", "www", "A"}} {
+			code, _, stderr := e.run(nil, "", append([]string{"godaddy", "dns", verb}, args...)...)
+			if code != cli.ExitUsage || !strings.Contains(stderr, "usage: polyctl godaddy dns "+verb+" <domain> <name> <type> <value>") {
+				t.Errorf("non-interactive %s %v: exit %d, %s", verb, args, code, stderr)
+			}
+		}
+	}
+	// upsert of a name with one type: the type is preselected, the set is
+	// shown and its first value proposed.
+	e.reset()
+	p0 := prompttest.New(t, "TXT", prompttest.KeepDefault{}, "second", "")
+	if code, _, stderr := e.run(p0, "", "godaddy", "dns", "upsert", "example.com", "www"); code != cli.ExitOK || !strings.Contains(stderr, "www.example.com TXT is now: hello (the set becomes what you enter)") {
+		t.Fatalf("upsert <name>: exit %d, %s", code, stderr)
+	}
+	p0.Done()
+	if got := e.records(); got != "A www 203.0.113.1,A www 203.0.113.2,TXT www hello,TXT www second" {
+		t.Errorf("upsert <name> wrote %q", got)
 	}
 	e.reset()
 	p := prompttest.New(t, prompttest.Label("hello"))

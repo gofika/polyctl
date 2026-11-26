@@ -133,19 +133,55 @@ func TestRoute53RecordPositionalUsage(t *testing.T) {
 	}
 }
 
-// With only the zone, record upsert still asks for the type and the value;
-// the set is then at the zone apex.
+// With only the zone, record upsert asks for the name (never taken to be
+// the apex), the type and the values, until one is left empty; a record
+// that stops after its name or its type is completed.
 func TestRoute53RecordUpsertWithOnlyTheZoneAsks(t *testing.T) {
 	h, r53, _ := positionalHarness(t)
 	h.rt.Flags.NonInteractive = false
-	p := prompttest.New(t, "TXT", "hello")
+	p := prompttest.New(t, "@", "TXT", "hello", "")
 	h.rt.Picker = p
 	if err := h.run("route53", "record", "upsert", "other.org"); err != nil {
 		t.Fatalf("upsert: %v\n%s", err, h.stderr.String())
 	}
 	p.Done()
+	if a := p.Find("Record name in other.org"); prompttest.Labels(a.Options) != "@ (apex)\nold  TXT\nwww  A\nAnother name..." {
+		t.Errorf("names offered:\n%s", prompttest.Labels(a.Options))
+	}
 	if got := r53.values("Z3", "other.org.", "TXT"); len(got) != 1 {
 		t.Errorf("apex TXT = %v", got)
+	}
+	// <zone> <name>: the type of the name is preselected, the current
+	// value proposed, and more values are asked.
+	p = prompttest.New(t, "A", prompttest.KeepDefault{}, "198.51.100.8", "")
+	h.rt.Picker = p
+	if err := h.run("route53", "record", "upsert", "other.org", "www"); err != nil {
+		t.Fatalf("upsert <name>: %v\n%s", err, h.stderr.String())
+	}
+	p.Done()
+	if a := p.Find("Record type"); a.Default != "A" {
+		t.Errorf("type preselected %q", a.Default)
+	}
+	if got := r53.values("Z3", "www.other.org.", "A"); strings.Join(got, ",") != "198.51.100.7,198.51.100.8" {
+		t.Errorf("www A = %v", got)
+	}
+	// <zone> <name> <type>.
+	p = prompttest.New(t, "typed", "")
+	h.rt.Picker = p
+	if err := h.run("route53", "record", "upsert", "other.org", "new", "txt"); err != nil {
+		t.Fatalf("upsert <name> <type>: %v\n%s", err, h.stderr.String())
+	}
+	p.Done()
+	if got := r53.values("Z3", "new.other.org.", "TXT"); len(got) != 1 {
+		t.Errorf("new TXT = %v", got)
+	}
+	// The non-interactive flow asks nothing.
+	h.rt.Picker = nil
+	h.rt.Flags.NonInteractive = true
+	for _, args := range [][]string{{"other.org", "www"}, {"other.org", "www", "A"}} {
+		if err := h.run(append([]string{"route53", "record", "upsert"}, args...)...); !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "<zone> <name> <type> <value>...") {
+			t.Errorf("non-interactive %v = %v", args, err)
+		}
 	}
 }
 

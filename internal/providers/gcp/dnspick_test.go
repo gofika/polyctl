@@ -63,12 +63,12 @@ func TestDNSZonePick(t *testing.T) {
 // shows the usage of the positional record.
 func TestDNSRecordUpsertAsks(t *testing.T) {
 	h, g := dnsHarness(t)
-	p := h.answer("proj/example-zone", "A", "not-an-ip", "192.0.2.7")
+	p := h.answer("proj/example-zone", "A", "not-an-ip", "192.0.2.7", "")
 	if err := h.run("dns", "record", "upsert", "--name", "www"); err != nil {
 		t.Fatalf("upsert: %v\n%s", err, h.stderr.String())
 	}
 	p.Done()
-	if in := p.Asked[len(p.Asked)-1]; in.Kind != "input" || in.Default != "1.1.1.1" {
+	if in := p.Find("Value of the A record"); in.Kind != "input" || in.Default != "1.1.1.1" {
 		t.Errorf("value prompt %+v", in)
 	}
 	if rs := g.rrset("example-zone", "www.example.com.", "A"); rs == nil || strings.Join(rs.Rrdatas, ",") != "192.0.2.7" {

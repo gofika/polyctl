@@ -590,8 +590,6 @@ profile are offered.`,
 }
 
 func newRecordUpsertCmd(rt *app.Runtime) *cobra.Command {
-	var typ, name string
-	var values []string
 	var ttl, priority int
 	cmd := &cobra.Command{
 		Use:   "upsert <zone> <name> <type> <value>...",
@@ -606,11 +604,7 @@ MX and SRV values take the priority from --priority, or as a leading number
 inside the value ("10 mail.example.com"). Hostnames get the trailing dot
 Cloud DNS expects; TXT and SPF values are quoted automatically.
 
-On a terminal, a missing <zone> is picked from the managed zones of the
-profile, and with only the zone the type is picked from the record types
-and the value is asked (one value, checked as it is typed; the current
-values of the set are shown, and the first one proposed). The name is not
-asked: the set is then at the zone apex.`,
+` + app.RecordAskHelp("zone") + "\n\n" + app.RecordSetAskHelp,
 		Example: `  polyctl gcp dns record upsert example-zone www A 203.0.113.10 203.0.113.11
   polyctl gcp dns record upsert example-zone @ MX "10 mx1.example.net" "20 mx2.example.net" --ttl 300
   polyctl gcp dns record upsert example-zone @ TXT "v=spf1 include:_spf.example.net ~all"`,
@@ -619,16 +613,9 @@ asked: the set is then at the zone apex.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The record is positional (<name> <type> <value>...) or, in the
 			// former form, given with --name, --type and --value.
-			if len(args) > 1 {
-				rec, err := app.ParseRecordArgs(cmd, args[1:], 1, -1)
-				if err != nil {
-					return err
-				}
-				name, typ, values = rec.Name, rec.Type, rec.Values
-				args = args[:1]
-			}
-			if (typ == "" || len(values) == 0) && !rt.Interactive() {
-				return app.UsageErrf("%s", app.RecordUsage(cmd, 1, -1))
+			in, err := rt.RecordInput(cmd, args, app.RecordForm{MinValues: 1, MaxValues: -1})
+			if err != nil {
+				return err
 			}
 			if rt.Flags.Offline {
 				return app.ErrOffline
@@ -637,40 +624,22 @@ asked: the set is then at the zone apex.`,
 			if err != nil {
 				return err
 			}
-			if args, err = zoneArg(cmd.Context(), rt, args, profile, true); err != nil {
+			if args, err = zoneArg(cmd.Context(), rt, args[:min(len(args), 1)], profile, true); err != nil {
 				return err
 			}
 			z, err := resolveZone(cmd.Context(), rt, profile, args[0])
 			if err != nil {
 				return err
 			}
-			if typ == "" {
-				if typ, err = rt.PickRecordType(platform.GCP); err != nil {
-					return err
-				}
+			if err := rt.CompleteRecord(in, app.RecordPrompt{Platform: platform.GCP, Zone: z.Name, WholeSet: true, ValueOf: recordValue,
+				Existing: func() ([]platform.Record, error) {
+					recs, _, err := cachedRecords(cmd.Context(), rt, profile, z)
+					return recs, err
+				}}); err != nil {
+				return err
 			}
-			typ = strings.ToUpper(typ)
-			fqdn := platform.FQDN(name, z.Name)
-			if len(values) == 0 {
-				recs, _, err := cachedRecords(cmd.Context(), rt, profile, z)
-				if err != nil {
-					return err
-				}
-				var cur []string
-				for _, r := range app.MatchRecords(recs, fqdn, typ, "") {
-					cur = append(cur, recordValue(r))
-				}
-				def := ""
-				if len(cur) > 0 {
-					def = cur[0]
-					rt.Infof("%s %s is now: %s (the set becomes the value you enter)", fqdn, typ, strings.Join(cur, ", "))
-				}
-				v, err := rt.AskRecordValue(typ, def)
-				if err != nil {
-					return err
-				}
-				values = []string{v}
-			}
+			typ, values := in.Type, in.Values
+			fqdn := platform.FQDN(in.Name, z.Name)
 			raw := make([]string, 0, len(values))
 			for _, v := range values {
 				rec := platform.Record{Name: fqdn, Type: typ, Value: v}
@@ -704,12 +673,10 @@ asked: the set is then at the zone apex.`,
 			return rt.Render(recordResult{Profile: profile, Zone: *z, Records: recs}, func() output.Grid { return recordGrid(recs) })
 		},
 	}
-	cmd.Flags().StringVar(&typ, "type", "", "record type (A, AAAA, CNAME, TXT, MX, ...)")
-	cmd.Flags().StringVar(&name, "name", "", "record name relative to the zone (www, @) or FQDN; default: the zone apex")
-	cmd.Flags().StringArrayVar(&values, "value", nil, "record value (repeat for multiple values)")
+	app.FormerRecordFlags(cmd, true)
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 = keep existing, or 300 for a new set)")
 	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX/SRV records")
-	hideFormerRecordFlags(cmd)
+	app.HideFormerRecordFlags(cmd)
 	return cmd
 }
 
@@ -719,14 +686,6 @@ const recordArgsHelp = `<name> is relative to the zone (www, a.b), @ for the zon
 inside the zone (www.example.com). <type> is case-insensitive. A value is one
 argument: quote one that contains spaces. A value that starts with "-" goes
 after "--".`
-
-// hideFormerRecordFlags leaves --name, --type and --value, the former form
-// of the record of a record command, out of its help. They keep working.
-func hideFormerRecordFlags(cmd *cobra.Command) {
-	for _, n := range []string{"name", "type", "value"} {
-		_ = cmd.Flags().MarkHidden(n)
-	}
-}
 
 func newRecordDeleteCmd(rt *app.Runtime) *cobra.Command {
 	var typ, name, value, id string
@@ -944,7 +903,7 @@ dns delete of one record. --dry-run asks nothing.`,
 	cmd.Flags().StringVar(&value, "value", "", "only remove this value from the set")
 	cmd.Flags().IntVar(&priority, "priority", 0, "priority of the MX/SRV <value>, when the value does not start with one")
 	cmd.Flags().StringVar(&id, "id", "", "delete the record value with this id (project/zone|TYPE|name|value)")
-	hideFormerRecordFlags(cmd)
+	app.HideFormerRecordFlags(cmd)
 	return cmd
 }
 

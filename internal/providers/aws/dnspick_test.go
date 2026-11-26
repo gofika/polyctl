@@ -72,7 +72,7 @@ func TestRoute53RecordAsks(t *testing.T) {
 		valueSet("www.other.org.", "A", 300, "198.51.100.7"),
 	}
 
-	p := prompttest.New(t, "A", prompttest.KeepDefault{})
+	p := prompttest.New(t, "A", prompttest.KeepDefault{}, "")
 	h.rt.Picker = p
 	if err := h.run("route53", "record", "upsert", "other.org", "--name", "www"); err != nil {
 		t.Fatalf("upsert: %v\n%s", err, h.stderr.String())

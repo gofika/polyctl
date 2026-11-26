@@ -398,8 +398,7 @@ func syncRecordRows(ctx context.Context, rt *app.Runtime, prof string, z *platfo
 }
 
 func recordUpsertCmd(rt *app.Runtime) *cobra.Command {
-	var typ, name, setID string
-	var values []string
+	var setID string
 	var ttl, priority int
 	cmd := &cobra.Command{
 		Use:   "upsert <zone> <name> <type> <value>...",
@@ -415,7 +414,9 @@ A routing-policy set (weighted, latency, failover, geolocation...) is
 chosen with --set-identifier and keeps its policy; a set identifier that
 does not exist is not found (exit code 4), since this command sets no
 routing policy. Without it, a name and type that hold only routing-policy
-sets are ambiguous (exit code 5).`,
+sets are ambiguous (exit code 5).
+
+` + app.RecordAskHelp("zone") + "\n\n" + app.RecordSetAskHelp,
 		Example: `  polyctl aws route53 record upsert example.com www A 203.0.113.10 203.0.113.11
   polyctl aws route53 record upsert example.com @ MX "10 mx1.example.net" "20 mx2.example.net" --ttl 300
   polyctl aws route53 record upsert example.com www A 203.0.113.12 --set-identifier eu`,
@@ -424,23 +425,16 @@ sets are ambiguous (exit code 5).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The record is positional (<name> <type> <value>...) or, in the
 			// former form, given with --name, --type and --value.
-			if len(args) > 1 {
-				rec, err := app.ParseRecordArgs(cmd, args[1:], 1, -1)
-				if err != nil {
-					return err
-				}
-				name, typ, values = rec.Name, rec.Type, rec.Values
-				args = args[:1]
-			}
-			if (typ == "" || len(values) == 0) && !rt.Interactive() {
-				return app.UsageErrf("%s", app.RecordUsage(cmd, 1, -1))
+			in, err := rt.RecordInput(cmd, args, app.RecordForm{MinValues: 1, MaxValues: -1})
+			if err != nil {
+				return err
 			}
 			if rt.Flags.Offline {
 				return app.ErrOffline
 			}
 			// A record is created in the zone: an empty list is a usage
 			// error naming <zone>.
-			args, err := rt.DomainArg(cmd.Context(), args, platform.AWS, platform.ResZone, nil)
+			args, err = rt.DomainArg(cmd.Context(), args[:min(len(args), 1)], platform.AWS, platform.ResZone, nil)
 			if err != nil {
 				return app.RequiredPick(err, "<zone>")
 			}
@@ -455,31 +449,15 @@ sets are ambiguous (exit code 5).`,
 			if z, err = zoneWithName(cmd.Context(), rt, c, z); err != nil {
 				return err
 			}
-			fqdn := platform.FQDN(name, z.Name)
-			if typ == "" {
-				if typ, err = rt.PickRecordType(platform.AWS); err != nil {
-					return err
-				}
+			if err := rt.CompleteRecord(in, app.RecordPrompt{Platform: platform.AWS, Zone: z.Name, WholeSet: true,
+				Existing: func() ([]platform.Record, error) { return c.ListRecords(cmd.Context(), z.ID) },
+				// The value of the set being replaced, not of another
+				// routing-policy set of the name and type.
+				Current: func(r platform.Record) bool { return extraString(r.Extra, "set_identifier") == setID }}); err != nil {
+				return err
 			}
-			if len(values) == 0 {
-				// The value of the set as it is, when it exists, is proposed.
-				cur := ""
-				if recs, err := c.ListRecords(cmd.Context(), z.ID); err == nil {
-					for _, r := range app.MatchRecords(recs, fqdn, typ, "") {
-						// The value of the set being replaced, not of
-						// another routing-policy set of the name and type.
-						if extraString(r.Extra, "set_identifier") == setID {
-							cur = r.Value
-							break
-						}
-					}
-				}
-				v, err := rt.AskRecordValue(typ, cur)
-				if err != nil {
-					return err
-				}
-				values = []string{v}
-			}
+			typ, values := in.Type, in.Values
+			fqdn := platform.FQDN(in.Name, z.Name)
 			if cmd.Flags().Changed("priority") && hasPriority(typ) {
 				// Prepend --priority to values that do not carry one already.
 				for i, v := range values {
@@ -500,13 +478,11 @@ sets are ambiguous (exit code 5).`,
 			return rt.Render(recordResult{Profile: prof.Name, Zone: z, Records: recs}, func() output.Grid { return recordGrid(recs) })
 		},
 	}
-	cmd.Flags().StringVar(&typ, "type", "", "record type (A, AAAA, CNAME, TXT, MX, ...)")
-	cmd.Flags().StringVar(&name, "name", "", "record name relative to the zone (www, @); default: the zone apex")
-	cmd.Flags().StringArrayVar(&values, "value", nil, "record value (repeatable; replaces the whole set)")
+	app.FormerRecordFlags(cmd, true)
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 = keep existing, or 300 for a new set)")
 	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX/SRV values that do not start with one")
 	cmd.Flags().StringVar(&setID, "set-identifier", "", "set identifier of a routing-policy record set (weighted, latency, failover...)")
-	hideFormerRecordFlags(cmd)
+	app.HideFormerRecordFlags(cmd)
 	return cmd
 }
 
@@ -516,16 +492,6 @@ const recordArgsHelp = `<name> is relative to the zone (www, a.b), @ for the zon
 inside the zone (www.example.com). <type> is case-insensitive. A value is one
 argument: quote one that contains spaces. A value that starts with "-" goes
 after "--".`
-
-// hideFormerRecordFlags leaves --name, --type and --value, the former form
-// of the record of a record command, out of its help. They keep working.
-func hideFormerRecordFlags(cmd *cobra.Command) {
-	for _, n := range []string{"name", "type", "value"} {
-		if cmd.Flags().Lookup(n) != nil {
-			_ = cmd.Flags().MarkHidden(n)
-		}
-	}
-}
 
 func recordDeleteCmd(rt *app.Runtime) *cobra.Command {
 	var typ, name, setID string
@@ -675,7 +641,7 @@ nothing. A missing set is not found (exit code 4) before the question.
 	cmd.Flags().StringVar(&typ, "type", "", "record type")
 	cmd.Flags().StringVar(&name, "name", "", "record name relative to the zone (www, @); default: the zone apex")
 	cmd.Flags().StringVar(&setID, "set-identifier", "", "set identifier of a routing-policy record set (weighted, latency, failover...)")
-	hideFormerRecordFlags(cmd)
+	app.HideFormerRecordFlags(cmd)
 	return cmd
 }
 
