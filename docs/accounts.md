@@ -333,7 +333,8 @@ In 0.1.x a profile was one account on one platform; now it is a set of accounts,
 - `POLYCTL_OUTPUT` now overrides `output:` in `config.yaml` (flag > environment > config > default).
 - `--no-browser` is a flag of `auth login` and `auth manage` only.
 - An unknown subcommand (`polyctl dns nosuch`, `polyctl help dns nosuch`) is a usage error (exit 2), not help with exit 0.
-- `dns update` is now `dns set`; `dns update --add` is now `dns add`.
+- `dns update` is now `dns ensure <domain> <name> <type> <value>`; `dns update --add` is now `dns add`.
+- `polyctl dns set` was removed, use `polyctl dns ensure <domain> <name> <type> <value>`.
 - `ns set <domain> --ns a,b` is now `ns set <domain> a b` (all trees).
 - `--proxied true|false` is now `--proxied` / `--proxied=false`.
 - `inventory list --platform` / `--type` take lists.

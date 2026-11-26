@@ -351,7 +351,7 @@ An empty report still prints its header (`"changes": []`). A failed step is repo
 
 These writes print the written object instead of a report when run for real (a report only with `--dry-run`):
 
-- `dns add`, `dns set`, `dns delete`, `domain ns set`;
+- `dns add`, `dns delete`, `domain ns set`;
 - platform DNS record writes: `cloudflare dns create|update|delete`, `namecom dns create|update|delete`, `godaddy dns add|upsert|delete`, `aws route53 record upsert|delete`, `gcp dns record upsert|delete`, `aliyun dns record create|update|delete`;
 - registrar writes: `ns set` of `aws route53domains`, `namecom domain`, `godaddy domain`, `aliyun domain`; `lock` / `unlock` / `autorenew` of `namecom domain` and `godaddy domain`;
 - `cloudflare cache purge`, `cloudflare dev-mode` / `ssl-mode` with a value, `aws rds instance create`.

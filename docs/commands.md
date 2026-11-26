@@ -26,7 +26,6 @@ The status line on stderr always names the account used, for example `zone examp
 
 ```text
 polyctl dns list   <domain> [--type A] [--name www]
-polyctl dns set    <domain> <name> <type> <value> [--ttl 300] [--priority 10] [--proxied[=false]]
 polyctl dns add    <domain> <name> <type> <value> [--ttl 300] [--priority 10] [--proxied[=false]]
 polyctl dns ensure <domain> <name> <type> <value>... [--ttl 300|auto] [--priority 10] [--proxied[=false]]
 polyctl dns ensure <domain> (-r <name:type:value[:ttl[:proxied]]>... | -f records.yaml) [--prune-duplicates]
@@ -41,7 +40,7 @@ One record is written like a line of a zone file, after the domain:
 ```sh
 polyctl dns ensure example.com @ A 192.0.2.10
 polyctl dns ensure example.com www CNAME target.example.net
-polyctl dns set example.com www A 203.0.113.10 --ttl 300
+polyctl dns ensure example.com api A 203.0.113.10 --ttl 300
 polyctl dns add example.com @ TXT "v=spf1 include:_spf.example.net ~all"
 polyctl dns delete example.com www A
 ```
@@ -51,20 +50,20 @@ polyctl dns delete example.com www A
 - `<domain>` may be the zone apex or any name under it: `www.example.com` resolves to the `example.com` zone.
 - `<name>` (and `--name` of `dns list`) is relative to the zone (`www`, `a.b`, `@` for the apex), a full name in the zone (`www.example.com`), or an absolute name ending with a dot (`www.example.com.`). A name outside the zone (`www.other.org`, `www.other.org.`) is exit code 2, never put inside the zone.
 - `<type>` is case-insensitive.
-- Each `<value>` is one argument: quote one that contains spaces (`"v=spf1 -all"`, `"10 mail.example.com"`). A value that starts with `-` goes after `--`: `polyctl dns set example.com note TXT -- -text`.
+- Each `<value>` is one argument: quote one that contains spaces (`"v=spf1 -all"`, `"10 mail.example.com"`). A value that starts with `-` goes after `--`: `polyctl dns ensure example.com note TXT -- -text`.
 - A record's data is its **value** everywhere: the `<value>` argument, the `VALUE` column and the `value` field of `-o json` / `-o yaml`. What one command prints can be passed to another.
-- A wrong number of record arguments is exit code 2, and the message shows the usage (`usage: polyctl dns set <domain> <name> <type> <value>`). On a terminal, `dns set`, `dns add` and `dns ensure` ask for what is left out, in the order zone, name, type, value: the record may stop after `<domain>`, `<name>` or `<type>`. The name is chosen from the names the zone already has, `@` for the apex, or typed in; the type from the types the platform writes, the one the name already has preselected; `dns set` and `dns ensure` propose the current value of the record, and `dns ensure` asks for values until one is left empty. `dns delete` with only `<domain>` lists the records. The non-interactive flow asks nothing.
-- Former form (0.5.x): `dns set`, `dns add` and `dns delete` still read the record from `--name`, `--type` and `--value` (without `--name`, the record name is `<domain>` itself: a `<domain>` below its zone names the record, and the zone itself is its apex; on a terminal, `dns set` and `dns add` ask for the name in that second case instead of writing to the apex). These flags are no longer listed in the help (`--type` of `dns delete` stays, for `--all`). A positional record together with one of them is exit code 2.
-- `--ttl` is in seconds; `0` or no flag means the platform default (`dns set` keeps the existing TTL).
+- A wrong number of record arguments is exit code 2, and the message shows the usage (`usage: polyctl dns add <domain> <name> <type> <value>`). On a terminal, `dns add` and `dns ensure` ask for what is left out, in the order zone, name, type, value: the record may stop after `<domain>`, `<name>` or `<type>`. The name is chosen from the names the zone already has, `@` for the apex, or typed in; the type from the types the platform writes, the one the name already has preselected; `dns ensure` proposes the current value of the record and asks for values until one is left empty. `dns delete` with only `<domain>` lists the records. The non-interactive flow asks nothing.
+- Former form (0.5.x): `dns add` and `dns delete` still read the record from `--name`, `--type` and `--value` (without `--name`, the record name is `<domain>` itself: a `<domain>` below its zone names the record, and the zone itself is its apex; on a terminal, `dns add` asks for the name in that second case instead of writing to the apex). These flags are no longer listed in the help (`--type` of `dns delete` stays, for `--all`). A positional record together with one of them is exit code 2.
+- `polyctl dns set` was removed, use `polyctl dns ensure <domain> <name> <type> <value>`. `dns ensure` takes no `--name`, `--type` and `--value`, checks the type and the value before it writes, and prints a change report in place of the record.
+- `--ttl` of `dns add` is in seconds; `0` or no flag means the platform default. `--ttl` of `dns ensure` is described [below](#dns-ensure).
 - In tables, special TTLs are shown by name: `auto` (Cloudflare automatic, `1` in the API), `alias` (Route 53 alias records) and `default` (a GoDaddy record written without `--ttl`). JSON and YAML keep the raw value.
-- `--proxied` is Cloudflare only. `--proxied` turns the proxy on, `--proxied=false` turns it off (the `=` is required). Without it, `dns set` keeps the current setting and `dns add` uses Cloudflare's default. The `PROXIED` column appears for Cloudflare zones.
+- `--proxied` is Cloudflare only. `--proxied` turns the proxy on, `--proxied=false` turns it off (the `=` is required). Without it, `dns ensure` keeps the current setting of an existing record, and a new record gets Cloudflare's default. The `PROXIED` column appears for Cloudflare zones.
 - After a write, the inventory is updated, so the next `dns list` shows the change without `--refresh`.
 - A Cloudflare, name.com or GoDaddy request refused for its rate limit (HTTP 429) waits for the delay the platform announces (`Retry-After`, `RateLimit-Reset`; at most 2 minutes per wait, 3 waits per request) and is sent again, so a long `dns delete --all` or sync rides out the limit window instead of failing partway.
 
-### dns set and dns add
+### dns add
 
-- `dns set` creates or updates one record, keyed on name + type. One existing record is updated (TTL, priority and proxy status are kept unless given); none means create. Several existing records are an error that changes nothing: use `dns add` or `dns delete`.
-- `dns add` always creates one more record and leaves the others alone. Use it to build round-robin `A` records or several `TXT` / `MX` records.
+- `dns add` always creates one more record and leaves the others alone. Use it to build round-robin `A` records or several `TXT` / `MX` records. To change a record, use `dns ensure`.
 
 ### dns ensure
 
@@ -369,6 +368,6 @@ The same operation has the same verb and shape on every platform:
 | Record sets by name and type (Route 53, Cloud DNS, GoDaddy) | `upsert` sets the whole record set. `delete <zone> [<name> [<type>]]` on Route 53 deletes a record set (`--set-identifier` tells routing-policy sets apart; there is no `--id`); `delete <zone> [<name> [<type> [<value>]]]` on Cloud DNS deletes a record set or one value of it; `delete <domain> [<name> [<type> [<value>]]]` on GoDaddy deletes records as the platforms with record ids do. `<type>` is needed only for a name with records of several types, and `--id` (Cloud DNS, GoDaddy) names one record exactly |
 | Compute services | `<service> instance list\|start\|stop ...` |
 
-- **`create`** makes one new resource and fails when it exists. **`set` / `upsert`** set one object (a record, a record set) and never create anything else.
+- **`create`** makes one new resource and fails when it exists. **`set` / `upsert`** set one object (the nameservers of a domain, a zone setting, a record set) and never create anything else.
 - **`ensure`** converges a group of related resources: it reads what exists, changes only what differs, reports `unchanged` for what matches, and never deletes resources it was not told about. Any command that creates dependencies you did not name one by one (a VPC, a security group, a certificate, a listener) is an `ensure` command. Exit code 0 includes "everything was unchanged". It prints a [change report](configuration.md#dry-runs-and-change-reports).
 - **Waiting**: asynchronous changes take `--wait` (wait until the change has completed; the default of `ensure` commands and of every `instance create`), `--no-wait` (return once the change was requested; accepted by every command that has `--wait`) and `--timeout <duration>` (upper bound of the wait, default `10m`). A wait that runs out of time is exit code 1 and names the resource and its last status.
