@@ -131,6 +131,20 @@ func setupTwoRecords(t *testing.T) (string, string) {
 	return dir, cfgPath
 }
 
+// setupOneA is setup with a zone holding one A record, in the inventory and
+// on the fake platform.
+func setupOneA(t *testing.T) (string, string) {
+	t.Helper()
+	dir, cfgPath := setup(t, true)
+	recs := []platform.Record{{ID: "r1", ZoneID: "z1", Name: "www." + flowZone, Type: "A", Value: "1.2.3.4"}}
+	zones := []platform.Zone{{ID: "z1", Name: flowZone}}
+	seed(t, dir, zones, map[string][]platform.Record{"z1": recs})
+	fc := client("a")
+	fc.zones = zones
+	fc.records["z1"] = append([]platform.Record(nil), recs...)
+	return dir, cfgPath
+}
+
 func setupEmpty(t *testing.T) (string, string) { return setup(t, false) }
 func setupOne(t *testing.T) (string, string)   { return setup(t, true) }
 func recordsDeleted(t *testing.T, _ string) string {
@@ -308,6 +322,31 @@ func flowCases() []flowCase {
 			piped: "y\n", wantCode: ExitUsage, wantMsg: []string{"dns delete --all needs --yes"},
 			mutated:  recordsDeleted,
 			complete: []string{"dns", "delete", flowZone, "--all", "--yes"}, completed: bothDeleted,
+		},
+		{
+			name: "dns ensure: replace the record of another type", setup: setupOneA,
+			args:  []string{"dns", "ensure", flowZone, "www", "TXT", "hello"},
+			typed: "y\n",
+			interactive: func(t *testing.T, dir string, r flowResult, p *scriptedPicker) {
+				if fc := client("a"); r.err != nil || fc.count("DeleteRecord:r1") != 1 || fc.count("CreateRecord:www."+flowZone+":TXT") != 1 ||
+					!strings.Contains(r.stderr, "replace the A record of www."+flowZone+" with the TXT record in zone "+flowZone+" (y/N)") {
+					t.Errorf("dns ensure confirmed: %v, calls %v, stderr %q", r.err, fc.calls, r.stderr)
+				}
+			},
+			piped: "y\n", wantCode: ExitUsage,
+			wantMsg: []string{"confirmation required: pass --yes to proceed", "would replace the A record of www." + flowZone},
+			mutated: func(t *testing.T, _ string) string {
+				if fc := client("a"); writes(fc) != 0 {
+					return "records were written: " + strings.Join(fc.calls, " ")
+				}
+				return ""
+			},
+			complete: []string{"dns", "ensure", flowZone, "www", "TXT", "hello", "--yes"},
+			completed: func(t *testing.T, _ string, r flowResult) {
+				if fc := client("a"); fc.count("DeleteRecord:r1") != 1 || fc.count("CreateRecord:www."+flowZone+":TXT") != 1 || strings.Contains(r.stderr, "(y/N)") {
+					t.Errorf("dns ensure --yes: calls %v, stderr %q", fc.calls, r.stderr)
+				}
+			},
 		},
 		{
 			// Refused before the account is opened: needs neither one nor

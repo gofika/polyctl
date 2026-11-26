@@ -704,12 +704,17 @@ positional record nothing is asked.`,
 			if _, err := zoneRecords(); err != nil {
 				return err
 			}
+			// The names that hold records of other types are settled, and
+			// the replacements confirmed, before anything is written.
+			repl := &ensureReplace{rt: rt, t: t}
 			plan, err := platform.PlanDNSEnsure(platform.DNSEnsure{
 				Platform:        t.Platform,
 				ZoneID:          t.ResourceID,
 				Existing:        existing,
 				Desired:         desired,
 				PruneDuplicates: prune,
+				Decide:          repl.decide,
+				Restore:         func(r platform.Record) string { return restoreCommand(t, r) },
 				DNS:             dns,
 				Written: func(ctx context.Context, oldID string, r platform.Record) {
 					rememberRecord(ctx, rt, t, oldID, r)
@@ -719,6 +724,9 @@ positional record nothing is asked.`,
 				},
 			})
 			if err != nil {
+				return err
+			}
+			if err := repl.confirm(ctx); err != nil {
 				return err
 			}
 			rt.Infof("zone %s via %s/%s", t.Domain, t.Platform, t.Profile)

@@ -359,28 +359,54 @@ func isDigits(s string) bool {
 }
 
 // existingCompareValue is compareValue of a record read from a platform.
-// A Cloudflare SRV record carries its components in data; a GoDaddy one its
-// weight and port in fields of their own beside the target.
 func existingCompareValue(r Record) string {
-	if strings.EqualFold(r.Type, "SRV") && r.Priority != nil && len(strings.Fields(r.Value)) == 1 {
-		if w, p := r.Extra["weight"], r.Extra["port"]; w != nil && p != nil {
-			return compareValue("SRV", fmt.Sprintf("%d %v %v %s", *r.Priority, w, p, r.Value), nil)
-		}
-	}
-	if strings.EqualFold(r.Type, "SRV") {
-		if d, ok := r.Extra["data"].(map[string]any); ok {
-			var f []string
-			for _, k := range []string{"priority", "weight", "port", "target"} {
-				if x, ok := d[k]; ok {
-					f = append(f, fmt.Sprint(x))
-				}
-			}
-			if len(f) == 4 {
-				return compareValue("SRV", strings.Join(f, " "), nil)
-			}
-		}
+	if v, ok := srvFields(r); ok {
+		return compareValue("SRV", v, nil)
 	}
 	return compareValue(r.Type, r.Value, r.Priority)
+}
+
+// srvFields is "<priority> <weight> <port> <target>" of an SRV record whose
+// platform keeps the fields apart: a Cloudflare SRV record carries them in
+// data, a GoDaddy one its weight and port in fields of their own beside the
+// target. ok is false for any other record.
+func srvFields(r Record) (string, bool) {
+	if !strings.EqualFold(r.Type, "SRV") {
+		return "", false
+	}
+	if r.Priority != nil && len(strings.Fields(r.Value)) == 1 {
+		if w, p := r.Extra["weight"], r.Extra["port"]; w != nil && p != nil {
+			return fmt.Sprintf("%d %v %v %s", *r.Priority, w, p, r.Value), true
+		}
+	}
+	if d, ok := r.Extra["data"].(map[string]any); ok {
+		var f []string
+		for _, k := range []string{"priority", "weight", "port", "target"} {
+			if x, ok := d[k]; ok {
+				f = append(f, fmt.Sprint(x))
+			}
+		}
+		if len(f) == 4 {
+			return strings.Join(f, " "), true
+		}
+	}
+	return "", false
+}
+
+// RecordAddValue is the value of r as `dns add` takes it: the priority an
+// MX, SRV or URI record holds apart put back in front, and the fields of an
+// SRV record a platform keeps apart joined.
+func RecordAddValue(r Record) string {
+	if v, ok := srvFields(r); ok {
+		return v
+	}
+	n := len(strings.Fields(r.Value))
+	switch typ := strings.ToUpper(r.Type); {
+	case r.Priority == nil:
+	case typ == "MX" && n == 1, typ == "SRV" && n == 3, typ == "URI" && n == 2:
+		return strconv.Itoa(*r.Priority) + " " + r.Value
+	}
+	return r.Value
 }
 
 // RecordValueMatches reports whether value names the value of r, compared
@@ -511,6 +537,17 @@ type DNSEnsure struct {
 	// PruneDuplicates deletes the other records of a name and type that has
 	// several, once one of them is as desired.
 	PruneDuplicates bool
+	// Decide settles a name that holds records of types the run does not
+	// name for it (see OccupiedName): replace=true deletes them before the
+	// desired records of the name are written, false leaves them beside
+	// those. It is called for each such name in input order, after every
+	// other check and before any step runs; an error stops the plan before
+	// anything is written. nil refuses every such name (OccupiedName.Refusal).
+	Decide func(OccupiedName) (replace bool, err error)
+	// Restore is the command that writes a deleted record again: the error
+	// of a write that fails after the records it replaces were deleted
+	// names it. nil names none.
+	Restore func(Record) string
 	// DNS performs the writes (inside Step.Apply only).
 	DNS DNSService
 	// Written is told about every record written (oldID is the id the
@@ -518,6 +555,152 @@ type DNSEnsure struct {
 	// record deleted. Both may be nil. They keep the inventory in step.
 	Written func(ctx context.Context, oldID string, r Record)
 	Removed func(ctx context.Context, id string)
+}
+
+// OccupiedName is a name of a dns ensure run that holds records of types
+// the run does not name for it, and that needs a decision before anything
+// is written: they are replaced by the desired records of the name (deleted
+// first), or kept beside them. The SOA and the NS records of the zone apex
+// are the zone's own and never count. A name whose records include one of a
+// type the run names, and whose other records can share the name with the
+// desired ones, needs no decision: those are left alone.
+type OccupiedName struct {
+	Platform ID
+	// Name is relative to the zone ("@" for the apex); FQDN is the full name.
+	Name, FQDN string
+	// Types are the types the run names for the name, in input order, and
+	// Count is the number of its desired records.
+	Types []string
+	Count int
+	// Others are the records of other types, as the zone lists them.
+	Others []Record
+	// Claimed says the name also holds a record of a type of Types.
+	Claimed bool
+	// Conflict says a type of Types cannot share the name with a record of
+	// Others (RecordTypesConflict).
+	Conflict bool
+}
+
+// Single says the name holds one record, of another type: it is replaced
+// after a confirmation, without a choice.
+func (o OccupiedName) Single() bool { return !o.Claimed && len(o.Others) == 1 }
+
+// CanKeep says the desired records can be written beside Others.
+func (o OccupiedName) CanKeep() bool { return !o.Conflict }
+
+// What names the desired records of the name: "the A record", "the MX
+// records", "the A, TXT records".
+func (o OccupiedName) What() string {
+	switch {
+	case len(o.Types) > 1:
+		return "the " + strings.Join(o.Types, ", ") + " records"
+	case o.Count > 1:
+		return "the " + strings.Join(o.Types, "") + " records"
+	}
+	return "the " + strings.Join(o.Types, "") + " record"
+}
+
+// OthersText lists Others: `TXT "x" ttl=300, MX 10 mail.example.com ttl=300`.
+func (o OccupiedName) OthersText() string {
+	parts := make([]string, len(o.Others))
+	for i, r := range o.Others {
+		parts[i] = strings.ToUpper(r.Type) + " " + recordDisplay(o.Platform, r)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// othersCount is "a record of another type" or "3 records of other types".
+func (o OccupiedName) othersCount() string {
+	if len(o.Others) == 1 {
+		return "a record of another type"
+	}
+	return fmt.Sprintf("%d records of other types", len(o.Others))
+}
+
+// conflictReason says why the desired records cannot share the name with
+// Others, "" when they can.
+func (o OccupiedName) conflictReason() string {
+	apex := o.Name == "@"
+	for _, t := range o.Types {
+		for _, r := range o.Others {
+			if RecordTypesConflict(o.Platform, apex, t, r.Type) {
+				return conflictReason(o.Platform, t, r.Type)
+			}
+		}
+	}
+	return ""
+}
+
+// Ambiguous is the error of a name that needs a choice where nothing can be
+// asked (exit code 5): dns ensure deletes several records of a name only
+// after a choice on a terminal, never in a script, --yes or not.
+func (o OccupiedName) Ambiguous() error {
+	hint := fmt.Sprintf("add %s beside them with `polyctl dns add`, or delete them first with `polyctl dns delete` to replace them", o.What())
+	if why := o.conflictReason(); why != "" {
+		hint = fmt.Sprintf("%s cannot stay beside them (%s): delete them first with `polyctl dns delete`, then run dns ensure again", o.What(), why)
+	}
+	return fmt.Errorf("%w: %s holds %s (%s); dns ensure replaces several records of a name only after a choice on a terminal: %s (nothing was written)",
+		ErrAmbiguous, o.FQDN, o.othersCount(), o.OthersText(), hint)
+}
+
+// Refusal is the error of a name nobody decided: Ambiguous, or for a single
+// record that replacing it needs a confirmation.
+func (o OccupiedName) Refusal() error {
+	if !o.Single() {
+		return o.Ambiguous()
+	}
+	return fmt.Errorf("%s holds %s (%s); replacing it with %s needs a confirmation (nothing was written)", o.FQDN, o.othersCount(), o.OthersText(), o.What())
+}
+
+// occupiedNames are the names of in that need a decision (OccupiedName), in
+// input order. Desired records that are not written (proxied=true off
+// Cloudflare) do not count.
+func occupiedNames(in DNSEnsure) []OccupiedName {
+	var names []OccupiedName
+	at := map[string]int{}
+	for _, d := range in.Desired {
+		if d.ProxiedUnsupported {
+			continue
+		}
+		i, ok := at[d.FQDN]
+		if !ok {
+			i = len(names)
+			at[d.FQDN] = i
+			names = append(names, OccupiedName{Platform: in.Platform, Name: d.Name, FQDN: d.FQDN})
+		}
+		names[i].Count++
+		if !slices.Contains(names[i].Types, d.Type) {
+			names[i].Types = append(names[i].Types, d.Type)
+		}
+	}
+	for _, r := range in.Existing {
+		i, ok := at[NormalizeDomain(r.Name)]
+		if !ok {
+			continue
+		}
+		o := &names[i]
+		typ := strings.ToUpper(r.Type)
+		switch {
+		case slices.Contains(o.Types, typ):
+			o.Claimed = true
+		case typ == "SOA", typ == "NS" && o.Name == "@":
+			// The zone's own records.
+		default:
+			o.Others = append(o.Others, r)
+		}
+	}
+	var out []OccupiedName
+	for _, o := range names {
+		if len(o.Others) == 0 {
+			continue
+		}
+		o.Conflict = o.conflictReason() != ""
+		if o.Claimed && !o.Conflict {
+			continue
+		}
+		out = append(out, o)
+	}
+	return out
 }
 
 // PlanDNSEnsure computes the steps that bring the zone to the desired
@@ -530,16 +713,19 @@ type DNSEnsure struct {
 // updated in its other fields, such as the TTL); the others are left alone,
 // or deleted with PruneDuplicates. When none has the desired value it is
 // ambiguous (ErrAmbiguous), unless PruneDuplicates picks the oldest one to
-// update and deletes the rest. The
-// deletions come last. Errors are returned before any step runs.
+// update and deletes the rest; those deletions come last.
+//
+// Records of types the run does not name are left alone when the name also
+// holds a record of a type it names and they can share the name with the
+// desired records. Otherwise the name is an OccupiedName that Decide
+// settles: replaced records are deleted right before the first step of
+// their name. Errors are returned before any step runs.
 func PlanDNSEnsure(in DNSEnsure) (*Plan, error) {
 	existing := map[string][]Record{}
-	byName := map[string][]Record{}
 	for _, r := range in.Existing {
 		r.Name, r.Type = NormalizeDomain(r.Name), strings.ToUpper(r.Type)
 		k := r.Name + "\x00" + r.Type
 		existing[k] = append(existing[k], r)
-		byName[r.Name] = append(byName[r.Name], r)
 	}
 	for k := range existing {
 		sortOldestFirst(existing[k])
@@ -548,37 +734,31 @@ func PlanDNSEnsure(in DNSEnsure) (*Plan, error) {
 	for _, d := range in.Desired {
 		groups[d.key()] = append(groups[d.key()], d)
 	}
-	// A CNAME cannot share its name with A / AAAA records (nor, on most
-	// platforms, with any other); those are reported before anything is
-	// written instead of failing halfway. Other types are left to the
-	// platform: Cloudflare lets a CNAME live next to TXT or MX records.
-	for _, d := range in.Desired {
-		for _, r := range byName[d.FQDN] {
-			if (d.Type == "CNAME" && (r.Type == "A" || r.Type == "AAAA")) || ((d.Type == "A" || d.Type == "AAAA") && r.Type == "CNAME") {
-				return nil, fmt.Errorf("%s: %s already has %s %s record, which a CNAME cannot coexist with; remove it first with `polyctl dns delete`", d.label(), d.Name, article(r.Type), r.Type)
-			}
-		}
-	}
 
-	plan := &Plan{}
+	type desiredStep struct {
+		d    DesiredRecord
+		step Step
+	}
+	var steps []desiredStep
+	add := func(d DesiredRecord, s Step) { steps = append(steps, desiredStep{d, s}) }
 	var deletes []Step
 	for _, d := range in.Desired {
 		recs := existing[d.key()]
 		if d.ProxiedUnsupported {
-			plan.Add(Step{Resource: d.Resource(), Action: Skipped, Desc: fmt.Sprintf("proxied=true applies to Cloudflare only, %s has no proxy; record not written", in.Platform)})
+			add(d, Step{Resource: d.Resource(), Action: Skipped, Desc: fmt.Sprintf("proxied=true applies to Cloudflare only, %s has no proxy; record not written", in.Platform)})
 			continue
 		}
 		if len(groups[d.key()]) > 1 {
 			// Set semantics: make sure this value exists.
 			if r, ok := findValue(recs, d); ok {
-				plan.Add(Step{Resource: d.Resource(), Action: Unchanged, ID: r.ID, Desc: recordDisplay(in.Platform, r)})
+				add(d, Step{Resource: d.Resource(), Action: Unchanged, ID: r.ID, Desc: recordDisplay(in.Platform, r)})
 				continue
 			}
 			step, err := in.createStep(d)
 			if err != nil {
 				return nil, err
 			}
-			plan.Add(step)
+			add(d, step)
 			continue
 		}
 		switch len(recs) {
@@ -587,9 +767,9 @@ func PlanDNSEnsure(in DNSEnsure) (*Plan, error) {
 			if err != nil {
 				return nil, err
 			}
-			plan.Add(step)
+			add(d, step)
 		case 1:
-			plan.Add(in.updateOrKeep(d, recs[0], ""))
+			add(d, in.updateOrKeep(d, recs[0], ""))
 		default:
 			keep := -1
 			for i, r := range recs {
@@ -621,11 +801,103 @@ func PlanDNSEnsure(in DNSEnsure) (*Plan, error) {
 					}
 				}
 			}
-			plan.Add(in.updateOrKeep(d, recs[keep], note))
+			add(d, in.updateOrKeep(d, recs[keep], note))
 		}
+	}
+
+	// Every name that holds records of other types is decided, each of them
+	// before anything is written.
+	replaced := map[string]OccupiedName{}
+	for _, o := range occupiedNames(in) {
+		replace, err := false, error(nil)
+		if in.Decide == nil {
+			err = o.Refusal()
+		} else {
+			replace, err = in.Decide(o)
+		}
+		if err != nil {
+			return nil, err
+		}
+		if replace {
+			replaced[o.FQDN] = o
+		}
+	}
+
+	plan := &Plan{}
+	started := map[string]bool{}
+	for _, s := range steps {
+		if o, ok := replaced[s.d.FQDN]; ok && s.step.Action != Skipped {
+			if !started[o.FQDN] {
+				started[o.FQDN] = true
+				for _, r := range o.Others {
+					plan.Add(in.replaceStep(o, r))
+				}
+			}
+			s.step = in.restorable(o, s.step)
+		}
+		plan.Add(s.step)
 	}
 	plan.Add(deletes...)
 	return plan, nil
+}
+
+// replaceStep deletes r, a record of o that the desired records of o
+// replace. Its attrs keep the full data of the record, as the report of
+// `dns delete --all` does, and replaced_by the types that replace it.
+func (in DNSEnsure) replaceStep(o OccupiedName, r Record) Step {
+	attrs := recordAttrs(r)
+	attrs["replaced_by"] = strings.Join(o.Types, ",")
+	return Step{
+		Resource: "dns-record/" + o.Name + "/" + strings.ToUpper(r.Type),
+		Action:   Deleted,
+		ID:       r.ID,
+		Desc:     recordDisplay(in.Platform, r) + "; replaced by " + o.What(),
+		Attrs:    attrs,
+		Apply: func(ctx context.Context) (Change, error) {
+			if err := in.DNS.DeleteRecord(ctx, in.ZoneID, r.ID); err != nil {
+				return Change{}, fmt.Errorf("delete %s %s (%s) to replace it with %s: %w", o.FQDN, strings.ToUpper(r.Type), r.ID, o.What(), err)
+			}
+			if in.Removed != nil {
+				in.Removed(ctx, r.ID)
+			}
+			return Change{}, nil
+		},
+	}
+}
+
+// restorable makes the error of a write of o, which runs after the records
+// it replaces were deleted, say so: it names each deleted record with its
+// type, value and TTL and the command that writes it again (Restore). The
+// error is a general one (exit code 1) whatever the write failed for.
+func (in DNSEnsure) restorable(o OccupiedName, s Step) Step {
+	apply := s.Apply
+	if apply == nil {
+		return s
+	}
+	s.Apply = func(ctx context.Context) (Change, error) {
+		ch, err := apply(ctx)
+		if err == nil {
+			return ch, nil
+		}
+		var b strings.Builder
+		fmt.Fprintf(&b, "%v; ", err)
+		if len(o.Others) == 1 {
+			b.WriteString("the record it replaces was deleted before and is gone: ")
+		} else {
+			fmt.Fprintf(&b, "the %d records it replaces were deleted before and are gone: ", len(o.Others))
+		}
+		for i, r := range o.Others {
+			if i > 0 {
+				b.WriteString("; ")
+			}
+			fmt.Fprintf(&b, "%s %s %s", o.FQDN, strings.ToUpper(r.Type), recordDisplay(in.Platform, r))
+			if in.Restore != nil {
+				fmt.Fprintf(&b, " (restore it with: %s)", in.Restore(r))
+			}
+		}
+		return ch, errors.New(b.String())
+	}
+	return s
 }
 
 func article(typ string) string {

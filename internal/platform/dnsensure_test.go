@@ -383,11 +383,169 @@ func TestDNSEnsureWarnings(t *testing.T) {
 	}
 }
 
-func TestDNSEnsureCNAMEConflict(t *testing.T) {
-	m := &memDNS{recs: []Record{{ID: "a", Name: "www.example.com", Type: "A", Value: "203.0.113.1"}}}
-	r := ensure(t, m, Cloudflare, false, false, "api:A:203.0.113.2", "www:CNAME:example.net")
-	if r.err == nil || errors.Is(r.err, ErrInvalidInput) || !strings.Contains(r.err.Error(), "dns delete") || m.writes() != 0 {
-		t.Errorf("conflict = %v, %v", r.err, m.calls)
+// ensureDecided is ensure with a Decide that records the names it is asked
+// about and answers replace (or err), and a Restore that names the record.
+func ensureDecided(t *testing.T, dns DNSService, p ID, dryRun, replace bool, err error, records ...string) (ensureRun, []OccupiedName) {
+	t.Helper()
+	desired, nerr := NormalizeRecordSpecs("example.com", p, specs(t, records...), nil, nil)
+	if nerr != nil {
+		t.Fatalf("normalize: %v", nerr)
+	}
+	existing, _ := dns.ListRecords(context.Background(), "z1")
+	var asked []OccupiedName
+	plan, perr := PlanDNSEnsure(DNSEnsure{Platform: p, ZoneID: "z1", Existing: existing, Desired: desired, DNS: dns,
+		Decide: func(o OccupiedName) (bool, error) {
+			asked = append(asked, o)
+			return replace, err
+		},
+		Restore: func(r Record) string { return "restore " + r.Type + " " + RecordAddValue(r) },
+	})
+	if perr != nil {
+		return ensureRun{err: perr}, asked
+	}
+	ch, rerr := plan.Run(context.Background(), dryRun)
+	return ensureRun{ch, rerr}, asked
+}
+
+// The records of other types on a name: the rules of what ensure changes.
+func TestDNSEnsureOccupiedNames(t *testing.T) {
+	apex := []Record{
+		{ID: "soa", Name: "example.com", Type: "SOA", Value: "ns1.example.net. admin.example.com. 1 7200 3600 86400 300"},
+		{ID: "ns1", Name: "example.com", Type: "NS", Value: "ns1.example.net"},
+	}
+	txt := Record{ID: "t1", Name: "www.example.com", Type: "TXT", Value: "hello", TTL: 300}
+	a := Record{ID: "a1", Name: "www.example.com", Type: "A", Value: "203.0.113.1", TTL: 300}
+	mx := Record{ID: "m1", Name: "www.example.com", Type: "MX", Value: "mail.example.com", Priority: ip(10), TTL: 300}
+
+	// a. Only the zone's own records at the apex: created, nothing asked.
+	m := &memDNS{recs: append([]Record(nil), apex...)}
+	r, asked := ensureDecided(t, m, AWS, false, true, nil, "@:A:203.0.113.9")
+	if r.err != nil || len(asked) != 0 || strings.Join(m.calls, ",") != "create:example.com:A:203.0.113.9" {
+		t.Errorf("apex beside SOA and NS = %v, asked %d, calls %v", r.err, len(asked), m.calls)
+	}
+
+	// c. One record of another type: replaced, the delete before the create.
+	m = &memDNS{recs: []Record{a}}
+	r, asked = ensureDecided(t, m, AWS, false, true, nil, "www:CNAME:target.example.net")
+	if r.err != nil || len(asked) != 1 || !asked[0].Single() || asked[0].CanKeep() || asked[0].What() != "the CNAME record" {
+		t.Fatalf("replace = %v, asked %+v", r.err, asked)
+	}
+	if strings.Join(m.calls, ",") != "delete:a1,create:www.example.com:CNAME:target.example.net" || dnsActions(r.changes) != "dns-record/www/A=deleted dns-record/www/CNAME=created" {
+		t.Errorf("replace = %s, calls %v", dnsActions(r.changes), m.calls)
+	}
+	if c := r.changes[0]; c.ID != "a1" || c.Attrs["value"] != "203.0.113.1" || c.Attrs["ttl"] != "300" || c.Attrs["replaced_by"] != "CNAME" || !strings.Contains(c.Detail, "replaced by the CNAME record") {
+		t.Errorf("deleted change = %+v", c)
+	}
+	// ... a dry run reports both steps and writes nothing.
+	m = &memDNS{recs: []Record{txt}}
+	r, _ = ensureDecided(t, m, AWS, true, true, nil, "www:A:203.0.113.5")
+	if r.err != nil || m.writes() != 0 || dnsActions(r.changes) != "dns-record/www/TXT=would_delete dns-record/www/A=would_create" {
+		t.Errorf("replace dry run = %s, %v, calls %v", dnsActions(r.changes), r.err, m.calls)
+	}
+	// ... a refused decision stops the plan before anything is written.
+	stop := errors.New("declined")
+	r, _ = ensureDecided(t, m, AWS, false, true, stop, "www:A:203.0.113.5")
+	if !errors.Is(r.err, stop) || m.writes() != 0 {
+		t.Errorf("declined = %v, calls %v", r.err, m.calls)
+	}
+	// ... and nobody to decide is a refusal.
+	if r := ensure(t, m, AWS, false, false, "www:A:203.0.113.5"); r.err == nil || !strings.Contains(r.err.Error(), "needs a confirmation") || m.writes() != 0 {
+		t.Errorf("undecided = %v, calls %v", r.err, m.calls)
+	}
+
+	// d. One record of the type among others: that one is updated, the
+	// others left alone, nothing asked.
+	m = &memDNS{recs: []Record{txt, a}}
+	r, asked = ensureDecided(t, m, AWS, false, true, nil, "www:A:203.0.113.7")
+	if r.err != nil || len(asked) != 0 || strings.Join(m.calls, ",") != "update:a1:203.0.113.7" {
+		t.Errorf("target among others = %v, asked %d, calls %v", r.err, len(asked), m.calls)
+	}
+	// ... unless the type cannot share the name with them: a choice.
+	m = &memDNS{recs: []Record{{ID: "c1", Name: "www.example.com", Type: "CNAME", Value: "old.example.net"}, txt}}
+	r, asked = ensureDecided(t, m, AWS, false, true, nil, "www:CNAME:new.example.net")
+	if r.err != nil || len(asked) != 1 || asked[0].Single() || asked[0].CanKeep() || strings.Join(m.calls, ",") != "delete:t1,update:c1:new.example.net" {
+		t.Errorf("conflicting others = %v, asked %+v, calls %v", r.err, asked, m.calls)
+	}
+
+	// e. Several records of other types: a choice. Keeping them writes the
+	// desired record beside them.
+	m = &memDNS{recs: []Record{txt, mx}}
+	r, asked = ensureDecided(t, m, AWS, false, false, nil, "www:A:203.0.113.8")
+	if r.err != nil || len(asked) != 1 || asked[0].Single() || !asked[0].CanKeep() || len(asked[0].Others) != 2 || strings.Join(m.calls, ",") != "create:www.example.com:A:203.0.113.8" {
+		t.Errorf("keep = %v, asked %+v, calls %v", r.err, asked, m.calls)
+	}
+	err := asked[0].Ambiguous()
+	for _, want := range []string{"www.example.com holds 2 records of other types", `TXT "hello" ttl=300`, "MX 10 mail.example.com ttl=300", "`polyctl dns add`", "`polyctl dns delete`", "nothing was written"} {
+		if !errors.Is(err, ErrAmbiguous) || !strings.Contains(err.Error(), want) {
+			t.Errorf("ambiguous error %q lacks %q", err, want)
+		}
+	}
+	if r := ensure(t, &memDNS{recs: []Record{txt, mx}}, AWS, false, false, "www:A:203.0.113.8"); !errors.Is(r.err, ErrAmbiguous) {
+		t.Errorf("undecided choice = %v", r.err)
+	}
+	// ... replacing deletes them all first.
+	m = &memDNS{recs: []Record{txt, mx}}
+	r, _ = ensureDecided(t, m, AWS, false, true, nil, "www:A:203.0.113.8")
+	if r.err != nil || strings.Join(m.calls, ",") != "delete:t1,delete:m1,create:www.example.com:A:203.0.113.8" {
+		t.Errorf("replace several = %v, calls %v", r.err, m.calls)
+	}
+
+	// g. A set of one name and type replaces the record of another type.
+	m = &memDNS{recs: []Record{txt}}
+	r, asked = ensureDecided(t, m, AWS, false, true, nil, "www:MX:10 mx1.example.com", "www:MX:20 mx2.example.com")
+	if r.err != nil || len(asked) != 1 || asked[0].What() != "the MX records" ||
+		strings.Join(m.calls, ",") != "delete:t1,create:www.example.com:MX:mx1.example.com,create:www.example.com:MX:mx2.example.com" {
+		t.Errorf("set = %v, asked %+v, calls %v", r.err, asked, m.calls)
+	}
+
+	// h. Every name is decided before the first write; a duplicates error
+	// comes before any question.
+	m = &memDNS{recs: []Record{txt, {ID: "o1", Name: "other.example.com", Type: "TXT", Value: "x"}}}
+	r, asked = ensureDecided(t, m, AWS, false, true, stop, "api:A:203.0.113.1", "www:A:203.0.113.2", "other:A:203.0.113.3")
+	if !errors.Is(r.err, stop) || len(asked) != 1 || m.writes() != 0 {
+		t.Errorf("stopped run = %v, asked %d, calls %v", r.err, len(asked), m.calls)
+	}
+	m = &memDNS{recs: []Record{txt, {ID: "d1", Name: "dup.example.com", Type: "A", Value: "203.0.113.1"}, {ID: "d2", Name: "dup.example.com", Type: "A", Value: "203.0.113.2"}}}
+	r, asked = ensureDecided(t, m, AWS, false, true, nil, "www:A:203.0.113.2", "dup:A:203.0.113.3")
+	if !errors.Is(r.err, ErrAmbiguous) || len(asked) != 0 || m.writes() != 0 {
+		t.Errorf("duplicates first = %v, asked %d", r.err, len(asked))
+	}
+}
+
+// A write that fails after the records it replaces were deleted says so,
+// names them and the command that restores them, and is a general error.
+func TestDNSEnsureFailedCreateAfterReplace(t *testing.T) {
+	m := &failDNS{memDNS{recs: []Record{{ID: "t1", Name: "b.example.com", Type: "TXT", Value: "hello world", TTL: 300}}}}
+	r, _ := ensureDecided(t, m, AWS, false, true, nil, "b:A:203.0.113.2")
+	if r.err == nil || dnsActions(r.changes) != "dns-record/b/TXT=deleted dns-record/b/A=failed" {
+		t.Fatalf("failure = %s, %v", dnsActions(r.changes), r.err)
+	}
+	for _, want := range []string{"boom", "the record it replaces was deleted before and is gone", `b.example.com TXT "hello world" ttl=300`, "restore it with: restore TXT hello world"} {
+		if !strings.Contains(r.err.Error(), want) {
+			t.Errorf("error %q lacks %q", r.err, want)
+		}
+	}
+	if errors.Is(r.err, ErrInvalidInput) || errors.Is(r.err, ErrAmbiguous) {
+		t.Errorf("error %v wraps a sentinel", r.err)
+	}
+}
+
+func TestRecordAddValue(t *testing.T) {
+	for _, c := range []struct {
+		r    Record
+		want string
+	}{
+		{Record{Type: "MX", Value: "mail.example.com", Priority: ip(10)}, "10 mail.example.com"},
+		{Record{Type: "MX", Value: "10 mail.example.com"}, "10 mail.example.com"},
+		{Record{Type: "SRV", Value: "5 5060 sip.example.com", Priority: ip(10)}, "10 5 5060 sip.example.com"},
+		{Record{Type: "SRV", Value: "sip.example.com", Priority: ip(10), Extra: map[string]any{"weight": 5, "port": 5060}}, "10 5 5060 sip.example.com"},
+		{Record{Type: "SRV", Value: "x", Extra: map[string]any{"data": map[string]any{"priority": 1, "weight": 2, "port": 3, "target": "t.example.com"}}}, "1 2 3 t.example.com"},
+		{Record{Type: "URI", Value: `1 "https://example.com/"`, Priority: ip(10)}, `10 1 "https://example.com/"`},
+		{Record{Type: "TXT", Value: "hello"}, "hello"},
+	} {
+		if got := RecordAddValue(c.r); got != c.want {
+			t.Errorf("RecordAddValue(%+v) = %q, want %q", c.r, got, c.want)
+		}
 	}
 }
 

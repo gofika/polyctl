@@ -165,6 +165,9 @@ type RecordDelete struct {
 	// or --id <id>". "" for a command that has no way to; it is not shown
 	// for a single record.
 	Exact string
+	// Declined is the note of a no, for a command that does more than
+	// delete ("nothing was written"). Default: "no record was deleted".
+	Declined string
 }
 
 // ConfirmRecordDelete is the one confirmation of the record delete
@@ -193,6 +196,9 @@ func (rt *Runtime) ConfirmRecordDelete(ctx context.Context, d RecordDelete) erro
 		return err
 	}
 	if !ok {
+		if d.Declined != "" {
+			return NothingToDof("%s", d.Declined)
+		}
 		return NoRecordDeleted(hint)
 	}
 	return nil

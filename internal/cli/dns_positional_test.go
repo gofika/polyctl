@@ -92,9 +92,9 @@ func TestDNSPositionalRecordMatchesFlagForm(t *testing.T) {
 			`rr.example.com A "203.0.113.6" ttl=60`,
 		},
 		"ensure MX values": {
-			[]string{"dns", "ensure", "example.com", "@", "MX", "10 mx1.example.com", "20 mx2.example.com"},
-			[]string{"dns", "ensure", "example.com", "-r", "@:MX:10 mx1.example.com", "-r", "@:MX:20 mx2.example.com"},
-			`example.com MX "mx2.example.com" ttl=0 prio=20`,
+			[]string{"dns", "ensure", "example.com", "mx", "MX", "10 mx1.example.com", "20 mx2.example.com"},
+			[]string{"dns", "ensure", "example.com", "-r", "mx:MX:10 mx1.example.com", "-r", "mx:MX:20 mx2.example.com"},
+			`mx.example.com MX "mx2.example.com" ttl=0 prio=20`,
 		},
 		"ensure proxied, auto TTL": {
 			[]string{"dns", "ensure", "example.com", "www", "A", "203.0.113.1", "--ttl", "auto", "--proxied"},
@@ -102,9 +102,9 @@ func TestDNSPositionalRecordMatchesFlagForm(t *testing.T) {
 			`www.example.com A "203.0.113.1" ttl=300 prio=- proxied=true`,
 		},
 		"ensure with a priority": {
-			[]string{"dns", "ensure", "example.com", "@", "MX", "mail.example.com", "--priority", "10"},
-			[]string{"dns", "ensure", "example.com", "-r", "@:MX:10 mail.example.com"},
-			`example.com MX "mail.example.com" ttl=0 prio=10`,
+			[]string{"dns", "ensure", "example.com", "mx", "MX", "mail.example.com", "--priority", "10"},
+			[]string{"dns", "ensure", "example.com", "-r", "mx:MX:10 mail.example.com"},
+			`mx.example.com MX "mail.example.com" ttl=0 prio=10`,
 		},
 		// "true" and "false" are a name or a value like any other, also
 		// beside --proxied.
@@ -323,9 +323,9 @@ func TestDNSWriteCompletesAPartialRecord(t *testing.T) {
 // asked.
 func TestDNSEnsureAsksForARecord(t *testing.T) {
 	_, cfgPath, fc := ensureZone(t, platform.Record{ID: "r1", ZoneID: "z1", Name: "www.example.com", Type: "A", Value: "203.0.113.10", TTL: 300})
-	p := prompttest.New(t, "www", "TXT", "one", "two", "")
+	p := prompttest.New(t, prompttest.Label("Another name"), "txt", "TXT", "one", "two", "")
 	r := runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), "dns", "ensure", "example.com")
-	if r.err != nil || fc.count("CreateRecord:www.example.com:TXT") != 2 {
+	if r.err != nil || fc.count("CreateRecord:txt.example.com:TXT") != 2 {
 		t.Fatalf("ensure: %v, %q, calls %v", r.err, r.stderr, fc.calls)
 	}
 	p.Done()
