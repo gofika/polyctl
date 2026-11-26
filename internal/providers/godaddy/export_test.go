@@ -1,6 +1,9 @@
 package godaddy
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 // Fake gives the external tests of this package (which run the whole
 // command line, and so cannot live in the package itself) the fake GoDaddy
@@ -65,4 +68,18 @@ func (x *Fake) SetSRV(domain, service, protocol, target string, port int) {
 	defer x.f.mu.Unlock()
 	zero := 0
 	x.f.records[domain] = append(x.f.records[domain], apiRecord{Type: "SRV", Name: "@", Data: target, TTL: 600, Service: service, Protocol: protocol, Port: &port, Weight: &zero, Priority: &zero})
+}
+
+// Details lists the records of domain as "TYPE name data ttl priority"
+// (priority "-" when there is none).
+func (x *Fake) Details(domain string) []string {
+	var out []string
+	for _, r := range x.f.getRecords(domain) {
+		prio := "-"
+		if r.Priority != nil {
+			prio = fmt.Sprint(*r.Priority)
+		}
+		out = append(out, fmt.Sprintf("%s %s %s %d %s", r.Type, r.Name, r.Data, r.TTL, prio))
+	}
+	return out
 }

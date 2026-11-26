@@ -626,18 +626,35 @@ func newDNSAddCmd(rt *app.Runtime) *cobra.Command {
 	var typ, name, value string
 	var ttl, priority int
 	cmd := &cobra.Command{
-		Use:     "add <domain>",
-		Short:   "Add a DNS record (existing records of the same name and type are kept)",
-		Example: "  polyctl godaddy dns add example.com --type A --name www --value 1.2.3.4",
-		Args:    app.ArgsOrInteractive(rt, 1, nil),
+		Use:   "add <domain> <name> <type> <value>",
+		Short: "Add a DNS record (existing records of the same name and type are kept)",
+		Long: `Add one record to <domain>. Records that already have the same name and type
+are kept.
+
+` + recordArgsHelp,
+		Example: `  polyctl godaddy dns add example.com www A 203.0.113.10
+  polyctl godaddy dns add example.com @ MX mail.example.com --priority 10
+  polyctl godaddy dns add example.com @ TXT "v=spf1 include:_spf.example.net ~all"`,
+		Args:              app.RecordArgsOrInteractive(rt, 1, 1),
+		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.GoDaddy)),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// The record is positional (<name> <type> <value>) or, in the
+			// former form, given with --name, --type and --value.
+			if len(args) > 1 {
+				rec, err := app.ParseRecordArgs(cmd, args[1:], 1, 1)
+				if err != nil {
+					return err
+				}
+				name, typ, value = rec.Name, rec.Type, rec.Value()
+				args = args[:1]
+			}
+			if (typ == "" || value == "") && !rt.Interactive() {
+				return app.UsageErrf("%s", app.RecordUsage(cmd, 1, 1))
+			}
 			args, err := rt.DomainArg(cmd.Context(), args, platform.GoDaddy, platform.ResZone, nil)
 			if err != nil {
 				// The record cannot be created without a zone.
 				return app.RequiredPick(err, "<domain>")
-			}
-			if (typ == "" || value == "") && !rt.Interactive() {
-				return app.UsageErrf("--type and --value are required")
 			}
 			if typ == "" {
 				if typ, err = rt.PickRecordType(platform.GoDaddy); err != nil {
@@ -675,7 +692,25 @@ func newDNSAddCmd(rt *app.Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&value, "value", "", "record value")
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 = GoDaddy default; minimum 600)")
 	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX/SRV records")
+	hideFormerRecordFlags(cmd)
 	return cmd
+}
+
+// recordArgsHelp is the paragraph of the record commands about their
+// positional record.
+const recordArgsHelp = `<name> is relative to the domain (www, a.b), @ for the apex, or a full name
+inside the domain (www.example.com). <type> is case-insensitive. A value is
+one argument: quote one that contains spaces. A value that starts with "-" goes
+after "--".`
+
+// hideFormerRecordFlags leaves --name, --type and --value, the former form
+// of the record of a record command, out of its help. They keep working.
+func hideFormerRecordFlags(cmd *cobra.Command) {
+	for _, n := range []string{"name", "type", "value"} {
+		if cmd.Flags().Lookup(n) != nil {
+			_ = cmd.Flags().MarkHidden(n)
+		}
+	}
 }
 
 func newDNSUpsertCmd(rt *app.Runtime) *cobra.Command {
@@ -683,22 +718,36 @@ func newDNSUpsertCmd(rt *app.Runtime) *cobra.Command {
 	var values []string
 	var ttl, priority int
 	cmd := &cobra.Command{
-		Use:   "upsert <domain>",
+		Use:   "upsert <domain> <name> <type> <value>...",
 		Short: "Create or replace the record set of a name and type with the given values",
-		Long: `Set the records of one name and type to exactly the values given: the record
+		Long: `Set the records of <name> and <type> to exactly the values given: the record
 set is created when it does not exist, and every record it holds is replaced
-when it does. Repeat --value for several records. To add a record and keep
-the existing ones use ` + "`polyctl godaddy dns add`" + `.`,
-		Example: "  polyctl godaddy dns upsert example.com --type A --name www --value 1.2.3.4 --value 5.6.7.8",
-		Args:    app.ArgsOrInteractive(rt, 1, nil),
+when it does. Every <value> is one record. To add a record and keep the
+existing ones use ` + "`polyctl godaddy dns add`" + `.
+
+` + recordArgsHelp,
+		Example: `  polyctl godaddy dns upsert example.com www A 203.0.113.10 203.0.113.11
+  polyctl godaddy dns upsert example.com @ MX mail.example.com --priority 10 --ttl 3600`,
+		Args:              app.RecordArgsOrInteractive(rt, 1, -1),
+		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.GoDaddy)),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// The record set is positional (<name> <type> <value>...) or, in
+			// the former form, given with --name, --type and --value.
+			if len(args) > 1 {
+				rec, err := app.ParseRecordArgs(cmd, args[1:], 1, -1)
+				if err != nil {
+					return err
+				}
+				name, typ, values = rec.Name, rec.Type, rec.Values
+				args = args[:1]
+			}
+			if (typ == "" || len(values) == 0) && !rt.Interactive() {
+				return app.UsageErrf("%s", app.RecordUsage(cmd, 1, -1))
+			}
 			args, err := rt.DomainArg(cmd.Context(), args, platform.GoDaddy, platform.ResZone, nil)
 			if err != nil {
 				// The record cannot be created without a zone.
 				return app.RequiredPick(err, "<domain>")
-			}
-			if (typ == "" || len(values) == 0) && !rt.Interactive() {
-				return app.UsageErrf("--type and at least one --value are required")
 			}
 			if typ == "" {
 				if typ, err = rt.PickRecordType(platform.GoDaddy); err != nil {
@@ -742,38 +791,57 @@ the existing ones use ` + "`polyctl godaddy dns add`" + `.`,
 	cmd.Flags().StringArrayVar(&values, "value", nil, "record value (repeat for several records)")
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 = GoDaddy default; minimum 600)")
 	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX/SRV records")
+	hideFormerRecordFlags(cmd)
 	return cmd
 }
 
 func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 	var typ, name, id string
 	cmd := &cobra.Command{
-		Use:   "delete <domain>",
+		Use:   "delete <domain> [<name> <type>]",
 		Short: "Delete every record of a name and type (or one record by --id)",
-		Long: `Delete every record of --name and --type, or the one record given with --id.
-GoDaddy addresses records by name and type, so the id is an optional second
-way to pick a single record here, not a required argument.
+		Long: `Delete every record of <name> and <type>, or the one record given with --id
+(it cannot be combined with <name> <type>). GoDaddy addresses records by name
+and type, so the id is an optional second way to pick a single record here,
+not a required argument.
+
+<name> is relative to the domain (www, a.b), @ for the apex, or a full name
+inside the domain (www.example.com). <type> is case-insensitive.
 
 The records to delete are listed, then one yes/no question is asked (default
 no; --yes skips it). The non-interactive flow asks nothing: --yes is required
 (exit code 2 without it, before anything is read). Declining changes nothing.
 --dry-run reports what would be deleted and asks nothing.`,
-		Example: "  polyctl godaddy dns delete example.com --type A --name www\n  polyctl godaddy dns delete example.com --type A --name www --yes",
-		Args:    app.ArgsOrInteractive(rt, 1, nil),
+		Example:           "  polyctl godaddy dns delete example.com www A\n  polyctl godaddy dns delete example.com www A --yes\n  polyctl godaddy dns delete example.com --id 'example.com|A|www|203.0.113.10' --yes",
+		Args:              app.RecordArgsOrInteractive(rt, 0, 0),
+		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.GoDaddy)),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			args, err := rt.DomainArg(cmd.Context(), args, platform.GoDaddy, platform.ResZone, nil)
-			if err != nil {
-				return err
+			// The record set is positional (<name> <type>) or, in the former
+			// form, given with --name and --type.
+			if len(args) > 1 {
+				rec, err := app.ParseRecordArgs(cmd, args[1:], 0, 0)
+				if err != nil {
+					return err
+				}
+				if id != "" {
+					return app.UsageErrf("--id selects one record; it cannot be combined with <name> <type>")
+				}
+				name, typ = rec.Name, rec.Type
+				args = args[:1]
 			}
-			zone := platform.NormalizeDomain(args[0])
 			if id != "" && (typ != "" || cmd.Flags().Changed("name")) {
 				// The id selects one record; --type / --name beside it
 				// would be ignored.
 				return app.UsageErrf("--id selects one record; it cannot be combined with --type or --name")
 			}
 			if id == "" && typ == "" && !rt.Interactive() {
-				return app.UsageErrf("--type (with --name) or --id is required")
+				return app.UsageErrf("a record or --id is required: %s", app.RecordUsage(cmd, 0, 0))
 			}
+			args, err := rt.DomainArg(cmd.Context(), args, platform.GoDaddy, platform.ResZone, nil)
+			if err != nil {
+				return err
+			}
+			zone := platform.NormalizeDomain(args[0])
 			if !rt.Flags.DryRun {
 				what := "delete the picked record of zone " + zone
 				switch {
@@ -873,6 +941,7 @@ no; --yes skips it). The non-interactive flow asks nothing: --yes is required
 	cmd.Flags().StringVar(&typ, "type", "", "record type")
 	cmd.Flags().StringVar(&name, "name", "@", "record name relative to the domain (www, @)")
 	cmd.Flags().StringVar(&id, "id", "", "delete the single record with this id (zone|TYPE|name|value, as dns list shows it)")
+	hideFormerRecordFlags(cmd)
 	return cmd
 }
 
