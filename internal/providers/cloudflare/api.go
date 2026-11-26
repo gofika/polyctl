@@ -681,8 +681,10 @@ func toRecord(r apiRecord) platform.Record {
 // are carried over from Extra when present; for those types `data` replaces
 // `content` because the API only accepts the components, not the formatted
 // string. Extra["data"] is a map[string]any both fresh from the API and after
-// a JSON round-trip through the inventory.
-func toBody(r platform.Record) recordBody {
+// a JSON round-trip through the inventory. A value of such a type that can
+// be read neither from its text nor from Extra is refused (ErrInvalidInput),
+// not sent for the API to judge.
+func toBody(r platform.Record) (recordBody, error) {
 	b := recordBody{
 		Name:     platform.NormalizeDomain(r.Name),
 		Type:     strings.ToUpper(r.Type),
@@ -720,18 +722,19 @@ func toBody(r platform.Record) recordBody {
 			b.Content = ""
 		}
 	}
-	if b.Data == nil && isDataType(b.Type) && b.Content != "" {
-		// A new record given as text ("10 5 5060 sip.example.com"): the
-		// API takes the components only. Text it cannot read is sent as
-		// content, for the API to judge.
-		if d, prio, err := dataFromText(b.Type, b.Content, r.Priority); err == nil {
-			b.Data, b.Content = d, ""
-			if prio != nil {
-				b.Priority = prio
-			}
+	if b.Data == nil && isDataType(b.Type) {
+		// A record given as text ("10 5 5060 sip.example.com"): the API
+		// takes the components only.
+		d, prio, err := dataFromText(b.Type, b.Content, r.Priority)
+		if err != nil {
+			return recordBody{}, err
+		}
+		b.Data, b.Content = d, ""
+		if prio != nil {
+			b.Priority = prio
 		}
 	}
-	return b
+	return b, nil
 }
 
 // canReadData reports whether dataFromText can read text.
@@ -744,112 +747,69 @@ func canReadData(typ, text string, priority *int) bool {
 }
 
 // dataFromText reads the zone-file text of a record of a data type into
-// the components of the API's data object. The field names of SRV and CAA
-// are confirmed against the API; those of the other types follow its
-// documentation. URI keeps its priority outside data (returned separately).
-// priority is the priority given apart from the text, if any.
+// the components of the API's data object, through the record type
+// knowledge of polyctl (platform.RecordFields): a value it refuses is an
+// ErrInvalidInput. The field names of SRV and CAA are confirmed against the
+// API; those of the other types follow its documentation. URI keeps its
+// priority outside data (returned separately). priority is the priority a
+// listed SRV or URI record carries apart from its text, if any.
 func dataFromText(typ, text string, priority *int) (map[string]any, *int, error) {
-	f := strings.Fields(text)
-	num := func(s string) (int, error) { return strconv.Atoi(s) }
-	unquote := func(s string) string { return strings.Trim(s, `"`) }
-	host := func(s string) string { return strings.TrimSuffix(s, ".") }
-	bad := func() (map[string]any, *int, error) {
-		return nil, nil, fmt.Errorf("cannot read %s value %q", typ, text)
-	}
-	ints := func(parts []string) ([]int, bool) {
-		out := make([]int, len(parts))
-		for i, p := range parts {
-			n, err := num(p)
-			if err != nil {
-				return nil, false
-			}
-			out[i] = n
+	typ = strings.ToUpper(typ)
+	text = strings.TrimSpace(text)
+	if priority != nil {
+		n := len(strings.Fields(text))
+		if (typ == "SRV" && n == 3) || (typ == "URI" && n == 2) {
+			text = strconv.Itoa(*priority) + " " + text
 		}
-		return out, true
 	}
-	switch strings.ToUpper(typ) {
+	f, err := platform.RecordFields(typ, text)
+	if err != nil {
+		return nil, nil, err
+	}
+	num := func(i int) int { n, _ := strconv.Atoi(f[i]); return n }
+	switch typ {
 	case "SRV":
-		if len(f) == 3 && priority != nil {
-			f = append([]string{strconv.Itoa(*priority)}, f...)
-		}
-		if len(f) != 4 {
-			return bad()
-		}
-		n, ok := ints(f[:3])
-		if !ok {
-			return bad()
-		}
-		return map[string]any{"priority": n[0], "weight": n[1], "port": n[2], "target": host(f[3])}, nil, nil
+		return map[string]any{"priority": num(0), "weight": num(1), "port": num(2), "target": f[3]}, nil, nil
 	case "CAA":
-		if len(f) < 3 {
-			return bad()
-		}
-		flags, err := num(f[0])
-		if err != nil {
-			return bad()
-		}
-		value := strings.TrimSpace(strings.SplitN(strings.TrimSpace(text), f[1], 2)[1])
-		return map[string]any{"flags": flags, "tag": f[1], "value": unquote(value)}, nil, nil
-	case "TLSA":
-		if len(f) < 4 {
-			return bad()
-		}
-		n, ok := ints(f[:3])
-		if !ok {
-			return bad()
-		}
-		return map[string]any{"usage": n[0], "selector": n[1], "matching_type": n[2], "certificate": strings.Join(f[3:], "")}, nil, nil
+		return map[string]any{"flags": num(0), "tag": f[1], "value": f[2]}, nil, nil
+	case "TLSA", "SMIMEA":
+		return map[string]any{"usage": num(0), "selector": num(1), "matching_type": num(2), "certificate": f[3]}, nil, nil
+	case "SSHFP":
+		return map[string]any{"algorithm": num(0), "type": num(1), "fingerprint": f[2]}, nil, nil
 	case "DS":
-		if len(f) < 4 {
-			return bad()
-		}
-		n, ok := ints(f[:3])
-		if !ok {
-			return bad()
-		}
-		return map[string]any{"key_tag": n[0], "algorithm": n[1], "digest_type": n[2], "digest": strings.Join(f[3:], "")}, nil, nil
+		return map[string]any{"key_tag": num(0), "algorithm": num(1), "digest_type": num(2), "digest": f[3]}, nil, nil
 	case "DNSKEY":
-		if len(f) < 4 {
-			return bad()
-		}
-		n, ok := ints(f[:3])
-		if !ok {
-			return bad()
-		}
-		return map[string]any{"flags": n[0], "protocol": n[1], "algorithm": n[2], "public_key": strings.Join(f[3:], "")}, nil, nil
+		return map[string]any{"flags": num(0), "protocol": num(1), "algorithm": num(2), "public_key": f[3]}, nil, nil
 	case "CERT":
-		if len(f) < 4 {
-			return bad()
-		}
-		n, ok := ints(f[:3])
-		if !ok {
-			return bad()
-		}
-		return map[string]any{"type": n[0], "key_tag": n[1], "algorithm": n[2], "certificate": strings.Join(f[3:], "")}, nil, nil
+		return map[string]any{"type": num(0), "key_tag": num(1), "algorithm": num(2), "certificate": f[3]}, nil, nil
 	case "URI":
-		if len(f) == 2 && priority != nil {
-			f = append([]string{strconv.Itoa(*priority)}, f...)
-		}
-		if len(f) != 3 {
-			return bad()
-		}
-		n, ok := ints(f[:2])
-		if !ok {
-			return bad()
-		}
-		p := n[0]
-		return map[string]any{"weight": n[1], "target": unquote(f[2])}, &p, nil
+		p := num(0)
+		return map[string]any{"weight": num(1), "target": f[2]}, &p, nil
 	case "NAPTR":
-		if len(f) != 6 {
-			return bad()
+		return map[string]any{"order": num(0), "preference": num(1), "flags": f[2], "service": f[3], "regex": f[4], "replacement": f[5]}, nil, nil
+	case "HTTPS", "SVCB":
+		// value holds the parameters as zone-file text (alpn="h3,h2").
+		v, err := platform.CheckRecord(platform.RecordCheck{Type: typ, Value: text})
+		if err != nil {
+			return nil, nil, err
 		}
-		n, ok := ints(f[:2])
-		if !ok {
-			return bad()
+		params := ""
+		if parts := strings.SplitN(v.Value, " ", 3); len(parts) == 3 {
+			params = parts[2]
 		}
-		return map[string]any{"order": n[0], "preference": n[1], "flags": unquote(f[2]), "service": unquote(f[3]), "regex": unquote(f[4]), "replacement": host(f[5])}, nil, nil
+		return map[string]any{"priority": num(0), "target": f[1], "value": params}, nil, nil
+	case "LOC":
+		fl := func(i int) float64 {
+			x, _ := strconv.ParseFloat(strings.TrimSuffix(f[i], "m"), 64)
+			return x
+		}
+		return map[string]any{
+			"lat_degrees": num(0), "lat_minutes": num(1), "lat_seconds": fl(2), "lat_direction": f[3],
+			"long_degrees": num(4), "long_minutes": num(5), "long_seconds": fl(6), "long_direction": f[7],
+			"altitude": fl(8), "size": fl(9), "precision_horz": fl(10), "precision_vert": fl(11),
+		}, nil, nil
 	}
-	return bad()
+	return nil, nil, fmt.Errorf("%w: %s values are not written as components", platform.ErrInvalidInput, typ)
 }
 
 // --- zone operations used by native commands ------------------------------

@@ -135,11 +135,10 @@ func (*provider) LoginOptions() []string {
 	return []string{metaMethod, "token", metaAccountID, metaDisabledAccounts}
 }
 
-// RecordTypes are the record types Cloudflare creates through the API
-// (SPF and SOA are refused there; DNSKEY only at the apex and DS only next
-// to NS records, which the API reports).
+// RecordTypes are the record types Cloudflare creates through the API: the
+// types of its create-record request. SPF, SOA and ALIAS are not among them.
 func (*provider) RecordTypes() []string {
-	return []string{"A", "AAAA", "CNAME", "MX", "NS", "TXT", "SRV", "CAA", "PTR", "NAPTR", "TLSA", "URI", "CERT", "DNSKEY", "DS"}
+	return []string{"A", "AAAA", "CNAME", "MX", "NS", "TXT", "SRV", "CAA", "PTR", "NAPTR", "HTTPS", "SVCB", "TLSA", "SMIMEA", "SSHFP", "DS", "DNSKEY", "CERT", "URI", "LOC", "OPENPGPKEY"}
 }
 
 func (*provider) ResourceTypes() []platform.ResourceType {
@@ -954,7 +953,11 @@ func recordIn(zoneID string, r apiRecord) platform.Record {
 
 // CreateRecord creates a record; r.Name is the FQDN.
 func (c *Client) CreateRecord(ctx context.Context, zoneID string, r platform.Record) (*platform.Record, error) {
-	res, err := c.api.createRecord(ctx, zoneID, toBody(r))
+	body, err := toBody(r)
+	if err != nil {
+		return nil, err
+	}
+	res, err := c.api.createRecord(ctx, zoneID, body)
 	if err != nil {
 		return nil, err
 	}
@@ -967,7 +970,11 @@ func (c *Client) UpdateRecord(ctx context.Context, zoneID string, r platform.Rec
 	if r.ID == "" {
 		return nil, errors.New("record id is required")
 	}
-	res, err := c.api.updateRecord(ctx, zoneID, r.ID, toBody(r))
+	body, err := toBody(r)
+	if err != nil {
+		return nil, err
+	}
+	res, err := c.api.updateRecord(ctx, zoneID, r.ID, body)
 	if err != nil {
 		return nil, err
 	}
@@ -987,7 +994,7 @@ func (c *Client) PatchRecord(ctx context.Context, zoneID string, cur platform.Re
 		if isDataType(cur.Type) {
 			d, prio, err := dataFromText(cur.Type, *p.Value, p.Priority)
 			if err != nil {
-				return nil, fmt.Errorf("%w: %v", platform.ErrInvalidInput, err)
+				return nil, err
 			}
 			body["data"] = d
 			if prio != nil {

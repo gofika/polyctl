@@ -983,11 +983,11 @@ func TestLoginToleratesMissingAccountRead(t *testing.T) {
 
 func TestToBodyAndToRecord(t *testing.T) {
 	px := false
-	b := toBody(platform.Record{Name: "Sub.Example.COM.", Type: "txt", Value: "v=spf1", TTL: 0, Proxied: &px, Extra: map[string]any{"tags": []string{"a", "b"}}})
+	b := mustBody(t, platform.Record{Name: "Sub.Example.COM.", Type: "txt", Value: "v=spf1", TTL: 0, Proxied: &px, Extra: map[string]any{"tags": []string{"a", "b"}}})
 	if b.Name != "sub.example.com" || b.Type != "TXT" || b.TTL != 1 || b.Proxied == nil || *b.Proxied || len(b.Tags) != 2 || b.Comment != nil {
 		t.Fatalf("body: %+v", b)
 	}
-	b = toBody(platform.Record{Name: "a.example.com", Type: "A", Value: "1.1.1.1", TTL: 300})
+	b = mustBody(t, platform.Record{Name: "a.example.com", Type: "A", Value: "1.1.1.1", TTL: 300})
 	if b.TTL != 300 || b.Priority != nil || b.Proxied != nil {
 		t.Fatalf("body: %+v", b)
 	}
@@ -1002,26 +1002,35 @@ func TestToBodyAndToRecord(t *testing.T) {
 
 	// data is only sent for the types whose components live there; an A
 	// record with a stray data map keeps its content.
-	b = toBody(r)
+	b = mustBody(t, r)
 	if b.Data != nil || b.Content != "1.1.1.1" {
 		t.Fatalf("A record must not send data: %+v", b)
 	}
-	caa := toBody(platform.Record{Name: "example.com", Type: "caa", Value: "0 issue letsencrypt.org", TTL: 1, Extra: map[string]any{"data": map[string]any{"flags": 0, "tag": "issue", "value": "letsencrypt.org"}}})
+	caa := mustBody(t, platform.Record{Name: "example.com", Type: "caa", Value: "0 issue letsencrypt.org", TTL: 1, Extra: map[string]any{"data": map[string]any{"flags": 0, "tag": "issue", "value": "letsencrypt.org"}}})
 	got, _ := json.Marshal(caa)
 	if caa.Content != "" || caa.Data["tag"] != "issue" || strings.Contains(string(got), `"content"`) || !strings.Contains(string(got), `"data"`) {
 		t.Fatalf("CAA body: %s", got)
 	}
 	// Without data the text is read into data: the API takes the
 	// components of these types, not their text.
-	caa = toBody(platform.Record{Name: "example.com", Type: "CAA", Value: "0 issue letsencrypt.org", TTL: 1})
+	caa = mustBody(t, platform.Record{Name: "example.com", Type: "CAA", Value: "0 issue letsencrypt.org", TTL: 1})
 	if caa.Content != "" || caa.Data["tag"] != "issue" || caa.Data["value"] != "letsencrypt.org" {
 		t.Fatalf("CAA body without data: %+v", caa)
 	}
-	// Text that cannot be read is sent as content, for the API to judge.
-	caa = toBody(platform.Record{Name: "example.com", Type: "CAA", Value: "garbled", TTL: 1})
-	if caa.Content != "garbled" || caa.Data != nil {
-		t.Fatalf("unreadable CAA body: %+v", caa)
+	// Text that cannot be read is refused, not sent for the API to judge.
+	if _, err := toBody(platform.Record{Name: "example.com", Type: "CAA", Value: "garbled", TTL: 1}); !errors.Is(err, platform.ErrInvalidInput) {
+		t.Fatalf("unreadable CAA body: %v", err)
 	}
+}
+
+// mustBody is toBody of a record it can convert.
+func mustBody(t *testing.T, r platform.Record) recordBody {
+	t.Helper()
+	b, err := toBody(r)
+	if err != nil {
+		t.Fatalf("toBody(%+v): %v", r, err)
+	}
+	return b
 }
 
 func TestClassifyCodes(t *testing.T) {
@@ -1500,11 +1509,11 @@ func TestCreateDataRecordFromText(t *testing.T) {
 		t.Errorf("content sent with data: %v", f.lastBody)
 	}
 	for typ, text := range map[string]string{
-		"TLSA":   "3 1 1 abcd",
+		"TLSA":   "3 1 0 abcd",
 		"URI":    `10 1 "https://example.com/"`,
 		"NAPTR":  `100 10 "U" "E2U+sip" "!^.*$!sip:info@example.com!" .`,
-		"DS":     "2371 13 2 1F987CC6",
-		"DNSKEY": "257 3 13 AbCd==",
+		"DS":     "2371 13 2 1F987CC6" + strings.Repeat("0", 56),
+		"DNSKEY": "257 3 13 AbCd",
 		"CERT":   "1 0 0 AbCd",
 	} {
 		if d, _, err := dataFromText(typ, text, nil); err != nil || len(d) == 0 {
@@ -1518,11 +1527,11 @@ func TestCreateDataRecordFromText(t *testing.T) {
 // them.
 func TestDataBodyPrefersTheValue(t *testing.T) {
 	old := map[string]any{"data": map[string]any{"priority": 10, "weight": 5, "port": 5060, "target": "old.example.com"}}
-	b := toBody(platform.Record{Name: "_sip._tcp.example.com", Type: "SRV", Value: "6 5061 new.example.com", Priority: intp(20), Extra: old})
+	b := mustBody(t, platform.Record{Name: "_sip._tcp.example.com", Type: "SRV", Value: "6 5061 new.example.com", Priority: intp(20), Extra: old})
 	if b.Data["target"] != "new.example.com" || b.Data["port"] != 5061 || b.Data["priority"] != 20 || b.Content != "" {
 		t.Errorf("body = %+v", b)
 	}
-	b = toBody(platform.Record{Name: "_sip._tcp.example.com", Type: "SRV", Value: "unreadable", Extra: old})
+	b = mustBody(t, platform.Record{Name: "_sip._tcp.example.com", Type: "SRV", Value: "unreadable", Extra: old})
 	if b.Data["target"] != "old.example.com" || b.Content != "" {
 		t.Errorf("fallback body = %+v", b)
 	}
