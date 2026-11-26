@@ -616,23 +616,25 @@ nothing. A missing set is not found (exit code 4) before the question.
 				if named {
 					// The name alone: its one record set, or, with several,
 					// a list on a terminal and exit code 5 without one.
-					found, err := app.RecordsOfName(z.Name, recs, fqdn, "", "")
+					chosen, err := rt.SelectRecords(app.RecordSelect{Zone: z.Name, Records: recs, Name: fqdn, Verb: "Delete", TypeArg: typeArg,
+						List: func(_ string, recs []platform.Record) (out []platform.Record, err error) {
+							fqdn, typ, setID, err = pickRecordSet(rt, z, recs)
+							return recs, err
+						}})
 					if err != nil {
 						return err
 					}
-					recs = found.Records
-					sets := recordSetKeys(recs)
-					if pick, err = rt.NeedsType(found, typeArg); err != nil {
-						return err
-					}
-					switch {
+					recs = chosen.Records
+					switch sets := recordSetKeys(recs); {
+					case chosen.Listed:
 					case len(sets) == 1:
 						typ, setID = sets[0].typ, sets[0].setID
-					case !pick && !rt.Interactive():
+					case !rt.Interactive():
 						// One type in several routed sets: LookupSet lists
 						// the identifiers (exit code 5).
-						typ = found.Type()
+						typ = chosen.Type()
 					default:
+						// One type in several routed sets: one is picked.
 						pick = true
 					}
 				}

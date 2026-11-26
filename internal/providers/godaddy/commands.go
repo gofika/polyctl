@@ -881,22 +881,23 @@ type). Declining changes nothing. --dry-run reports what would be deleted and as
 				}
 				// The interactive flow lists the records to pick one: those
 				// of the zone, or of a name with records of several types
-				// (exit code 5 where nothing can be asked).
-				pick, title := !byName, "Delete which record of "+zone+"?"
+				// (exit code 5 where nothing can be asked). A list picks one
+				// record here, deleted by its id.
+				sel := app.RecordSelect{Zone: zone, Records: recs, Verb: "Delete", TypeArg: typeArg,
+					List: func(of string, recs []platform.Record) ([]platform.Record, error) {
+						var err error
+						id, err = rt.PickRecordID("Delete which record of "+of+"?", recs, nil)
+						return recs, err
+					}}
 				if byName {
-					found, err := app.RecordsOfName(zone, recs, platform.FQDN(name, zone), "", "")
-					if err != nil {
-						return err
-					}
-					if pick, err = rt.NeedsType(found, typeArg); err != nil {
-						return err
-					}
-					recs, typ, title = found.Records, found.Type(), "Delete which record of "+found.Name+"?"
+					sel.Name = platform.FQDN(name, zone)
 				}
-				if pick {
-					if id, err = rt.PickRecordID(title, recs, nil); err != nil {
-						return err
-					}
+				chosen, err := rt.SelectRecords(sel)
+				if err != nil {
+					return err
+				}
+				if !chosen.Listed {
+					typ = chosen.Type()
 				}
 			}
 			target := platform.Target{Platform: platform.GoDaddy, Profile: p.Name, Domain: zone}

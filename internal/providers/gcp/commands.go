@@ -833,25 +833,24 @@ dns delete of one record. --dry-run asks nothing.`,
 				if err != nil {
 					return err
 				}
-				found, err := app.RecordsOfName(z.Name, recs, platform.FQDN(name, z.Name), "", value)
+				// Record sets of several types: a list on a terminal (a
+				// record set, then the whole set or one value), exit code 5
+				// without one.
+				chosen, err := rt.SelectRecords(app.RecordSelect{Zone: z.Name, Records: recs, Name: platform.FQDN(name, z.Name), Value: value, Verb: "Delete", TypeArg: typeArg,
+					List: func(_ string, recs []platform.Record) ([]platform.Record, error) {
+						set, one, err := pickRecordToDelete(rt, z, recs)
+						if err != nil {
+							return nil, err
+						}
+						typ = set.Type
+						onlyValue(one)
+						return recs, nil
+					}})
 				if err != nil {
 					return err
 				}
-				// Record sets of several types: a list on a terminal, exit
-				// code 5 without one.
-				open, err := rt.NeedsType(found, typeArg)
-				if err != nil {
-					return err
-				}
-				if open {
-					set, one, err := pickRecordToDelete(rt, z, found.Records)
-					if err != nil {
-						return err
-					}
-					typ = set.Type
-					onlyValue(one)
-				} else {
-					typ = found.Type()
+				if !chosen.Listed {
+					typ = chosen.Type()
 				}
 			}
 			if pick {
