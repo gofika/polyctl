@@ -550,6 +550,36 @@ func TestDNSEnsureFailedCreateAfterReplace(t *testing.T) {
 	}
 }
 
+// A delete of a replace that fails after other records of the name were
+// deleted names those and the commands that restore them.
+func TestDNSEnsureFailedDeleteAfterReplace(t *testing.T) {
+	recs := func() []Record {
+		return []Record{
+			{ID: "t1", Name: "www.example.com", Type: "TXT", Value: "hello", TTL: 300},
+			{ID: "m1", Name: "www.example.com", Type: "MX", Value: "mail.example.com", Priority: ip(10), TTL: 300},
+		}
+	}
+	m := &refuseDNS{memDNS: memDNS{recs: recs()}, fail: "m1"}
+	r, _ := ensureDecided(t, m, AWS, false, true, nil, "www:A:203.0.113.2")
+	if r.err == nil || dnsActions(r.changes) != "dns-record/www/TXT=deleted dns-record/www/MX=failed" || strings.Join(m.calls, ",") != "delete:t1,delete:m1" {
+		t.Fatalf("failure = %s, %v, calls %v", dnsActions(r.changes), r.err, m.calls)
+	}
+	for _, want := range []string{"refused", "the record of www.example.com deleted before it to make room for the A record is gone", `www.example.com TXT "hello" ttl=300`, "restore it with: restore TXT hello"} {
+		if !strings.Contains(r.err.Error(), want) {
+			t.Errorf("error %q lacks %q", r.err, want)
+		}
+	}
+	if strings.Contains(r.err.Error(), "restore MX") {
+		t.Errorf("error %q restores the record that was not deleted", r.err)
+	}
+	// The first delete failing has nothing gone to name.
+	m = &refuseDNS{memDNS: memDNS{recs: recs()}, fail: "t1"}
+	r, _ = ensureDecided(t, m, AWS, false, true, nil, "www:A:203.0.113.2")
+	if r.err == nil || strings.Contains(r.err.Error(), "gone") || strings.Join(m.calls, ",") != "delete:t1" {
+		t.Errorf("first delete failing = %v, calls %v", r.err, m.calls)
+	}
+}
+
 func TestRecordAddValue(t *testing.T) {
 	for _, c := range []struct {
 		r    Record

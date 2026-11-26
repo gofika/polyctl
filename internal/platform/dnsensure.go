@@ -838,11 +838,13 @@ func PlanDNSEnsure(in DNSEnsure) (*Plan, error) {
 		if o, ok := replaced[s.d.FQDN]; ok && s.step.Action != Skipped {
 			if !started[o.FQDN] {
 				started[o.FQDN] = true
-				for _, r := range o.Others {
-					plan.Add(in.replaceStep(o, r))
+				for i, r := range o.Others {
+					// A delete after the first fails with the records of the
+					// name already deleted gone.
+					plan.Add(in.restorable(o.Others[:i], replacedLead(o, i), in.replaceStep(o, r)))
 				}
 			}
-			s.step = in.restorable(o, s.step)
+			s.step = in.restorable(o.Others, replacesLead(len(o.Others)), s.step)
 		}
 		plan.Add(s.step)
 	}
@@ -874,13 +876,33 @@ func (in DNSEnsure) replaceStep(o OccupiedName, r Record) Step {
 	}
 }
 
-// restorable makes the error of a write of o, which runs after the records
-// it replaces were deleted, say so: it names each deleted record with its
-// type, value and TTL and the command that writes it again (Restore). The
-// error is a general one (exit code 1) whatever the write failed for.
-func (in DNSEnsure) restorable(o OccupiedName, s Step) Step {
+// replacesLead introduces the records a failed write of desired records
+// replaces, n of them deleted before it.
+func replacesLead(n int) string {
+	if n == 1 {
+		return "the record it replaces was deleted before and is gone: "
+	}
+	return fmt.Sprintf("the %d records it replaces were deleted before and are gone: ", n)
+}
+
+// replacedLead introduces the records of o deleted before its i-th replaced
+// record, whose delete failed.
+func replacedLead(o OccupiedName, i int) string {
+	if i == 1 {
+		return fmt.Sprintf("the record of %s deleted before it to make room for %s is gone: ", o.FQDN, o.What())
+	}
+	return fmt.Sprintf("the %d records of %s deleted before it to make room for %s are gone: ", i, o.FQDN, o.What())
+}
+
+// restorable makes the error of a step that runs after the records gone
+// were deleted to make room for desired records say so: after lead, it
+// names each deleted record with its name, type, value and TTL and the
+// command that writes it again (Restore). The error is a general one (exit
+// code 1) whatever the step failed for. With nothing gone, s is returned as
+// it is.
+func (in DNSEnsure) restorable(gone []Record, lead string, s Step) Step {
 	apply := s.Apply
-	if apply == nil {
+	if apply == nil || len(gone) == 0 {
 		return s
 	}
 	s.Apply = func(ctx context.Context) (Change, error) {
@@ -889,17 +911,12 @@ func (in DNSEnsure) restorable(o OccupiedName, s Step) Step {
 			return ch, nil
 		}
 		var b strings.Builder
-		fmt.Fprintf(&b, "%v; ", err)
-		if len(o.Others) == 1 {
-			b.WriteString("the record it replaces was deleted before and is gone: ")
-		} else {
-			fmt.Fprintf(&b, "the %d records it replaces were deleted before and are gone: ", len(o.Others))
-		}
-		for i, r := range o.Others {
+		fmt.Fprintf(&b, "%v; %s", err, lead)
+		for i, r := range gone {
 			if i > 0 {
 				b.WriteString("; ")
 			}
-			fmt.Fprintf(&b, "%s %s %s", o.FQDN, strings.ToUpper(r.Type), recordDisplay(in.Platform, r))
+			fmt.Fprintf(&b, "%s %s %s", NormalizeDomain(r.Name), strings.ToUpper(r.Type), recordDisplay(in.Platform, r))
 			if in.Restore != nil {
 				fmt.Fprintf(&b, " (restore it with: %s)", in.Restore(r))
 			}
