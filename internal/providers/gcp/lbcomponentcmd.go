@@ -243,17 +243,15 @@ func componentArg(ctx context.Context, rt *app.Runtime, spec componentSpec, args
 	if err != nil {
 		return nil, err
 	}
-	var opts []prompt.Option
-	for i, h := range hits {
-		_, row := spec.row(h.component)
-		opts = append(opts, prompt.Option{Label: prompt.Cells(append(row, "gcp/"+h.profile)...), Value: strconv.Itoa(i)})
-	}
-	v, err := rt.Choose(app.Choice{Title: strings.ToUpper(string(spec.kind)[:1]) + string(spec.kind)[1:], Options: opts, Arg: "<name>", What: string(spec.kind)})
+	h, err := app.PickOf(rt, app.Choice{Title: strings.ToUpper(string(spec.kind)[:1]) + string(spec.kind)[1:], Arg: "<name>", What: string(spec.kind)}, hits,
+		func(h located) string {
+			_, row := spec.row(h.component)
+			return prompt.Cells(append(row, "gcp/"+h.profile)...)
+		})
 	if err != nil {
 		return nil, err
 	}
-	i, _ := strconv.Atoi(v)
-	return &hits[i], nil
+	return &h, nil
 }
 
 // ---------------------------------------------------------------- commands

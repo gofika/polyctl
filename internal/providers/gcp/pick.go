@@ -81,14 +81,7 @@ func pickInstanceRef(ctx context.Context, rt *app.Runtime, arg, zone, what strin
 // interactive flow with pickInstanceRef; with the argument given, args is
 // returned as it is.
 func instanceArg(ctx context.Context, rt *app.Runtime, args []string, zone, what string, keep func(Instance) bool) ([]string, error) {
-	if len(args) > 0 {
-		return args, nil
-	}
-	id, err := pickInstanceRef(ctx, rt, "<name|id>", zone, what, false, keep)
-	if err != nil {
-		return nil, err
-	}
-	return []string{id}, nil
+	return app.ArgOr(args, func() (string, error) { return pickInstanceRef(ctx, rt, "<name|id>", zone, what, false, keep) })
 }
 
 // defaultPickMachineType is the type preselected by the machine type pick
@@ -536,20 +529,17 @@ func recordSetLabel(s recordSet) string {
 // one value. It returns the set and the value chosen (nil: the whole
 // set). An empty zone is nothing to do.
 func pickRecordToDelete(rt *app.Runtime, z *zoneRef, recs []platform.Record) (recordSet, *platform.Record, error) {
-	sets := recordSetsOf(recs)
-	var opts []prompt.Option
-	for i, s := range sets {
+	var sets []recordSet
+	for _, s := range recordSetsOf(recs) {
 		if (s.Type == "SOA" || s.Type == "NS") && platform.NormalizeDomain(s.Name) == platform.NormalizeDomain(z.Name) {
 			continue
 		}
-		opts = append(opts, prompt.Option{Label: recordSetLabel(s), Value: strconv.Itoa(i)})
+		sets = append(sets, s)
 	}
-	v, err := rt.Choose(app.Choice{Title: "Record set to delete", Options: opts, Arg: "<name> and <type>", What: "deletable record set in zone " + z.ID})
+	s, err := app.PickOf(rt, app.Choice{Title: "Record set to delete", Arg: "<name> and <type>", What: "deletable record set in zone " + z.ID}, sets, recordSetLabel)
 	if err != nil {
 		return recordSet{}, nil, err
 	}
-	i, _ := strconv.Atoi(v)
-	s := sets[i]
 	if len(s.Records) == 1 {
 		return s, nil, nil
 	}

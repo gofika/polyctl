@@ -49,14 +49,7 @@ func pickLB(ctx context.Context, rt *app.Runtime, arg, region, what string, requ
 // lbArg fills in a missing load balancer argument in the interactive flow
 // with pickLB; with the argument given, args is returned as it is.
 func lbArg(ctx context.Context, rt *app.Runtime, args []string, arg, region, what string, required bool, keep func(loadBalancer) bool) ([]string, error) {
-	if len(args) > 0 {
-		return args, nil
-	}
-	v, err := pickLB(ctx, rt, arg, region, what, required, keep)
-	if err != nil {
-		return nil, err
-	}
-	return []string{v}, nil
+	return app.ArgOr(args, func() (string, error) { return pickLB(ctx, rt, arg, region, what, required, keep) })
 }
 
 // activeLB keeps the active load balancers.

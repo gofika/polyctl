@@ -90,14 +90,9 @@ func pickInstanceRef(ctx context.Context, rt *app.Runtime, arg, profile, region,
 // interactive flow with pickInstanceRef; with the argument given, args is
 // returned as it is.
 func instanceArg(ctx context.Context, rt *app.Runtime, args []string, region, what string, keep func(instanceInfo) bool) ([]string, error) {
-	if len(args) > 0 {
-		return args, nil
-	}
-	id, err := pickInstanceRef(ctx, rt, "<name|id>", "", region, what, false, keep)
-	if err != nil {
-		return nil, err
-	}
-	return []string{id}, nil
+	return app.ArgOr(args, func() (string, error) {
+		return pickInstanceRef(ctx, rt, "<name|id>", "", region, what, false, keep)
+	})
 }
 
 // locatedLabel shows a live instance found by a lookup: "web-01  i-0abc
@@ -415,19 +410,6 @@ func pickVolume(ctx context.Context, rt *app.Runtime, region, what string, keep 
 // volumeStates keeps the volumes in one of the states.
 func volumeStatesIn(states ...string) func(volumeInfo) bool {
 	return func(v volumeInfo) bool { return slices.Contains(states, v.State) }
-}
-
-// volumeArg fills in a missing <vol-id|name> in the interactive flow with
-// pickVolume; with the argument given, args is returned as it is.
-func volumeArg(ctx context.Context, rt *app.Runtime, args []string, region, what string, keep func(volumeInfo) bool) ([]string, error) {
-	if len(args) > 0 {
-		return args, nil
-	}
-	h, err := pickVolume(ctx, rt, region, what, keep)
-	if err != nil {
-		return nil, err
-	}
-	return []string{h.v.ID}, nil
 }
 
 // availableZones lists the available availability zones of region (local

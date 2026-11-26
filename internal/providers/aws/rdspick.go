@@ -59,14 +59,7 @@ func pickDB(ctx context.Context, rt *app.Runtime, region, what string, keep func
 // dbArg fills in a missing <id|endpoint-dns> in the interactive flow with
 // pickDB; with the argument given, args is returned as it is.
 func dbArg(ctx context.Context, rt *app.Runtime, args []string, region, what string, keep func(dbInstance) bool) ([]string, error) {
-	if len(args) > 0 {
-		return args, nil
-	}
-	v, err := pickDB(ctx, rt, region, what, keep)
-	if err != nil {
-		return nil, err
-	}
-	return []string{v}, nil
+	return app.ArgOr(args, func() (string, error) { return pickDB(ctx, rt, region, what, keep) })
 }
 
 // dbStatusIn keeps the instances in one of the statuses.

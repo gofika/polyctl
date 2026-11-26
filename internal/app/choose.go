@@ -305,6 +305,20 @@ func Arg(args []string, i int) string {
 	return ""
 }
 
+// ArgOr fills in a missing first argument: with it given, args is returned
+// as it is; without it, pick (a Choose or PickResource of the command, which
+// refuses in the non-interactive flow) supplies it.
+func ArgOr(args []string, pick func() (string, error)) ([]string, error) {
+	if len(args) > 0 {
+		return args, nil
+	}
+	v, err := pick()
+	if err != nil {
+		return nil, err
+	}
+	return []string{v}, nil
+}
+
 // NamesArgs fills in a missing list of domain names (the <name>... of a
 // registrar's domain check) in the interactive flow: names cannot be
 // listed, so they are asked, separated by spaces or commas, and checked as

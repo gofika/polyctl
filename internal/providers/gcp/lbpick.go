@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -113,16 +112,7 @@ func pickLBTarget(ctx context.Context, rt *app.Runtime, region string, all bool,
 	if err != nil {
 		return nil, err
 	}
-	var opts []prompt.Option
-	for i, t := range list {
-		opts = append(opts, prompt.Option{Label: lbTargetLabel(t), Value: strconv.Itoa(i)})
-	}
-	v, err := rt.Choose(app.Choice{Title: "Load balancer", Options: opts, Arg: "<name>", What: what})
-	if err != nil {
-		return nil, err
-	}
-	i, _ := strconv.Atoi(v)
-	return list[i], nil
+	return app.PickOf(rt, app.Choice{Title: "Load balancer", Arg: "<name>", What: what}, list, lbTargetLabel)
 }
 
 // httpLB keeps the load balancers cert set can work on: an HTTP(S) URL
