@@ -504,7 +504,7 @@ func storeRecord(ctx context.Context, rt *app.Runtime, profile string, z *platfo
 }
 
 func newDNSCreateCmd(rt *app.Runtime) *cobra.Command {
-	var typ, name, value, comment string
+	var comment string
 	var ttl, priority int
 	var proxied bool
 	cmd := &cobra.Command{
@@ -519,7 +519,9 @@ argument: quote one that contains spaces. A value that starts with "-" goes
 after "--".
 
 --proxied is a boolean: --proxied switches the proxy on, --proxied=false
-switches it off, and without it Cloudflare's default applies.`,
+switches it off, and without it Cloudflare's default applies.
+
+` + app.RecordAskHelp("zone"),
 		Example: `  polyctl cloudflare dns create example.com www A 203.0.113.10 --proxied
   polyctl cloudflare dns create example.com @ MX mail.example.com --priority 10
   polyctl cloudflare dns create example.com @ TXT "v=spf1 include:_spf.example.net ~all"`,
@@ -527,18 +529,12 @@ switches it off, and without it Cloudflare's default applies.`,
 		ValidArgsFunction: app.CompleteRecordArgs(completeZones(rt), platform.Cloudflare),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The record is positional (<name> <type> <value>) or, in the
-			// former form, given with --name, --type and --value.
-			if len(args) > 1 {
-				rec, err := app.ParseRecordArgs(cmd, args[1:], 1, 1)
-				if err != nil {
-					return err
-				}
-				name, typ, value = rec.Name, rec.Type, rec.Value()
-			}
-			// The interactive flow asks for what is missing: the zone,
-			// the type and the value.
-			if (typ == "" || value == "") && !rt.Interactive() {
-				return app.UsageErrf("%s", app.RecordUsage(cmd, 1, 1))
+			// former form, given with --name, --type and --value. The
+			// interactive flow asks for what is missing: the zone, the
+			// name, the type and the value.
+			in, err := rt.RecordInput(cmd, args, app.RecordForm{MinValues: 1, MaxValues: 1})
+			if err != nil {
+				return err
 			}
 			if rt.Flags.Offline {
 				return app.ErrOffline
@@ -548,20 +544,15 @@ switches it off, and without it Cloudflare's default applies.`,
 				// The record cannot be created without a zone.
 				return app.RequiredPick(err, "<zone>")
 			}
-			if typ == "" {
-				if typ, err = rt.PickRecordType(platform.Cloudflare); err != nil {
-					return err
-				}
-			}
-			if value == "" {
-				if value, err = rt.AskRecordValue(strings.ToUpper(typ), ""); err != nil {
-					return err
-				}
-			}
 			s, err := mutationSession(cmd.Context(), rt)
 			if err != nil {
 				return err
 			}
+			if err := rt.CompleteRecord(in, app.RecordPrompt{Platform: platform.Cloudflare, Zone: z.Name,
+				Existing: func() ([]platform.Record, error) { return s.client.ListRecords(cmd.Context(), z.ID) }}); err != nil {
+				return err
+			}
+			name, typ, value := in.Name, in.Type, in.Value()
 			rec := platform.Record{ZoneID: z.ID, Name: platform.FQDN(name, z.Name), Type: strings.ToUpper(typ), Value: value, TTL: ttl}
 			if cmd.Flags().Changed("proxied") {
 				px := proxied
@@ -587,23 +578,12 @@ switches it off, and without it Cloudflare's default applies.`,
 			return rt.Render(recordsResult{Profile: profile, Zone: z, Records: []platform.Record{*out}}, func() output.Grid { return recordGrid([]platform.Record{*out}) })
 		},
 	}
-	cmd.Flags().StringVar(&typ, "type", "", "record type (A, AAAA, CNAME, TXT, MX, ...)")
-	cmd.Flags().StringVar(&name, "name", "", "record name relative to the zone (www, @) or FQDN; default: the zone apex")
-	cmd.Flags().StringVar(&value, "value", "", "record value")
+	app.FormerRecordFlags(cmd, false)
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 or 1 = automatic)")
 	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX/SRV/URI records")
 	cmd.Flags().BoolVar(&proxied, "proxied", false, "proxy through Cloudflare: --proxied or --proxied=false (default: Cloudflare's default)")
 	cmd.Flags().StringVar(&comment, "comment", "", "record comment")
-	hideFormerRecordFlags(cmd)
 	return cmd
-}
-
-// hideFormerRecordFlags hides --name, --type and --value, the former form of
-// a record command, from its help; they keep working.
-func hideFormerRecordFlags(cmd *cobra.Command) {
-	for _, n := range []string{"name", "type", "value"} {
-		_ = cmd.Flags().MarkHidden(n)
-	}
 }
 
 // recordTargetHelp says how update and delete find their record.

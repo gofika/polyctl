@@ -125,18 +125,58 @@ func TestDNSCreatePositionalUsage(t *testing.T) {
 	}
 }
 
-// With only the domain the interactive flow still asks for the type and the
-// value; the record is then at the apex.
+// With only the domain the interactive flow asks for the name (never taken
+// to be the apex), the type and the value; a record that stops after its
+// name or its type is completed. The non-interactive flow asks nothing.
 func TestDNSCreateWithOnlyTheDomainAsks(t *testing.T) {
 	e := newRecordEnv(t)
-	p := prompttest.New(t, "A", "203.0.113.10")
+	p := prompttest.New(t, "@", "A", "203.0.113.10")
 	code, _, stderr := e.run(p, "namecom", "dns", "create", "example.com")
 	if code != cli.ExitOK {
 		t.Fatalf("exit %d, %s", code, stderr)
 	}
 	p.Done()
+	if a := p.Find("Record name in example.com"); prompttest.Labels(a.Options) != "@ (apex)\nAnother name..." {
+		t.Errorf("names offered:\n%s", prompttest.Labels(a.Options))
+	}
 	if got := e.records(); got != "@ A 203.0.113.10 0 -" {
 		t.Errorf("created %q", got)
+	}
+	// A name typed in; then <domain> <name> (the type it has preselected)
+	// and <domain> <name> <type>.
+	p = prompttest.New(t, prompttest.Label("Another name"), "www", "TXT", "hello")
+	if code, _, stderr := e.run(p, "namecom", "dns", "create", "example.com"); code != cli.ExitOK {
+		t.Fatalf("typed name: exit %d, %s", code, stderr)
+	}
+	p.Done()
+	if a := p.Find("Record name in example.com"); prompttest.Labels(a.Options) != "@ (apex)  A\nAnother name..." {
+		t.Errorf("names offered:\n%s", prompttest.Labels(a.Options))
+	}
+	p = prompttest.New(t, "TXT", "again")
+	if code, _, stderr := e.run(p, "namecom", "dns", "create", "example.com", "www"); code != cli.ExitOK {
+		t.Fatalf("<name>: exit %d, %s", code, stderr)
+	}
+	p.Done()
+	if a := p.Find("Record type"); a.Default != "TXT" {
+		t.Errorf("type preselected %q", a.Default)
+	}
+	p = prompttest.New(t, "203.0.113.11")
+	if code, _, stderr := e.run(p, "namecom", "dns", "create", "example.com", "api", "a"); code != cli.ExitOK {
+		t.Fatalf("<name> <type>: exit %d, %s", code, stderr)
+	}
+	p.Done()
+	before := e.records()
+	if !strings.Contains(before, "www TXT hello") || !strings.Contains(before, "www TXT again") || !strings.Contains(before, "api A 203.0.113.11") {
+		t.Errorf("created %q", before)
+	}
+	for _, args := range [][]string{{"example.com", "www"}, {"example.com", "www", "A"}} {
+		code, _, stderr := e.run(nil, append([]string{"namecom", "dns", "create"}, args...)...)
+		if code != cli.ExitUsage || !strings.Contains(stderr, "usage: polyctl namecom dns create <domain> <name> <type> <value>") {
+			t.Errorf("non-interactive %v: exit %d, %s", args, code, stderr)
+		}
+	}
+	if got := e.records(); got != before {
+		t.Errorf("a usage error wrote %q", got)
 	}
 }
 

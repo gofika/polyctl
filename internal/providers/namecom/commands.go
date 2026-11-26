@@ -589,7 +589,6 @@ func newDNSListCmd(rt *app.Runtime) *cobra.Command {
 }
 
 func newDNSCreateCmd(rt *app.Runtime) *cobra.Command {
-	var typ, name, value string
 	var ttl, priority int
 	cmd := &cobra.Command{
 		Use:   "create <domain> <name> <type> <value>",
@@ -600,7 +599,9 @@ type are left alone.
 <name> is relative to the domain (www, a.b), @ for the apex, or a full name
 inside the domain (www.example.com). <type> is case-insensitive. The value is
 one argument: quote one that contains spaces. A value that starts with "-" goes
-after "--".`,
+after "--".
+
+` + app.RecordAskHelp("domain"),
 		Example: `  polyctl namecom dns create example.com www A 203.0.113.10
   polyctl namecom dns create example.com @ MX mail.example.com --priority 10
   polyctl namecom dns create example.com @ TXT "v=spf1 include:_spf.example.net ~all"`,
@@ -609,37 +610,25 @@ after "--".`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The record is positional (<name> <type> <value>) or, in the
 			// former form, given with --name, --type and --value.
-			if len(args) > 1 {
-				rec, err := app.ParseRecordArgs(cmd, args[1:], 1, 1)
-				if err != nil {
-					return err
-				}
-				name, typ, value = rec.Name, rec.Type, rec.Value()
-				args = args[:1]
+			in, err := rt.RecordInput(cmd, args, app.RecordForm{MinValues: 1, MaxValues: 1})
+			if err != nil {
+				return err
 			}
-			if (typ == "" || value == "") && !rt.Interactive() {
-				return app.UsageErrf("%s", app.RecordUsage(cmd, 1, 1))
-			}
-			args, err := rt.DomainArg(cmd.Context(), args, platform.NameCom, platform.ResZone, nil)
+			args, err = rt.DomainArg(cmd.Context(), args[:min(len(args), 1)], platform.NameCom, platform.ResZone, nil)
 			if err != nil {
 				// The record cannot be created without a zone.
 				return app.RequiredPick(err, "<domain>")
-			}
-			if typ == "" {
-				if typ, err = rt.PickRecordType(platform.NameCom); err != nil {
-					return err
-				}
-			}
-			if value == "" {
-				if value, err = rt.AskRecordValue(strings.ToUpper(typ), ""); err != nil {
-					return err
-				}
 			}
 			domain := platform.NormalizeDomain(args[0])
 			c, p, err := open(cmd.Context(), rt)
 			if err != nil {
 				return err
 			}
+			if err := rt.CompleteRecord(in, app.RecordPrompt{Platform: platform.NameCom, Zone: domain,
+				Existing: func() ([]platform.Record, error) { return c.ListRecords(cmd.Context(), domain) }}); err != nil {
+				return err
+			}
+			name, typ, value := in.Name, in.Type, in.Value()
 			rec := platform.Record{ZoneID: domain, Name: platform.FQDN(name, domain), Type: strings.ToUpper(typ), Value: value, TTL: ttl}
 			if cmd.Flags().Changed("priority") {
 				pr := priority
@@ -659,15 +648,9 @@ after "--".`,
 			})
 		},
 	}
-	cmd.Flags().StringVar(&typ, "type", "", "record type (A, AAAA, CNAME, TXT, MX, SRV, NS, ...)")
-	cmd.Flags().StringVar(&name, "name", "", "record name relative to the domain (www, @); default: the apex")
-	cmd.Flags().StringVar(&value, "value", "", "record value")
+	app.FormerRecordFlags(cmd, false)
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 = name.com default, minimum 300)")
 	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX/SRV records")
-	// The former form of the record keeps working and is left out of the help.
-	for _, n := range []string{"name", "type", "value"} {
-		_ = cmd.Flags().MarkHidden(n)
-	}
 	return cmd
 }
 

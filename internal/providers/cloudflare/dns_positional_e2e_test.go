@@ -104,18 +104,56 @@ func TestDNSCreatePositionalUsage(t *testing.T) {
 	}
 }
 
-// With only the zone the interactive flow still asks for the type and the
-// value; the record is then at the zone apex.
+// With only the zone the interactive flow asks for the name (never taken
+// to be the apex), the type and the value; a record that stops after its
+// name or its type is completed. The non-interactive flow asks nothing.
 func TestDNSCreateWithOnlyTheZoneAsks(t *testing.T) {
 	e, post := newRecordEnv(t)
-	p := prompttest.New(t, "A", "203.0.113.10")
+	p := prompttest.New(t, "@", "A", "203.0.113.10")
 	code, _, stderr := e.runPick(p, "cloudflare", "dns", "create", "example.com")
 	if code != cli.ExitOK {
 		t.Fatalf("exit %d, %s", code, stderr)
 	}
 	p.Done()
+	if a := p.Find("Record name in example.com"); prompttest.Labels(a.Options) != "@ (apex)\nAnother name..." {
+		t.Errorf("names offered:\n%s", prompttest.Labels(a.Options))
+	}
 	if b := e.f.body(post); b["name"] != "example.com" || b["type"] != "A" || b["content"] != "203.0.113.10" {
 		t.Errorf("created %v", b)
+	}
+	// A name typed in is taken.
+	p = prompttest.New(t, prompttest.Label("Another name"), "www", "CNAME", "target.example.net")
+	if code, _, stderr := e.runPick(p, "cloudflare", "dns", "create", "example.com"); code != cli.ExitOK {
+		t.Fatalf("typed name: exit %d, %s", code, stderr)
+	}
+	p.Done()
+	if b := e.f.body(post); b["name"] != "www.example.com" || b["type"] != "CNAME" {
+		t.Errorf("created %v", b)
+	}
+	// <zone> <name>.
+	p = prompttest.New(t, "A", "203.0.113.11")
+	if code, _, stderr := e.runPick(p, "cloudflare", "dns", "create", "example.com", "@"); code != cli.ExitOK {
+		t.Fatalf("<name>: exit %d, %s", code, stderr)
+	}
+	p.Done()
+	// <zone> <name> <type>.
+	p = prompttest.New(t, "hello")
+	if code, _, stderr := e.runPick(p, "cloudflare", "dns", "create", "example.com", "txt", "txt"); code != cli.ExitOK {
+		t.Fatalf("<name> <type>: exit %d, %s", code, stderr)
+	}
+	p.Done()
+	if b := e.f.body(post); b["name"] != "txt.example.com" || b["type"] != "TXT" || b["content"] != "hello" {
+		t.Errorf("created %v", b)
+	}
+	e.f.reset()
+	for _, args := range [][]string{{"example.com", "www"}, {"example.com", "www", "A"}} {
+		code, _, stderr := e.run(append([]string{"cloudflare", "dns", "create"}, args...)...)
+		if code != cli.ExitUsage || !strings.Contains(stderr, "usage: polyctl cloudflare dns create <zone> <name> <type> <value>") {
+			t.Errorf("non-interactive %v: exit %d, %s", args, code, stderr)
+		}
+	}
+	if w := e.f.writes(); len(w) != 0 {
+		t.Errorf("a usage error wrote %v", w)
 	}
 }
 

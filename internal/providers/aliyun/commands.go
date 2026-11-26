@@ -234,7 +234,7 @@ func upsertRecord(rt *app.Runtime, ctx context.Context, prof, zone string, rec p
 }
 
 func newDNSRecordCreateCmd(rt *app.Runtime) *cobra.Command {
-	var typ, name, value, line string
+	var line string
 	var ttl, priority int
 	cmd := &cobra.Command{
 		Use:   "create <domain> <name> <type> <value>",
@@ -246,9 +246,7 @@ inside the domain (www.example.com). <type> is case-insensitive. The value is
 one argument: quote one that contains spaces. A value that starts with "-"
 goes after "--". The priority of an MX record goes in --priority.
 
-On a terminal, a missing <domain> is picked from the alidns domains of the
-profile, and with only the domain the type is picked and the value is asked.
-The name is not asked: the record is then at the apex.`,
+` + app.RecordAskHelp("domain"),
 		Example: `  polyctl aliyun dns record create example.com www A 203.0.113.10
   polyctl aliyun dns record create example.com @ MX mail.example.com --priority 10
   polyctl aliyun dns record create example.com www CNAME target.example.net --line telecom`,
@@ -257,30 +255,13 @@ The name is not asked: the record is then at the apex.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The record is positional (<name> <type> <value>) or, in the
 			// former form, given with --name, --type and --value.
-			if len(args) > 1 {
-				rec, err := app.ParseRecordArgs(cmd, args[1:], 1, 1)
-				if err != nil {
-					return err
-				}
-				name, typ, value = rec.Name, rec.Type, rec.Value()
-				args = args[:1]
+			in, err := rt.RecordInput(cmd, args, app.RecordForm{MinValues: 1, MaxValues: 1})
+			if err != nil {
+				return err
 			}
-			if (typ == "" || value == "") && !rt.Interactive() {
-				return app.UsageErrf("%s", app.RecordUsage(cmd, 1, 1))
-			}
-			args, err := rt.DomainArg(cmd.Context(), args, platform.Aliyun, platform.ResZone, nil)
+			args, err = rt.DomainArg(cmd.Context(), args[:min(len(args), 1)], platform.Aliyun, platform.ResZone, nil)
 			if err != nil {
 				return app.RequiredPick(err, "<domain>")
-			}
-			if typ == "" {
-				if typ, err = rt.PickRecordType(platform.Aliyun); err != nil {
-					return err
-				}
-			}
-			if value == "" {
-				if value, err = rt.AskRecordValue(strings.ToUpper(typ), ""); err != nil {
-					return err
-				}
 			}
 			if err := mustPositive("ttl", ttl); err != nil {
 				return err
@@ -290,6 +271,11 @@ The name is not asked: the record is then at the apex.`,
 			if err != nil {
 				return err
 			}
+			if err := rt.CompleteRecord(in, app.RecordPrompt{Platform: platform.Aliyun, Zone: zone,
+				Existing: func() ([]platform.Record, error) { return c.ListRecords(cmd.Context(), zone) }}); err != nil {
+				return err
+			}
+			name, typ, value := in.Name, in.Type, in.Value()
 			rec := platform.Record{ZoneID: zone, Name: platform.FQDN(name, zone), Type: strings.ToUpper(typ), Value: value, TTL: ttl}
 			if cmd.Flags().Changed("priority") {
 				pr := priority
@@ -312,17 +298,10 @@ The name is not asked: the record is then at the apex.`,
 			})
 		},
 	}
-	cmd.Flags().StringVar(&typ, "type", "", "record type (A, AAAA, CNAME, TXT, MX, ...)")
-	cmd.Flags().StringVar(&name, "name", "", "record name relative to the domain (www, @); default: the apex")
-	cmd.Flags().StringVar(&value, "value", "", "record value")
+	app.FormerRecordFlags(cmd, false)
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 = alidns default, 600)")
 	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX records (1-50)")
 	cmd.Flags().StringVar(&line, "line", "", "resolution line (default, telecom, unicom, mobile, oversea, ...)")
-	// --name, --type and --value are the former form of the record; they
-	// keep working and are left out of the help.
-	for _, n := range []string{"name", "type", "value"} {
-		_ = cmd.Flags().MarkHidden(n)
-	}
 	return cmd
 }
 

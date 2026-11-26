@@ -99,20 +99,71 @@ func TestDNSRecordCreatePositionalUsage(t *testing.T) {
 	}
 }
 
-// With only the domain, dns record create still asks for the type and the
-// value; the record is then at the apex.
+// With only the domain, dns record create asks for the name (from the
+// names of the domain, the apex, or typed in), the type and the value; a
+// record that stops after its name or type is completed.
 func TestDNSRecordCreateWithOnlyTheDomainAsks(t *testing.T) {
 	t.Setenv(app.EnvNonInteractive, "")
 	h, added := createHarness(t, app.Flags{})
 	seedZones(t, h, platform.ResZone, "example.com")
-	p := prompttest.New(t, "TXT", "hello")
+	h.api.on("DescribeDomainRecords", func(q url.Values) (int, any) {
+		return 200, map[string]any{"TotalCount": 1, "DomainRecords": map[string]any{"Record": []map[string]any{
+			{"RecordId": "77", "RR": "www", "Type": "TXT", "Value": "old", "TTL": 600, "DomainName": "example.com"}}}}
+	})
+	p := prompttest.New(t, "@", "TXT", "hello")
 	h.rt.Picker = p
 	if err := h.run("dns", "record", "create", "example.com"); err != nil {
 		t.Fatalf("create: %v\n%s", err, h.stderr.String())
 	}
 	p.Done()
+	if a := p.Find("Record name in example.com"); prompttest.Labels(a.Options) != "@ (apex)\nwww  TXT\nAnother name..." {
+		t.Errorf("names offered:\n%s", prompttest.Labels(a.Options))
+	}
 	if len(*added) != 1 || (*added)[0] != "DomainName=example.com RR=@ Type=TXT Value=hello TTL= Priority= Line=default" {
 		t.Errorf("sent %q", *added)
+	}
+	// <domain> <name>: the type the name has is preselected; create
+	// proposes no value.
+	p = prompttest.New(t, "TXT", "more")
+	h.rt.Picker = p
+	if err := h.run("dns", "record", "create", "example.com", "www"); err != nil {
+		t.Fatalf("create <name>: %v\n%s", err, h.stderr.String())
+	}
+	p.Done()
+	if a := p.Find("Record type"); a.Default != "TXT" {
+		t.Errorf("type preselected %q", a.Default)
+	}
+	if a := p.Find("Value of the TXT record"); a.Default != "" {
+		t.Errorf("value proposed %q", a.Default)
+	}
+	// <domain> <name> <type>, and a name typed in.
+	p = prompttest.New(t, "203.0.113.7")
+	h.rt.Picker = p
+	if err := h.run("dns", "record", "create", "example.com", "api", "a"); err != nil {
+		t.Fatalf("create <name> <type>: %v\n%s", err, h.stderr.String())
+	}
+	p.Done()
+	p = prompttest.New(t, prompttest.Label("Another name"), "new", "A", "203.0.113.8")
+	h.rt.Picker = p
+	if err := h.run("dns", "record", "create", "example.com"); err != nil {
+		t.Fatalf("typed name: %v\n%s", err, h.stderr.String())
+	}
+	p.Done()
+	if got := strings.Join((*added)[1:], "\n"); got != "DomainName=example.com RR=www Type=TXT Value=more TTL= Priority= Line=default\n"+
+		"DomainName=example.com RR=api Type=A Value=203.0.113.7 TTL= Priority= Line=default\n"+
+		"DomainName=example.com RR=new Type=A Value=203.0.113.8 TTL= Priority= Line=default" {
+		t.Errorf("sent %q", got)
+	}
+	// The non-interactive flow asks nothing.
+	h.rt.Picker = nil
+	h.rt.Flags.NonInteractive = true
+	for _, args := range [][]string{{"example.com", "www"}, {"example.com", "www", "A"}} {
+		if err := h.run(append([]string{"dns", "record", "create"}, args...)...); !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "usage: aliyun dns record create <domain> <name> <type> <value>") {
+			t.Errorf("non-interactive %v = %v", args, err)
+		}
+	}
+	if len(*added) != 4 {
+		t.Errorf("a usage error sent %q", *added)
 	}
 }
 

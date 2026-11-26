@@ -53,6 +53,10 @@ func TestDNSRecordCreateInteractive(t *testing.T) {
 	h.api.on("DescribeDomainRecordInfo", func(q url.Values) (int, any) {
 		return 200, map[string]any{"RecordId": "9001", "RR": "www", "Type": "A", "Value": "203.0.113.9", "TTL": 600, "DomainName": "example.com"}
 	})
+	h.api.on("DescribeDomainRecords", func(q url.Values) (int, any) {
+		return 200, map[string]any{"TotalCount": 1, "DomainRecords": map[string]any{"Record": []map[string]any{
+			{"RecordId": "77", "RR": "www", "Type": "TXT", "Value": "old", "TTL": 600, "DomainName": "example.com"}}}}
+	})
 	p := prompttest.New(t, "example.com", "A", "not-an-ip", "203.0.113.9")
 	h.rt.Picker = p
 	if err := h.run("dns", "record", "create", "--name", "www"); err != nil {
