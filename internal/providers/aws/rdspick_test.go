@@ -46,19 +46,19 @@ func TestRDSPicks(t *testing.T) {
 	}
 	h.ec2.mu.Unlock()
 
-	p := prompttest.New(t, "db-b")
+	p := prompttest.New(t, prompttest.Label("db-b  "))
 	h.rt.Picker = p
 	if err := h.run("rds", "instance", "start"); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	if v := prompttest.Values(p.Asked[0].Options); v != "db-b" {
+	if v := prompttest.Values(p.Asked[0].Options); v != "db-b.abc123.ap-east-1.rds.amazonaws.com" {
 		t.Errorf("start offered %q", v)
 	}
 	if l := prompttest.Labels(p.Asked[0].Options); !strings.Contains(l, "db-b  mysql 8.0.36  db.t3.micro  stopped  ap-east-1a  aws/lab/ap-east-1") {
 		t.Errorf("labels: %s", l)
 	}
 
-	p = prompttest.New(t, "db-a", "db.m5.large")
+	p = prompttest.New(t, prompttest.Label("db-a  "), "db.m5.large")
 	h.rt.Picker = p
 	if err := h.run("rds", "instance", "resize"); err != nil {
 		t.Fatalf("resize: %v\n%s", err, h.stderr.String())
@@ -132,5 +132,26 @@ func TestRDSCreateEnsureAsks(t *testing.T) {
 	h.rt.Flags.NonInteractive = true
 	if err := h.run("rds", "instance", "create", "x", "--size", "20", "--password-env", "NOPE_UNSET"); !errors.Is(err, app.ErrUsage) {
 		t.Errorf("non-interactive = %v", err)
+	}
+}
+
+// The row chosen in the list is the target: an identifier held in two
+// regions is asked about once, not again when the instance is looked up.
+func TestRDSPickOfAnIdentifierInTwoRegions(t *testing.T) {
+	h := rdsPickHarness(t, app.Flags{DryRun: true}, nil)
+	h.ec2.find.regions = []string{"ap-east-1", "us-west-2"}
+	h.addDB("ap-east-1", "db-a", dbStopped)
+	h.addDB("us-west-2", "db-a", dbStopped)
+	p := prompttest.New(t, prompttest.Label("us-west-2"))
+	h.rt.Picker = p
+	if err := h.run("rds", "instance", "start"); err != nil {
+		t.Fatalf("start: %v\n%s", err, h.stderr.String())
+	}
+	p.Done()
+	if len(p.Asked) != 1 || len(p.Asked[0].Options) != 2 {
+		t.Errorf("prompts: %v", p.Titles())
+	}
+	if rep := h.report(); len(rep.Changes) != 1 || rep.Target.Region != "us-west-2" {
+		t.Errorf("report = %+v", rep)
 	}
 }

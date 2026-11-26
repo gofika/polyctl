@@ -26,7 +26,8 @@ func dbOptionLabel(profile string, d dbInstance) string {
 
 // dbOptions lists the RDS instances of the selected AWS accounts as the
 // inventory knows them (synced first when stale), those in region when
-// given and those keep accepts, valued by identifier.
+// given and those keep accepts, valued by endpoint (by identifier for an
+// instance that has none yet).
 func pickDB(ctx context.Context, rt *app.Runtime, region, what string, keep func(dbInstance) bool) (string, error) {
 	return rt.PickResource(ctx, app.ResourcePick{Platform: platform.AWS, Kind: platform.ResDBInstance,
 		Title: "RDS instance", Arg: "<id|endpoint-dns>", What: what,
@@ -45,6 +46,12 @@ func pickDB(ctx context.Context, rt *app.Runtime, region, what string, keep func
 		Value: func(r inventory.Resource) string {
 			var d dbInstance
 			_ = r.Decode(&d)
+			// The row chosen is the target: its endpoint names one
+			// instance, where an identifier may be held in several
+			// regions or accounts and would be asked about again.
+			if d.Endpoint != "" {
+				return d.Endpoint
+			}
 			return d.ID
 		}})
 }
