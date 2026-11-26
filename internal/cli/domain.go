@@ -353,11 +353,21 @@ func newDomainWhichCmd(rt *app.Runtime) *cobra.Command {
 				}
 				return f, nil
 			}
+			// The sets marked due are indexed before the lookup, as routing
+			// does: one of them may hold a second owner of the domain.
+			var indexErrs []error
+			for _, kind := range []platform.ResourceType{platform.ResZone, platform.ResDomain} {
+				if err := rt.IndexDue(cmd.Context(), kind); err != nil {
+					if cerr := cmd.Context().Err(); cerr != nil {
+						return cerr
+					}
+					indexErrs = append(indexErrs, err)
+				}
+			}
 			entries, err := lookup()
 			if err != nil {
 				return err
 			}
-			var indexErrs []error
 			if len(entries) == 0 && !rt.Flags.Offline {
 				// Index as routing would (never built, or --refresh), then
 				// re-read. Resolving an owner is not needed, so nothing is
