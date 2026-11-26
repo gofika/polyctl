@@ -39,7 +39,8 @@ type DomainPick struct {
 
 // PickDomain asks for one of the domains of the local index in the
 // interactive flow, restricted by --profile and --platform like domain
-// routing. Each domain is one option, labelled with its kinds and owners
+// routing; like routing, it first indexes the sets marked due (IndexDue).
+// Each domain is one option, labelled with its kinds and owners
 // ("example.com  zone cloudflare/acme  domain namecom/acme"): the accounts
 // holding its zone in one cell and those holding its registration in the
 // next, "-" for a domain without a zone. When several accounts own the
@@ -55,6 +56,18 @@ func (rt *Runtime) PickDomain(ctx context.Context, p DomainPick) (string, error)
 	only, err := rt.RoutePlatform()
 	if err != nil {
 		return "", err
+	}
+	// The sets marked due are indexed first, as routing does, so that the
+	// list offers what their accounts cover now. An account that fails is
+	// a warning: the domains already indexed are still offered.
+	dueKinds := p.Kinds
+	if len(dueKinds) == 0 {
+		dueKinds = []platform.ResourceType{platform.ResZone, platform.ResDomain}
+	}
+	for _, k := range dueKinds {
+		if err := rt.IndexDue(ctx, k); err != nil && ctx.Err() != nil {
+			return "", ctx.Err()
+		}
 	}
 	entries, err := db.IndexEntries(ctx)
 	if err != nil {

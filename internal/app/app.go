@@ -122,6 +122,9 @@ type Runtime struct {
 	routeRefreshed map[platform.ResourceType]bool
 	// routeRefreshErr is the error of that indexing: every account failed.
 	routeRefreshErr map[platform.ResourceType]error
+	// dueIndexed holds the accounts and kinds whose set, marked due, a
+	// lookup has indexed in this run, with the error of that indexing.
+	dueIndexed map[dueKey]error
 }
 
 // New creates a Runtime; nothing is loaded until first use.

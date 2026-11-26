@@ -1,0 +1,251 @@
+package app_test
+
+import (
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/gofika/polyctl/internal/app"
+	"github.com/gofika/polyctl/internal/inventory"
+	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt/prompttest"
+)
+
+// markDue marks every cached set of a single-account profile as due, as an
+// upgrade, a login that changes what the account covers, and the enable /
+// disable / use commands of a platform do.
+func (h *harness) markDue(profile string) {
+	h.t.Helper()
+	if err := h.db().Expire(ctx, h.platformOf(profile), profile); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+func (h *harness) zoneState(profile string) *inventory.State {
+	h.t.Helper()
+	st, err := h.db().GetState(ctx, inventory.Set{Platform: h.platformOf(profile), Profile: profile, Type: platform.ResZone})
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return st
+}
+
+// A set marked due is indexed before the lookup, without --refresh: the
+// zone its account covers since then is routed, and only that account is
+// asked, once per run.
+func TestResolveDomainIndexesSetsMarkedDue(t *testing.T) {
+	h := newHarness(t, app.Flags{}, nil)
+	h.seedStandard()
+	if !app.ForcedDue(&inventory.State{ExpiresAt: time.Unix(0, 0)}) || app.ForcedDue(h.zoneState("a")) || app.ForcedDue(nil) {
+		t.Fatal("ForcedDue: only the zero Unix time is a set marked due")
+	}
+	h.markDue("a")
+	if !app.ForcedDue(h.zoneState("a")) {
+		t.Fatalf("state after Expire = %+v", h.zoneState("a"))
+	}
+	h.client("a").zones = []platform.Zone{zone("z-example", "example.com"), zone("z-new", "newlycovered.io")}
+
+	tgt, err := h.rt.ResolveDomain(ctx, "www.newlycovered.io", platform.ResZone)
+	if err != nil || tgt.Profile != "a" || tgt.ResourceID != "z-new" {
+		t.Fatalf("target = %+v, %v (%s)", tgt, err, h.stderr.String())
+	}
+	if !strings.Contains(h.stderr.String(), "indexing zone in 1 account(s) whose cached inventory was marked due") {
+		t.Errorf("stderr = %q", h.stderr.String())
+	}
+	if st := h.zoneState("a"); !st.Fresh(time.Now()) {
+		t.Errorf("state after the indexing = %+v", st)
+	}
+	// Later lookups of the run, hits and misses, ask nobody again.
+	if _, err := h.rt.ResolveDomain(ctx, "nope.org", platform.ResZone); !errors.Is(err, app.ErrDomainUnknown) {
+		t.Errorf("miss = %v", err)
+	}
+	if _, err := h.rt.ResolveDomain(ctx, "newlycovered.io", platform.ResZone); err != nil {
+		t.Errorf("second hit = %v", err)
+	}
+	if n := h.client("a").count("Sync:zone"); n != 1 {
+		t.Errorf("profile a zone sync count = %d, want 1", n)
+	}
+	for _, p := range []string{"b", "c"} {
+		if n := h.client(p).count("Sync"); n != 0 {
+			t.Errorf("profile %s, whose set was not marked due, synced %d times", p, n)
+		}
+	}
+	if n := h.client("a").count("Sync:domain"); n != 0 {
+		t.Errorf("a zone lookup synced domains")
+	}
+}
+
+// The indexing happens before the lookup, not only on a miss: a zone name
+// held twice is reported as ambiguous and not routed to the account that
+// was indexed earlier.
+func TestResolveDomainSetMarkedDueRevealsASecondOwner(t *testing.T) {
+	h := newHarness(t, app.Flags{}, nil)
+	h.seedZones("a", zone("z1", "example.com"))
+	h.seedZones("b", zone("z9", "other.org"))
+	h.seedZones("c")
+	h.markDue("b")
+	h.client("b").zones = []platform.Zone{zone("z9", "other.org"), zone("z2", "example.com")}
+
+	_, err := h.rt.ResolveDomain(ctx, "example.com", platform.ResZone)
+	var amb *app.AmbiguousError
+	if !errors.As(err, &amb) || len(amb.Candidates) != 2 {
+		t.Fatalf("err = %v, want two owners", err)
+	}
+	if n := h.client("a").count("Sync"); n != 0 {
+		t.Errorf("profile a synced %d times", n)
+	}
+}
+
+// A set that ran past its TTL is not a set marked due: a miss does not
+// sweep the accounts.
+func TestResolveDomainTTLExpiredSetIsNotIndexed(t *testing.T) {
+	h := newHarness(t, app.Flags{}, nil)
+	for _, p := range []string{"a", "b", "c"} {
+		s := inventory.Set{Platform: h.platformOf(p), Profile: p, Type: platform.ResZone}
+		if err := h.db().Replace(ctx, s, app.ZoneResources([]platform.Zone{zone("z-"+p, p+".example")}), -time.Hour); err != nil {
+			t.Fatal(err)
+		}
+		if st := h.zoneState(p); st.Fresh(time.Now()) || app.ForcedDue(st) {
+			t.Fatalf("state of %s = %+v, want expired by its TTL", p, st)
+		}
+		h.client(p).zones = []platform.Zone{zone("z-new", "newlycovered.io")}
+	}
+	if _, err := h.rt.ResolveDomain(ctx, "newlycovered.io", platform.ResZone); !errors.Is(err, app.ErrDomainUnknown) || !strings.Contains(err.Error(), "--refresh") {
+		t.Fatalf("miss = %v", err)
+	}
+	if tgt, err := h.rt.ResolveDomain(ctx, "a.example", platform.ResZone); err != nil || tgt.Profile != "a" {
+		t.Errorf("hit = %+v, %v", tgt, err)
+	}
+	for _, p := range []string{"a", "b", "c"} {
+		if n := h.client(p).count(""); n != 0 {
+			t.Errorf("profile %s was reached: %v", p, h.client(p).calls)
+		}
+	}
+	if strings.Contains(h.stderr.String(), "indexing") {
+		t.Errorf("stderr = %q", h.stderr.String())
+	}
+}
+
+// --offline makes no request for a set marked due: its rows are served,
+// and a miss keeps the offline message.
+func TestResolveDomainOfflineLeavesSetsMarkedDue(t *testing.T) {
+	h := newHarness(t, app.Flags{Offline: true}, nil)
+	h.seedStandard()
+	h.markDue("a")
+	h.client("a").zones = []platform.Zone{zone("z-new", "newlycovered.io")}
+
+	_, err := h.rt.ResolveDomain(ctx, "newlycovered.io", platform.ResZone)
+	if !errors.Is(err, app.ErrDomainUnknown) || !strings.Contains(err.Error(), "run `polyctl domain index` when online") {
+		t.Fatalf("offline miss = %v", err)
+	}
+	if tgt, err := h.rt.ResolveDomain(ctx, "www.example.com", platform.ResZone); err != nil || tgt.Profile != "a" {
+		t.Errorf("offline hit = %+v, %v", tgt, err)
+	}
+	if err := h.rt.IndexDue(ctx, platform.ResZone); err != nil {
+		t.Errorf("IndexDue offline = %v", err)
+	}
+	for _, p := range []string{"a", "b", "c"} {
+		if n := h.client(p).count(""); n != 0 {
+			t.Errorf("profile %s was reached offline: %v", p, h.client(p).calls)
+		}
+	}
+	if !app.ForcedDue(h.zoneState("a")) {
+		t.Errorf("the set is no longer marked due: %+v", h.zoneState("a"))
+	}
+}
+
+// --profile restricts the indexing like the lookup: a set marked due of an
+// account that is not selected is left alone.
+func TestResolveDomainSetMarkedDueRespectsTheSelection(t *testing.T) {
+	h := newHarness(t, app.Flags{Profile: "b"}, nil)
+	h.seedStandard()
+	h.markDue("a")
+	h.markDue("b")
+	if _, err := h.rt.ResolveDomain(ctx, "nope.org", platform.ResZone); !errors.Is(err, app.ErrDomainUnknown) {
+		t.Fatalf("miss = %v", err)
+	}
+	if a, b := h.client("a").count("Sync"), h.client("b").count("Sync:zone"); a != 0 || b != 1 {
+		t.Errorf("sync counts: a %d (want 0), b %d (want 1)", a, b)
+	}
+}
+
+// An account whose set was marked due and that fails to sync is a warning
+// while the lookup is answered, by the rows it kept or by another account;
+// it is tried once per run. When nothing answers, the failure is reported
+// and not "unknown domain".
+func TestResolveDomainSetMarkedDueFailingAccount(t *testing.T) {
+	h := newHarness(t, app.Flags{}, nil)
+	h.seedStandard()
+	h.markDue("a")
+	h.client("a").syncErr = errors.New("dial tcp: connection refused")
+
+	if tgt, err := h.rt.ResolveDomain(ctx, "www.example.com", platform.ResZone); err != nil || tgt.Profile != "a" {
+		t.Fatalf("hit in the rows kept = %+v, %v", tgt, err)
+	}
+	if !strings.Contains(h.stderr.String(), "warning: index namecom/a") {
+		t.Errorf("stderr = %q", h.stderr.String())
+	}
+	_, err := h.rt.ResolveDomain(ctx, "nope.org", platform.ResZone)
+	if err == nil || errors.Is(err, app.ErrDomainUnknown) || !strings.Contains(err.Error(), "could not index the zones") {
+		t.Errorf("miss = %v, want the indexing failure", err)
+	}
+	if n := h.client("a").count("Sync:zone"); n != 1 {
+		t.Errorf("profile a zone sync count = %d, want 1", n)
+	}
+	if !app.ForcedDue(h.zoneState("a")) {
+		t.Errorf("a failed sync cleared the mark: %+v", h.zoneState("a"))
+	}
+}
+
+// When one of two accounts marked due fails, the other one's answer
+// stands and a miss is a plain "unknown domain".
+func TestResolveDomainSetMarkedDuePartialFailure(t *testing.T) {
+	h := newHarness(t, app.Flags{}, nil)
+	h.seedStandard()
+	h.markDue("a")
+	h.markDue("b")
+	h.client("a").syncErr = errors.New("dial tcp: connection refused")
+	h.client("b").zones = []platform.Zone{zone("z-new", "newlycovered.io")}
+
+	if tgt, err := h.rt.ResolveDomain(ctx, "newlycovered.io", platform.ResZone); err != nil || tgt.Profile != "b" {
+		t.Fatalf("target = %+v, %v", tgt, err)
+	}
+	if _, err := h.rt.ResolveDomain(ctx, "nope.org", platform.ResZone); !errors.Is(err, app.ErrDomainUnknown) {
+		t.Errorf("miss = %v, want ErrDomainUnknown", err)
+	}
+}
+
+// --refresh indexes every candidate once; the sets marked due are not
+// indexed a second time for it.
+func TestResolveDomainRefreshCoversSetsMarkedDue(t *testing.T) {
+	h := newHarness(t, app.Flags{Refresh: true}, nil)
+	h.seedStandard()
+	h.markDue("a")
+	if _, err := h.rt.ResolveDomain(ctx, "nope.org", platform.ResZone); !errors.Is(err, app.ErrDomainUnknown) {
+		t.Fatalf("miss = %v", err)
+	}
+	if n := h.client("a").count("Sync:zone"); n != 1 {
+		t.Errorf("profile a zone sync count = %d, want 1", n)
+	}
+}
+
+// The domain picker indexes the sets marked due before it lists the
+// index, so that a zone an account covers since then is offered.
+func TestPickDomainIndexesSetsMarkedDue(t *testing.T) {
+	t.Setenv(app.EnvNonInteractive, "")
+	h := newHarness(t, app.Flags{}, nil)
+	h.seedStandard()
+	h.markDue("a")
+	h.client("a").zones = []platform.Zone{zone("z-example", "example.com"), zone("z-new", "newlycovered.io")}
+	p := prompttest.New(t, "newlycovered.io")
+	h.rt.Picker = p
+	d, err := h.rt.PickDomain(ctx, app.DomainPick{Arg: "<domain>", Kinds: []platform.ResourceType{platform.ResZone}})
+	if err != nil || d != "newlycovered.io" {
+		t.Fatalf("PickDomain = %q, %v", d, err)
+	}
+	p.Done()
+	if a, b := h.client("a").count("Sync:zone"), h.client("b").count("Sync"); a != 1 || b != 0 {
+		t.Errorf("sync counts: a %d (want 1), b %d (want 0)", a, b)
+	}
+}

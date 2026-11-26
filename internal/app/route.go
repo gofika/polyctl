@@ -41,8 +41,11 @@ var ErrDomainUnknown = errors.New("domain not found in local index")
 // a hand edit) take no part. If several accounts (or several resources of
 // one account) own the same best match, an AmbiguousError is returned.
 // With --refresh the candidate accounts are indexed before the lookup, once
-// per run and kind. Without it, a miss indexes them only when none of them
-// has ever been indexed, and the lookup is retried.
+// per run and kind. Without it, the candidate accounts whose set of kind
+// was marked due (see IndexDue) are indexed before the lookup, once per run;
+// after that a miss indexes the candidates only when none of them has ever
+// been indexed, and the lookup is retried. A set that merely ran past its
+// TTL is not indexed again by a lookup.
 func (rt *Runtime) ResolveDomain(ctx context.Context, domain string, kind platform.ResourceType) (*Target, error) {
 	domain = platform.NormalizeDomain(domain)
 	cands := platform.Candidates(domain)
@@ -196,6 +199,13 @@ func (rt *Runtime) ResolveDomain(ctx context.Context, domain string, kind platfo
 		indexErr = rt.refreshIndex(ctx, kind, profiles)
 		refreshed = true
 	}
+	// A set marked due may miss what its account covers since then, or
+	// hold only one of two zones of a name: it is indexed before the
+	// lookup, so that neither a miss nor a hit is served from it.
+	dueErr, err := rt.indexDue(ctx, kind, profiles)
+	if err != nil {
+		return nil, err
+	}
 	t, err := lookup()
 	if err != nil || t != nil {
 		return t, err
@@ -218,6 +228,10 @@ func (rt *Runtime) ResolveDomain(ctx context.Context, domain string, kind platfo
 			return nil, indexErr
 		}
 		return nil, notFound()
+	}
+	if dueErr != nil {
+		// Not "unknown" either: no account marked due could be asked.
+		return nil, dueErr
 	}
 	// Without --refresh, index automatically only when the index has never
 	// been built for any of the candidate profiles. Once at least one
@@ -271,6 +285,97 @@ func (rt *Runtime) refreshIndex(ctx context.Context, kind platform.ResourceType,
 	}
 	rt.routeRefreshed[kind], rt.routeRefreshErr[kind] = true, err
 	return err
+}
+
+// ForcedDue reports whether a set was marked due by the program and did
+// not just run past its TTL: the data migration of an upgrade, a login that
+// changed what the account covers, and the enable / disable / use commands
+// of a platform set its expiry to the zero Unix time (inventory.DB.Expire),
+// which no sync ever writes (a sync writes its own time plus the TTL, or
+// its own time for a set that kept old rows).
+func ForcedDue(st *inventory.State) bool {
+	return st != nil && st.ExpiresAt.Unix() == 0
+}
+
+// dueKey names one account and kind in Runtime.dueIndexed.
+type dueKey struct {
+	ref  config.AccountRef
+	kind platform.ResourceType
+}
+
+// IndexDue indexes kind in the accounts selected by --profile / --platform
+// whose set of kind was marked due (ForcedDue), each at most once per run.
+// It does nothing with --offline, and nothing with --refresh, which indexes
+// every candidate anyway. A failing account is a warning; the error
+// returned says that every account tried in this run failed.
+func (rt *Runtime) IndexDue(ctx context.Context, kind platform.ResourceType) error {
+	profiles, err := rt.indexCandidates(ctx, kind)
+	if err != nil {
+		return err
+	}
+	dueErr, err := rt.indexDue(ctx, kind, profiles)
+	if err != nil {
+		return err
+	}
+	return dueErr
+}
+
+// indexDue is IndexDue for the given candidates. Its first error is the
+// one of every account failing (the lookup may still be answered by
+// another account), its second one stops the lookup.
+func (rt *Runtime) indexDue(ctx context.Context, kind platform.ResourceType, profiles []config.AccountRef) (error, error) {
+	if rt.Flags.Offline || rt.Flags.Refresh || len(profiles) == 0 {
+		return nil, nil
+	}
+	db, err := rt.DB()
+	if err != nil {
+		return nil, err
+	}
+	var due []config.AccountRef
+	for _, p := range profiles {
+		if _, done := rt.dueIndexed[dueKey{p, kind}]; done {
+			continue
+		}
+		st, err := db.GetState(ctx, inventory.Set{Platform: p.Platform, Profile: p.Profile, Type: kind})
+		if err != nil {
+			return nil, err
+		}
+		if ForcedDue(st) {
+			due = append(due, p)
+		}
+	}
+	if len(due) > 0 {
+		rt.Infof("indexing %s in %d account(s) whose cached inventory was marked due...", kind, len(due))
+		if rt.dueIndexed == nil {
+			rt.dueIndexed = map[dueKey]error{}
+		}
+		for _, p := range due {
+			err := SyncError(rt.SyncAccount(ctx, p, []platform.ResourceType{kind}))
+			if err != nil {
+				rt.Infof("warning: index %s: %v", p.Label(), err)
+				err = fmt.Errorf("%s: %w", p.Label(), err)
+			}
+			rt.dueIndexed[dueKey{p, kind}] = err
+		}
+	}
+	// The outcome of this run, so that a later lookup reports what the
+	// first one did.
+	var errs []error
+	tried := 0
+	for _, p := range profiles {
+		err, done := rt.dueIndexed[dueKey{p, kind}]
+		if !done {
+			continue
+		}
+		tried++
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if tried == 0 || len(errs) < tried {
+		return nil, nil
+	}
+	return IndexFailure(ctx, string(kind)+"s", errs, tried), nil
 }
 
 // indexKind syncs kind in each of profiles. A failing account is a
@@ -339,8 +444,9 @@ func IndexFailure(ctx context.Context, what string, errs []error, total int) err
 // IndexForLookup indexes kind for the lookup of a domain the index does
 // not hold, as ResolveDomain would, but without resolving an owner (so it
 // never asks which one): with --refresh once per run, otherwise only when
-// no candidate account of kind was ever indexed. The error is that of
-// indexKind: every account failed.
+// no candidate account of kind was ever indexed. The accounts whose set
+// was marked due are a matter of IndexDue, which the caller runs before its
+// lookup. The error is that of indexKind: every account failed.
 func (rt *Runtime) IndexForLookup(ctx context.Context, kind platform.ResourceType) error {
 	profiles, err := rt.indexCandidates(ctx, kind)
 	if err != nil || len(profiles) == 0 || rt.Flags.Offline {
