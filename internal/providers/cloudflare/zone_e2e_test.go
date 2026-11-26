@@ -300,6 +300,10 @@ func (f *zoneFake) serveZone(w http.ResponseWriter, r *http.Request, z *zfZone, 
 	case sub == "" && r.Method == http.MethodDelete:
 		z.deleted = true
 		f.ok(w, map[string]any{"id": z.id}, nil)
+	case sub == "dns_records" && r.Method == http.MethodPost:
+		// The created record is the request with an id.
+		in["id"] = "rec-new"
+		f.ok(w, in, nil)
 	case sub == "dns_records":
 		f.ok(w, []any{}, map[string]any{"page": 1, "per_page": 1, "count": 0, "total_count": z.records, "total_pages": z.records})
 	case sub == "subscription" && r.Method == http.MethodPut:

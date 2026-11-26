@@ -259,6 +259,7 @@ func TestProxiedSeparateValueIsNamed(t *testing.T) {
 		{"dns", "set", "example.com", "--type", "A", "--value", "1.1.1.1", "--proxied", "true"},
 		{"dns", "add", "example.com", "--type", "A", "--value", "1.1.1.1", "--proxied", "false"},
 		{"cloudflare", "dns", "create", "example.com", "--type", "A", "--name", "www", "--value", "1.1.1.1", "--proxied", "true"},
+		{"cloudflare", "dns", "create", "example.com", "www", "A", "1.1.1.1", "--proxied", "true"},
 		{"cloudflare", "dns", "update", "example.com", "r1", "--proxied", "false"},
 		{"cloudflare", "dns", "update", "example.com", "--proxied", "true"},
 	} {
