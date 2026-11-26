@@ -212,6 +212,20 @@ func recordToAPI(zone string, r platform.Record) (apiRecord, error) {
 		out.Protocol = extraString(r.Extra, "protocol")
 		out.Port = extraInt(r.Extra, "port")
 		out.Weight = extraInt(r.Extra, "weight")
+		if len(strings.Fields(r.Value)) == 4 {
+			// "<priority> <weight> <port> <target>": GoDaddy keeps the
+			// numbers in fields of their own and the target in data. A
+			// record as listed has them apart already (Extra, Priority).
+			f, err := platform.RecordFields("SRV", r.Value)
+			if err != nil {
+				return apiRecord{}, err
+			}
+			n := func(s string) *int { x, _ := strconv.Atoi(s); return &x }
+			out.Priority, out.Weight, out.Port, out.Data = n(f[0]), n(f[1]), n(f[2]), f[3]
+			if *out.Port == 0 {
+				return apiRecord{}, fmt.Errorf("%w: GoDaddy takes an SRV port from 1 to 65535, not 0", platform.ErrInvalidInput)
+			}
+		}
 		// Strip "_service._proto." from the owner name; GoDaddy stores
 		// those labels in separate fields.
 		if service, protocol, owner := srvLabels(apiRecord{Name: out.Name}); service != "" && protocol != "" {
@@ -224,10 +238,10 @@ func recordToAPI(zone string, r platform.Record) (apiRecord, error) {
 			}
 		}
 		if out.Service == "" || out.Protocol == "" {
-			return apiRecord{}, fmt.Errorf("SRV records need a name of the form _service._proto[.owner] or extra.service/extra.protocol")
+			return apiRecord{}, fmt.Errorf("%w: an SRV record on GoDaddy needs a name of the form _service._proto[.owner]", platform.ErrInvalidInput)
 		}
 		if out.Port == nil {
-			return apiRecord{}, fmt.Errorf("SRV records need extra.port")
+			return apiRecord{}, fmt.Errorf("%w: an SRV record needs a port: write the value as <priority> <weight> <port> <target>", platform.ErrInvalidInput)
 		}
 		if out.Weight == nil {
 			w := 0

@@ -5,11 +5,11 @@ import (
 	"testing"
 )
 
-// SRV values given as text cannot be written to this platform's separate
-// fields, so dns ensure refuses them up front (exit code 7).
-func TestRecordTypesLeaveOutSRV(t *testing.T) {
+// GoDaddy writes the types of its record API but SOA: SRV included (its
+// value is split into the fields GoDaddy keeps apart).
+func TestRecordTypes(t *testing.T) {
 	types := (&provider{}).RecordTypes()
-	if slices.Contains(types, "SRV") || !slices.Contains(types, "MX") {
+	if !slices.Equal(types, []string{"A", "AAAA", "CNAME", "MX", "NS", "TXT", "SRV", "CAA"}) {
 		t.Errorf("RecordTypes = %v", types)
 	}
 }

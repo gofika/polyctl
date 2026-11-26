@@ -241,7 +241,7 @@ func TestDNSRecordTypeCompletion(t *testing.T) {
 		return strings.Join(got, " | ")
 	}
 	for _, verb := range []string{"add", "upsert"} {
-		if got := complete(verb, "example.com", "www", ""); got != "A | AAAA | CNAME | MX | NS | TXT | CAA" {
+		if got := complete(verb, "example.com", "www", ""); got != "A | AAAA | CNAME | MX | NS | TXT | SRV | CAA" {
 			t.Errorf("%s completes <type> with %q", verb, got)
 		}
 	}
