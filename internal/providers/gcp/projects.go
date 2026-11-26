@@ -361,7 +361,7 @@ func (c *client) eachProject(ctx context.Context, api string, fn func(ctx contex
 				first = r.err
 			}
 			failures = append(failures, platform.RegionError{Region: r.project, Tree: true,
-				Err: fmt.Errorf("%w (if the project is not to be used any more: polyctl gcp project disable %s)", r.err, r.project)})
+				Err: fmt.Errorf("%w (if the project is not to be used any more: polyctl gcp project disable %s%s)", r.err, r.project, profileFlag(c.accountLabel()))})
 		}
 	}
 	if len(failures) == 0 {

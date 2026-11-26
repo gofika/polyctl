@@ -161,6 +161,19 @@ func (c *client) accountLabel() string {
 	return string(platform.GCP) + "/" + c.cov.profile
 }
 
+// profileFlag is " --profile <name>" for the account label
+// "gcp/<profile>", "" for a label that names no profile. A hint that
+// names a command carries it: the note may be about an account of
+// another profile than the one the command would pick (a sync walks
+// every profile), and the command copied as it is has to reach the
+// account the note is about.
+func profileFlag(account string) string {
+	if _, profile, ok := strings.Cut(account, "/"); ok && profile != "" {
+		return " --profile " + profile
+	}
+	return ""
+}
+
 // notef prints a note about projects that were left out (stderr). Tests
 // replace it to capture the output.
 var notef = func(format string, args ...any) {
@@ -220,8 +233,9 @@ func (c *client) noteOff(project string, err error) {
 }
 
 // flushOff tells, in one note, the projects of the client's account that
-// were skipped since the last note, and how to stop asking them. The
-// default project cannot be disabled, so the hint leaves it out.
+// were skipped since the last note, and how to stop asking them (the
+// command names the profile of the account). The default project cannot
+// be disabled, so the hint leaves it out.
 func (c *client) flushOff() { flushOffNotes(c.accountLabel()) }
 
 func flushOffNotes(account string) {
@@ -243,7 +257,7 @@ func flushOffNotes(account string) {
 	msg := fmt.Sprintf("note: %s: skipped %d project(s) in which an API is not enabled or billing is off: %s; they hold nothing there.",
 		account, len(list), strings.Join(names, ", "))
 	if len(others) > 0 {
-		msg += " To stop asking them: polyctl gcp project disable " + strings.Join(others, " ")
+		msg += " To stop asking them: polyctl gcp project disable " + strings.Join(others, " ") + profileFlag(account)
 	}
 	notef("%s", msg)
 }

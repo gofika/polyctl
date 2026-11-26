@@ -364,7 +364,7 @@ func TestSyncOfFailedProjectKeepsItsRows(t *testing.T) {
 	if rse == nil || len(rse.Failures) != 1 || rse.Failures[0].Region != "p2" || !rse.Failures[0].Tree {
 		t.Fatalf("error = %v, want a tree failure of p2", reps[0].Err)
 	}
-	if msg := reps[0].Err.Error(); !strings.Contains(msg, "polyctl gcp project disable p2") || strings.Contains(msg, "region(s)") {
+	if msg := reps[0].Err.Error(); !strings.Contains(msg, "polyctl gcp project disable p2 --profile lab") || strings.Contains(msg, "region(s)") {
 		t.Errorf("message = %s", msg)
 	}
 	if got := strings.Join(h.rowsOf(platform.ResZone), "; "); got != "p1/uno p1; p2/two p2" {
@@ -411,7 +411,7 @@ func TestSyncCountsDisabledAPIAsEmpty(t *testing.T) {
 	if n := strings.Count(calls, "GET /dns/v1/projects/p1/managedZones\n"); n != 1 {
 		t.Errorf("the zones of p1 were listed %d times in one run, want once:\n%s", n, calls)
 	}
-	want := "note: gcp/lab: skipped 1 project(s) in which an API is not enabled or billing is off: p2 (Cloud DNS API); they hold nothing there. To stop asking them: polyctl gcp project disable p2\n"
+	want := "note: gcp/lab: skipped 1 project(s) in which an API is not enabled or billing is off: p2 (Cloud DNS API); they hold nothing there. To stop asking them: polyctl gcp project disable p2 --profile lab\n"
 	if got := h.stderr.String(); got != want {
 		t.Errorf("stderr = %q\nwant     %q", got, want)
 	}
@@ -442,7 +442,7 @@ func TestSyncCountsDisabledAPIAsEmpty(t *testing.T) {
 	if reps, err = h.sync(platform.ResZone); err != nil || reps[0].Err != nil || reps[0].Count != 1 {
 		t.Fatalf("billing off: %+v, %v; want one zone and no error", reps, err)
 	}
-	want = "note: gcp/lab: skipped 2 project(s) in which an API is not enabled or billing is off: p2 (Cloud DNS API), p3 (an API); they hold nothing there. To stop asking them: polyctl gcp project disable p2 p3\n"
+	want = "note: gcp/lab: skipped 2 project(s) in which an API is not enabled or billing is off: p2 (Cloud DNS API), p3 (an API); they hold nothing there. To stop asking them: polyctl gcp project disable p2 p3 --profile lab\n"
 	if got := h.stderr.String(); got != want {
 		t.Errorf("stderr = %q\nwant     %q", got, want)
 	}

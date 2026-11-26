@@ -55,7 +55,7 @@ func TestDocsDescribeEnabledProjectsAndAccounts(t *testing.T) {
 				"A command that works on one project (a change, or a list or lookup of the project named with `--project`) and meets a disabled API is exit code 3",
 				"A list, lookup or sync over the enabled projects does not fail for it",
 				"`enable` manages which projects are enabled", "`disable` never opens the list",
-				"To stop asking them: polyctl gcp project disable acme-lab",
+				"To stop asking them: polyctl gcp project disable acme-lab --profile acme",
 			},
 		},
 		{

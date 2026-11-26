@@ -97,8 +97,8 @@ func TestSweepsOfTwoAPIsNoteEachProjectOnce(t *testing.T) {
 	// p1 has neither API: it was told already.
 	sweep(map[string]error{"p1": off("Compute Engine API"), "p2": off("Compute Engine API"), "p3": off("Compute Engine API")})
 	want := []string{
-		"note: gcp/lab: skipped 1 project(s) in which an API is not enabled or billing is off: p1 (Cloud DNS API); they hold nothing there. To stop asking them: polyctl gcp project disable p1",
-		"note: gcp/lab: skipped 2 project(s) in which an API is not enabled or billing is off: p2 (Compute Engine API), p3 (Compute Engine API); they hold nothing there. To stop asking them: polyctl gcp project disable p2 p3",
+		"note: gcp/lab: skipped 1 project(s) in which an API is not enabled or billing is off: p1 (Cloud DNS API); they hold nothing there. To stop asking them: polyctl gcp project disable p1 --profile lab",
+		"note: gcp/lab: skipped 2 project(s) in which an API is not enabled or billing is off: p2 (Compute Engine API), p3 (Compute Engine API); they hold nothing there. To stop asking them: polyctl gcp project disable p2 p3 --profile lab",
 	}
 	if strings.Join(*notes, "\n") != strings.Join(want, "\n") {
 		t.Errorf("notes = %q\nwant    %q", *notes, want)
@@ -125,7 +125,7 @@ func TestSweepProjectsSkipsAndFails(t *testing.T) {
 	if err != nil || strings.Join(rows, ",") != "p1,p3,p4" {
 		t.Fatalf("sweep = %v, %v", rows, err)
 	}
-	want := "note: gcp/lab: skipped 3 project(s) in which an API is not enabled or billing is off: p0 (Compute Engine API), p2 (Compute Engine API), p5 (Compute Engine API); they hold nothing there. To stop asking them: polyctl gcp project disable p2 p5"
+	want := "note: gcp/lab: skipped 3 project(s) in which an API is not enabled or billing is off: p0 (Compute Engine API), p2 (Compute Engine API), p5 (Compute Engine API); they hold nothing there. To stop asking them: polyctl gcp project disable p2 p5 --profile lab"
 	if len(*notes) != 1 || (*notes)[0] != want {
 		t.Errorf("notes = %q\nwant    %q", *notes, want)
 	}

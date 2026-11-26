@@ -339,7 +339,7 @@ func (c *Client) eachAccount(ctx context.Context, ids []string, fn func(ctx cont
 				first = err
 			}
 			if id != "" {
-				err = fmt.Errorf("%w (if the account is not to be used any more: polyctl cloudflare account disable %s)", err, id)
+				err = fmt.Errorf("%w (if the account is not to be used any more: polyctl cloudflare account disable %s --profile %s)", err, id, c.profile.Name)
 			}
 			failures = append(failures, platform.RegionError{Region: id, Tree: true, Err: err})
 			continue

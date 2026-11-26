@@ -109,7 +109,7 @@ func TestSyncSeveralAccounts(t *testing.T) {
 	if code == cli.ExitOK {
 		t.Fatalf("a sync with a failed account must not exit 0: %s", stderr)
 	}
-	if want := "polyctl cloudflare account disable acc2"; !strings.Contains(stdout+stderr, want) {
+	if want := "polyctl cloudflare account disable acc2 --profile both"; !strings.Contains(stdout+stderr, want) {
 		t.Errorf("the failure of acc2 is not reported with %q: %s%s", want, stdout, stderr)
 	}
 	if got, want := e.rows("both", platform.ResZone), []string{"zone-a acc1", "zone-beta acc2", "zone-couk acc1"}; !reflect.DeepEqual(got, want) {

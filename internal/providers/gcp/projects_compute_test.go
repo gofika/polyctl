@@ -423,7 +423,7 @@ func TestListsSkipProjectWithoutTheAPI(t *testing.T) {
 	if err := h.run("compute", "firewall", "list"); err != nil || !strings.Contains(h.stdout.String(), "allow-ssh") {
 		t.Errorf("firewall list = %v\n%s", err, h.stdout.String())
 	}
-	want := "note: gcp/lab: skipped 1 project(s) in which an API is not enabled or billing is off: p2 (Compute Engine API); they hold nothing there. To stop asking them: polyctl gcp project disable p2\n"
+	want := "note: gcp/lab: skipped 1 project(s) in which an API is not enabled or billing is off: p2 (Compute Engine API); they hold nothing there. To stop asking them: polyctl gcp project disable p2 --profile lab\n"
 	if got := h.stderr.String(); !strings.Contains(got, want) {
 		t.Errorf("stderr = %q\nwant it to hold %q", got, want)
 	}
