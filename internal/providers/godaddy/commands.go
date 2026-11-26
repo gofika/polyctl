@@ -799,7 +799,7 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 	var typ, name, id string
 	cmd := &cobra.Command{
 		Use:   "delete <domain> [<name> [<type>]]",
-		Short: "Delete every record of a name and type (or one record by --id)",
+		Short: "Delete the records of a name (optionally of one type), or one record by --id",
 		Long: `Delete every record of <name> and <type>, or the one record given with --id
 (it cannot be combined with a positional record). GoDaddy addresses records
 by name and type, so the id is an optional second way to pick a single
@@ -817,8 +817,9 @@ The NS and SOA records of the apex are never meant by the name alone.
 The records to delete are listed with their ids and, for several, a note on
 how to delete one of them only (--id); then one yes/no question is asked
 (default no; --yes skips it). The non-interactive flow asks nothing: --yes
-is required (exit code 2 without it, before anything is read). Declining
-changes nothing. --dry-run reports what would be deleted and asks nothing.`,
+is required (exit code 2 without it: for <name> <type> and --id before
+anything is read, for a name alone once its records are known to have one
+type). Declining changes nothing. --dry-run reports what would be deleted and asks nothing.`,
 		Example:           "  polyctl godaddy dns delete example.com www\n  polyctl godaddy dns delete example.com www A\n  polyctl godaddy dns delete example.com www A --yes\n  polyctl godaddy dns delete example.com --id 'example.com|A|www|203.0.113.10' --yes",
 		Args:              app.RecordSelectorArgsOrInteractive(rt, 0),
 		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.GoDaddy), platform.GoDaddy),
@@ -853,15 +854,14 @@ changes nothing. --dry-run reports what would be deleted and asks nothing.`,
 				return err
 			}
 			zone := platform.NormalizeDomain(args[0])
-			if !rt.Flags.DryRun {
-				what := "delete the picked record of zone " + zone
-				switch {
-				case id != "":
-					what = "delete record " + id + " of zone " + zone
-				case typ != "":
+			// Records that are named (<name> <type>, --id) need --yes where
+			// nothing can be asked: refused before anything is read. A name
+			// alone is read first: what it means (one type, several types,
+			// nothing) comes before the confirmation.
+			if !rt.Flags.DryRun && (id != "" || typ != "") {
+				what := "delete record " + id + " of zone " + zone
+				if id == "" {
 					what = fmt.Sprintf("delete every %s record of %s", strings.ToUpper(typ), platform.FQDN(name, zone))
-				case byName:
-					what = "delete every record of " + platform.FQDN(name, zone)
 				}
 				if err := rt.CanConfirm(what); err != nil {
 					return err
@@ -951,8 +951,9 @@ changes nothing. --dry-run reports what would be deleted and asks nothing.`,
 				for _, r := range set {
 					recs = append(recs, recordFromAPI(zone, r))
 				}
-				if err := rt.ConfirmRecordDelete(cmd.Context(), app.RecordDelete{Records: recordGrid(recs), Exact: "give its id with --id <id>",
-					Question: fmt.Sprintf("Delete %d %s record(s) of %s?", len(recs), upper, platform.FQDN(rel, zone))}); err != nil {
+				if err := rt.ConfirmRecordDelete(cmd.Context(), app.RecordDelete{Records: recordGrid(recs), Exact: app.ExactRecordHint(typeArg, false, true),
+					Question: fmt.Sprintf("Delete %d %s record(s) of %s?", len(recs), upper, platform.FQDN(rel, zone)),
+					Refusal:  fmt.Sprintf("delete every %s record of %s", upper, platform.FQDN(rel, zone))}); err != nil {
 					return err
 				}
 			}

@@ -22,7 +22,7 @@ func TestDNSDeleteByNameOfOneType(t *testing.T) {
 		oneType()
 		args := append([]string{"godaddy", "dns", "delete", "example.com"}, form...)
 		// Non-interactive without --yes: refused, nothing written.
-		if code, _, stderr := e.run(nil, "", args...); code != cli.ExitUsage || !strings.Contains(stderr, "would delete every record of www.example.com") || len(e.f.Writes()) != 0 {
+		if code, _, stderr := e.run(nil, "", args...); code != cli.ExitUsage || !strings.Contains(stderr, "pass --yes to proceed (would delete every A record of www.example.com)") || len(e.f.Writes()) != 0 {
 			t.Errorf("%v without --yes: exit %d, %s", form, code, stderr)
 		}
 		// A dry run reports and asks nothing.
@@ -51,12 +51,17 @@ func TestDNSDeleteByNameOfOneType(t *testing.T) {
 }
 
 // A name with records of several types is exit code 5 where nothing can be
-// asked, also with --yes and in a dry run; a terminal offers its records.
+// asked, with --yes, without it and in a dry run; a terminal offers its
+// records, after a line that names the types.
 func TestDNSDeleteByNameOfSeveralTypes(t *testing.T) {
 	e := newDeleteEnv(t)
 	for arg, form := range map[string][]string{"<type>": {"www"}, "--type": {"--name", "www"}} {
-		for _, flag := range []string{"--yes", "--dry-run"} {
-			code, _, stderr := e.run(nil, "", append([]string{"godaddy", "dns", "delete", "example.com", flag}, form...)...)
+		for _, flag := range []string{"--yes", "--dry-run", ""} {
+			args := append([]string{"godaddy", "dns", "delete", "example.com"}, form...)
+			if flag != "" {
+				args = append(args, flag)
+			}
+			code, _, stderr := e.run(nil, "", args...)
 			if code != cli.ExitAmbiguous || e.records() != allRecords || len(e.f.Writes()) != 0 ||
 				!strings.Contains(stderr, "www.example.com has records of 2 types in zone example.com (A, TXT); give "+arg) {
 				t.Errorf("%v %s: exit %d, %s", form, flag, code, stderr)
@@ -69,6 +74,9 @@ func TestDNSDeleteByNameOfSeveralTypes(t *testing.T) {
 		t.Fatalf("picked: exit %d, records %s, %s", code, e.records(), stderr)
 	}
 	p.Done()
+	if !strings.Contains(stderr, "www.example.com has records of 2 types (A, TXT)") {
+		t.Errorf("the types are not announced: %s", stderr)
+	}
 	if a := p.Find("Delete which record of www.example.com?"); len(a.Options) != 3 || !strings.Contains(a.Options[0].Label, "example.com|A|www|203.0.113.1") {
 		t.Errorf("options %+v", a.Options)
 	}
