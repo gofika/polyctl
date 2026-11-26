@@ -342,19 +342,27 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 	var name, value, id string
 	var all, keepBound bool
 	cmd := &cobra.Command{
-		Use:   "delete <domain> [<name> <type> [<value>]]",
-		Short: "Delete the DNS records of a name and type (optionally of one value), or all of them with --all",
-		Long: "Delete the records of <name> and <type>, only those with <value> when it is\n" +
-			"given, or the one record with --id (alone: it cannot be combined with a\n" +
-			"positional record).\n" +
+		Use:   "delete <domain> [<name> [<type> [<value>]]]",
+		Short: "Delete the DNS records of a name (optionally of one type and value), or all of them with --all",
+		Long: "Delete the records of <name>, or the one record with --id (alone: it cannot\n" +
+			"be combined with a positional record).\n" +
 			"\n" + recordHelp + "\n" +
 			"\n" +
-			"A single match is deleted at once. Several matches are\n" +
-			"listed on stderr and, in the interactive flow, confirmed first (default no);\n" +
-			"--yes skips the question. In the non-interactive flow (no terminal,\n" +
-			"--non-interactive or POLYCTL_NON_INTERACTIVE=1) nothing is asked and stdin is\n" +
-			"not read: --yes is required to delete several records, and without it the\n" +
-			"command is a usage error (exit code 2) and nothing is deleted.\n" +
+			"<type> and <value> narrow the selection and are needed only to tell records\n" +
+			"apart. A name whose records all have one type needs no <type>. A name with\n" +
+			"records of several types is not deleted as a whole: the interactive flow\n" +
+			"lists its records to tick (ticking none deletes nothing), and the\n" +
+			"non-interactive flow names the types and exits with code 5, also with --yes;\n" +
+			"give <type> then. <value> selects the records with that value.\n" +
+			"\n" +
+			"A single match is deleted at once. Several matches are listed on stderr with\n" +
+			"their ids and a note on how to delete one of them only (<value> or --id),\n" +
+			"and, in the interactive flow, confirmed first (default no; a no deletes\n" +
+			"nothing, exit code 0); --yes skips the question. In the non-interactive flow\n" +
+			"(no terminal, --non-interactive or POLYCTL_NON_INTERACTIVE=1) nothing is\n" +
+			"asked and stdin is not read: --yes is required to delete several records,\n" +
+			"and without it the command is a usage error (exit code 2) and nothing is\n" +
+			"deleted.\n" +
 			"\n" +
 			"With --all, every record of the zone is deleted (it cannot be combined with\n" +
 			"a positional record or --id); --type then limits the deletion to the given types\n" +
@@ -367,26 +375,30 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 			"A record that cannot be deleted does not stop the others: it is reported as\n" +
 			"failed and the command exits with code 1 at the end. The zone is read live:\n" +
 			"--offline is refused (exit code 6).",
-		Example: `  polyctl dns delete example.com www A
+		Example: `  polyctl dns delete example.com www
+  polyctl dns delete example.com www A
   polyctl dns delete example.com www A 203.0.113.10
   polyctl dns delete example.com @ TXT "v=spf1 -all" --yes
   polyctl dns delete example.com --id 372e67954025e0ba6aaa6d586b9e0b59
   polyctl dns delete example.com --all --type TXT --dry-run`,
-		Args:              app.RecordArgsOrInteractive(rt, 0, 1),
+		Args:              app.RecordSelectorArgsOrInteractive(rt, 1),
 		ValidArgsFunction: app.CompleteRecordArgs(completeDomains(rt), ""),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// The record is positional (<name> <type> [<value>]) or, in
+			// The record is positional (<name> [<type> [<value>]]) or, in
 			// the former form, given with --name, --type and --value.
-			nameArg := "--name"
+			nameArg, typeArg := "--name", "--type"
 			if len(args) > 1 {
-				rec, err := app.ParseRecordArgs(cmd, args[1:], 0, 1)
+				rec, err := app.ParseRecordSelector(cmd, args[1:], 1)
 				if err != nil {
 					return err
 				}
 				if all || id != "" {
-					return usageErr("--all and --id cannot be combined with a positional record (<name> <type> [<value>])")
+					return usageErr("--all and --id cannot be combined with a positional record (<name> [<type> [<value>]])")
 				}
-				name, types, value, nameArg = rec.Name, []string{rec.Type}, rec.Value(), "<name>"
+				name, value, nameArg, typeArg = rec.Name, rec.Value(), "<name>", "<type>"
+				if rec.Type != "" {
+					types = []string{rec.Type}
+				}
 				args = args[:1]
 			}
 			args, err := domainArgs(cmd, rt, args, app.DomainPick{Title: "Zone", Kinds: zoneKinds})
@@ -410,7 +422,7 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 			}
 			if len(types) > 1 || (len(types) == 1 && strings.Contains(types[0], ",")) {
 				if nameArg == "<name>" {
-					return usageErr("<type> is one record type: %s", app.RecordUsage(cmd, 0, 1))
+					return usageErr("<type> is one record type: %s", app.RecordSelectorUsage(cmd, 1))
 				}
 				return usageErr("--type takes one record type without --all")
 			}
@@ -419,10 +431,12 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 				typ = types[0]
 			}
 			// Without a selection the interactive flow lists the records
-			// of the zone to tick.
-			pick := id == "" && typ == ""
+			// of the zone to tick (of --value when only that is given). A
+			// name selects its records; without a type that is every record
+			// of the name when they have one type.
+			pick := id == "" && typ == "" && name == ""
 			if pick && !rt.Interactive() {
-				return usageErr("a record, --id or --all is required: %s", app.RecordUsage(cmd, 0, 1))
+				return usageErr("a record, --id or --all is required: %s", app.RecordSelectorUsage(cmd, 1))
 			}
 			t, err := rt.ResolveDomain(cmd.Context(), args[0], platform.ResZone)
 			if err != nil {
@@ -446,26 +460,26 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			zone := platform.Zone{ID: t.ResourceID, Name: t.Domain}
 			var matches []platform.Record
-			if pick {
-				// --name and --value given without --type narrow the
-				// records offered.
+			// ticked: the records were chosen in a list, one by one.
+			ticked := false
+			switch {
+			case pick:
 				cands := existing
-				if name != "" {
-					cands = app.MatchRecords(cands, fqdn, "", value)
-				} else if value != "" {
-					var kept []platform.Record
-					for _, r := range cands {
+				if value != "" {
+					cands = nil
+					for _, r := range existing {
 						if platform.RecordValueMatches(r, value) {
-							kept = append(kept, r)
+							cands = append(cands, r)
 						}
 					}
-					cands = kept
 				}
-				if matches, err = pickRecords(rt, dns, platform.Zone{ID: t.ResourceID, Name: t.Domain}, cands); err != nil {
+				if matches, err = pickRecords(rt, dns, zone, "Delete which records of "+zone.Name+"?", cands); err != nil {
 					return err
 				}
-			} else if id != "" {
+				ticked = true
+			case id != "":
 				matcher, _ := dns.(platform.RecordIDMatcher)
 				for _, r := range existing {
 					if r.ID == id || (matcher != nil && matcher.RecordIDMatches(id, r)) {
@@ -480,15 +494,31 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 					return fmt.Errorf("%w: record id %q matches %d records in zone %s (%s); pass the id of one, as `polyctl dns list %s` shows it",
 						platform.ErrAmbiguous, id, len(matches), t.Domain, strings.Join(ids, ", "), t.Domain)
 				}
-			} else {
-				matches = app.MatchRecords(existing, fqdn, typ, value)
+			default:
+				found, err := app.RecordsOfName(t.Domain, existing, fqdn, typ, value)
+				if err != nil {
+					return err
+				}
+				matches = found.Records
+				// Records of several types are not deleted by the name
+				// alone: the terminal lists them to tick.
+				open, err := rt.NeedsType(found, typeArg)
+				if err != nil {
+					return err
+				}
+				if open {
+					rt.Infof("%s has records of %d types (%s)", found.Name, len(found.Types), strings.Join(found.Types, ", "))
+					if matches, err = pickRecords(rt, dns, zone, "Delete which records of "+found.Name+"?", found.Records); err != nil {
+						return err
+					}
+					ticked = true
+				}
 			}
 			if len(matches) == 0 {
 				return fmt.Errorf("%w: no matching record in zone %s", platform.ErrNotFound, t.Domain)
 			}
 			// Records owned by another service of the platform (the CNAME of
 			// an R2 custom domain) are deleted by unbinding them there.
-			zone := platform.Zone{ID: t.ResourceID, Name: t.Domain}
 			unbinder, _ := dns.(platform.RecordUnbinder)
 			owners := make([]string, len(matches))
 			var bound []string
@@ -508,20 +538,23 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 			if done, err := rt.WouldWrite(t.ReportTarget(), changes...); done || err != nil {
 				return err
 			}
-			if len(matches) > 1 && !rt.Flags.Yes {
-				// Shown in both flows, so the caller sees what is affected:
-				// before the question, or with the refusal that asks for --yes.
-				_ = output.RenderGrid(rt.Stderr, recordGrid(matches, t.Platform))
+			if len(matches) > 1 {
+				// The list is shown in both flows, so the caller sees what
+				// is affected: before the question, or with the refusal
+				// that asks for --yes.
 				question := fmt.Sprintf("delete %d records in zone %s", len(matches), t.Domain)
 				if len(bound) > 0 {
 					question += fmt.Sprintf(" (%d of them by unbinding them from %s)", len(bound), strings.Join(bound, ", "))
 				}
-				ok, err := rt.Confirm(cmd.Context(), question, false)
-				if err != nil {
-					return err
+				confirm := app.RecordDelete{Records: recordGrid(matches, t.Platform), Question: question}
+				if !ticked {
+					confirm.Exact = "give its <value> after the <type>, or its id with --id <id>"
+					if typeArg == "--type" {
+						confirm.Exact = "give its value with --value, or its id with --id <id>"
+					}
 				}
-				if !ok {
-					return nothingToDo("no record was deleted")
+				if err := rt.ConfirmRecordDelete(cmd.Context(), confirm); err != nil {
+					return err
 				}
 			}
 			db, _ := rt.DB()

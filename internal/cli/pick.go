@@ -58,35 +58,23 @@ func certStoreOptions(st *cert.Store) ([]prompt.Option, error) {
 	return opts, nil
 }
 
-// pickRecords lets the user tick records of a zone to delete: every record
+// pickRecords lets the user tick the records to delete among existing (the
+// records of a zone, or of one name of it), asked with title: every record
 // but the zone's own (SOA, apex NS), labelled "name  type  value  ttl 300
-// proxied  [owner]" ("-" for what a record does not have), a record owned
-// by another service marked with that service.
-func pickRecords(rt *app.Runtime, dns platform.DNSService, zone platform.Zone, existing []platform.Record) ([]platform.Record, error) {
+// proxied  [owner]  id" ("-" for what a record does not have), a record
+// owned by another service marked with that service.
+func pickRecords(rt *app.Runtime, dns platform.DNSService, zone platform.Zone, title string, existing []platform.Record) ([]platform.Record, error) {
 	items := platform.ClassifyDeleteAll(platform.DNSDeleteAll{Zone: zone, DNS: dns, Records: existing})
-	byID := map[string]platform.Record{}
-	var opts []prompt.Option
+	owners := map[string]string{}
+	var recs []platform.Record
 	for _, it := range items {
 		if it.Disposition != platform.DispNormal && it.Disposition != platform.DispBound {
 			continue
 		}
-		r := it.Record
-		owner := ""
-		if it.Owner != "" {
-			owner = "[" + it.Owner + "]"
-		}
-		byID[r.ID] = r
-		opts = append(opts, prompt.Option{Label: app.RecordLabel(r, owner), Value: r.ID})
+		recs = append(recs, it.Record)
+		owners[it.Record.ID] = it.Owner
 	}
-	ids, err := rt.ChooseMany(app.Choice{Title: "Delete which records of " + zone.Name + "?", Options: opts, What: "record in zone " + zone.Name})
-	if err != nil {
-		return nil, err
-	}
-	out := make([]platform.Record, 0, len(ids))
-	for _, id := range ids {
-		out = append(out, byID[id])
-	}
-	return out, nil
+	return rt.PickRecords(title, "record in zone "+zone.Name, recs, func(r platform.Record) string { return owners[r.ID] })
 }
 
 // certStoreLabel says what the store holds for the root domain of d:

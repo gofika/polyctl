@@ -93,10 +93,10 @@ func TestDNSDeletePicksRecords(t *testing.T) {
 		t.Errorf("record options %+v", a.Options)
 	}
 	p.Done()
-	// --name without --type narrows the records offered; a dry run still
-	// asks and deletes nothing.
+	// --value alone narrows the records offered; a dry run still asks and
+	// deletes nothing.
 	p = prompttest.New(t, []string{"r1"})
-	r = runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), "dns", "delete", "example.com", "--name", "h1", "--dry-run")
+	r = runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), "dns", "delete", "example.com", "--value", "192.0.2.1", "--dry-run")
 	if r.err != nil || fc.count("DeleteRecord") != 1 {
 		t.Fatalf("narrowed dry run: %v, %q, calls %v", r.err, r.stderr, fc.calls)
 	}
@@ -110,7 +110,7 @@ func TestDNSDeletePicksRecords(t *testing.T) {
 		t.Errorf("nothing ticked: exit %d, %v", r.code, r.err)
 	}
 	r = runFlow(t, context.Background(), cfgPath, nil, strings.NewReader(""), "dns", "delete", "example.com")
-	if r.code != ExitUsage || !strings.Contains(r.err.Error(), "a record, --id or --all is required: usage: polyctl dns delete <domain> <name> <type> [<value>]") {
+	if r.code != ExitUsage || !strings.Contains(r.err.Error(), "a record, --id or --all is required: usage: polyctl dns delete <domain> <name> [<type> [<value>]]") {
 		t.Errorf("non-interactive: exit %d, %v", r.code, r.err)
 	}
 }

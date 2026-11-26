@@ -930,16 +930,19 @@ func TestDNSDeleteDeclinedIsNotAnError(t *testing.T) {
 		return len(rows)
 	}
 	args := []string{"dns", "delete", "example.com", "--type", "A", "--name", "www"}
+	// A no says how to delete one of the records only.
+	const declined = "nothing to do: no record was deleted; to delete one of them only, give its value with --value, or its id with --id <id>"
 	deleted := func() bool { return fc.count("DeleteRecord") != 0 || len(fc.records["z1"]) != 2 || cached() != 2 }
 
 	// The question belongs to the interactive flow. "n", and an empty
 	// answer: the default is no.
 	for _, answer := range []string{"n\n", "no\n", "\n"} {
 		r := runFlow(t, context.Background(), cfgPath, &scriptedPicker{T: t}, strings.NewReader(answer), args...)
-		if r.code != ExitOK || !errors.Is(r.err, errNothingToDo) || r.err.Error() != "nothing to do: no record was deleted" || strings.Contains(r.stderr, "deleted www") {
+		if r.code != ExitOK || !errors.Is(r.err, errNothingToDo) || r.err.Error() != declined || strings.Contains(r.stderr, "deleted www") {
 			t.Errorf("answer %q: %v, exit %d (stderr %q), want the note and exit code 0", answer, r.err, r.code, r.stderr)
 		}
-		if !strings.Contains(r.stderr, "delete 2 records in zone example.com (y/N)") || !strings.Contains(r.stderr, "1.2.3.4") || !strings.Contains(r.stderr, "5.6.7.8") {
+		if !strings.Contains(r.stderr, "delete 2 records in zone example.com (y/N)") || !strings.Contains(r.stderr, "1.2.3.4") || !strings.Contains(r.stderr, "5.6.7.8") ||
+			!strings.Contains(r.stderr, "r1") || !strings.Contains(r.stderr, "r2") || !strings.Contains(r.stderr, "2 records match; to delete one of them only, give its value with --value, or its id with --id <id>") {
 			t.Errorf("answer %q: the records were not shown with the question: %q", answer, r.stderr)
 		}
 		if r.stdout != "" {
@@ -955,7 +958,7 @@ func TestDNSDeleteDeclinedIsNotAnError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	r := runFlow(t, ctx, cfgPath, &scriptedPicker{T: t}, leavingReader(t, cancel), args...)
-	if !errors.Is(r.err, errNothingToDo) || r.code != ExitOK || r.err.Error() != "nothing to do: no record was deleted" {
+	if !errors.Is(r.err, errNothingToDo) || r.code != ExitOK || r.err.Error() != declined {
 		t.Errorf("left confirmation = %v (exit %d), want nothing to do", r.err, r.code)
 	}
 	if r.stdout != "" || strings.Contains(r.stderr, "deleted www") || deleted() {

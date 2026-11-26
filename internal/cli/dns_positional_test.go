@@ -160,7 +160,7 @@ func TestDNSPositionalRecordUsage(t *testing.T) {
 		setUsage    = "usage: polyctl dns set <domain> <name> <type> <value>"
 		addUsage    = "usage: polyctl dns add <domain> <name> <type> <value>"
 		ensureUsage = "usage: polyctl dns ensure <domain> <name> <type> <value>..."
-		deleteUsage = "usage: polyctl dns delete <domain> <name> <type> [<value>]"
+		deleteUsage = "usage: polyctl dns delete <domain> <name> [<type> [<value>]]"
 	)
 	for _, c := range []struct {
 		args []string
@@ -185,7 +185,6 @@ func TestDNSPositionalRecordUsage(t *testing.T) {
 		{[]string{"dns", "ensure", "example.com", "www"}, ensureUsage},
 		{[]string{"dns", "ensure", "example.com", "www", "A"}, ensureUsage},
 		{[]string{"dns", "delete", "example.com"}, deleteUsage},
-		{[]string{"dns", "delete", "example.com", "h1"}, deleteUsage},
 		{[]string{"dns", "delete", "example.com", "h1", "A", "192.0.2.1", "192.0.2.2"}, deleteUsage},
 		// Empty arguments.
 		{[]string{"dns", "set", "example.com", "", "A", "192.0.2.9"}, "<name> must not be empty"},
@@ -245,7 +244,7 @@ func TestDNSPositionalRecordHelp(t *testing.T) {
 		"set":    "polyctl dns set <domain> <name> <type> <value> [flags]",
 		"add":    "polyctl dns add <domain> <name> <type> <value> [flags]",
 		"ensure": "polyctl dns ensure <domain> [<name> <type> <value>...] [flags]",
-		"delete": "polyctl dns delete <domain> [<name> <type> [<value>]] [flags]",
+		"delete": "polyctl dns delete <domain> [<name> [<type> [<value>]]] [flags]",
 	} {
 		code, help, stderr := mainExit(dir, "dns", cmd, "--help")
 		if code != ExitOK || !strings.Contains(help, use) || !strings.Contains(help, "polyctl dns "+cmd+" example.com ") {
