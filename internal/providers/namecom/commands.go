@@ -605,18 +605,38 @@ func newDNSCreateCmd(rt *app.Runtime) *cobra.Command {
 	var typ, name, value string
 	var ttl, priority int
 	cmd := &cobra.Command{
-		Use:     "create <domain>",
-		Example: "  polyctl namecom dns create example.com --type A --name www --value 1.2.3.4",
-		Short:   "Create a DNS record",
-		Args:    app.ArgsOrInteractive(rt, 1, nil),
+		Use:   "create <domain> <name> <type> <value>",
+		Short: "Create a DNS record",
+		Long: `Create one record of <domain>. Records that already have the same name and
+type are left alone.
+
+<name> is relative to the domain (www, a.b), @ for the apex, or a full name
+inside the domain (www.example.com). <type> is case-insensitive. The value is
+one argument: quote one that contains spaces. A value that starts with "-" goes
+after "--".`,
+		Example: `  polyctl namecom dns create example.com www A 203.0.113.10
+  polyctl namecom dns create example.com @ MX mail.example.com --priority 10
+  polyctl namecom dns create example.com @ TXT "v=spf1 include:_spf.example.net ~all"`,
+		Args:              app.RecordArgsOrInteractive(rt, 1, 1),
+		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.NameCom)),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// The record is positional (<name> <type> <value>) or, in the
+			// former form, given with --name, --type and --value.
+			if len(args) > 1 {
+				rec, err := app.ParseRecordArgs(cmd, args[1:], 1, 1)
+				if err != nil {
+					return err
+				}
+				name, typ, value = rec.Name, rec.Type, rec.Value()
+				args = args[:1]
+			}
+			if (typ == "" || value == "") && !rt.Interactive() {
+				return app.UsageErrf("%s", app.RecordUsage(cmd, 1, 1))
+			}
 			args, err := rt.DomainArg(cmd.Context(), args, platform.NameCom, platform.ResZone, nil)
 			if err != nil {
 				// The record cannot be created without a zone.
 				return app.RequiredPick(err, "<domain>")
-			}
-			if (typ == "" || value == "") && !rt.Interactive() {
-				return app.UsageErrf("--type and --value are required")
 			}
 			if typ == "" {
 				if typ, err = rt.PickRecordType(platform.NameCom); err != nil {
@@ -657,6 +677,10 @@ func newDNSCreateCmd(rt *app.Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&value, "value", "", "record value")
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 = name.com default, minimum 300)")
 	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX/SRV records")
+	// The former form of the record keeps working and is left out of the help.
+	for _, n := range []string{"name", "type", "value"} {
+		_ = cmd.Flags().MarkHidden(n)
+	}
 	return cmd
 }
 
