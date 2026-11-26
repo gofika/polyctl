@@ -20,8 +20,8 @@ cloudflare whoami                 # verifies the API token (id, status, expiry) 
 cloudflare account list            # visible accounts; ENABLED says yes or no, * marks the default
 cloudflare account current         # the default account and the disabled accounts (works offline)
 cloudflare account use <account>   # <account> is an account id or name
-cloudflare account enable [<account>...] [--default <account>] [--dry-run]
-cloudflare account disable [<account>...] [--default <account>] [--dry-run]
+cloudflare account enable [<account>...] [--default <account>] [--dry-run]   # without <account>, on a terminal: the list of enabled accounts
+cloudflare account disable <account>... [--default <account>] [--dry-run]
 # every command below: [--account <id|name>]
 cloudflare zone list              cloudflare zone get <zone|id>
 cloudflare zone create <domain> [--foundation-dns[=false]]
@@ -86,10 +86,10 @@ One Cloudflare login of a profile works on **every account its credentials see**
 polyctl cf account list                       # visible accounts; ENABLED says yes or no, * marks the default
 polyctl cf account current                    # the default account and the disabled accounts (works offline)
 polyctl cf account use "Acme Ltd"             # make it the default (enables it if it was disabled)
-polyctl cf account disable "Acme Lab" fedcba9876543210fedcba9876543210   # keep accounts that are not used out of every sync
+polyctl cf account enable                     # on a terminal: one list of every account, the enabled ones ticked
 polyctl cf account enable "Acme Lab"          # take one back
+polyctl cf account disable "Acme Lab" fedcba9876543210fedcba9876543210   # keep accounts that are not used out of every sync
 polyctl cf account disable "Acme Ltd" --default "Acme Lab"   # disabling the default names its successor
-polyctl cf account disable                    # on a terminal: one list of every account, the enabled ones ticked
 polyctl cf account disable "Acme Lab" --dry-run -o json      # report only
 polyctl cf zone list --account "Acme Lab"     # one account for this call
 ```
@@ -104,9 +104,10 @@ polyctl cf zone list --account "Acme Lab"     # one account for this call
 - `disable <account>...` changes nothing at Cloudflare and keeps the credentials. It drops what the inventory cached of the accounts at once: their zones, the DNS records of those zones, their R2 buckets and their domains in the index; nothing is synced again because of it. An account that is disabled already is left as it is (exit code 0); one the credentials do not see is exit code 4. With `--offline`, or with credentials that cannot list their accounts, an id is taken as it is, with a note.
 - Disabling the default account needs a new default: `--default <account>`, naming an account that stays enabled (exit code 2 without it in the non-interactive flow; on a terminal it is asked, and the only account that stays becomes the default without a question). Disabling every account is exit code 2 (use `polyctl auth logout cloudflare`); it can only be told when the credentials list all their accounts. A login without a default account can disable accounts by id, and nothing needs a new default there.
 - `enable <account>...` takes disabled accounts back; the cached inventory of the login is synced again on its next use. An account that is enabled already is exit code 0 (nothing to do); one that is neither disabled nor visible is exit code 4 (name it with `--account`, or make it the default with `use`). When the credentials cannot list their accounts, nothing tells that they do not see an id: it counts as enabled already (exit code 0). A disabled account that is no longer visible is simply forgotten. Works with `--offline` for accounts named by id.
-- **Without arguments, on a terminal, `enable` and `disable` open the same list**: every account the credentials see, the enabled ones ticked. What is ticked when you confirm is enabled, the rest is disabled; a default that was unticked is replaced as above (`--default`, or a question). Ticking nothing changes nothing (exit code 0). The list needs the network (`--offline`: exit code 6). Credentials that cannot list their accounts are offered the accounts read off their zones, which leaves out an account without a zone; credentials that see no zone either have nothing to offer (exit code 2: pass the ids). In the non-interactive flow the accounts are required (exit code 2).
+- **`enable` manages which accounts are enabled. Without arguments, on a terminal, it opens the list**: every account the credentials see, the enabled ones ticked. What is ticked when you confirm is enabled, the rest is disabled; a default that was unticked is replaced by `--default <account>`, or by the answer to a question (the only account that stays is taken without one). Ticking nothing changes nothing (exit code 0). The list needs the network (`--offline`: exit code 6). Credentials that cannot list their accounts are offered the accounts read off their zones, which leaves out an account without a zone; credentials that see no zone either have nothing to offer (exit code 2: pass the ids). In the non-interactive flow the accounts are required (exit code 2).
+- `disable` never opens the list: it is the shortcut that disables the accounts named, for scripts, and without an account it is exit code 2 on a terminal too, with a message that names `polyctl cloudflare account enable`.
 - `enable` and `disable` support `--dry-run`: the change report names `account/<id>` with `disabled`, `enabled` or `default`, and nothing is written, dropped or made due. No confirmation is asked by any of them: only `config.yaml` and a cache the next sync rebuilds change.
-- `polyctl cloudflare account add` and `remove` still work as hidden names of `enable` and `disable`, with the same flags.
+- `polyctl cloudflare account add` and `remove` still work as hidden names of `enable` and `disable`, with the same flags and arguments.
 - Whatever changed the disabled accounts (also an edited `config.yaml`, or `--set disabled_accounts` of a new login), the `cloudflare` commands never find or change a zone or bucket through a cached row of a disabled account; `--account` still reaches it. A default account listed in `disabled_accounts` by hand is ignored there.
 
 **What a sync reads.**

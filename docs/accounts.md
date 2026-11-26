@@ -36,14 +36,16 @@ Secrets go to the system keyring, or a 0600 file when no keyring is available; s
 One GCP account reaches several Google Cloud projects, and one Cloudflare login several Cloudflare accounts. polyctl treats both in the same way, with three words:
 
 - **Enabled.** Every project (account) the credentials see is enabled, the ones created or shared later included. Nothing has to be added. A sync, the inventory, the lists, the name lookups and the platform-neutral commands that route by domain or address (`dns`, `domain`, `find`, `cert deploy`, ...) cover every enabled one, not only the default.
-- **Disabled.** `polyctl gcp project disable <id>...` and `polyctl cloudflare account disable <account>...` keep the ones that are certainly not used out of every sync, list, lookup and routing, and drop what the inventory cached of them. `enable` takes them back. On a terminal, without arguments, both commands open one list of everything visible with the enabled ones ticked. Only the disabled ones are stored (`disabled_projects`, `disabled_accounts` in `config.yaml`).
+- **Disabled.** A disabled project (account) is kept out of every sync, list, lookup and routing, and what the inventory cached of it is dropped: disable the ones that are certainly not used. `polyctl gcp project enable` and `polyctl cloudflare account enable` manage which ones are enabled: on a terminal, without arguments, they open one list of everything visible with the enabled ones ticked, and what is ticked at the end is enabled and the rest disabled. `enable <id>...` and `disable <id>...` change the ones named, for scripts; `disable` always needs them (exit code 2 without). Only the disabled ones are stored (`disabled_projects`, `disabled_accounts` in `config.yaml`).
 - **Default.** The default project (account) is only what a command works on when nothing names one: where a new instance, firewall rule, certificate or zone is created. It is always enabled. A login chooses it, and `polyctl gcp project use <id>` / `polyctl cloudflare account use <account>` change it.
 
 `--project <id>` on the `gcp` commands and `--account <id or name>` on the `cloudflare` commands name one for a single call. A disabled one can be named too: it is read live and nothing of it is cached.
 
 ```sh
 polyctl gcp project list                 # every visible project, ENABLED yes or no, * the default
-polyctl gcp project disable acme-lab     # never synced or searched again, until enabled
+polyctl gcp project enable               # on a terminal: tick the projects that stay enabled
+polyctl gcp project disable acme-lab     # the shortcut: never synced or searched again, until enabled
+polyctl cf account enable                # the same list for the Cloudflare accounts
 polyctl cf account disable "Acme Lab"
 polyctl sync                             # every enabled project and account of every profile
 ```
@@ -156,7 +158,7 @@ A login works on every account its credentials see ([Enabled, disabled and defau
 - A token that cannot list accounts (no `Account:Read`) takes `account_id` as given, and without it the login has no default account: it works on every zone it sees, and a new zone or R2 needs `--account`. An account-owned token sees its own account only.
 - Stored as the metadata `account_id`, `account_name` (the default account) and `disabled_accounts` (absent when none is disabled).
 - A login that disables more accounts drops their cached zones, records and R2 buckets at once; one that enables accounts again makes the cached sets of the login due.
-- When several accounts are enabled the login says so and names `polyctl cloudflare account disable`. `polyctl cloudflare account use`, `enable` and `disable` change the default and the disabled accounts without a new login; `account current` shows them. See [Cloudflare: Accounts](platforms/cloudflare.md#accounts).
+- When several accounts are enabled the login says so and names `polyctl cloudflare account enable`, which chooses the ones that stay enabled. `polyctl cloudflare account use`, `enable` and `disable` change the default and the disabled accounts without a new login; `account current` shows them. See [Cloudflare: Accounts](platforms/cloudflare.md#accounts).
 
 **Non-interactive:** export `CLOUDFLARE_API_TOKEN`, or `--set token=-` with the token on stdin (`--set token` wins). A token piped without `--set token=-` is ignored.
 
@@ -262,7 +264,7 @@ Projects. One account works on every project its credentials see ([Enabled, disa
 - `projects=<id>,<id>,...`, which chose the projects of an account in 0.4.0, is accepted and no longer used: a note on stderr says so. Without `project` it still names the default project (the stored one when it is listed, else its first id), so a 0.4.0 command line keeps working.
 - The default project must be reachable (exit code 3 otherwise). The other projects are not probed at a login: a sync skips the ones that hold nothing ([GCP: Projects](platforms/gcp.md#projects)).
 - Stored in `config.yaml` as `project` (the default) and `disabled_projects` (comma-separated; absent when none is disabled).
-- When the credentials list more than one enabled project the login says how many and names `polyctl gcp project disable`. `polyctl gcp project use`, `enable` and `disable` change the default and the disabled projects without a new login.
+- When the credentials list more than one enabled project the login says how many and names `polyctl gcp project enable`, which chooses the ones that stay enabled. `polyctl gcp project use`, `enable` and `disable` change the default and the disabled projects without a new login.
 - A login that disables more projects drops what the inventory cached of them (stored instance passwords stay); one that changes the default or enables projects again makes the cached inventory of the account due, so that the next command syncs it.
 
 **Non-interactive:** nothing is asked, no browser is opened, and the default method is `adc`. `service_account` needs `key_file` (and `project` if the key names none). `oauth` needs `project` (and `client_id`, `client_secret=-` for your own client, or in a build without a built-in one); it prints the consent URL and waits up to 5 minutes for the browser to return. The default project otherwise falls back to the previous login's, the ADC project, or the only visible one; several and no default is a usage error. The disabled projects of the previous login are kept.

@@ -7,7 +7,7 @@ Platform-neutral commands (`dns`, `domain`, `cert`, `find`) find the account tha
 ## Features
 
 - Six platforms: Cloudflare, name.com, GoDaddy, AWS, GCP, Alibaba Cloud.
-- Profiles: one profile holds one account per platform a project uses; keep as many profiles as you have projects or customers. One GCP account covers every Google Cloud project its credentials see, and one Cloudflare login every Cloudflare account: all of them are synced and searched unless disabled (`polyctl gcp project disable`, `polyctl cloudflare account disable`), and the default one is only where new resources go (`--project` / `--account` name another for one call).
+- Profiles: one profile holds one account per platform a project uses; keep as many profiles as you have projects or customers. One GCP account covers every Google Cloud project its credentials see, and one Cloudflare login every Cloudflare account: all of them are synced and searched unless disabled (`polyctl gcp project enable` and `polyctl cloudflare account enable` choose which ones are enabled), and the default one is only where new resources go (`--project` / `--account` name another for one call).
 - Secrets in the OS keyring (macOS Keychain, Windows Credential Manager, Secret Service), falling back to a `0600` file; `config.yaml` never holds a secret.
 - Domain routing: `polyctl dns list example.com` picks the right zone and account. A domain found in two accounts is reported, not guessed; `--profile` and `--platform` pick one (two Cloudflare accounts of one login: `--account` of the `cloudflare` commands).
 - Reverse lookup: `polyctl find 203.0.113.10` lists the instances, load balancers, elastic / static IPs and database endpoints holding an address or DNS name, in every account.
@@ -104,7 +104,10 @@ polyctl auth login godaddy    --profile acme
 polyctl auth status
 
 #    A GCP account or Cloudflare login covers every project / account it sees;
-#    keep the ones that are not used out of every sync
+#    choose which ones are enabled from a list (ticked: synced and searched),
+#    or name the ones to keep out of every sync
+polyctl gcp project enable
+polyctl cloudflare account enable
 polyctl gcp project disable acme-lab
 polyctl cloudflare account disable "Acme Lab"
 

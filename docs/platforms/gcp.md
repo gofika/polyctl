@@ -48,10 +48,10 @@ One GCP account of a profile works on **every project its credentials see**, the
 polyctl gcp project list                      # visible projects; ENABLED says yes or no, * marks the default
 polyctl gcp project current                   # the default project and the disabled projects (works offline)
 polyctl gcp project use acme-dns              # make it the default (enables it if it was disabled)
-polyctl gcp project disable acme-lab acme-old # keep projects that are not used out of every sync, list and lookup
+polyctl gcp project enable                    # on a terminal: one list of every project, the enabled ones ticked
 polyctl gcp project enable acme-lab           # take one back
+polyctl gcp project disable acme-lab acme-old # keep projects that are not used out of every sync, list and lookup
 polyctl gcp project disable acme-prod --default acme-dns   # disabling the default names its successor
-polyctl gcp project disable                   # on a terminal: one list of every project, the enabled ones ticked
 polyctl gcp project disable acme-lab --dry-run -o json     # report only
 ```
 
@@ -64,9 +64,10 @@ polyctl gcp project disable acme-lab --dry-run -o json     # report only
 - `disable <id>...` changes nothing in Google Cloud. It drops what the inventory cached of the projects at once (stored instance passwords stay); nothing is synced again because of it. A project that is disabled already is left as it is (exit code 0); one the credentials do not see is exit code 4. With `--offline`, or with credentials that cannot list projects, the ids are taken as they are, with a note.
 - Disabling the default project needs a new default: `--default <id>`, naming a project that stays enabled (exit code 2 without it in the non-interactive flow; on a terminal it is asked, and the only project that stays becomes the default without a question). `--default` is applied whenever it is given. Disabling every project is exit code 2 (use `polyctl auth logout gcp`).
 - `enable <id>...` takes disabled projects back; the cached inventory of the account is synced again on its next use. A project that is enabled already is exit code 0 (nothing to do); one that is neither disabled nor visible is exit code 4 (name it with `--project`, or make it the default with `use`). A disabled project that is no longer visible is simply forgotten. Works with `--offline` for projects that are disabled.
-- **Without arguments, on a terminal, `enable` and `disable` open the same list**: every project the credentials see, the enabled ones ticked. What is ticked when you confirm is enabled, the rest is disabled; a default that was unticked is replaced as above (`--default`, or a question). Ticking nothing changes nothing (exit code 0). The list needs the network (`--offline`: exit code 6) and credentials that can list projects (exit code 3 otherwise). In the non-interactive flow the ids are required (exit code 2).
+- **`enable` manages which projects are enabled. Without arguments, on a terminal, it opens the list**: every project the credentials see, the enabled ones ticked. What is ticked when you confirm is enabled, the rest is disabled; a default that was unticked is replaced as above (`--default`, or a question). Ticking nothing changes nothing (exit code 0). The list needs the network (`--offline`: exit code 6) and credentials that can list projects (exit code 3 otherwise). In the non-interactive flow the ids are required (exit code 2).
+- `disable` never opens the list: it is the shortcut that disables the projects named, for scripts and for the command a skip note prints, and without an id it is exit code 2 on a terminal too, with a message that names `polyctl gcp project enable`.
 - `enable` and `disable` support `--dry-run`: the change report names `project/<id>` with `disabled`, `enabled` or `default`, and nothing is written, dropped or made due. No confirmation is asked by any of them: only `config.yaml` and a cache the next sync rebuilds change.
-- `polyctl gcp project add` and `remove`, the names of 0.4.0, still work as hidden names of `enable` and `disable`, with the same flags. With every project enabled from the start, `add` only has something to do for a project that was disabled.
+- `polyctl gcp project add` and `remove`, the names of 0.4.0, still work as hidden names of `enable` and `disable`, with the same flags. `remove` asked which projects to remove when none was named on a terminal: there it opens the list of `enable` now. With every project enabled from the start, `add` only has something to do for a project that was disabled.
 - Whatever changed the disabled projects (also an edited `config.yaml`, or `--set disabled_projects` of a new login), the `gcp` commands never find or change a resource through a cached row of a disabled project; `--project` still reaches it. A default project listed in `disabled_projects` by hand is ignored there.
 
 **Projects in which an API is not enabled.** An enabled project in which the API of a type is not enabled, or whose billing is off, holds nothing of that type (a DNS-only project does not fail the instance sync), also when it is the only project of the account. Syncs and lists skip it with exit code 0, and a note on stderr names the skipped projects, the API, and `polyctl gcp project disable <id>...`, which stops asking them. Each project is named once per run. The projects one listing skipped share a note; a run that reads several types (a `polyctl sync` of DNS zones and of instances) prints a note for each API it found switched off:
@@ -128,7 +129,8 @@ note: gcp/acme: skipped 2 project(s) in which an API is not enabled or billing i
 gcp whoami
 gcp project list | current
 gcp project use <project-id>
-gcp project enable [<project-id>...] | disable [<project-id>...] [--default <project-id>] [--dry-run]
+gcp project enable [<project-id>...] [--default <project-id>] [--dry-run]   # without <project-id>, on a terminal: the list of enabled projects
+gcp project disable <project-id>... [--default <project-id>] [--dry-run]
 
 # every gcp dns and gcp compute command also takes --project <id>
 gcp dns zone list | get <zone>
