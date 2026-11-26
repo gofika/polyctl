@@ -56,11 +56,17 @@ func TestRoute53RecordDeleteByNameOfOneSet(t *testing.T) {
 	if err := h.run("route53", "record", "delete", "other.org", "nope"); !errors.Is(err, platform.ErrNotFound) {
 		t.Errorf("no record of the name = %v", err)
 	}
-	// Without --yes the non-interactive flow is refused before anything is read.
+	// Without --yes the non-interactive flow is refused: for the name
+	// alone once its record set is known, for a name and type before
+	// anything is read.
 	h.rt.Flags.Yes = false
+	before := setsOf(r53, "Z3")
+	if err := h.run("route53", "record", "delete", "other.org", "www"); !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "pass --yes to proceed (would delete the A record set of www.other.org)") || setsOf(r53, "Z3") != before {
+		t.Errorf("no --yes = %v, sets %s", err, setsOf(r53, "Z3"))
+	}
 	r53.listCalls = 0
-	if err := h.run("route53", "record", "delete", "other.org", "www"); !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "would delete the record set of www") || r53.listCalls != 0 {
-		t.Errorf("no --yes = %v after %d read(s)", err, r53.listCalls)
+	if err := h.run("route53", "record", "delete", "other.org", "www", "A"); !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "would delete the A record set of www") || r53.listCalls != 0 {
+		t.Errorf("<name> <type> without --yes = %v after %d read(s)", err, r53.listCalls)
 	}
 	// A dry run reports the set and asks nothing.
 	h.rt.Flags.DryRun = true
@@ -70,16 +76,17 @@ func TestRoute53RecordDeleteByNameOfOneSet(t *testing.T) {
 }
 
 // A name with record sets of several types is exit code 5 where nothing can
-// be asked, also with --yes, and nothing is deleted.
+// be asked, with --yes, without it and in a dry run, and nothing is deleted.
 func TestRoute53RecordDeleteByNameOfSeveralTypesIsAmbiguous(t *testing.T) {
 	h, r53, _ := nameHarness(t)
 	before := setsOf(r53, "Z3")
-	for _, yes := range []bool{true, false} {
-		h.rt.Flags.Yes, h.rt.Flags.DryRun = yes, !yes
+	for _, c := range []struct{ yes, dryRun bool }{{true, false}, {false, true}, {false, false}} {
+		yes := c.yes
+		h.rt.Flags.Yes, h.rt.Flags.DryRun = c.yes, c.dryRun
 		for arg, form := range map[string][]string{"<type>": {"mail"}, "--type": {"--name", "mail"}} {
 			err := h.run(append([]string{"route53", "record", "delete", "other.org"}, form...)...)
 			if !errors.Is(err, platform.ErrAmbiguous) || !strings.Contains(err.Error(), "mail.other.org has records of 2 types in zone other.org (A, TXT); give "+arg) {
-				t.Errorf("%v (yes %v) = %v", form, yes, err)
+				t.Errorf("%v (yes %v, dry run %v) = %v", form, yes, c.dryRun, err)
 			}
 		}
 	}
@@ -140,4 +147,60 @@ func TestRoute53RecordDeleteByNameOfRoutedSets(t *testing.T) {
 		t.Errorf("picked = %v, sets %s", err, setsOf(r53, "Z3"))
 	}
 	p.Done()
+}
+
+// --set-identifier beside a name alone says which set is meant: nothing is
+// asked when it leaves one set, a list never replaces it, and a name whose
+// other sets have another type is not ambiguous.
+func TestRoute53RecordDeleteByNameWithSetIdentifier(t *testing.T) {
+	h, r53, _ := nameHarness(t)
+	routed := func(more ...r53types.ResourceRecordSet) {
+		r53.sets["Z3"] = append([]r53types.ResourceRecordSet{
+			weightedSet("www.other.org.", "A", "eu", 70, "198.51.100.1"),
+			weightedSet("www.other.org.", "A", "us", 30, "198.51.100.2"),
+		}, more...)
+	}
+	left := func() string {
+		var ids []string
+		for _, s := range r53.sets["Z3"] {
+			id := "-"
+			if s.SetIdentifier != nil {
+				id = *s.SetIdentifier
+			}
+			ids = append(ids, string(s.Type)+"/"+id)
+		}
+		return strings.Join(ids, ",")
+	}
+	h.rt.Flags.Yes = true
+	// On a terminal: no list, the set named is deleted.
+	routed()
+	h.rt.Flags.NonInteractive = false
+	p := prompttest.New(t)
+	h.rt.Picker = p
+	if err := h.run("route53", "record", "delete", "other.org", "www", "--set-identifier", "eu"); err != nil || left() != "A/us" {
+		t.Errorf("terminal = %v, left %s", err, left())
+	}
+	p.Done()
+	// Several types under one identifier: only those sets are offered.
+	routed(weightedSet("www.other.org.", "TXT", "eu", 1, `"x"`))
+	p = prompttest.New(t, prompttest.Label("TXT"))
+	h.rt.Picker = p
+	if err := h.run("route53", "record", "delete", "other.org", "www", "--set-identifier", "eu"); err != nil || left() != "A/eu,A/us" {
+		t.Errorf("picked = %v, left %s", err, left())
+	}
+	p.Done()
+	if len(p.Asked) != 1 || len(p.Asked[0].Options) != 2 {
+		t.Errorf("asked %+v", p.Asked)
+	}
+	// Where nothing can be asked: a set of another type does not make the
+	// name ambiguous, and an identifier no set has is not found.
+	h.rt.Flags.NonInteractive = true
+	h.rt.Picker = nil
+	routed(valueSet("www.other.org.", "TXT", 300, `"plain"`))
+	if err := h.run("route53", "record", "delete", "other.org", "www", "--set-identifier", "eu"); err != nil || left() != "A/us,TXT/-" {
+		t.Errorf("non-interactive = %v, left %s", err, left())
+	}
+	if err := h.run("route53", "record", "delete", "other.org", "www", "--set-identifier", "nope"); !errors.Is(err, platform.ErrNotFound) || left() != "A/us,TXT/-" {
+		t.Errorf("unknown identifier = %v, left %s", err, left())
+	}
 }

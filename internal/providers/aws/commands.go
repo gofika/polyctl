@@ -531,7 +531,7 @@ func recordDeleteCmd(rt *app.Runtime) *cobra.Command {
 	var typ, name, setID string
 	cmd := &cobra.Command{
 		Use:   "delete <zone> <name> [<type>]",
-		Short: "Delete a whole record set (name + type)",
+		Short: "Delete the record set of a name (optionally of one type)",
 		Long: `Delete the record set of <name> and <type>, with every value in it. <name> is
 relative to the zone (www, a.b), @ for the zone apex, or a full name inside
 the zone (www.example.com). <type> is case-insensitive.
@@ -545,13 +545,15 @@ The SOA and NS sets of the zone apex are never meant by the name alone.
 A routing-policy set (weighted, latency, failover, geolocation...) is
 chosen with --set-identifier; without it, a name and type that hold only
 routing-policy sets are ambiguous (exit code 5) and the identifiers are
-listed.
+listed. Beside a name alone, --set-identifier says which set is meant: only
+the sets with that identifier count, and only those are offered.
 
 The values to delete are listed, then one yes/no question is asked (default
 no; --yes skips it). The non-interactive flow asks nothing: --yes is required
-(exit code 2 without it, before anything is read). Declining changes nothing.
-A missing set is not found (exit code 4) before the question. --dry-run
-reports what would be deleted and asks nothing.`,
+(exit code 2 without it: for <name> <type> before anything is read, for a
+name alone once it is known to mean one record set). Declining changes
+nothing. A missing set is not found (exit code 4) before the question.
+--dry-run reports what would be deleted and asks nothing.`,
 		Example:           "  polyctl aws route53 record delete example.com _acme-challenge\n  polyctl aws route53 record delete example.com _acme-challenge TXT\n  polyctl aws route53 record delete example.com www A --set-identifier eu --yes",
 		Args:              app.RecordSelectorArgsOrInteractive(rt, 0),
 		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.AWS), platform.AWS),
@@ -570,15 +572,12 @@ reports what would be deleted and asks nothing.`,
 			if typ == "" && !named && !rt.Interactive() {
 				return app.UsageErrf("%s", app.RecordSelectorUsage(cmd, 0))
 			}
-			if !rt.Flags.DryRun {
-				what := "delete the picked record set"
-				switch {
-				case typ != "":
-					what = fmt.Sprintf("delete the %s record set of %s", strings.ToUpper(typ), nameOrApex(name))
-				case named:
-					what = "delete the record set of " + nameOrApex(name)
-				}
-				if err := rt.CanConfirm(what); err != nil {
+			// A record set that is named needs --yes where nothing can be
+			// asked: refused before anything is read. A name alone is read
+			// first: what it means (one set, several types, nothing) comes
+			// before the confirmation.
+			if !rt.Flags.DryRun && typ != "" {
+				if err := rt.CanConfirm(fmt.Sprintf("delete the %s record set of %s", strings.ToUpper(typ), nameOrApex(name))); err != nil {
 					return err
 				}
 			}
@@ -606,6 +605,11 @@ reports what would be deleted and asks nothing.`,
 				if err != nil {
 					return err
 				}
+				// --set-identifier says which sets are meant: only those
+				// count for the name, and only those are offered in a list.
+				if setID != "" {
+					recs = recordsOfSetID(recs, setID)
+				}
 				// pick: the record set is chosen from a list, of the zone
 				// or of the name.
 				pick := !named
@@ -623,10 +627,7 @@ reports what would be deleted and asks nothing.`,
 					}
 					switch {
 					case len(sets) == 1:
-						typ = sets[0].typ
-						if setID == "" {
-							setID = sets[0].setID
-						}
+						typ, setID = sets[0].typ, sets[0].setID
 					case !pick && !rt.Interactive():
 						// One type in several routed sets: LookupSet lists
 						// the identifiers (exit code 5).
@@ -656,7 +657,8 @@ reports what would be deleted and asks nothing.`,
 			// of its values only, so the confirmation names none.
 			cur := recordsFromSet(zoneID(z.ID), *rs)
 			if err := rt.ConfirmRecordDelete(cmd.Context(), app.RecordDelete{Records: recordGrid(cur),
-				Question: fmt.Sprintf("Delete the %s record set of %s (%d value(s))?", strings.ToUpper(typ), platform.NormalizeDomain(fqdn), len(cur))}); err != nil {
+				Question: fmt.Sprintf("Delete the %s record set of %s (%d value(s))?", strings.ToUpper(typ), platform.NormalizeDomain(fqdn), len(cur)),
+				Refusal:  fmt.Sprintf("delete the %s record set of %s", strings.ToUpper(typ), platform.NormalizeDomain(fqdn))}); err != nil {
 				return err
 			}
 			recs, err := c.DeleteSet(cmd.Context(), z.ID, fqdn, typ, setID)
@@ -691,6 +693,18 @@ func recordSetKeys(recs []platform.Record) []recordSetKey {
 		}
 	}
 	return keys
+}
+
+// recordsOfSetID are the records of recs in a routing-policy set with the
+// set identifier id.
+func recordsOfSetID(recs []platform.Record, id string) []platform.Record {
+	var out []platform.Record
+	for _, r := range recs {
+		if extraString(r.Extra, "set_identifier") == id {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // nameOrApex names --name for a message: the zone apex when it is empty.
