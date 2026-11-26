@@ -107,7 +107,7 @@ polyctl cf zone list --account "Acme Lab"     # one account for this call
 - **`enable` manages which accounts are enabled. Without arguments, on a terminal, it opens the list**: every account the credentials see, the enabled ones ticked. What is ticked when you confirm is enabled, the rest is disabled; a default that was unticked is replaced by `--default <account>`, or by the answer to a question (the only account that stays is taken without one). Ticking nothing changes nothing (exit code 0). The list needs the network (`--offline`: exit code 6). Credentials that cannot list their accounts are offered the accounts read off their zones, which leaves out an account without a zone; credentials that see no zone either have nothing to offer (exit code 2: pass the ids). In the non-interactive flow the accounts are required (exit code 2).
 - `disable` never opens the list: it is the shortcut that disables the accounts named, for scripts, and without an account it is exit code 2 on a terminal too, with a message that names `polyctl cloudflare account enable`.
 - `enable` and `disable` support `--dry-run`: the change report names `account/<id>` with `disabled`, `enabled` or `default`, and nothing is written, dropped or made due. No confirmation is asked by any of them: only `config.yaml` and a cache the next sync rebuilds change.
-- `polyctl cloudflare account add` and `remove` still work as hidden names of `enable` and `disable`, with the same flags and arguments.
+- `polyctl cloudflare account add` and `remove` are hidden names of `enable` and `disable`, with the same flags and arguments (no release had them as visible commands).
 - Whatever changed the disabled accounts (also an edited `config.yaml`, or `--set disabled_accounts` of a new login), the `cloudflare` commands never find or change a zone or bucket through a cached row of a disabled account; `--account` still reaches it. A default account listed in `disabled_accounts` by hand is ignored there.
 
 **What a sync reads.**
@@ -169,7 +169,7 @@ A login without a default account (its credentials could not list accounts) need
 
 **`zone ensure <domain>`** reuses the zone (`unchanged`) or creates it as `create` does. Without `--account` the zone is looked for in every enabled account and reused in the one that holds it (`target.account_id` of the report names it); zones of the name in two of them are asked about on a terminal and exit code 5 otherwise. With `--account` only that account is looked in. Then:
 
-- `--preset optimized` converges, reading first and writing only what differs, in this order: `0rtt` on, `early_hints` on, `rum` on, `response_buffering` on; on Enterprise zones only, `ipv6` off and Argo Smart Routing on (elsewhere `skipped`, since Argo is billed); `always_use_https` on, `automatic_https_rewrites` on; last `ssl`.
+- `--preset optimized` converges, reading first and writing only what differs, in this order: `0rtt` on, `early_hints` on, `rum` on; on Enterprise zones only, `response_buffering` on, `ipv6` off and Argo Smart Routing on (elsewhere `skipped`, since Argo is billed); `always_use_https` on, `automatic_https_rewrites` on; last `ssl`.
 - `ssl` is `--ssl` (`flexible` or `strict`), else `defaults.cloudflare.ssl`, else `strict`. `strict` replaces `flexible` (`flexible -> strict`), so pass `--ssl flexible` for an origin without HTTPS. `off` and `full` are set with `cloudflare ssl-mode`. `--ssl` without `--preset` sets the SSL mode only.
 - A setting the plan cannot change is `skipped`.
 - `--foundation-dns` applies to a new zone by default; an existing zone is switched on only when the flag is given explicitly, and never switched off.
@@ -180,7 +180,7 @@ A login without a default account (its credentials could not list accounts) need
 
 **`zone delete <zone>`** deletes a zone (name or id) with all of its DNS records.
 
-- It asks for confirmation, showing the plan, status and number of DNS records (`--yes` in the non-interactive flow; see [Confirmations](../interactive.md#confirmations)). A name found in several accounts is exit code 5: pass `--account`, `--profile` or the zone id.
+- It asks for confirmation, showing the plan, status and number of DNS records (`--yes` in the non-interactive flow; see [Confirmations](../interactive.md#confirmations)). A name found in several accounts is asked about on a terminal and exit code 5 in the non-interactive flow: pass `--account`, `--profile` or the zone id.
 - An Enterprise zone must be moved to the Free plan first. polyctl does that only with `--downgrade-enterprise` (changes billing); otherwise it stops with exit code 1. A token without billing permission is exit code 3 and nothing is deleted. If the downgrade succeeds and the deletion fails, the zone stays on Free: run the command again.
 - `--dry-run` reports `zone/<domain>  would delete  plan=free records=12` (plus `zone/<domain>/subscription  would update  enterprise -> free`).
 
