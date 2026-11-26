@@ -256,7 +256,8 @@ func r2Unusable(err error) bool {
 // other types of a sync are not failed for it, and a bucket the inventory
 // does not know is still looked up live.
 func (c *Client) syncBuckets(ctx context.Context) ([]platform.Resource, error) {
-	return c.buckets(ctx, true)
+	out, _, err := c.buckets(ctx, true)
+	return out, err
 }
 
 // bucketResources lists the R2 buckets of the enabled accounts (default
@@ -264,7 +265,10 @@ func (c *Client) syncBuckets(ctx context.Context) ([]platform.Resource, error) {
 // returned; with several, an account that cannot be used for R2 holds no
 // bucket (with the note) unless none of them can, and an account that
 // fails otherwise keeps its stored rows (a *platform.RegionSyncError).
-func (c *Client) bucketResources(ctx context.Context) ([]platform.Resource, error) {
+// left are the accounts that were left out as unusable: they did not
+// answer, so a listing does not count them, and another login may list
+// them.
+func (c *Client) bucketResources(ctx context.Context) (out []platform.Resource, left []string, err error) {
 	return c.buckets(ctx, false)
 }
 
@@ -276,28 +280,29 @@ func r2UnusableWhy(err error) string {
 	return "no R2 permission"
 }
 
-func (c *Client) buckets(ctx context.Context, skipUnusable bool) ([]platform.Resource, error) {
+func (c *Client) buckets(ctx context.Context, skipUnusable bool) (out []platform.Resource, left []string, err error) {
 	ids, err := c.enabledAccounts(ctx)
 	if err != nil {
 		if skipUnusable && r2Unusable(err) {
 			warnf("cloudflare/%s: skipped r2 buckets: %v", c.profile.Name, err)
-			return []platform.Resource{}, nil
+			return []platform.Resource{}, nil, nil
 		}
-		return nil, err
+		return nil, nil, err
 	}
 	if len(ids) == 0 {
-		return []platform.Resource{}, nil
+		return []platform.Resource{}, nil, nil
 	}
 	var (
 		unusable []error
 		notes    []string
 	)
-	out, err := c.eachAccount(ctx, ids, func(ctx context.Context, ac *Client) ([]platform.Resource, error) {
+	out, err = c.eachAccount(ctx, ids, func(ctx context.Context, ac *Client) ([]platform.Resource, error) {
 		acc := ac.api.accountID
 		res, err := c.bucketsOf(ctx, acc)
 		if err != nil && r2Unusable(err) && (skipUnusable || len(ids) > 1) {
 			unusable = append(unusable, fmt.Errorf("account %s: %w", acc, err))
 			notes = append(notes, fmt.Sprintf("%s (%s)", acc, r2UnusableWhy(err)))
+			left = append(left, acc)
 			return []platform.Resource{}, nil
 		}
 		return res, err
@@ -305,7 +310,7 @@ func (c *Client) buckets(ctx context.Context, skipUnusable bool) ([]platform.Res
 	if !skipUnusable && len(unusable) == len(ids) {
 		// Not one account can be used for R2: that is the answer of a
 		// command that asked for the buckets.
-		return nil, errors.Join(unusable...)
+		return nil, left, errors.Join(unusable...)
 	}
 	if len(notes) > 0 {
 		// One line for all of them. It names no command: the account may
@@ -315,7 +320,7 @@ func (c *Client) buckets(ctx context.Context, skipUnusable bool) ([]platform.Res
 	if out == nil && err == nil {
 		out = []platform.Resource{}
 	}
-	return out, err
+	return out, left, err
 }
 
 // bucketsOf lists the R2 buckets of one account as inventory resources. The

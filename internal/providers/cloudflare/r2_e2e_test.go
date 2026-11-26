@@ -65,6 +65,10 @@ type r2Fake struct {
 	// (GET /accounts) answers: 403 as a token without Account:Read gets it
 	// (code 10000), anything else as a request that failed.
 	accountsStatus int
+	// r2Denied holds "<accounts of the token>/<account>": the R2
+	// endpoints of that account answer 403 / code 10000 to that token, as
+	// to one that sees the account without an R2 permission in it.
+	r2Denied map[string]bool
 }
 
 // sees reports whether a token of the accounts in list (comma-separated)
@@ -318,6 +322,10 @@ func (f *r2Fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (f *r2Fake) serveR2(w http.ResponseWriter, r *http.Request, tokenAcc string, parts []string, body []byte) {
 	if !sees(tokenAcc, parts[1]) {
+		f.fail(w, http.StatusForbidden, 10000, "Authentication error")
+		return
+	}
+	if f.r2Denied[tokenAcc+"/"+parts[1]] {
 		f.fail(w, http.StatusForbidden, 10000, "Authentication error")
 		return
 	}

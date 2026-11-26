@@ -188,7 +188,8 @@ func skipReason(err error) string {
 // findBucket returns the account that holds bucket, among the accounts the
 // command covers: every enabled account of every Cloudflare login, of the
 // login of --profile, or the one account of --account. The same account
-// in two logins counts once.
+// in two logins counts once: it is asked through the first login that can
+// use it for R2, and a login that cannot does not hide it from the next.
 //
 // The account of --account is used as it is, without a listing. Otherwise,
 // in the default jurisdiction, the inventory (r2_bucket) is asked first:
@@ -232,15 +233,22 @@ func findBucket(ctx context.Context, rt *app.Runtime, bucket, jurisdiction strin
 		}
 	}
 	var hits []*r2Acct
-	var searched, skipped []string
-	var hard error
-	skip := func(who string, err error) {
-		if why := skipReason(err); why != "" {
+	var searched []string
+	// failed are the logins and accounts that did not answer: account is
+	// "" for a login that could not be opened, why "" for a failure that
+	// is not skipped. An account that answered through another login is
+	// dropped from them in the end (seen).
+	type failure struct {
+		who, account, why string
+		err               error
+	}
+	var failed []failure
+	skip := func(who, account string, err error) {
+		why := skipReason(err)
+		if why != "" {
 			rt.Verbosef("cloudflare/%s: skipped: %v", who, err)
-			skipped = append(skipped, who+" ("+why+")")
-		} else if hard == nil {
-			hard = fmt.Errorf("cloudflare/%s: %w", who, err)
 		}
+		failed = append(failed, failure{who: who, account: account, why: why, err: fmt.Errorf("cloudflare/%s: %w", who, err)})
 	}
 	seen := map[string]bool{}
 	for _, sc := range scopes {
@@ -249,7 +257,7 @@ func findBucket(ctx context.Context, rt *app.Runtime, bucket, jurisdiction strin
 			if explicit {
 				return nil, err
 			}
-			skip(sc.profile, err)
+			skip(sc.profile, "", err)
 			continue
 		}
 		if explicit && len(scopes) == 1 && len(accts) == 1 {
@@ -261,17 +269,21 @@ func findBucket(ctx context.Context, rt *app.Runtime, bucket, jurisdiction strin
 			if seen[a.account] {
 				continue
 			}
-			seen[a.account] = true
-			searched = append(searched, a.account)
+			if !slices.Contains(searched, a.account) {
+				searched = append(searched, a.account)
+			}
 			buckets, err := a.api.listBuckets(ctx, a.account, bucket)
 			if err != nil {
+				// The account is not counted as asked: a later login
+				// that can use it for R2 is still asked for the bucket.
 				who := a.profile
 				if a.multi {
 					who += " account " + a.account
 				}
-				skip(who, err)
+				skip(who, a.account, err)
 				continue
 			}
+			seen[a.account] = true
 			if slices.ContainsFunc(buckets, func(b r2Bucket) bool { return b.Name == bucket }) {
 				hits = append(hits, a)
 			}
@@ -290,9 +302,17 @@ func findBucket(ctx context.Context, rt *app.Runtime, bucket, jurisdiction strin
 		rt.Infof("bucket %s via %s", bucket, a.via())
 		return a, nil
 	}
-	if hard != nil {
-		// The bucket may be in the account that could not be read.
-		return nil, hard
+	var skipped []string
+	for _, f := range failed {
+		if f.account != "" && seen[f.account] {
+			// Another login read the account.
+			continue
+		}
+		if f.why == "" {
+			// The bucket may be in the account that could not be read.
+			return nil, f.err
+		}
+		skipped = append(skipped, f.who+" ("+f.why+")")
 	}
 	msg := fmt.Sprintf("bucket %s not found in any cloudflare profile", bucket)
 	what := "profiles"
@@ -661,7 +681,8 @@ command fails only when no account could be read.`,
 // scopeBuckets lists the buckets of a scope: through the inventory in the
 // default jurisdiction, live in another one and for an account that is
 // disabled for the login. accounts are the accounts that were read: the
-// one of --account, or the enabled ones the listing asked; nil when the
+// one of --account, or the enabled ones that answered the listing (one
+// that cannot be used for R2 is left out); nil when the
 // inventory answered for the enabled accounts, which it does not name.
 // cached says the inventory answered.
 func scopeBuckets(ctx context.Context, rt *app.Runtime, sc acctScope, jurisdiction string) (list []r2BucketRow, accounts []string, cached bool, err error) {
@@ -689,15 +710,21 @@ func cachedBuckets(ctx context.Context, rt *app.Runtime, sc acctScope) (list []r
 		if err != nil {
 			return nil, err
 		}
-		out, err := c.bucketResources(ctx)
+		out, left, err := c.bucketResources(ctx)
 		if err != nil {
 			// The account of a login without one is known by now.
 			err = r2Err(err, newR2Acct(c, acctScope{profile: sc.profile, def: sc.def}, nonEmpty(c.api.accountID, c.r2AccountID), "", false), "")
 		}
 		// The listing asked for the enabled accounts: they are remembered
-		// by the client, so this is no request.
+		// by the client, so this is no request. One that cannot be used
+		// for R2 did not answer: it is not an account that was read.
 		if ids, idErr := c.enabledAccounts(ctx); idErr == nil {
-			accounts = ids
+			accounts = []string{}
+			for _, id := range ids {
+				if !slices.Contains(left, id) {
+					accounts = append(accounts, id)
+				}
+			}
 		}
 		return out, err
 	})
@@ -735,7 +762,6 @@ func liveBuckets(ctx context.Context, rt *app.Runtime, sc acctScope, jurisdictio
 	ids := make([]string, 0, len(accts))
 	var unusable []error
 	for _, a := range accts {
-		ids = append(ids, a.account)
 		buckets, err := a.api.listBuckets(ctx, a.account, "")
 		if err != nil {
 			err = r2Err(err, a, "")
@@ -746,6 +772,8 @@ func liveBuckets(ctx context.Context, rt *app.Runtime, sc acctScope, jurisdictio
 			unusable = append(unusable, err)
 			continue
 		}
+		// The accounts that answered are the ones that were read.
+		ids = append(ids, a.account)
 		for _, b := range buckets {
 			out = append(out, r2BucketRow{Profile: a.profile, AccountID: a.account, Name: b.Name, CreationDate: b.CreationDate})
 		}

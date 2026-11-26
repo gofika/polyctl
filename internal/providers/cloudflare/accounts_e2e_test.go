@@ -1910,3 +1910,47 @@ func TestAccountUseOnALoginWithoutAnAccount(t *testing.T) {
 		t.Errorf("zone list: exit %d, %s%s", code, stdout, stderr)
 	}
 }
+
+// A login whose token sees an account without an R2 permission in it does
+// not hide that account from the login that can use it: the bucket is
+// found through the second login, and the bucket listing shows its
+// buckets, in the run that synced as in the one served from the
+// inventory. The status line counts the accounts that answered.
+func TestR2AccountALoginCannotUseIsReadThroughAnother(t *testing.T) {
+	e := newR2Env(t)
+	cloudflare.CaptureWarnings(t)
+	e.f.accounts["acc1"].buckets = []string{"assets"}
+	e.f.accounts["acc2"].buckets = []string{"media"}
+	e.f.r2Denied = map[string]bool{"acc1,acc2/acc2": true}
+	// The profile sorts before beta, the login of acc2.
+	if code, _, stderr := e.run("auth", "login", "cloudflare", "--profile", "aaa", "--set", "token=tok-both", "--set", "account_id=acc1"); code != cli.ExitOK {
+		t.Fatalf("login aaa: exit %d, %s", code, stderr)
+	}
+	e.f.reset()
+
+	// The lookup of a bucket, before anything is in the inventory.
+	if code, _, stderr := e.run("cloudflare", "r2", "domain", "list", "media"); code != cli.ExitOK || !strings.Contains(stderr, "beta") {
+		t.Fatalf("domain list media: exit %d, %s", code, stderr)
+	}
+	// A bucket no account holds names the login that was skipped only
+	// for an account nobody could read.
+	code, _, stderr := e.run("cloudflare", "r2", "domain", "list", "nowhere")
+	if code != cli.ExitNotFound || strings.Contains(stderr, "were skipped") {
+		t.Errorf("domain list nowhere: exit %d, %s", code, stderr)
+	}
+
+	for _, run := range []string{"synced", "inventory"} {
+		code, stdout, stderr := e.run("cloudflare", "r2", "bucket", "list", "-o", "json")
+		if code != cli.ExitOK || !strings.Contains(stdout, `"name": "assets"`) || !strings.Contains(stdout, `"name": "media"`) {
+			t.Errorf("%s: bucket list: exit %d, %s%s", run, code, stdout, stderr)
+		}
+		if run == "synced" && !strings.Contains(stderr, "2 bucket(s) in 2 account(s)") {
+			t.Errorf("%s: status line: %s", run, stderr)
+		}
+	}
+	// The login alone lists the one account that answered.
+	code, stdout, stderr := e.run("--refresh", "cloudflare", "r2", "bucket", "list", "--profile", "aaa")
+	if code != cli.ExitOK || !strings.Contains(stdout, "assets") || strings.Contains(stdout, "media") || !strings.Contains(stderr, "1 bucket(s) in 1 account(s)") {
+		t.Errorf("bucket list --profile aaa: exit %d, %s%s", code, stdout, stderr)
+	}
+}
