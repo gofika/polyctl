@@ -982,9 +982,15 @@ func TestProjectUseEnableDisable(t *testing.T) {
 	if err := run("disable", "a/b"); exitClass(err) != "usage" {
 		t.Errorf("disable of a bad id = %v", err)
 	}
-	for _, sub := range []string{"enable", "disable", "add", "remove"} {
+	for _, sub := range []string{"enable", "add"} {
 		if err := run(sub); err == nil || !has(err, "arg(s)") {
 			t.Errorf("%s without an id in the non-interactive flow = %v, want the error of a missing argument", sub, err)
+		}
+	}
+	// disable, and remove, its former name, say where the list is.
+	for _, sub := range []string{"disable", "remove"} {
+		if err := run(sub); exitClass(err) != "usage" || !has(err, noProjectsToDisable) {
+			t.Errorf("%s without an id in the non-interactive flow = %v, want the usage error that names the list", sub, err)
 		}
 	}
 
@@ -1072,10 +1078,10 @@ func TestProjectUseEnableDisable(t *testing.T) {
 }
 
 // Without arguments the interactive flow picks from a list: use the
-// default among the visible projects; enable and disable the same list of
-// every project, the enabled ones ticked, whose result is applied in both
-// directions. A default that was unticked is asked again, or taken when
-// one project is left or --default names it.
+// default among the visible projects; enable a list of every project, the
+// enabled ones ticked, whose result is applied in both directions. A
+// default that was unticked is asked again, or taken when one project is
+// left or --default names it. disable never opens the list.
 func TestProjectCommandsPick(t *testing.T) {
 	h, g := multiDNS(t)
 	h.enableOn(g, "p1", "p1", "p2", "p3", "p4")
@@ -1114,15 +1120,17 @@ func TestProjectCommandsPick(t *testing.T) {
 		}
 	}
 
-	// disable: the default and p4 are unticked, and p9, ticked, is
-	// forgotten without becoming a candidate of the new default.
+	// The default and p4 are unticked, and p9, ticked, is forgotten
+	// without becoming a candidate of the new default. remove, the name
+	// disable had in polyctl 0.4.0, asked on a terminal: it opens the same
+	// list.
 	h.disableProjects("p9")
 	p = h.answer([]string{"p1", "p2", "p9"}, "p2")
-	if err := h.run("project", "disable"); err != nil || h.labProjects() != "p2 [p3,p4]" {
-		t.Fatalf("disable = %v, %s", err, h.labProjects())
+	if err := h.run("project", "remove"); err != nil || h.labProjects() != "p2 [p3,p4]" {
+		t.Fatalf("remove = %v, %s", err, h.labProjects())
 	}
 	p.Done()
-	offered("disable", p.Asked[0], "p1 p2 p3 p4")
+	offered("remove", p.Asked[0], "p1 p2 p3 p4")
 	if a := p.Asked[1]; a.Title != "New default project" || prompttest.Values(a.Options) != "p1 p2" {
 		t.Errorf("new default asked %+v", a)
 	}
@@ -1136,13 +1144,13 @@ func TestProjectCommandsPick(t *testing.T) {
 	p.Done()
 	// Nothing ticked is leaving the list, not disabling every project.
 	h.answer([]string{})
-	if err := h.run("project", "disable"); exitClass(err) != "nothing" || !has(err, "nothing was selected") {
+	if err := h.run("project", "enable"); exitClass(err) != "nothing" || !has(err, "nothing was selected") {
 		t.Errorf("nothing ticked = %v", err)
 	}
 	// A list without a visible project left for the default is refused.
 	h.disableProjects("p3", "p4", "p9")
 	h.answer([]string{"p9"})
-	if err := h.run("project", "disable"); exitClass(err) != "usage" || !has(err, "this would disable every project of gcp/lab") {
+	if err := h.run("project", "enable"); exitClass(err) != "usage" || !has(err, "this would disable every project of gcp/lab") {
 		t.Errorf("only an invisible project ticked = %v", err)
 	}
 	h.disableProjects("p3", "p4")
@@ -1153,7 +1161,7 @@ func TestProjectCommandsPick(t *testing.T) {
 	// --default names the new default without a question, and must stay
 	// ticked.
 	h.answer([]string{"p1", "p3"})
-	if err := h.run("project", "disable", "--default", "p4"); exitClass(err) != "usage" || !has(err, "--default p4: not one of the projects that stay enabled (p1, p3)") {
+	if err := h.run("project", "enable", "--default", "p4"); exitClass(err) != "usage" || !has(err, "--default p4: not one of the projects that stay enabled (p1, p3)") {
 		t.Errorf("--default of an unticked project = %v", err)
 	}
 	p = h.answer([]string{"p1", "p3"})
@@ -1163,19 +1171,40 @@ func TestProjectCommandsPick(t *testing.T) {
 	p.Done()
 	// One project left: it becomes the default without a question.
 	p = h.answer([]string{"p1"})
-	if err := h.run("project", "disable"); err != nil || h.labProjects() != "p1 [p2,p3,p4]" {
+	if err := h.run("project", "enable"); err != nil || h.labProjects() != "p1 [p2,p3,p4]" {
 		t.Fatalf("one project left = %v, %s", err, h.labProjects())
 	}
 	p.Done()
 
+	// disable never opens the list: without a project it is a usage error
+	// on a terminal too, which says where the list is, and asks nothing.
+	before = h.labMeta()
+	p = h.answer()
+	for _, args := range [][]string{{"disable"}, {"disable", "--default", "p2"}} {
+		if err := h.run(append([]string{"project"}, args...)...); exitClass(err) != "usage" || !has(err, noProjectsToDisable) {
+			t.Errorf("project %v on a terminal = %v, want the usage error that names the list", args, err)
+		}
+	}
+	if len(p.Asked) != 0 || !reflect.DeepEqual(h.labMeta(), before) {
+		t.Errorf("disable without a project asked %v, metadata %v", p.Titles(), h.labMeta())
+	}
+
 	// The non-interactive flow needs the ids.
 	h.nonInteractive()
-	for _, sub := range []string{"enable", "disable", "add", "remove"} {
+	for _, sub := range []string{"enable", "add"} {
 		if err := h.run("project", sub); !has(err, "accepts between 1 and 100 arg(s), received 0") {
 			t.Errorf("project %s without an id, non-interactive = %v", sub, err)
 		}
 	}
+	for _, sub := range []string{"disable", "remove"} {
+		if err := h.run("project", sub); exitClass(err) != "usage" || !has(err, noProjectsToDisable) {
+			t.Errorf("project %s without an id, non-interactive = %v", sub, err)
+		}
+	}
 }
+
+// noProjectsToDisable is the usage error of disable without a project.
+const noProjectsToDisable = `name the projects to disable, or choose from the list with "polyctl gcp project enable"`
 
 // --dry-run of enable and disable (and of add and remove, their former
 // names) reports the projects that would be disabled and enabled and the
@@ -1237,7 +1266,7 @@ func TestProjectEnableDisableDryRun(t *testing.T) {
 	}
 	// The pick reports what its ticks would change, in both directions.
 	h.interactive([]string{"p2", "p4"}, "p4")
-	check("pick", h.run("project", "disable"), "project/p1 would_update disabled", "project/p3 would_update disabled",
+	check("pick", h.run("project", "enable"), "project/p1 would_update disabled", "project/p3 would_update disabled",
 		"project/p4 would_update enabled", "project/p4 would_update default")
 	// The cached sets were not made due: the next list is served by them.
 	h.nonInteractive()
@@ -1337,7 +1366,7 @@ func TestHelpOfNameLookupsNamesProjectAmbiguity(t *testing.T) {
 // Disabling the default project when one other project stays enabled: the
 // non-interactive flow still needs --default (nothing is assumed), the
 // interactive flow makes the one that stays the default without a
-// question. Without a project id the commands list the visible projects,
+// question. Without a project id use and enable list the visible projects,
 // which --offline cannot.
 func TestProjectDisableDefaultWithOneLeft(t *testing.T) {
 	h, _ := multiDNS(t)
@@ -1354,7 +1383,7 @@ func TestProjectDisableDefaultWithOneLeft(t *testing.T) {
 		t.Errorf("asked %v", p.Titles())
 	}
 	h.rt.Flags.Offline = true
-	for _, sub := range []string{"use", "enable", "disable"} {
+	for _, sub := range []string{"use", "enable"} {
 		if err := h.run("project", sub); exitClass(err) != "offline" {
 			t.Errorf("project %s --offline without an id = %v", sub, err)
 		}

@@ -28,10 +28,14 @@ ones created later included. One of them is the default project, where new
 resources are created and which a command works on when nothing names a
 project: use sets it.
 
-disable keeps the projects that are certainly not used out of every sync, list
-and lookup, and enable takes them back. A project in which the Compute Engine
-or Cloud DNS API is not enabled holds nothing and is skipped with a note;
-disabling it stops asking it.
+enable manages which projects are enabled: on a terminal, without arguments,
+it lists every project the credentials see with the enabled ones ticked, and
+what is ticked at the end is enabled and the rest disabled. A disabled project
+is kept out of every sync, list and lookup: disable the ones that are
+certainly not used. "enable <project-id>..." and "disable <project-id>..." are
+the shortcuts that change the projects named, for scripts. A project in which
+the Compute Engine or Cloud DNS API is not enabled holds nothing and is
+skipped with a note; disabling it stops asking it.
 
 A disabled project can still be named with --project on the gcp dns and gcp
 compute commands: it is read live and nothing of it is cached.`,
@@ -364,7 +368,7 @@ func newDefaultProject(rt *app.Runtime, profile string, cur currentProject, disa
 	return def, nil
 }
 
-// pickProjects is enable and disable without arguments on a terminal: one
+// pickProjects is enable without arguments on a terminal: one
 // list of every project the credentials see, and of the disabled ones
 // they do not, in which the enabled ones are ticked. What is ticked at
 // the end is enabled and the rest disabled; a default project that was
@@ -552,22 +556,29 @@ func newProjectEnableCmd(rt *app.Runtime, name string, hidden bool) *cobra.Comma
 	cmd := &cobra.Command{
 		Use:    name + " <project-id>...",
 		Hidden: hidden,
-		Short:  "Enable projects of the gcp account again, after they were disabled",
-		Long: `Enable projects of the profile's gcp account that were disabled: the
-inventory, name lookups, domain routing and certificate deployment cover them
-again. Nothing needs to be enabled otherwise: every project the credentials
-see is enabled unless it was disabled, the ones created later included.
+		Short:  "Choose which projects of the gcp account are enabled, or enable the ones named",
+		Long: `Manage which projects of the profile's gcp account are enabled. An enabled
+project is covered by the inventory, name lookups, domain routing and
+certificate deployment; a disabled one is kept out of every sync, list and
+lookup. Every project the credentials see is enabled unless it was disabled,
+the ones created later included.
+
+On a terminal, without <project-id> every project the credentials see is
+listed with the enabled ones ticked: what is ticked at the end is enabled, the
+rest is disabled. A default project that was unticked is replaced by --default
+<id>, or by the answer to a question when it is left out. The list needs
+Google Cloud (not with --offline). Off a terminal the project ids are required
+(exit code 2).
+
+With <project-id>... the projects named are enabled again, and the others are
+left as they are; "polyctl gcp project disable <project-id>..." is the
+opposite shortcut.
 
 A project that is enabled already is left as it is (exit code 0, nothing is
 written). One that is neither disabled nor visible to the credentials is not
 found (exit code 4): name it with --project, or make it the default project
 with "polyctl gcp project use". A disabled project that is no longer visible
 is forgotten.
-
-On a terminal, without <project-id> every project the credentials see is
-listed with the enabled ones ticked, as "polyctl gcp project disable" does:
-what is ticked at the end is enabled, the rest is disabled. The list needs
-Google Cloud (not with --offline).
 
 Only the local configuration changes; the cached inventory of the account is
 synced again on its next use. --dry-run reports what would change and writes
@@ -637,6 +648,26 @@ nothing. Works with --offline for projects that are disabled.`,
 	return cmd
 }
 
+// disableArgs are the arguments of disable: one project at least, on a
+// terminal too, since the list in which the enabled projects are ticked
+// belongs to enable. remove, the hidden name disable had in polyctl 0.4.0,
+// asked which projects to remove when none was named on a terminal: it
+// still asks, with the list of enable.
+func disableArgs(rt *app.Runtime, name string) cobra.PositionalArgs {
+	missing := func(*cobra.Command, []string) error {
+		return app.UsageErrf(`name the projects to disable, or choose from the list with "polyctl gcp project enable"`)
+	}
+	if name == "remove" {
+		return app.RangeArgsOrInteractive(rt, 1, 100, missing)
+	}
+	return func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			return missing(cmd, args)
+		}
+		return cobra.RangeArgs(1, 100)(cmd, args)
+	}
+}
+
 // newProjectDisableCmd builds disable, and remove, the name it had in
 // polyctl 0.4.0, kept hidden for the scripts written then.
 func newProjectDisableCmd(rt *app.Runtime, name string, hidden bool) *cobra.Command {
@@ -644,9 +675,9 @@ func newProjectDisableCmd(rt *app.Runtime, name string, hidden bool) *cobra.Comm
 	cmd := &cobra.Command{
 		Use:    name + " <project-id>...",
 		Hidden: hidden,
-		Short:  "Disable projects of the gcp account: keep them out of every sync, list and lookup",
-		Long: `Disable projects of the profile's gcp account: the ones that are certainly
-not used. Nothing in Google Cloud changes: the projects are no longer synced,
+		Short:  "Disable the projects named: keep them out of every sync, list and lookup",
+		Long: `Disable the projects named of the profile's gcp account: the ones that are
+certainly not used. Nothing in Google Cloud changes: the projects are no longer synced,
 listed or searched, and what the inventory cached of them is dropped (stored
 instance passwords stay). "polyctl gcp project enable" takes them back, and
 --project still names one for a single call.
@@ -659,17 +690,15 @@ names the enabled project that becomes the default (on a terminal it is
 asked); without it this is a usage error (exit code 2), as is disabling every
 project (log the account out with "polyctl auth logout gcp" instead).
 
-On a terminal, without <project-id> every project the credentials see is
-listed with the enabled ones ticked, as "polyctl gcp project enable" does:
-what is ticked at the end is enabled, the rest is disabled, and a default
-project that was unticked is replaced as above. The list needs Google Cloud
-(not with --offline).
+At least one <project-id> is required (exit code 2 without one, on a terminal
+too): to choose from a list of the projects, with the enabled ones ticked, run
+"polyctl gcp project enable" without arguments.
 
 No confirmation is asked: only the local configuration and a cache that the
 next sync rebuilds change. --dry-run reports what would change and writes
 nothing. With --offline the projects are not checked against what the
 credentials see.`,
-		Args: app.RangeArgsOrInteractive(rt, 1, 100, nil),
+		Args: disableArgs(rt, name),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			profile, err := rt.ProfileFor(platform.GCP)
@@ -684,6 +713,7 @@ credentials see.`,
 			if err != nil {
 				return err
 			}
+			// Only remove gets here without a project (see disableArgs).
 			if len(ids) == 0 {
 				return pickProjects(ctx, rt, profile, cur, newDefault)
 			}
@@ -747,5 +777,11 @@ credentials see.`,
 	}
 	cmd.Flags().StringVar(&newDefault, "default", "", "the enabled project that becomes the default, when the default project is disabled")
 	formerName(cmd, "disable")
+	if cmd.Hidden {
+		cmd.Long += `
+
+On a terminal, without <project-id>, this former name still opens the list of
+"polyctl gcp project enable".`
+	}
 	return cmd
 }
