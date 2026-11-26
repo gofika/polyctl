@@ -237,14 +237,25 @@ func cachedDomains(cmd *cobra.Command, rt *Runtime, id platform.ID) []string {
 
 func cachedRecordIDs(cmd *cobra.Command, rt *Runtime, id platform.ID, zone string) []string {
 	out := []string{}
+	for _, rec := range cachedRecords(cmd, rt, id, zone) {
+		desc := strings.Join(strings.Fields(rec.Type+" "+rec.Name+" "+rec.Value), " ")
+		out = append(out, rec.ID+"\t"+desc)
+	}
+	return out
+}
+
+// cachedRecords are the records of a zone in the local inventory that have
+// an id, with the name the inventory holds.
+func cachedRecords(cmd *cobra.Command, rt *Runtime, id platform.ID, zone string) []platform.Record {
+	var out []platform.Record
 	for _, r := range completionRows(cmd, rt, id, inventory.Query{Type: platform.ResDNSRecord, Domain: zone}) {
 		if r.ID == "" {
 			continue
 		}
 		var rec platform.Record
 		_ = json.Unmarshal(r.Data, &rec)
-		desc := strings.Join(strings.Fields(rec.Type+" "+r.Name+" "+rec.Value), " ")
-		out = append(out, r.ID+"\t"+desc)
+		rec.ID, rec.Name = r.ID, r.Name
+		out = append(out, rec)
 	}
 	return out
 }

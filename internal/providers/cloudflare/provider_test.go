@@ -1151,14 +1151,15 @@ func TestCommandTree(t *testing.T) {
 			t.Errorf("dns create lacks --%s", flag)
 		}
 	}
-	// The record id is a required argument of update and delete, not a flag.
+	// update and delete find their record by name; the id is the exact
+	// selector --id, and the former <zone> <record-id> still parses.
 	for _, verb := range []string{"update", "delete"} {
 		c, _, _ := cmd.Find([]string{"dns", verb})
-		if c.Flags().Lookup("id") != nil || c.Use != verb+" <zone> <record-id>" {
+		if c.Flags().Lookup("id") == nil || c.Use != verb+" <zone> [<name> [<type> [<value>]]]" {
 			t.Errorf("dns %s: use %q, --id %v", verb, c.Use, c.Flags().Lookup("id") != nil)
 		}
-		if err := c.Args(c, []string{"example.com"}); !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "record id is required") {
-			t.Errorf("dns %s without the id = %v", verb, err)
+		if err := c.Args(c, []string{"example.com"}); !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "a record or --id <record-id> is required") {
+			t.Errorf("dns %s without a record = %v", verb, err)
 		}
 		if err := c.Args(c, []string{"example.com", "rec1"}); err != nil {
 			t.Errorf("dns %s <zone> <record-id> = %v", verb, err)

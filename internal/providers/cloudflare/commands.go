@@ -2,7 +2,6 @@ package cloudflare
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -607,22 +606,60 @@ func hideFormerRecordFlags(cmd *cobra.Command) {
 	}
 }
 
+// recordTargetHelp says how update and delete find their record.
+const recordTargetHelp = `<name> is relative to the zone (www, a.b), @ for the zone apex, or a full name
+inside the zone (www.example.com). <type> and <value> narrow the selection and
+are needed only to tell records apart; <type> is case-insensitive. --id names
+one record by its id, as ` + "`polyctl cloudflare dns list`" + ` shows it, and cannot be
+combined with a positional record. The former form <zone> <record-id> still
+works: a single argument after the zone that is the id of a record of the
+zone, and not the name of one, is taken for that id.
+
+On a terminal, a missing <zone> is picked from the zones of the profile, and
+with only the zone its records are listed to choose from.`
+
 func newDNSUpdateCmd(rt *app.Runtime) *cobra.Command {
-	var typ, name, value, comment string
+	var typ, name, value, comment, id string
 	var ttl, priority int
 	var proxied bool
+	changeFlags := []string{"value", "ttl", "proxied", "priority", "comment", "name", "type"}
 	cmd := &cobra.Command{
-		Use:   "update <zone> <record-id>",
+		Use:   "update <zone> [<name> [<type> [<value>]]]",
 		Short: "Update one DNS record (fields that are not given keep their value)",
-		Long: `Update the DNS record <record-id> of <zone>; the ids are shown by
-` + "`polyctl cloudflare dns list`" + `. Only the fields given are changed.
+		Long: `Update one DNS record of <zone>: the record of <name>, or the one with --id.
+Only the fields given with flags are changed; the positional <type> and
+<value> say which record is meant, --type and --value what it becomes.
+
+` + recordTargetHelp + `
+
+Exactly one record is updated. When several records match, the interactive
+flow lists them to choose one, and the non-interactive flow lists them on
+stderr and exits with code 5: add <type>, <value> or use --id.
+
+Without a flag that changes something, the interactive flow asks for the new
+value (the current one is the default); the non-interactive flow is a usage
+error (exit code 2).
 
 --proxied is a boolean: --proxied switches the proxy on, --proxied=false
 switches it off, and without it the record keeps its current setting.`,
-		Args:              app.ProxiedArgs(app.RecordIDArgsOrInteractive(rt)),
-		ValidArgsFunction: app.CompleteRecordIDArgs(rt, platform.Cloudflare),
+		Example: `  polyctl cloudflare dns update example.com www --value 203.0.113.20
+  polyctl cloudflare dns update example.com www A --proxied=false
+  polyctl cloudflare dns update example.com www A 203.0.113.10 --value 203.0.113.20
+  polyctl cloudflare dns update example.com --id 372e67954025e0ba6aaa6d586b9e0b59 --ttl 300`,
+		Args:              app.ProxiedRecordArgs(app.RecordTargetArgsOrInteractive(rt), 1),
+		ValidArgsFunction: app.CompleteRecordTargetArgs(rt, completeZones(rt), platform.Cloudflare),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			id := app.Arg(args, 1)
+			target, err := app.ParseRecordTarget(cmd, args)
+			if err != nil {
+				return err
+			}
+			changes := false
+			for _, f := range changeFlags {
+				changes = changes || cmd.Flags().Changed(f)
+			}
+			if !changes && !rt.Interactive() {
+				return app.UsageErrf("nothing to change: pass --%s", strings.Join(changeFlags, ", --"))
+			}
 			if rt.Flags.Offline {
 				return app.ErrOffline
 			}
@@ -638,20 +675,18 @@ switches it off, and without it the record keeps its current setting.`,
 			if err != nil {
 				return err
 			}
-			if id == "" {
-				if id, err = rt.PickRecordID("Update which record of "+z.Name+"?", existing, nil); err != nil {
+			chosen, err := rt.SelectRecords(target.Select(app.RecordSelect{Zone: z.Name, Records: existing, ID: id, One: true, Verb: "Update", Grid: recordGrid}))
+			if err != nil {
+				return err
+			}
+			cur := &chosen.Records[0]
+			if !changes {
+				if value, err = rt.AskRecordValue(strings.ToUpper(cur.Type), cur.Value); err != nil {
 					return err
 				}
-			}
-			var cur *platform.Record
-			for i := range existing {
-				if existing[i].ID == id {
-					cur = &existing[i]
-					break
+				if value == cur.Value {
+					return app.NothingToDof("%s %s keeps the value %s", cur.Name, cur.Type, cur.Value)
 				}
-			}
-			if cur == nil {
-				return fmt.Errorf("%w: record %s in zone %s", platform.ErrNotFound, id, z.Name)
 			}
 			rec := *cur
 			rec.ZoneID = z.ID
@@ -686,8 +721,8 @@ switches it off, and without it the record keeps its current setting.`,
 			if cmd.Flags().Changed("comment") {
 				rec.Extra["comment"] = comment
 			}
-			target := platform.Target{Platform: platform.Cloudflare, Profile: profile, Domain: z.Name}
-			if done, err := rt.WouldWrite(target, platform.Change{Resource: app.RecordResource(rec.Name, rec.Type), Action: platform.Updated, ID: id, Detail: cur.Value + " -> " + rec.Value}); done || err != nil {
+			report := platform.Target{Platform: platform.Cloudflare, Profile: profile, Domain: z.Name}
+			if done, err := rt.WouldWrite(report, platform.Change{Resource: app.RecordResource(rec.Name, rec.Type), Action: platform.Updated, ID: cur.ID, Detail: cur.Value + " -> " + rec.Value}); done || err != nil {
 				return err
 			}
 			out, err := s.client.UpdateRecord(cmd.Context(), z.ID, rec)
@@ -699,6 +734,7 @@ switches it off, and without it the record keeps its current setting.`,
 			return rt.Render(recordsResult{Profile: profile, Zone: z, Records: []platform.Record{*out}}, func() output.Grid { return recordGrid([]platform.Record{*out}) })
 		},
 	}
+	cmd.Flags().StringVar(&id, "id", "", "update the record with this id")
 	cmd.Flags().StringVar(&typ, "type", "", "new record type")
 	cmd.Flags().StringVar(&name, "name", "", "new record name relative to the zone (www, @) or FQDN")
 	cmd.Flags().StringVar(&value, "value", "", "new record value")
@@ -709,14 +745,50 @@ switches it off, and without it the record keeps its current setting.`,
 	return cmd
 }
 
+// deleteResult is the output of dns delete. Deleted is the id of the
+// record when one was deleted, as the command printed it when it took one
+// record id.
+type deleteResult struct {
+	Profile string            `json:"profile" yaml:"profile"`
+	ZoneID  string            `json:"zone_id" yaml:"zone_id"`
+	Zone    string            `json:"zone" yaml:"zone"`
+	Deleted string            `json:"deleted,omitempty" yaml:"deleted,omitempty"`
+	Records []platform.Record `json:"records" yaml:"records"`
+}
+
 func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
+	var id string
 	cmd := &cobra.Command{
-		Use:               "delete <zone> <record-id>",
-		Short:             "Delete one DNS record (ids are shown by `polyctl cloudflare dns list`)",
-		Args:              app.RecordIDArgsOrInteractive(rt),
-		ValidArgsFunction: app.CompleteRecordIDArgs(rt, platform.Cloudflare),
+		Use:   "delete <zone> [<name> [<type> [<value>]]]",
+		Short: "Delete the DNS records of a name (optionally of one type and value), or one record by --id",
+		Long: `Delete the records of <name> in <zone>, or the one record with --id.
+
+` + recordTargetHelp + `
+
+A name whose records all have one type needs no <type>. A name with records
+of several types is not deleted as a whole: the interactive flow lists its
+records to tick (ticking none deletes nothing), and the non-interactive flow
+names the types and exits with code 5, also with --yes.
+
+A single match is deleted at once. Several matches are listed on stderr with
+their ids and a note on how to delete one of them only (<value> or --id), and
+confirmed first (default no; a no deletes nothing, exit code 0); --yes skips
+the question. The non-interactive flow asks nothing: --yes is required to
+delete several records (exit code 2 without it).
+
+The CNAME of an R2 custom domain is removed by unbinding the domain from its
+bucket. --dry-run reports what would be deleted and asks nothing.`,
+		Example: `  polyctl cloudflare dns delete example.com www
+  polyctl cloudflare dns delete example.com www A
+  polyctl cloudflare dns delete example.com www A 203.0.113.10
+  polyctl cloudflare dns delete example.com --id 372e67954025e0ba6aaa6d586b9e0b59`,
+		Args:              app.RecordTargetArgsOrInteractive(rt),
+		ValidArgsFunction: app.CompleteRecordTargetArgs(rt, completeZones(rt), platform.Cloudflare),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			id := app.Arg(args, 1)
+			target, err := app.ParseRecordTarget(cmd, args)
+			if err != nil {
+				return err
+			}
 			if rt.Flags.Offline {
 				return app.ErrOffline
 			}
@@ -728,60 +800,34 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if id == "" {
-				existing, err := s.client.ListRecords(cmd.Context(), z.ID)
-				if err != nil {
-					return err
-				}
-				mark := func(r platform.Record) string {
-					if owner, ok := s.client.Match(*z, r); ok {
-						return owner
-					}
-					return ""
-				}
-				if id, err = rt.PickRecordID("Delete which record of "+z.Name+"?", existing, mark); err != nil {
-					return err
-				}
-			}
-			// The record is read first: the CNAME of an R2 custom domain
-			// cannot be deleted through the DNS API, only by unbinding the
-			// domain from its bucket.
-			cur, err := s.client.api.getRecord(cmd.Context(), z.ID, id)
+			existing, err := s.client.ListRecords(cmd.Context(), z.ID)
 			if err != nil {
-				if errors.Is(err, platform.ErrNotFound) {
-					return fmt.Errorf("%w: record %s in zone %s", platform.ErrNotFound, id, z.Name)
-				}
 				return err
 			}
-			rec := toRecord(*cur)
-			owner, bound := s.client.Match(*z, rec)
-			detail := "zone " + z.Name
-			if bound {
-				detail += "; unbound from " + owner + ", which removes the record"
-			}
-			target := platform.Target{Platform: platform.Cloudflare, Profile: profile, Domain: z.Name}
-			if done, err := rt.WouldWrite(target, platform.Change{Resource: "record/" + id, Action: platform.Deleted, ID: id, Detail: detail}); done || err != nil {
+			sel := target.Select(app.RecordSelect{Zone: z.Name, Records: existing, ID: id, Verb: "Delete", Grid: recordGrid})
+			// A record owned by another service (the CNAME of an R2 custom
+			// domain) is marked in a list and deleted by unbinding it there.
+			sel.Offer, sel.Mark = app.DeletableRecords(s.client, *z)
+			chosen, err := rt.SelectRecords(sel)
+			if err != nil {
 				return err
 			}
-			if bound {
-				rt.Infof("%s %s belongs to %s: unbinding it there removes the record", rec.Name, rec.Type, owner)
-				handled, err := s.client.Unbind(cmd.Context(), *z, rec)
-				if err == nil && !handled {
-					err = fmt.Errorf("%s could not be unbound", owner)
-				}
-				if err != nil {
-					return err
-				}
-			} else if err := s.client.DeleteRecord(cmd.Context(), z.ID, id); err != nil {
+			del := app.RecordsDelete{Target: platform.Target{Platform: platform.Cloudflare, Profile: profile, Domain: z.Name},
+				Zone: *z, DNS: s.client, Records: chosen.Records, Grid: recordGrid}
+			if !chosen.Listed {
+				del.Exact = app.ExactRecordHint("<type>", true, true)
+			}
+			if done, err := rt.DeleteRecords(cmd.Context(), del); !done || err != nil {
 				return err
 			}
-			if db, err := rt.DB(); err == nil {
-				_ = db.Delete(cmd.Context(), recordSet(profile, ""), platform.ResDNSRecord, id)
+			res := deleteResult{Profile: profile, ZoneID: z.ID, Zone: z.Name, Records: chosen.Records}
+			if len(chosen.Records) == 1 {
+				res.Deleted = chosen.Records[0].ID
 			}
-			rt.Infof("deleted record %s from zone %s via cloudflare/%s", id, z.Name, profile)
-			return rt.Render(map[string]string{"profile": profile, "zone_id": z.ID, "zone": z.Name, "deleted": id}, func() output.Grid { return output.Grid{} })
+			return rt.Render(res, func() output.Grid { return output.Grid{} })
 		},
 	}
+	cmd.Flags().StringVar(&id, "id", "", "delete the record with this id")
 	return cmd
 }
 

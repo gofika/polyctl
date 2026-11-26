@@ -308,6 +308,12 @@ func (f *r2Fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 				f.records[z.id] = append(f.records[z.id][:i:i], f.records[z.id][i+1:]...)
 				f.ok(w, map[string]any{"id": parts[3]}, nil)
+			case http.MethodPut:
+				var next map[string]any
+				_ = json.Unmarshal(b, &next)
+				next["id"] = parts[3]
+				f.records[z.id][i] = next
+				f.ok(w, next, nil)
 			}
 			return
 		}

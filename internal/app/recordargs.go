@@ -199,3 +199,124 @@ func CompleteRecordArgs(first CompletionFunc, id platform.ID) CompletionFunc {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 }
+
+// NoFormerFlags is the formerFlags of a command whose --name, --type and
+// --value are not a former form of the positional record (an update, where
+// they are the new values): a positional record beside them is no mistake.
+const NoFormerFlags = ""
+
+// recordTarget is the positional record of a command that acts on existing
+// records of a platform with record ids: <name> [<type> [<value>]].
+var recordTarget = recordShape{maxValues: 1, typeOptional: true}
+
+// RecordTargetArgsOrInteractive validates the arguments of an update or
+// delete command of a platform with record ids, `<zone> [<name> [<type>
+// [<value>]]]` with the flag --id as the exact selector. The record after
+// the zone is read as ParseRecordSelector reads it; it cannot stand beside
+// --id. The interactive flow may leave out the record and the zone: the
+// command lists what there is. The non-interactive flow needs the zone and
+// a record or --id.
+func RecordTargetArgsOrInteractive(rt *Runtime) cobra.PositionalArgs {
+	return func(cmd *cobra.Command, args []string) error {
+		usage := recordTarget.usage(cmd)
+		byID := false
+		if f := cmd.Flags().Lookup("id"); f != nil && f.Changed {
+			byID = true
+		}
+		if len(args) > 1 {
+			if _, err := recordTarget.parse(cmd, args[1:], []string{NoFormerFlags}); err != nil {
+				return err
+			}
+			if byID {
+				return UsageErrf("--id selects one record; it cannot be combined with <name> [<type> [<value>]]")
+			}
+			return nil
+		}
+		if rt.Interactive() {
+			return nil
+		}
+		// See RangeArgsOrInteractive: an invalid POLYCTL_NON_INTERACTIVE
+		// is reported rather than the missing argument it leads to.
+		if err := CheckNonInteractiveEnv(); err != nil {
+			return UsageErrf("%v", err)
+		}
+		if len(args) == 1 && byID {
+			return nil
+		}
+		return UsageErrf("a record or --id <record-id> is required: %s", usage)
+	}
+}
+
+// ParseRecordTarget reads the record of a command validated by
+// RecordTargetArgsOrInteractive from its arguments (the zone first); nil
+// when no record follows the zone.
+func ParseRecordTarget(cmd *cobra.Command, args []string) (*RecordArgs, error) {
+	if len(args) < 2 {
+		return nil, nil
+	}
+	return recordTarget.parse(cmd, args[1:], []string{NoFormerFlags})
+}
+
+// Select fills in what the positional record r says about the records
+// meant in s, whose Zone is set: the full name, the type and the value. A
+// name alone may also be the record id of the former form `<zone>
+// <record-id>` (see RecordSelect.IDOrName). A nil r leaves s as it is: the
+// records are named by s.ID, or listed.
+func (r *RecordArgs) Select(s RecordSelect) RecordSelect {
+	if r == nil {
+		return s
+	}
+	s.Name, s.Type, s.Value = platform.FQDN(r.Name, s.Zone), r.Type, r.Value()
+	if r.Type == "" && s.ID == "" {
+		s.IDOrName = r.Name
+	}
+	return s
+}
+
+// CompleteRecordTargetArgs completes `<zone> [<name> [<type> [<value>]]]`
+// of a command that acts on existing records: the first argument with first
+// (the zones or domains), then the names of the records of the zone in the
+// local inventory (relative to the zone, described by their types and
+// values), the types the name has there and the values of the name and
+// type.
+func CompleteRecordTargetArgs(rt *Runtime, first CompletionFunc, id platform.ID) CompletionFunc {
+	return func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			if first != nil {
+				return first(cmd, args, toComplete)
+			}
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		if len(args) > 3 {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		var names []string
+		desc := map[string][]string{}
+		seen := map[string]bool{}
+		out := []string{}
+		for _, r := range cachedRecords(cmd, rt, id, args[0]) {
+			rel := platform.RelativeName(r.Name, args[0])
+			switch len(args) {
+			case 1:
+				if _, ok := desc[rel]; !ok {
+					names = append(names, rel)
+				}
+				desc[rel] = append(desc[rel], strings.Join(strings.Fields(r.Type+" "+r.Value), " "))
+			case 2:
+				if t := strings.ToUpper(r.Type); platform.NormalizeDomain(r.Name) == platform.FQDN(args[1], args[0]) && !seen[t] {
+					seen[t] = true
+					out = append(out, t)
+				}
+			case 3:
+				if platform.NormalizeDomain(r.Name) == platform.FQDN(args[1], args[0]) && strings.EqualFold(r.Type, args[2]) && !seen[r.Value] {
+					seen[r.Value] = true
+					out = append(out, r.Value)
+				}
+			}
+		}
+		for _, n := range names {
+			out = append(out, n+"\t"+strings.Join(desc[n], ", "))
+		}
+		return out, cobra.ShellCompDirectiveNoFileComp
+	}
+}

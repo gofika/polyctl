@@ -476,7 +476,7 @@ func TestPlatformTreeShapes(t *testing.T) {
 
 	// The record id is positional where it is required, and a flag where it
 	// is one of two ways to address a record.
-	for _, path := range []string{"cloudflare dns update", "cloudflare dns delete", "namecom dns update", "namecom dns delete", "aliyun dns record update", "aliyun dns record delete"} {
+	for _, path := range []string{"namecom dns update", "namecom dns delete", "aliyun dns record update", "aliyun dns record delete"} {
 		c := find(root, path)
 		if c == nil {
 			continue
@@ -486,6 +486,25 @@ func TestPlatformTreeShapes(t *testing.T) {
 		}
 		if err := c.Args(c, []string{"example.com"}); ExitCodeFor(err) != ExitUsage {
 			t.Errorf("%s without the record id = %v", path, err)
+		}
+	}
+	// Records found by name: <name> [<type> [<value>]] after the zone, the
+	// id as the exact selector --id. Without a terminal the zone alone is
+	// a usage error, and --id cannot stand beside a record.
+	for _, path := range []string{"cloudflare dns update", "cloudflare dns delete"} {
+		c := find(root, path)
+		if c == nil {
+			t.Errorf("%s is missing", path)
+			continue
+		}
+		if !strings.HasSuffix(c.Use, " <zone> [<name> [<type> [<value>]]]") || c.Flags().Lookup("id") == nil {
+			t.Errorf("%s: use %q, --id %v", path, c.Use, c.Flags().Lookup("id") != nil)
+		}
+		for n, wantErr := range map[int]bool{0: true, 1: true, 2: false, 3: false, 4: false, 5: true} {
+			args := []string{"example.com", "www", "A", "192.0.2.1", "192.0.2.2"}[:n]
+			if err := c.Args(c, args); (err != nil) != wantErr || err != nil && ExitCodeFor(err) != ExitUsage {
+				t.Errorf("%s with %d argument(s) = %v", path, n, err)
+			}
 		}
 	}
 	for _, path := range []string{"dns delete", "godaddy dns delete", "gcp dns record delete"} {
@@ -666,6 +685,7 @@ func TestDocsListConfirmingCommands(t *testing.T) {
 		{"aliyun alb server-group delete", "Alibaba Cloud", "`server-group delete`"},
 		{"aliyun alb acl delete", "Alibaba Cloud", "`acl delete`"},
 		{"aliyun cas certificate delete", "Alibaba Cloud", "`cas certificate delete`"},
+		{"cloudflare dns delete", "Cloudflare", "`dns delete`"},
 		{"cloudflare r2 domain detach", "Cloudflare", "`r2 domain detach`"},
 		{"cloudflare zone delete", "Cloudflare", "`zone delete`"},
 		{"cloudflare cache rule set", "Cloudflare", "`cache rule set --replace`"},

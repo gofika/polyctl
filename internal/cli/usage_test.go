@@ -97,7 +97,7 @@ func TestListFlagCompletion(t *testing.T) {
 }
 
 // No positional argument of a platform tree falls back to file names, and
-// record ids complete from the cached records of the zone.
+// records complete from the cached records of the zone.
 func TestPlatformArgCompletion(t *testing.T) {
 	dir, cfgPath := setup(t, true)
 	seed(t, dir, []platform.Zone{{ID: "z1", Name: "example.com"}}, map[string][]platform.Record{
@@ -115,12 +115,20 @@ func TestPlatformArgCompletion(t *testing.T) {
 		if out := seed2("cloudflare", "dns", verb, ""); !strings.Contains(out, "example.com\n") || !strings.HasSuffix(strings.TrimSpace(out), ":4") {
 			t.Errorf("cloudflare dns %s <zone>:\n%s", verb, out)
 		}
+		// The record is completed by name: the names of the zone, then
+		// the types of the name, then the values of the name and type.
 		out := seed2("cloudflare", "dns", verb, "example.com", "")
-		if !strings.Contains(out, "r1\tA www.example.com 1.2.3.4\n") || !strings.Contains(out, "r2\tMX example.com mail.example.com\n") || !strings.HasSuffix(strings.TrimSpace(out), ":4") {
-			t.Errorf("cloudflare dns %s example.com <record-id>:\n%s", verb, out)
+		if !strings.Contains(out, "www\tA 1.2.3.4\n") || !strings.Contains(out, "@\tMX mail.example.com\n") || !strings.HasSuffix(strings.TrimSpace(out), ":4") {
+			t.Errorf("cloudflare dns %s example.com <name>:\n%s", verb, out)
 		}
-		if out := seed2("cloudflare", "dns", verb, "example.com", "r1", ""); strings.Contains(out, "r1") || !strings.HasSuffix(strings.TrimSpace(out), ":4") {
-			t.Errorf("cloudflare dns %s: third argument:\n%s", verb, out)
+		if out := seed2("cloudflare", "dns", verb, "example.com", "www", ""); !strings.HasPrefix(out, "A\n:4") {
+			t.Errorf("cloudflare dns %s example.com www <type>:\n%s", verb, out)
+		}
+		if out := seed2("cloudflare", "dns", verb, "example.com", "www", "a", ""); !strings.HasPrefix(out, "1.2.3.4\n:4") {
+			t.Errorf("cloudflare dns %s example.com www a <value>:\n%s", verb, out)
+		}
+		if out := seed2("cloudflare", "dns", verb, "example.com", "www", "A", "1.2.3.4", ""); strings.Contains(out, "www") || !strings.HasSuffix(strings.TrimSpace(out), ":4") {
+			t.Errorf("cloudflare dns %s: fifth argument:\n%s", verb, out)
 		}
 	}
 	// The other trees have no account here: nothing to offer, and never

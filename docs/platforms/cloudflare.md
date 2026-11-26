@@ -32,8 +32,8 @@ cloudflare zone setting get <zone|id> <setting>
 cloudflare zone setting set <zone|id> <setting> <value> [--timeout 1m]
 cloudflare dns list <zone> [--type] [--name]
 cloudflare dns create <zone> <name> <type> <value> [--ttl 1] [--proxied[=false]] [--priority] [--comment]
-cloudflare dns update <zone> <record-id> [--type] [--name] [--value] [--ttl] [--priority] [--proxied[=false]] [--comment]
-cloudflare dns delete <zone> <record-id>
+cloudflare dns update <zone> (<name> [<type> [<value>]] | --id <record-id>) [--type] [--name] [--value] [--ttl] [--priority] [--proxied[=false]] [--comment]
+cloudflare dns delete <zone> (<name> [<type> [<value>]] | --id <record-id>) [-y]
 cloudflare cache purge <zone> (--everything | --url <url>... | --host <h>... | --tag <t>... | --prefix <p>...)   # host/tag/prefix need Enterprise
 cloudflare cache rule list <zone> [--wide]
 cloudflare cache rule set  <zone> --file rules.yaml [--replace] [--first] [-y]
@@ -206,10 +206,17 @@ polyctl cf zone setting set example.com argo_smart_routing on
 ```sh
 polyctl cf dns create example.com www A 203.0.113.10 --proxied
 polyctl cf dns create example.com @ TXT "v=spf1 include:_spf.example.net ~all"
-polyctl cf dns update example.com <record-id> --proxied=false
+polyctl cf dns update example.com www --proxied=false
+polyctl cf dns update example.com www A 203.0.113.10 --value 203.0.113.20
+polyctl cf dns delete example.com old
+polyctl cf dns delete example.com --id 372e67954025e0ba6aaa6d586b9e0b59
 ```
 
-- Records are addressed by their Cloudflare record id, an argument of `update` and `delete`.
+- `update` and `delete` find their record by `<name>`. `<type>` and `<value>` are needed only to tell records apart; `--id <record-id>` names one record exactly and cannot be combined with a positional record. The zone is read live.
+- `delete`: a name whose records have one type needs no `<type>`. A single match is deleted at once. Several matches are listed with their ids and the way to delete one of them only (`<value>` or `--id`), then confirmed (`--yes` in the non-interactive flow; see [Confirmations](../interactive.md#confirmations)). A name with records of several types is never deleted as a whole: a terminal lists its records to tick, scripts get exit code 5 naming the types, also with `--yes`. JSON: `{"profile", "zone_id", "zone", "records": [...]}`, plus `"deleted": "<record-id>"` when one record was deleted.
+- `update` changes exactly one record. Several matches are a list to choose one from on a terminal and exit code 5 in scripts (the candidates are listed on stderr with their ids), also with `--yes`. The positional `<type>` and `<value>` say which record is meant; `--type`, `--name` and `--value` are what it becomes. Without a flag that changes something, a terminal asks for the new value and scripts get exit code 2.
+- With only `<zone>`, a terminal lists the records of the zone: to tick for `delete`, to choose one for `update`. Scripts get exit code 2.
+- Former form: `update|delete <zone> <record-id>` still works. A single argument after the zone that is the id of a record of the zone, and not the name of one, is taken for that id; one that is both is exit code 5 and names `--id` and the full record name as the two ways to say which.
 - `create` takes the record as arguments: `<name>` is relative to the zone (`www`, `a.b`), `@` for the zone apex, or a full name inside the zone; `<type>` is case-insensitive; the value is one argument (quote one that contains spaces; one that starts with `-` goes after `--`). A wrong number of arguments is exit code 2.
 - Former form (0.5.x): `create` still reads the record from `--name`, `--type` and `--value` (without `--name`, the zone apex). These flags are no longer listed in the help. A positional record together with one of them is exit code 2.
 - `update` changes the fields given as `--name`, `--type` and `--value`; `--name` is relative to the zone (`www`, `@`) or an FQDN.
