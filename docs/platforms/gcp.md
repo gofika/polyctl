@@ -402,9 +402,9 @@ Components: the health check firewall rule and instance tag (as `firewall ensure
 ### list, get, delete
 
 - `list`: one row per forwarding rule with its project, protocol, IP, port, backend and health, for every enabled project. `--region` / `--global` narrow it.
-- `get <name>` (load balancer or forwarding rule name) shows the whole chain with backend health. A regional match wins over a global one. Several matches (in several projects, regions or accounts) are a pick on a terminal and exit code 5 otherwise; the error names `--project`, `--region` / `--global` or `--profile`, whichever differ.
+- `get <name>` (load balancer or forwarding rule name) shows the whole chain with backend health. Several matches (in several projects, regions or accounts, or a regional and a global load balancer of one name) are a pick on a terminal and exit code 5 otherwise; the error names `--project`, `--region` / `--global` or `--profile`, whichever differ.
 - `delete <name>` deletes the forwarding rules, then the proxies, URL maps and backend services only they use. Instance groups, health checks, firewall rules and static addresses are never deleted. Asks for confirmation.
 
 ### Components
 
-`backend-service`, `forwarding-rule`, `health-check` (`--region` / `--global`) and `instance-group` (`--zone`) each have `list`, `get` and `delete`, for troubleshooting and clean-up. They cover every enabled project; a name several projects or scopes hold is a pick on a terminal and exit code 5 otherwise (`--project`, `--region` / `--global` or `--zone` choose). `delete` asks for confirmation; a component still used by another is exit code 1 naming the user.
+`backend-service`, `forwarding-rule`, `health-check` (`--region` / `--global`) and `instance-group` (`--zone`) each have `list`, `get` and `delete`, for troubleshooting and clean-up. They cover every enabled project; a name several projects or scopes hold is a pick on a terminal and exit code 5 otherwise (`--project`, `--region` / `--global` or `--zone` choose). A regional and a global object of one name are two such candidates, for `load-balancer get` / `delete` too: until this version the regional one was used without asking. `delete` asks for confirmation; a component still used by another is exit code 1 naming the user.

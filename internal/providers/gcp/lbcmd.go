@@ -500,9 +500,10 @@ func lbScopes(ctx context.Context, rt *app.Runtime, ref string) ([]scope, error)
 // resolveLBTarget finds the load balancer ref names: the inventory tells
 // which accounts hold it, and their components are then read live. ref is
 // a load balancer name, or the name of one of its forwarding rules. Load
-// balancers of one name in several accounts, projects or scopes are a pick
-// in the interactive flow and ambiguous (exit code 5) otherwise, unless
-// --profile, --project, --region or --global choose.
+// balancers of one name in several accounts, projects or scopes (a regional
+// and a global one included) are a pick in the interactive flow and
+// ambiguous (exit code 5) otherwise, unless --profile, --project, --region
+// or --global choose.
 func resolveLBTarget(ctx context.Context, rt *app.Runtime, ref, region string, all bool) (*lbTarget, error) {
 	if rt.Flags.Offline {
 		return nil, fmt.Errorf("%w: load balancers are read live", app.ErrOffline)
@@ -556,20 +557,8 @@ func resolveLBTarget(ctx context.Context, rt *app.Runtime, ref, region string, a
 			hits = append(hits, &lbTarget{name: name, profile: p, c: c, x: x, region: r, entries: list})
 		}
 	}
-	if all {
-		// Without --region or --global a regional load balancer wins over a
-		// global one of the same name.
-		var regional []*lbTarget
-		for _, h := range hits {
-			if h.region != "" {
-				regional = append(regional, h)
-			}
-		}
-		if len(regional) > 0 && len(regional) < len(hits) {
-			rt.Infof("note: load balancer %q also exists in the global scope; using the regional one (pass --global for the other)", ref)
-			hits = regional
-		}
-	}
+	// A regional and a global load balancer of one name are two candidates
+	// like any others: neither is preferred.
 	switch len(hits) {
 	case 0:
 		where := ""
@@ -780,11 +769,9 @@ groups with their named ports and members. <name> is the load balancer name
 (the polyctl-lb label of its forwarding rules, else the URL map name, else
 the forwarding rule name) or the name of one of its forwarding rules; the
 inventory tells which account holds it (synced once when unknown), then
-everything is read live. Without --region or --global a regional load
-balancer wins over a global one of the same name. Several matches are exit
-code 5 (pass --profile, --project, --region or --global; a terminal lets you
-choose);
-none is exit code 4. On a terminal, without <name> the load balancers of
+everything is read live. Several matches, a regional and a global load
+balancer of one name included, are exit code 5 (pass --profile, --project,
+--region or --global; a terminal lets you choose); none is exit code 4. On a terminal, without <name> the load balancers of
 the selected accounts are offered.`,
 		Example: "  polyctl gcp compute load-balancer get lb-web-1 -o json",
 		Args:    app.ArgsOrInteractive(rt, 1, nil),

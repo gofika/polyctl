@@ -197,24 +197,13 @@ func componentsOf(ctx context.Context, rt *app.Runtime, kind lbKind, name string
 
 // locateComponent finds a component by name in every enabled project of
 // every selected GCP account.
-// Without --region or --global a regional match wins over a global one.
-// Several matches are a pick in the interactive flow and ambiguous (exit
-// code 5) otherwise; none is exit code 4.
+// Several matches, a regional and a global one of the same name included,
+// are a pick in the interactive flow and ambiguous (exit code 5) otherwise;
+// none is exit code 4.
 func locateComponent(ctx context.Context, rt *app.Runtime, kind lbKind, name string, q componentQuery) (*located, error) {
 	hits, searched, err := componentsOf(ctx, rt, kind, name, q)
 	if err != nil {
 		return nil, err
-	}
-	if kind != kindInstanceGroup && q.all {
-		var regional []located
-		for _, h := range hits {
-			if h.region != "" {
-				regional = append(regional, h)
-			}
-		}
-		if len(regional) > 0 {
-			hits = regional
-		}
 	}
 	switch len(hits) {
 	case 0:
@@ -406,9 +395,9 @@ func componentGetCmd(rt *app.Runtime, spec componentSpec) *cobra.Command {
 		Use:   "get <name>",
 		Short: "Show a " + string(spec.kind),
 		Long: "Show a " + string(spec.kind) + `, read live. Every selected GCP account is searched for
-the name (` + scopeHelp(spec) + ` narrows the search; without them a regional match wins
-over a global one). Several matches are exit code 5 (a terminal lets you
-choose), none is exit code 4. On a terminal, without <name> the ` + spec.plural + ` of
+the name (` + scopeHelp(spec) + ` narrows the search). Several matches are exit code 5,
+naming the flags that choose (a terminal lets you choose), none is exit
+code 4. On a terminal, without <name> the ` + spec.plural + ` of
 the selected accounts are offered.`,
 		Example: spec.example,
 		Args:    app.ArgsOrInteractive(rt, 1, nil),
