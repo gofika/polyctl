@@ -135,8 +135,8 @@ gcp project disable <project-id>... [--default <project-id>] [--dry-run]
 # every gcp dns and gcp compute command also takes --project <id>
 gcp dns zone list | get <zone>
 gcp dns record list <zone> [--type] [--name]
-gcp dns record upsert <zone> --type A --name www --value 203.0.113.10 [--value ...] [--ttl 300] [--priority <n>]
-gcp dns record delete <zone> (--type A --name www [--value <v>] [--priority <n>] | --id <project/zone|TYPE|name|value>) [--yes]
+gcp dns record upsert <zone> <name> <type> <value>... [--ttl 300] [--priority <n>]
+gcp dns record delete <zone> (<name> <type> [<value>] [--priority <n>] | --id <project/zone|TYPE|name|value>) [--yes]
 
 gcp compute instance list
 gcp compute instance get <name|id> [--zone <z>] [--field external-ip|internal-ip|status|zone|machine-type]
@@ -174,10 +174,13 @@ gcp compute instance-group list | get <name> | delete <name> [--zone <z>]
 
 - `<zone>` is a managed zone id (`<project>/<managed zone>`), a managed zone name or a DNS name. A managed zone name wins over a DNS name. A name several zones answer to (one managed zone name in two projects, or a public and a private zone of one DNS name) is a pick on a terminal and exit code 5 otherwise; `--project` or the zone id chooses. Until this version a DNS name of such a public and private pair silently meant the first of the two.
 - `zone list` shows the zones of every enabled project with their project; in JSON a zone's `id` is the zone id and `extra.project` / `extra.managed_zone` are its two parts.
-- Record sets are shown one record per value; `upsert` sets the whole record set, `delete` removes the set or, with `--value`, one value. Deleting a whole set lists its values and asks first ([Confirmations](../interactive.md#confirmations)); the non-interactive flow needs `--yes`, and a set that does not exist is exit code 4 and asks nothing. One value (`--value`, `--id`) is removed without a question. Writes are applied as one atomic change.
-- `--name` is relative to the zone (`www`, `@`) or an FQDN; default is the zone apex.
+- The record is written like a zone file line: `polyctl gcp dns record upsert example-zone www A 203.0.113.10 203.0.113.11`. `<name>` is relative to the zone (`www`, `a.b`), `@` for the zone apex, or a full name inside the zone; `<type>` is case-insensitive; each `<value>` is one argument (quote one that contains spaces, and put `--` before one that starts with `-`).
+- Record sets are shown one record per value; `upsert` sets the whole record set to the values given, `delete` removes the set or, with a `<value>`, one value. Deleting a whole set lists its values and asks first ([Confirmations](../interactive.md#confirmations)); the non-interactive flow needs `--yes`, and a set that does not exist is exit code 4 and asks nothing. One value (`<value>`, `--id`) is removed without a question. Writes are applied as one atomic change.
+- A wrong number of record arguments is exit code 2, and the message shows the usage (`usage: polyctl gcp dns record upsert <zone> <name> <type> <value>...`). With only `<zone>`, a terminal asks for the type and the value (`upsert`, at the zone apex) or offers the record sets of the zone (`delete`).
+- Former form (0.5.x): `upsert` and `delete` still read the record from `--name`, `--type` and `--value` (`upsert`: repeated for several values, and without `--name`, the zone apex). These flags are no longer listed in the help. A positional record together with one of them is exit code 2.
+- `--priority` applies to MX/SRV values that do not start with one (`"10 mail.example.com"`).
 - `--ttl 0` keeps the existing TTL; a new set gets 300.
-- `--id` (`project/zone|TYPE|name|value`, as shown by `list`) picks one record instead of `--name` / `--type`, and cannot be combined with `--name`, `--type`, `--value` or `--priority` (exit code 2).
+- `--id` (`project/zone|TYPE|name|value`, as shown by `list`) picks one record instead of `<name> <type>`, and cannot be combined with a record (arguments or the former flags) or `--priority` (exit code 2).
 
 ## Instances
 

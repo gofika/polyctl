@@ -62,7 +62,7 @@ A RAM denial (`Forbidden.RAM`) exits with code 3. The RAM actions of `ecs instan
 aliyun whoami                                     # account, ARN, identity type
 aliyun dns domain list
 aliyun dns record list <domain> [--type] [--name]
-aliyun dns record create <domain> --type A --name www --value 203.0.113.10 [--ttl 600] [--priority] [--line default|telecom|unicom|mobile|oversea]
+aliyun dns record create <domain> <name> <type> <value> [--ttl 600] [--priority] [--line default|telecom|unicom|mobile|oversea]
 aliyun dns record update <domain> <record-id> [--name] [--type] [--value] [--ttl] [--priority] [--line]
 aliyun dns record delete <domain> <record-id>
 aliyun domain list | get <domain>
@@ -142,7 +142,10 @@ aliyun cas certificate delete (<cert-id> | --expired) [--force] [--region <r>]..
 
 ## DNS and domains
 
-- Alidns calls the relative record name `RR`; polyctl exposes it as `--name` (`www`, `@`). `--ttl 0` uses the Alidns default (600). `--priority` is for MX records (1-50).
+- `create` takes the record as arguments, like a zone file line: `polyctl aliyun dns record create example.com www A 203.0.113.10`. `<name>` is relative to the domain (`www`, `a.b`), `@` for the apex, or a full name inside the domain; `<type>` is case-insensitive; the value is one argument (quote one that contains spaces; one that starts with `-` goes after `--`). A wrong number of arguments is exit code 2, and the message shows the usage. With only `<domain>`, a terminal asks for the type and the value (the record is then at the apex).
+- Former form (0.5.x): `create` still reads the record from `--name`, `--type` and `--value` (without `--name`, the apex). These flags are no longer listed in the help. A positional record together with one of them is exit code 2.
+- `update` changes the fields given as `--name`, `--type` and `--value`; `--name` is relative to the domain (`www`, `@`) or a full name.
+- Alidns calls the relative record name `RR`; polyctl shows the full name. `--ttl 0` uses the Alidns default (600). `--priority` is for MX records (1-50).
 - Records carry a resolution line (`--line`, shown in the `LINE` column).
 - Records have ids, so `update` and `delete` take `<record-id>` as an argument.
 - `domain ns set` writes the nameservers at the registrar. The registrar API used depends on the account's site.

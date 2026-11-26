@@ -363,7 +363,7 @@ The same operation has the same verb and shape on every platform:
 | --- | --- |
 | Registrar groups | `list`, `get <domain>`, `ns get <domain>`, `ns set <domain> <nameserver>...` |
 | Records with an id (Cloudflare, name.com, Alibaba Cloud) | `create`, `update <zone-or-domain> <record-id>`, `delete <zone-or-domain> <record-id>` |
-| Records by name and type (Route 53, Cloud DNS, GoDaddy) | `upsert` sets the whole record set; `delete --name --type`, with `--id` as an optional way to pick one record |
+| Records by name and type (Route 53, Cloud DNS, GoDaddy) | `upsert` sets the whole record set; `delete <name> <type>`, with `--id` as an optional way to pick one record |
 | Compute services | `<service> instance list\|start\|stop ...` |
 
 - **`create`** makes one new resource and fails when it exists. **`set` / `upsert`** set one object (a record, a record set) and never create anything else.
