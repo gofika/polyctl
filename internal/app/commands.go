@@ -68,23 +68,6 @@ func WhoamiCommand(rt *Runtime, id platform.ID, detail string) *cobra.Command {
 	}
 }
 
-// RecordIDArgs validates the arguments of a command that addresses one
-// record by its id: `<verb> <zone-or-domain> <record-id>`. A missing id is
-// reported by name, with the usage line, instead of as a bare argument
-// count.
-func RecordIDArgs(cmd *cobra.Command, args []string) error {
-	switch {
-	case len(args) < 2:
-		return UsageErrf("the record id is required (see the list command of this group for the ids): %s", cmd.UseLine())
-	case len(args) > 2:
-		return UsageErrf("expected 2 arguments, got %d: %s", len(args), cmd.UseLine())
-	}
-	if strings.TrimSpace(args[1]) == "" {
-		return UsageErrf("the record id must not be empty: %s", cmd.UseLine())
-	}
-	return nil
-}
-
 // NameserverArgs validates the arguments of an `ns set` command: the domain
 // and at least one nameserver.
 func NameserverArgs(cmd *cobra.Command, args []string) error {
@@ -106,18 +89,6 @@ func NameserverArgsOrInteractive(rt *Runtime) cobra.PositionalArgs {
 			return nil
 		}
 		return NameserverArgs(cmd, args)
-	}
-}
-
-// RecordIDArgsOrInteractive is RecordIDArgs, except in the interactive
-// flow, where the domain and the record id may be left out: the command
-// asks for them.
-func RecordIDArgsOrInteractive(rt *Runtime) cobra.PositionalArgs {
-	return func(cmd *cobra.Command, args []string) error {
-		if len(args) < 2 && rt.Interactive() {
-			return nil
-		}
-		return RecordIDArgs(cmd, args)
 	}
 }
 
@@ -185,21 +156,6 @@ func CompleteDomainArg(rt *Runtime, id platform.ID) CompletionFunc {
 	}
 }
 
-// CompleteRecordIDArgs completes `<zone-or-domain> <record-id>`: the first
-// argument like CompleteDomainArg, the second with the ids of the zone's
-// records in the local inventory, described as "TYPE name value".
-func CompleteRecordIDArgs(rt *Runtime, id platform.ID) CompletionFunc {
-	return func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		switch len(args) {
-		case 0:
-			return cachedDomains(cmd, rt, id), cobra.ShellCompDirectiveNoFileComp
-		case 1:
-			return cachedRecordIDs(cmd, rt, id, args[0]), cobra.ShellCompDirectiveNoFileComp
-		}
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-}
-
 // completionRows lists inventory rows of the account a platform command
 // would use. Completion never fails loudly: without an account or a cache
 // there is simply nothing to offer.
@@ -235,15 +191,6 @@ func cachedDomains(cmd *cobra.Command, rt *Runtime, id platform.ID) []string {
 	return out
 }
 
-func cachedRecordIDs(cmd *cobra.Command, rt *Runtime, id platform.ID, zone string) []string {
-	out := []string{}
-	for _, rec := range cachedRecords(cmd, rt, id, zone) {
-		desc := strings.Join(strings.Fields(rec.Type+" "+rec.Name+" "+rec.Value), " ")
-		out = append(out, rec.ID+"\t"+desc)
-	}
-	return out
-}
-
 // cachedRecords are the records of a zone in the local inventory that have
 // an id, with the name the inventory holds.
 func cachedRecords(cmd *cobra.Command, rt *Runtime, id platform.ID, zone string) []platform.Record {
@@ -264,9 +211,8 @@ func cachedRecords(cmd *cobra.Command, rt *Runtime, id platform.ID, zone string)
 // argument completion of its own one that fits its usage line, so that no
 // positional argument falls back to the shell's file name completion:
 // a leading <domain> or <zone> completes from the platform's cached zones
-// and domains, a following <record-id> from the cached records of that
-// zone, and everything else (nameservers, instance ids, names to check)
-// completes to nothing.
+// and domains, and everything else (nameservers, instance ids, names to
+// check) completes to nothing.
 func CompletePlatformArgs(rt *Runtime, id platform.ID, cmd *cobra.Command) {
 	for _, c := range cmd.Commands() {
 		CompletePlatformArgs(rt, id, c)
@@ -276,8 +222,6 @@ func CompletePlatformArgs(rt *Runtime, id platform.ID, cmd *cobra.Command) {
 	}
 	words := strings.Fields(cmd.Use)[1:]
 	switch {
-	case len(words) > 1 && isDomainArg(words[0]) && words[1] == "<record-id>":
-		cmd.ValidArgsFunction = CompleteRecordIDArgs(rt, id)
 	case len(words) > 0 && isDomainArg(words[0]):
 		cmd.ValidArgsFunction = CompleteDomainArg(rt, id)
 	default:
