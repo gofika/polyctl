@@ -160,6 +160,10 @@ if none exists it is created. If several exist the command fails: use
 ` + "`polyctl dns add`" + ` to create one more record of that name and type, or
 ` + "`polyctl dns delete`" + ` to remove the ones that should go.
 
+` + app.RecordAskHelp("zone") + `
+
+The value of the record that is updated is proposed.
+
 --proxied (Cloudflare) is a boolean: --proxied switches the proxy on,
 --proxied=false switches it off, and without it an updated record keeps its
 current setting.`,
@@ -181,6 +185,8 @@ record use ` + "`polyctl dns set`" + `.
 
 ` + recordHelp + `
 
+` + app.RecordAskHelp("zone") + `
+
 --proxied (Cloudflare) is a boolean: --proxied switches the proxy on,
 --proxied=false switches it off, and without it the platform default applies.`,
 		Example: `  polyctl dns add example.com www A 203.0.113.11
@@ -192,29 +198,20 @@ record use ` + "`polyctl dns set`" + `.
 // always creates a record; without, it updates the one record that has the
 // same name and type and creates it when there is none.
 func newDNSWriteCmd(rt *app.Runtime, add bool, cmd *cobra.Command) *cobra.Command {
-	var typ, name, value string
 	var ttl, priority int
 	var proxied bool
 	cmd.Args = app.ProxiedRecordArgs(app.RecordArgsOrInteractive(rt, 1, 1), 1)
 	cmd.ValidArgsFunction = app.CompleteRecordArgs(completeDomains(rt), "")
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		// The record is positional (<name> <type> <value>) or, in the
-		// former form, given with --name, --type and --value.
-		nameArg := "--name"
-		if len(args) > 1 {
-			rec, err := app.ParseRecordArgs(cmd, args[1:], 1, 1)
-			if err != nil {
-				return err
-			}
-			name, typ, value, nameArg = rec.Name, rec.Type, rec.Value(), "<name>"
-			args = args[:1]
+		// former form, given with --name, --type and --value. The
+		// interactive flow asks for what is missing: the zone, then the
+		// name, the type and the value.
+		in, err := rt.RecordInput(cmd, args, app.RecordForm{MinValues: 1, MaxValues: 1})
+		if err != nil {
+			return err
 		}
-		// The interactive flow asks for what is missing: the zone, then
-		// the type, then (once the zone is read) the value.
-		if (typ == "" || value == "") && !rt.Interactive() {
-			return usageErr("%s", app.RecordUsage(cmd, 1, 1))
-		}
-		args, err := domainArgs(cmd, rt, args, app.DomainPick{Title: "Zone", Kinds: zoneKinds, Required: true})
+		args, err = domainArgs(cmd, rt, args[:min(len(args), 1)], app.DomainPick{Title: "Zone", Kinds: zoneKinds, Required: true})
 		if err != nil {
 			return err
 		}
@@ -222,20 +219,20 @@ func newDNSWriteCmd(rt *app.Runtime, add bool, cmd *cobra.Command) *cobra.Comman
 		if err != nil {
 			return err
 		}
-		if typ == "" {
-			if typ, err = rt.PickRecordType(t.Platform); err != nil {
-				return err
-			}
-		}
-		typ = strings.ToUpper(typ)
 		if rt.Flags.Offline {
 			return app.ErrOffline
 		}
+		// A <domain> below its zone names the record (the former form
+		// `dns set www.example.com --type A --value ...`). The zone itself
+		// names none: the interactive flow asks, and the former form
+		// without --name keeps writing to the apex.
 		fqdn := platform.NormalizeDomain(args[0])
-		if name != "" {
-			if fqdn, err = dnsNameOf(t, name, nameArg); err != nil {
+		if in.Name != "" {
+			if fqdn, err = dnsNameOf(t, in.Name, in.NameArg); err != nil {
 				return err
 			}
+		} else if fqdn != platform.NormalizeDomain(t.Domain) {
+			in.Name = fqdn
 		}
 		dns, err := rt.OpenDNS(cmd.Context(), t)
 		if err != nil {
@@ -245,16 +242,18 @@ func newDNSWriteCmd(rt *app.Runtime, add bool, cmd *cobra.Command) *cobra.Comman
 		if err != nil {
 			return err
 		}
-		matches := app.MatchRecords(existing, fqdn, typ, "")
-		if value == "" {
-			def := ""
-			if !add && len(matches) == 1 {
-				def = matches[0].Value
-			}
-			if value, err = rt.AskRecordValue(typ, def); err != nil {
+		asked := in.Name == ""
+		if err := rt.CompleteRecord(in, app.RecordPrompt{Platform: t.Platform, Zone: t.Domain, Replaces: !add,
+			Existing: func() ([]platform.Record, error) { return existing, nil }}); err != nil {
+			return err
+		}
+		if asked && in.Name != "" {
+			if fqdn, err = dnsNameOf(t, in.Name, in.NameArg); err != nil {
 				return err
 			}
 		}
+		typ, value := in.Type, in.Value()
+		matches := app.MatchRecords(existing, fqdn, typ, "")
 		rec := platform.Record{ZoneID: t.ResourceID, Name: fqdn, Type: typ, Value: value, TTL: ttl}
 		if cmd.Flags().Changed("priority") {
 			p := priority
@@ -323,10 +322,7 @@ func newDNSWriteCmd(rt *app.Runtime, add bool, cmd *cobra.Command) *cobra.Comman
 	if add {
 		ttlHelp = "TTL in seconds (0 = platform default)"
 	}
-	cmd.Flags().StringVar(&typ, "type", "", "former form of <type>")
-	cmd.Flags().StringVar(&name, "name", "", "former form of <name>; default: <domain> itself")
-	cmd.Flags().StringVar(&value, "value", "", "former form of <value>")
-	hideFormerRecordFlags(cmd, "name", "type", "value")
+	app.FormerRecordFlags(cmd, false)
 	cmd.Flags().IntVar(&ttl, "ttl", 0, ttlHelp)
 	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX/SRV records")
 	proxiedHelp := "Cloudflare proxy status: --proxied or --proxied=false (default: keep the current value; the platform default for a new record)"
@@ -489,7 +485,7 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&name, "name", "", "former form of <name>; default: <domain> itself")
 	cmd.Flags().StringVar(&value, "value", "", "former form of <value>")
 	// --type stays in the help: --all reads it.
-	hideFormerRecordFlags(cmd, "name", "value")
+	app.HideFormerRecordFlags(cmd, "name", "value")
 	cmd.Flags().StringVar(&id, "id", "", "delete the record with this platform id")
 	cmd.Flags().BoolVar(&all, "all", false, "delete every record of the zone (except its SOA and apex NS records)")
 	cmd.Flags().BoolVar(&keepBound, "keep-bound", false, "with --all, leave records owned by another service (R2 custom domains) alone instead of unbinding them")
@@ -684,7 +680,14 @@ then updated); otherwise the command stops before writing anything (exit code
 5), unless --prune-duplicates is given: it keeps one record (updating the
 oldest when none has the desired value) and deletes the others, after the
 creates and updates. proxied=true on a platform other than Cloudflare reports the record as
-skipped. The zone is always read live: --offline is refused (exit code 6).`,
+skipped. The zone is always read live: --offline is refused (exit code 6).
+
+On a terminal, without a record, --record and --file one record is asked for,
+in the order zone, name, type and value, and so is the rest of a record that
+stops after its name or its type. The name is chosen from the names the zone
+already has, @ for the apex, or typed in; values are asked until one is left
+empty. With --record or --file nothing is asked. The non-interactive flow asks
+nothing: an incomplete record is a usage error (exit code 2).`,
 		Example: `  polyctl dns ensure example.com @ A 192.0.2.10
   polyctl dns ensure example.com www CNAME target.example.net --ttl 300
   polyctl dns ensure example.com @ TXT "v=spf1 -all" "google-site-verification=abc"
@@ -695,27 +698,25 @@ skipped. The zone is always read live: --offline is refused (exit code 6).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			var specs []platform.RecordSpec
-			if len(args) > 1 {
-				rec, err := app.ParseRecordArgs(cmd, args[1:], 1, -1)
-				if err != nil {
-					return err
-				}
-				if specs, err = positionalSpecs(cmd, rec, ttl, priority, proxied); err != nil {
-					return err
-				}
-				args = args[:1]
-			} else {
+			// The positional record; --record and --file are the other
+			// ways to name records. With none of the three the interactive
+			// flow asks for one record, and so it does for the rest of a
+			// positional record that stops early.
+			in, err := rt.RecordInput(cmd, args, app.RecordForm{MinValues: 1, MaxValues: -1, Optional: true})
+			if err != nil {
+				return err
+			}
+			ask := in.Given() || (len(records) == 0 && file == "")
+			if !ask {
 				for _, f := range []string{"ttl", "priority", "proxied"} {
 					if cmd.Flags().Changed(f) {
-						return usageErr("--%s applies to a positional record: %s", f, app.RecordUsage(cmd, 1, -1))
+						return usageErr("--%s applies to a positional record: %s", f, in.Usage())
 					}
 				}
+			} else if !in.Given() && !rt.Interactive() {
+				return usageErr("a record, --record or --file is required: %s", in.Usage())
 			}
-			if len(specs) == 0 && len(records) == 0 && file == "" {
-				// The desired records cannot be listed: not asked.
-				return usageErr("a record, --record or --file is required: %s", app.RecordUsage(cmd, 1, -1))
-			}
-			args, err := domainArgs(cmd, rt, args, app.DomainPick{Title: "Zone", Kinds: zoneKinds, Required: true})
+			args, err = domainArgs(cmd, rt, args[:min(len(args), 1)], app.DomainPick{Title: "Zone", Kinds: zoneKinds, Required: true})
 			if err != nil {
 				return err
 			}
@@ -745,6 +746,34 @@ skipped. The zone is always read live: --offline is refused (exit code 6).`,
 			if err != nil {
 				return err
 			}
+			// The zone is read once: for the questions, when there are
+			// any, and for the plan.
+			var dns platform.DNSService
+			var existing []platform.Record
+			read := false
+			zoneRecords := func() ([]platform.Record, error) {
+				if read {
+					return existing, nil
+				}
+				if dns, err = rt.OpenDNS(ctx, t); err != nil {
+					return nil, err
+				}
+				if existing, err = dns.ListRecords(ctx, t.ResourceID); err != nil {
+					return nil, err
+				}
+				read = true
+				return existing, nil
+			}
+			if ask {
+				if err := rt.CompleteRecord(in, app.RecordPrompt{Platform: t.Platform, Zone: t.Domain, Replaces: true, Existing: zoneRecords}); err != nil {
+					return err
+				}
+				pos, err := positionalSpecs(cmd, in, ttl, priority, proxied)
+				if err != nil {
+					return err
+				}
+				specs = append(pos, specs...)
+			}
 			desired, err := platform.NormalizeRecordSpecs(t.Domain, t.Platform, specs, platform.WritableRecordTypes(t.Platform), rt.Infof)
 			if err != nil {
 				return err
@@ -752,12 +781,7 @@ skipped. The zone is always read live: --offline is refused (exit code 6).`,
 			if len(desired) == 0 {
 				rt.Infof("note: the records file lists no records")
 			}
-			dns, err := rt.OpenDNS(ctx, t)
-			if err != nil {
-				return err
-			}
-			existing, err := dns.ListRecords(ctx, t.ResourceID)
-			if err != nil {
+			if _, err := zoneRecords(); err != nil {
 				return err
 			}
 			plan, err := platform.PlanDNSEnsure(platform.DNSEnsure{
@@ -792,7 +816,7 @@ skipped. The zone is always read live: --offline is refused (exit code 6).`,
 
 // positionalSpecs turns the positional record of dns ensure into record
 // specs, one per value, each with the --ttl, --priority and --proxied given.
-func positionalSpecs(cmd *cobra.Command, rec *app.RecordArgs, ttl string, priority int, proxied bool) ([]platform.RecordSpec, error) {
+func positionalSpecs(cmd *cobra.Command, rec *app.RecordInput, ttl string, priority int, proxied bool) ([]platform.RecordSpec, error) {
 	base := platform.RecordSpec{Name: rec.Name, Type: rec.Type}
 	if cmd.Flags().Changed("ttl") {
 		switch t := strings.ToLower(strings.TrimSpace(ttl)); t {
@@ -821,14 +845,6 @@ func positionalSpecs(cmd *cobra.Command, rec *app.RecordArgs, ttl string, priori
 		specs = append(specs, s)
 	}
 	return specs, nil
-}
-
-// hideFormerRecordFlags hides the flags of the former form of a record
-// command from its help; they keep working.
-func hideFormerRecordFlags(cmd *cobra.Command, names ...string) {
-	for _, n := range names {
-		_ = cmd.Flags().MarkHidden(n)
-	}
 }
 
 // rememberRecord upserts a written record into the inventory. Platforms

@@ -57,11 +57,11 @@ func TestDNSPickWithEmptyIndex(t *testing.T) {
 	}
 }
 
-// dns set without --type and --value asks for both, the value checked as
-// it is typed and prefilled with the current one.
+// dns set without a record asks for the name, the type and the value, the
+// value checked as it is typed and prefilled with the current one.
 func TestDNSSetAsksTypeAndValue(t *testing.T) {
 	_, cfgPath, fc := ensureZone(t, platform.Record{ID: "r1", ZoneID: "z1", Name: "example.com", Type: "A", Value: "203.0.113.10", TTL: 300})
-	p := prompttest.New(t, "A", "not-an-ip", "203.0.113.20")
+	p := prompttest.New(t, "@", "A", "not-an-ip", "203.0.113.20")
 	r := runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), "dns", "set", "example.com")
 	if r.err != nil || fc.count("UpdateRecord") != 1 || fc.records["z1"][0].Value != "203.0.113.20" {
 		t.Fatalf("set: %v, %q, calls %v", r.err, r.stderr, fc.calls)

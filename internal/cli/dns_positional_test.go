@@ -225,15 +225,123 @@ func TestDNSPositionalRecordUsage(t *testing.T) {
 	}
 }
 
-// With only the domain the interactive flow still asks for the record.
+// With only the domain the interactive flow asks for the record: its name
+// (never taken to be the apex), its type and its value.
 func TestDNSAddWithOnlyTheDomainAsks(t *testing.T) {
-	_, cfgPath, fc := ensureZone(t, platform.Record{ID: "r1", ZoneID: "z1", Name: "example.com", Type: "A", Value: "203.0.113.10", TTL: 300})
-	p := prompttest.New(t, "A", "203.0.113.20")
+	_, cfgPath, fc := ensureZone(t,
+		platform.Record{ID: "r1", ZoneID: "z1", Name: "example.com", Type: "A", Value: "203.0.113.10", TTL: 300},
+		platform.Record{ID: "r2", ZoneID: "z1", Name: "mail.example.com", Type: "MX", Value: "mx.example.net", TTL: 300})
+	p := prompttest.New(t, "@", "A", "203.0.113.20")
 	r := runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), "dns", "add", "example.com")
-	if r.err != nil || fc.count("CreateRecord:example.com:A") != 1 || len(fc.records["z1"]) != 2 {
+	if r.err != nil || fc.count("CreateRecord:example.com:A") != 1 || len(fc.records["z1"]) != 3 {
 		t.Fatalf("add: %v, %q, calls %v", r.err, r.stderr, fc.calls)
 	}
 	p.Done()
+	if a := p.Find("Record name in example.com"); prompttest.Labels(a.Options) != "@ (apex)  A\nmail  MX\nAnother name..." {
+		t.Errorf("names offered:\n%s", prompttest.Labels(a.Options))
+	}
+	// add proposes no current value.
+	if a := p.Find("Value of the A record"); a.Default != "" {
+		t.Errorf("add proposed %q", a.Default)
+	}
+}
+
+// A record that stops after its name or its type is completed on a
+// terminal: the type the name already has is preselected, and dns set
+// proposes the current value. A name can be typed in.
+func TestDNSWriteCompletesAPartialRecord(t *testing.T) {
+	_, cfgPath, fc := ensureZone(t,
+		platform.Record{ID: "r1", ZoneID: "z1", Name: "mail.example.com", Type: "MX", Value: "mx.example.net", TTL: 300})
+	p := prompttest.New(t, "MX", prompttest.KeepDefault{})
+	r := runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), "dns", "set", "example.com", "mail", "--dry-run")
+	if r.err != nil {
+		t.Fatalf("set <name>: %v, %q", r.err, r.stderr)
+	}
+	p.Done()
+	if a := p.Find("Record type"); a.Default != "MX" {
+		t.Errorf("type preselected %q", a.Default)
+	}
+	if a := p.Find("Value of the MX record"); a.Default != "mx.example.net" {
+		t.Errorf("value proposed %q", a.Default)
+	}
+	p = prompttest.New(t, "192.0.2.9")
+	r = runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), "dns", "add", "example.com", "new", "a")
+	if r.err != nil || fc.count("CreateRecord:new.example.com:A") != 1 {
+		t.Fatalf("add <name> <type>: %v, %q, calls %v", r.err, r.stderr, fc.calls)
+	}
+	p.Done()
+	// A name typed in, checked as it is typed: one outside the zone is
+	// asked again.
+	p = prompttest.New(t, prompttest.Label("Another name"), "www.example.org.", "api", "A", "192.0.2.10")
+	r = runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), "dns", "set", "example.com")
+	if r.err != nil || fc.count("CreateRecord:api.example.com:A") != 1 {
+		t.Fatalf("typed name: %v, %q, calls %v", r.err, r.stderr, fc.calls)
+	}
+	p.Done()
+	// The former flag form without --name is asked for the name too.
+	p = prompttest.New(t, "mail")
+	r = runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), "dns", "add", "example.com", "--type", "TXT", "--value", "hello")
+	if r.err != nil || fc.count("CreateRecord:mail.example.com:TXT") != 1 {
+		t.Fatalf("flag form: %v, %q, calls %v", r.err, r.stderr, fc.calls)
+	}
+	p.Done()
+	// A <domain> below its zone names the record: nothing is asked.
+	p = prompttest.New(t)
+	r = runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), "dns", "add", "deep.example.com", "--type", "TXT", "--value", "hello")
+	if r.err != nil || fc.count("CreateRecord:deep.example.com:TXT") != 1 {
+		t.Fatalf("domain below the zone: %v, %q, calls %v", r.err, r.stderr, fc.calls)
+	}
+	// The non-interactive flow asks nothing: a partial record is a usage
+	// error, and the former flag form without --name still writes to the
+	// apex.
+	writesBefore := writes(fc)
+	for _, args := range [][]string{{"example.com", "www"}, {"example.com", "www", "A"}} {
+		r = runFlow(t, context.Background(), cfgPath, nil, strings.NewReader(""), append([]string{"dns", "set"}, args...)...)
+		if r.code != ExitUsage || !strings.Contains(r.err.Error(), "usage: polyctl dns set <domain> <name> <type> <value>") {
+			t.Errorf("non-interactive %v: exit %d, %v", args, r.code, r.err)
+		}
+	}
+	if writes(fc) != writesBefore {
+		t.Errorf("a usage error wrote: %v", fc.calls)
+	}
+	r = runFlow(t, context.Background(), cfgPath, nil, strings.NewReader(""), "dns", "add", "example.com", "--type", "TXT", "--value", "apex")
+	if r.err != nil || fc.count("CreateRecord:example.com:TXT") != 1 {
+		t.Fatalf("non-interactive flag form: %v, %q, calls %v", r.err, r.stderr, fc.calls)
+	}
+}
+
+// dns ensure without a record, --record and --file asks for one record on
+// a terminal, its values until one is left empty; with --record nothing is
+// asked.
+func TestDNSEnsureAsksForARecord(t *testing.T) {
+	_, cfgPath, fc := ensureZone(t, platform.Record{ID: "r1", ZoneID: "z1", Name: "www.example.com", Type: "A", Value: "203.0.113.10", TTL: 300})
+	p := prompttest.New(t, "www", "TXT", "one", "two", "")
+	r := runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), "dns", "ensure", "example.com")
+	if r.err != nil || fc.count("CreateRecord:www.example.com:TXT") != 2 {
+		t.Fatalf("ensure: %v, %q, calls %v", r.err, r.stderr, fc.calls)
+	}
+	p.Done()
+	// A record that stops after its name: the one type is preselected and
+	// the current value proposed.
+	p = prompttest.New(t, "A", prompttest.KeepDefault{}, "")
+	r = runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), "dns", "ensure", "example.com", "www", "--dry-run")
+	if r.err != nil {
+		t.Fatalf("ensure <name>: %v, %q", r.err, r.stderr)
+	}
+	p.Done()
+	if a := p.Find("Value of the A record"); a.Default != "203.0.113.10" {
+		t.Errorf("value proposed %q", a.Default)
+	}
+	r = runFlow(t, context.Background(), cfgPath, prompttest.New(t), strings.NewReader(""), "dns", "ensure", "example.com", "-r", "www:A:203.0.113.10", "--dry-run")
+	if r.err != nil {
+		t.Fatalf("ensure --record: %v, %q", r.err, r.stderr)
+	}
+	for _, args := range [][]string{{"example.com"}, {"example.com", "www"}, {"example.com", "www", "A"}} {
+		r = runFlow(t, context.Background(), cfgPath, nil, strings.NewReader(""), append([]string{"dns", "ensure"}, args...)...)
+		if r.code != ExitUsage || !strings.Contains(r.err.Error(), "usage: polyctl dns ensure <domain> <name> <type> <value>...") {
+			t.Errorf("non-interactive %v: exit %d, %v", args, r.code, r.err)
+		}
+	}
 }
 
 // The help shows the positional form; the flags of the former form are
