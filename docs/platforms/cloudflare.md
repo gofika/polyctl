@@ -31,7 +31,7 @@ cloudflare zone setting list <zone|id>
 cloudflare zone setting get <zone|id> <setting>
 cloudflare zone setting set <zone|id> <setting> <value> [--timeout 1m]
 cloudflare dns list <zone> [--type] [--name]
-cloudflare dns create <zone> --type A --name www --value 203.0.113.10 [--ttl 1] [--proxied[=false]] [--priority] [--comment]
+cloudflare dns create <zone> <name> <type> <value> [--ttl 1] [--proxied[=false]] [--priority] [--comment]
 cloudflare dns update <zone> <record-id> [--type] [--name] [--value] [--ttl] [--priority] [--proxied[=false]] [--comment]
 cloudflare dns delete <zone> <record-id>
 cloudflare cache purge <zone> (--everything | --url <url>... | --host <h>... | --tag <t>... | --prefix <p>...)   # host/tag/prefix need Enterprise
@@ -204,12 +204,15 @@ polyctl cf zone setting set example.com argo_smart_routing on
 ## DNS records
 
 ```sh
-polyctl cf dns create example.com --type A --name www --value 203.0.113.10 --proxied
+polyctl cf dns create example.com www A 203.0.113.10 --proxied
+polyctl cf dns create example.com @ TXT "v=spf1 include:_spf.example.net ~all"
 polyctl cf dns update example.com <record-id> --proxied=false
 ```
 
 - Records are addressed by their Cloudflare record id, an argument of `update` and `delete`.
-- `--name` is relative to the zone (`www`, `@`) or an FQDN; default the zone apex.
+- `create` takes the record as arguments: `<name>` is relative to the zone (`www`, `a.b`), `@` for the zone apex, or a full name inside the zone; `<type>` is case-insensitive; the value is one argument (quote one that contains spaces; one that starts with `-` goes after `--`). A wrong number of arguments is exit code 2.
+- Former form (0.5.x): `create` still reads the record from `--name`, `--type` and `--value` (without `--name`, the zone apex). These flags are no longer listed in the help. A positional record together with one of them is exit code 2.
+- `update` changes the fields given as `--name`, `--type` and `--value`; `--name` is relative to the zone (`www`, `@`) or an FQDN.
 - `--ttl` in seconds; `0` or `1` means automatic.
 - `--proxied` is the orange cloud: `--proxied` on, `--proxied=false` off. Without it, `create` uses Cloudflare's default and `update` keeps the current setting.
 - `--priority` for MX/SRV/URI records; `--comment` sets a comment (`update --comment ""` clears it).

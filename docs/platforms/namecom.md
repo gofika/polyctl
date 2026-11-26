@@ -14,20 +14,23 @@ namecom domain lock <domain>      namecom domain unlock <domain>
 namecom domain autorenew <domain> on|off
 namecom domain check <name>...    # availability and price
 namecom dns list <domain> [--type] [--name]
-namecom dns create <domain> --type A --name www --value 203.0.113.10 [--ttl 300] [--priority]
+namecom dns create <domain> <name> <type> <value> [--ttl 300] [--priority]
 namecom dns update <domain> <record-id> [--type] [--name] [--value] [--ttl] [--priority]
 namecom dns delete <domain> <record-id>
 ```
 
 - Records are addressed by their name.com record id, an argument of `update` and `delete`.
-- `--name` is relative to the domain (`www`, `@`); default the apex.
+- `create` takes the record as arguments: `<name>` is relative to the domain (`www`, `a.b`), `@` for the apex, or a full name inside the domain; `<type>` is case-insensitive; the value is one argument (quote one that contains spaces; one that starts with `-` goes after `--`). A wrong number of arguments is exit code 2.
+- Former form (0.5.x): `create` still reads the record from `--name`, `--type` and `--value` (without `--name`, the apex). These flags are no longer listed in the help. A positional record together with one of them is exit code 2.
+- `update` changes the fields given as `--name`, `--type` and `--value`; `--name` is relative to the domain (`www`, `@`).
 - `--ttl` in seconds, minimum 300; `0` (the default of `create`) uses name.com's default.
 - `--priority` for MX/SRV records.
 - `whoami` needs the network (exit code 6 with `--offline`); credentials that no longer work exit with code 3.
 - List commands honour `--refresh` / `--offline`; writes always go to name.com.
 
 ```sh
-polyctl namecom dns create example.com --type A --name www --value 203.0.113.10
+polyctl namecom dns create example.com www A 203.0.113.10
+polyctl namecom dns create example.com @ MX mail.example.com --priority 10
 polyctl namecom domain ns set example.com ns1.example.net ns2.example.net
 ```
 
