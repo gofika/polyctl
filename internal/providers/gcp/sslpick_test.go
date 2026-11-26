@@ -100,9 +100,4 @@ func TestSSLCertificateUpdateDeletePick(t *testing.T) {
 	if h.gce.cert("global", "free") != nil {
 		t.Errorf("free not deleted")
 	}
-
-	h.nonInteractive()
-	if err := h.run("compute", "ssl-certificate", "delete", "managed", "--yes"); exitClass(err) != "usage" {
-		t.Errorf("non-interactive without scope = %v", err)
-	}
 }

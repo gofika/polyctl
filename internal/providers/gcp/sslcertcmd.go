@@ -406,17 +406,18 @@ An old certificate still used elsewhere is skipped, not a failure.
 The files are checked as for create (exit code 2). A missing certificate is
 exit code 4; a Google-managed one cannot be replaced (exit code 1).
 
-On a terminal, without <name> the self-managed certificates of every scope
-are offered (the scope then follows from the pick); a name without
---region / --global is looked up in every scope (a pick when several
-scopes hold it); missing files are asked as for create, the store entry
-covering the certificate's domain preselected.`,
+A name without --region / --global is looked up in every scope: the one
+scope that holds it is used, several are exit code 5 naming the two flags (a
+terminal lets you choose). On a terminal, without <name> the self-managed
+certificates of every scope are offered (the scope then follows from the
+pick); missing files are asked as for create, the store entry covering the
+certificate's domain preselected.`,
 		Example: "  polyctl gcp compute ssl-certificate update web-example-com-cert-20260901 --cert-file new-fullchain.pem --key-file new-privkey.pem --region <region>",
 		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			name := app.Arg(args, 0)
-			region, all, err := sf.resolve(!rt.Interactive())
+			region, all, err := sf.resolve(false)
 			if err != nil {
 				return err
 			}
@@ -531,22 +532,24 @@ func sslCertDeleteCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "delete <name>",
 		Short: "Delete an SSL certificate no proxy uses (asks first)",
-		Long: `Delete an SSL certificate of --region <r> or --global. A certificate a target
+		Long: `Delete an SSL certificate. A certificate a target
 HTTPS proxy still uses cannot be deleted: that is exit code 1, naming the
 proxies (switch them to another certificate first, for example with update).
 The certificate is shown first, then a confirmation is asked (default no;
 --yes skips it, and the non-interactive flow needs --yes). A missing
 certificate is exit code 4.
 
-On a terminal, without <name> the certificates of every scope that no
-proxy uses are offered (the scope then follows from the pick); a name
-without --region / --global is looked up in every scope.`,
+A name without --region / --global is looked up in every scope: the one
+scope that holds it is used, several are exit code 5 naming the two flags (a
+terminal lets you choose). On a terminal, without <name> the certificates
+of every scope that no proxy uses are offered (the scope then follows from
+the pick).`,
 		Example: "  polyctl gcp compute ssl-certificate delete web-example-com-cert-20260901 --region <region> --yes",
 		Args:    app.ArgsOrInteractive(rt, 1, nil),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			name := app.Arg(args, 0)
-			region, all, err := sf.resolve(!rt.Interactive())
+			region, all, err := sf.resolve(false)
 			if err != nil {
 				return err
 			}

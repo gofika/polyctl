@@ -165,12 +165,14 @@ type certTarget struct {
 }
 
 // pickCert finds the certificate a command acts on when <name> or the
-// scope is missing, in the interactive flow: every certificate of the
-// project (global and every region) that keep accepts, or every one named
-// name (the command checks it then); one match of a name is used, several
-// are a pick (none is nothing to do, or a not-found error for a name
-// given). note names what keep left out, printed when it left something
-// out.
+// scope is missing. With a name: the certificates of that name in every
+// scope of the project (the command checks the one found); one is used,
+// several (a regional and a global one, or two regions) are a list to
+// choose from in the interactive flow and ambiguous (exit code 5, naming
+// --region and --global) otherwise, none is not found. Without a name, in
+// the interactive flow: a list of every certificate of the project that
+// keep accepts (none is nothing to do). note names what keep left out,
+// printed when it left something out.
 func pickCert(ctx context.Context, rt *app.Runtime, c *client, profile, name string, keep func(sc *compute.SslCertificate, users []string) bool, note string) (certTarget, error) {
 	all, unreachable, err := c.listAllCerts(ctx)
 	if err != nil {
@@ -198,23 +200,24 @@ func pickCert(ctx context.Context, rt *app.Runtime, c *client, profile, name str
 	if left > 0 && note != "" {
 		rt.Infof("note: %d certificate(s) left out: %s", left, note)
 	}
-	if name != "" && len(found) == 0 {
+	label := func(sc *compute.SslCertificate) string { return certOptionLabel(sc, users[resourceKey(sc.SelfLink)]) }
+	var sc *compute.SslCertificate
+	switch {
+	case name != "" && len(found) == 0:
 		return certTarget{}, fmt.Errorf("%w: certificate %s in any scope of project %s (gcp/%s)", platform.ErrNotFound, name, c.project, profile)
+	case name != "":
+		cands := make([]cand, 0, len(found))
+		for _, f := range found {
+			cands = append(cands, cand{profile: profile, project: c.project, where: (certScope{region: lastSegment(f.Region)}).label()})
+		}
+		sc, err = app.OneOf(rt, ambiguous("certificate", name, cands, regionFlags, ""), found, label)
+	default:
+		sc, err = app.PickOf(rt, app.Choice{Title: "SSL certificate", Arg: "<name>", What: "usable certificate in gcp/" + profile}, found, label)
 	}
-	if name != "" && len(found) == 1 {
-		return certTarget{name: found[0].Name, region: lastSegment(found[0].Region)}, nil
-	}
-	var opts []prompt.Option
-	for i, sc := range found {
-		opts = append(opts, prompt.Option{Label: certOptionLabel(sc, users[resourceKey(sc.SelfLink)]), Value: fmt.Sprint(i)})
-	}
-	v, err := rt.Choose(app.Choice{Title: "SSL certificate", Options: opts, Arg: "<name>", What: "usable certificate in gcp/" + profile})
 	if err != nil {
 		return certTarget{}, err
 	}
-	var i int
-	fmt.Sscan(v, &i)
-	return certTarget{name: found[i].Name, region: lastSegment(found[i].Region)}, nil
+	return certTarget{name: sc.Name, region: lastSegment(sc.Region)}, nil
 }
 
 // askCertName asks the name of a new certificate in the interactive flow,

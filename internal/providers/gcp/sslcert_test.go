@@ -15,6 +15,7 @@ import (
 	"github.com/gofika/polyctl/internal/config"
 	"github.com/gofika/polyctl/internal/inventory"
 	"github.com/gofika/polyctl/internal/platform"
+	"github.com/gofika/polyctl/internal/prompt/prompttest"
 )
 
 // harnessNow is the time of the harness clock.
@@ -358,9 +359,66 @@ func TestSSLCertificateDelete(t *testing.T) {
 	if err := h.run("compute", "ssl-certificate", "delete", "free", "--region", "us-central1", "--yes"); exitClass(err) != "notfound" {
 		t.Errorf("missing = %v", err)
 	}
-	if err := h.run("compute", "ssl-certificate", "delete", "free"); exitClass(err) != "usage" {
-		t.Errorf("no scope = %v", err)
+	if err := h.run("compute", "ssl-certificate", "delete", "free", "--yes"); exitClass(err) != "notfound" {
+		t.Errorf("missing, no scope = %v", err)
 	}
+}
+
+// update and delete need --region or --global only when the name is in
+// several scopes: one holder is used; a regional and a global certificate
+// of one name are exit code 5 naming the two flags (nothing is written,
+// also with --yes), and a list to choose from on a terminal.
+func TestSSLCertificateScopeIsOptional(t *testing.T) {
+	h := lbHarness(t, app.Flags{})
+	old := newPair(t, []string{"example.com"}, 10)
+	nw := newPair(t, []string{"example.com"}, 90)
+	h.gce.addCert("us-central1", "web", old.chain)
+	h.gce.addCert("us-central1", "only-regional", old.chain)
+	h.gce.addCert("global", "web", old.chain)
+	h.gce.addCert("global", "only-global", old.chain)
+
+	for _, args := range [][]string{
+		{"delete", "web", "--yes"},
+		{"update", "web", "--cert-file", nw.certFile, "--key-file", nw.keyFile},
+	} {
+		err := h.run(append([]string{"compute", "ssl-certificate"}, args...)...)
+		if exitClass(err) != "ambiguous" || !has(err, `certificate "web"`, "regional, us-central1", "global", "--region <r> or --global") {
+			t.Errorf("%s of a name in two scopes = %v", args[0], err)
+		}
+		if w := h.gce.lbWrites(); len(w) != 0 {
+			t.Errorf("%s of an ambiguous name wrote %v", args[0], w)
+		}
+	}
+	// The flags choose.
+	if err := h.run("compute", "ssl-certificate", "delete", "web", "--global", "--yes"); err != nil || h.gce.cert("global", "web") != nil || h.gce.cert("us-central1", "web") == nil {
+		t.Errorf("delete --global = %v", err)
+	}
+	// One holder: no flag is needed.
+	if err := h.run("compute", "ssl-certificate", "delete", "web", "--yes"); err != nil || h.gce.cert("us-central1", "web") != nil {
+		t.Errorf("delete of the one left = %v", err)
+	}
+	if err := h.run("compute", "ssl-certificate", "delete", "only-global", "--yes"); err != nil || h.gce.cert("global", "only-global") != nil {
+		t.Errorf("delete of a global certificate without --global = %v", err)
+	}
+	if err := h.run("compute", "ssl-certificate", "update", "only-regional", "--cert-file", nw.certFile, "--key-file", nw.keyFile); err != nil || h.gce.cert("us-central1", "only-regional") != nil {
+		t.Errorf("update without --region = %v", err)
+	}
+	if err := h.run("compute", "ssl-certificate", "delete", "web"); exitClass(err) != "notfound" {
+		t.Errorf("missing = %v", err)
+	}
+
+	// On a terminal the two scopes are a list.
+	h.gce.addCert("us-central1", "web", old.chain)
+	h.gce.addCert("global", "web", old.chain)
+	h.rt.Flags.NonInteractiveSet = true
+	p := h.interactive(prompttest.Label("global"))
+	if err := h.run("compute", "ssl-certificate", "delete", "web", "--yes"); err != nil || h.gce.cert("global", "web") != nil || h.gce.cert("us-central1", "web") == nil {
+		t.Errorf("delete picked on a terminal = %v", err)
+	}
+	if a := p.Asked[0]; !strings.HasPrefix(a.Title, `Ambiguous certificate "web"`) || len(a.Options) != 2 {
+		t.Errorf("asked %q with %d options", a.Title, len(a.Options))
+	}
+	p.Done()
 }
 
 func TestSSLCertificateDeleteInteractive(t *testing.T) {

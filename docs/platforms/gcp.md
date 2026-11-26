@@ -160,8 +160,8 @@ gcp compute subnet list [--network <n>] [--region <r>] [--proxy-only]
 
 gcp compute ssl-certificate list [--global | --region <r>] [--expiring-in <days>]
 gcp compute ssl-certificate create <name> --cert-file <pem> --key-file <pem> (--global | --region <r>) [--description <text>]
-gcp compute ssl-certificate update <name> --cert-file <pem> --key-file <pem> (--global | --region <r>) [--keep-old]
-gcp compute ssl-certificate delete <name> (--global | --region <r>)
+gcp compute ssl-certificate update <name> --cert-file <pem> --key-file <pem> [--global | --region <r>] [--keep-old]
+gcp compute ssl-certificate delete <name> [--global | --region <r>]
 
 gcp compute load-balancer ensure <instance> --protocol http|https|tcp [...]
 gcp compute load-balancer cert set <lb> --domain <d> [--cert-file <pem> --key-file <pem>] [--days 30] [--new-ip] [--keep-old] [--region <r> | --global]
@@ -337,7 +337,7 @@ Read-only, always live.
 
 ## SSL certificates
 
-Self-managed certificates for load balancers. A regional certificate serves regional load balancers of its region, a global one global load balancers; `create`, `update` and `delete` need exactly one of `--region` or `--global`. Google-managed certificates are shown but never changed.
+Self-managed certificates for load balancers. A regional certificate serves regional load balancers of its region, a global one global load balancers; `create` needs exactly one of `--region` or `--global`. `update` and `delete` need one only when a regional and a global certificate, or certificates of two regions, have the same name: that is a pick on a terminal and exit code 5 otherwise, naming the two flags. Google-managed certificates are shown but never changed.
 
 ```sh
 polyctl gcp compute ssl-certificate create web-example-com-cert-20261117 --cert-file fullchain.pem --key-file privkey.pem --region us-central1
@@ -345,7 +345,7 @@ polyctl gcp compute ssl-certificate list --expiring-in 30
 ```
 
 - `list` shows domains, expiry (UTC), days left and the HTTPS proxies using each certificate, for every enabled project. An unused self-managed certificate is marked `*` (an orphan to delete by hand). `--expiring-in <days>` filters.
-- `update` and `delete` find `<name>` (in its scope) in the enabled projects, like the firewall commands: several holders are a pick on a terminal and exit code 5 otherwise (pass `--project`). On a terminal, without `<name>`, the project is asked first when several are enabled. `create` goes to the default project, or to the project of `--project`.
+- `update` and `delete` find `<name>` (in the scope of `--region` / `--global`, or in every scope) in the enabled projects, like the firewall commands: several holders are a pick on a terminal and exit code 5 otherwise (pass `--project`). On a terminal, without `<name>`, the project is asked first when several are enabled. `create` goes to the default project, or to the project of `--project`.
 - `create` uploads `--cert-file` (full chain, leaf first) and `--key-file` (unencrypted PEM key). `@-` reads stdin. polyctl checks before upload that the key matches the leaf and that the leaf has not expired (exit code 2 otherwise). An existing name is exit code 1.
 - `update <name>` replaces a certificate in use: it uploads a new one named `{slug}-cert-{YYYYMMDD}` (`naming.gcp_ssl_certificate`), switches every HTTPS proxy of the scope from `<name>` to it, then deletes `<name>` unless `--keep-old`. A certificate already holding the same leaf is `unchanged`; a re-run after a failed switch reuses the uploaded one.
 - `delete` asks for confirmation. A certificate still used by a proxy is exit code 1.
