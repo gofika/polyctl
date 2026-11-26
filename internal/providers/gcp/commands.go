@@ -687,8 +687,12 @@ inside the zone (www.example.com). <type> is case-insensitive. A value is one
 argument: quote one that contains spaces. A value that starts with "-" goes
 after "--".`
 
+// recordDeleteForm is the form of record delete: the record by name or
+// --id, or with the former --name, --type and --value.
+var recordDeleteForm = app.RecordTargetForm{FormerFlags: []string{"name", "type", "value"}}
+
 func newRecordDeleteCmd(rt *app.Runtime) *cobra.Command {
-	var typ, name, value, id string
+	var id string
 	var priority int
 	cmd := &cobra.Command{
 		Use:   "delete <zone> [<name> [<type> [<value>]]]",
@@ -724,33 +728,30 @@ dns delete of one record. --dry-run asks nothing.`,
   polyctl gcp dns record delete example-zone _acme-challenge TXT --yes
   polyctl gcp dns record delete example-zone www A 203.0.113.11
   polyctl gcp dns record delete example-zone --id 'acme-prod/example-zone|A|www.example.com|203.0.113.11'`,
-		Args:              app.RecordSelectorArgsOrInteractive(rt, 1),
-		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.GCP), platform.GCP),
+		Args:              recordDeleteForm.ArgsOrInteractive(rt),
+		ValidArgsFunction: recordDeleteForm.Complete(rt, app.CompleteDomainArg(rt, platform.GCP), platform.GCP),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The record is positional (<name> [<type> [<value>]]) or, in
 			// the former form, given with --name, --type and --value.
-			typeArg := "--type"
-			if len(args) > 1 {
-				rec, err := app.ParseRecordSelector(cmd, args[1:], 1)
-				if err != nil {
-					return err
-				}
-				name, typ, value = rec.Name, rec.Type, rec.Value()
-				typeArg = "<type>"
-				args = args[:1]
+			target, err := recordDeleteForm.Parse(cmd, args)
+			if err != nil {
+				return err
 			}
-			if id != "" && (typ != "" || name != "" || value != "" || cmd.Flags().Changed("priority")) {
-				// The id selects one value; a filter beside it would be
-				// ignored, and a wrong id would delete an unrelated value
-				// without asking.
-				return app.UsageErrf("--id selects one record value; it cannot be combined with a record (<name> [<type> [<value>]]) or --priority")
+			var name, typ, value string
+			typeArg := "--type"
+			if target != nil {
+				name, typ, value, typeArg = target.Name, target.Type, target.Value(), target.TypeArg
+			}
+			args = args[:min(len(args), 1)]
+			if id != "" && cmd.Flags().Changed("priority") {
+				// The id names the value, with its priority.
+				return app.UsageErrf("--id selects one record value; it cannot be combined with --priority")
 			}
 			// byName: the name alone says which record set, when it has one.
+			// pick: without a name the record set is chosen from a list (the
+			// non-interactive flow was refused when the arguments were read).
 			byName := id == "" && name != "" && typ == ""
-			pick := id == "" && !byName && (typ == "" || name == "")
-			if pick && !rt.Interactive() {
-				return app.UsageErrf("a record or --id is required: %s", app.RecordSelectorUsage(cmd, 1))
-			}
+			pick := id == "" && name == ""
 			// A whole record set that is named needs --yes where nothing can
 			// be asked: refused before anything is read. A name alone is read
 			// first: what it means (one set, several types, nothing) comes
@@ -816,9 +817,6 @@ dns delete of one record. --dry-run asks nothing.`,
 				recs, _, err := cachedRecords(cmd.Context(), rt, profile, z)
 				if err != nil {
 					return err
-				}
-				if name != "" {
-					recs = app.MatchRecords(recs, platform.FQDN(name, z.Name), "", "")
 				}
 				if typ != "" {
 					var f []platform.Record
@@ -898,9 +896,9 @@ dns delete of one record. --dry-run asks nothing.`,
 			return rt.Render(map[string]string{"deleted": what, "zone": z.ID, "profile": profile}, func() output.Grid { return output.Grid{} })
 		},
 	}
-	cmd.Flags().StringVar(&typ, "type", "", "record type")
-	cmd.Flags().StringVar(&name, "name", "", "record name relative to the zone (www, @) or FQDN; default: the zone apex")
-	cmd.Flags().StringVar(&value, "value", "", "only remove this value from the set")
+	cmd.Flags().String("type", "", "record type")
+	cmd.Flags().String("name", "", "record name relative to the zone (www, @) or FQDN")
+	cmd.Flags().String("value", "", "only remove this value from the set")
 	cmd.Flags().IntVar(&priority, "priority", 0, "priority of the MX/SRV <value>, when the value does not start with one")
 	cmd.Flags().StringVar(&id, "id", "", "delete the record value with this id (project/zone|TYPE|name|value)")
 	app.HideFormerRecordFlags(cmd)

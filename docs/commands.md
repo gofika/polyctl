@@ -366,7 +366,7 @@ The same operation has the same verb and shape on every platform:
 | --- | --- |
 | Registrar groups | `list`, `get <domain>`, `ns get <domain>`, `ns set <domain> <nameserver>...` |
 | Records with an id (Cloudflare, name.com, Alibaba Cloud) | `create`, `update <zone> [<name> [<type> [<value>]]]`, `delete <zone> [<name> [<type> [<value>]]]` (`<domain>` on name.com and Alibaba Cloud): the record is found by name, `<type>` and `<value>` only tell records apart (on Alibaba Cloud also the line), and `--id <record-id>` names one exactly (the former `<zone> <record-id>` still works) |
-| Records by name and type (Route 53, Cloud DNS, GoDaddy) | `upsert` sets the whole record set; `delete <name> [<type>]` (`<type>` only for a name with records of several types), with `--id` as an optional way to pick one record |
+| Record sets by name and type (Route 53, Cloud DNS, GoDaddy) | `upsert` sets the whole record set. `delete <zone> [<name> [<type>]]` on Route 53 deletes a record set (`--set-identifier` tells routing-policy sets apart; there is no `--id`); `delete <zone> [<name> [<type> [<value>]]]` on Cloud DNS deletes a record set or one value of it; `delete <domain> [<name> [<type> [<value>]]]` on GoDaddy deletes records as the platforms with record ids do. `<type>` is needed only for a name with records of several types, and `--id` (Cloud DNS, GoDaddy) names one record exactly |
 | Compute services | `<service> instance list\|start\|stop ...` |
 
 - **`create`** makes one new resource and fails when it exists. **`set` / `upsert`** set one object (a record, a record set) and never create anything else.

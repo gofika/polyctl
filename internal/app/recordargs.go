@@ -50,30 +50,18 @@ type recordShape struct {
 	partial              bool
 }
 
-// ParseRecordArgs reads the positional record of cmd. args are the
-// arguments after the <domain> or <zone>; without any there is no
-// positional record and it returns nil, nil (the flags of the former form,
-// or the interactive flow, then say what to write).
+// parse reads the positional record of cmd. args are the arguments after
+// the <domain> or <zone>; without any there is no positional record and it
+// returns nil, nil (the flags of the former form, or the interactive flow,
+// then say what to write).
 //
-// The record takes minValues to maxValues values (maxValues < 0: any
-// number). Every mistake is a usage error: a wrong number of arguments (the
-// message shows the usage of the positional form), an empty argument, and a
+// Every mistake is a usage error: a wrong number of arguments (the message
+// shows the usage of the positional form), an empty argument, and a
 // positional record beside one of the flags of the former form. Those
 // flags are --name, --type and --value unless formerFlags names the ones of
-// the command.
-func ParseRecordArgs(cmd *cobra.Command, args []string, minValues, maxValues int, formerFlags ...string) (*RecordArgs, error) {
-	return recordShape{minValues: minValues, maxValues: maxValues}.parse(cmd, args, formerFlags)
-}
-
-// ParseRecordSelector reads the positional record of a command that
-// selects records instead of writing one (delete): <name> [<type>
-// [<value>]], at most maxValues values. Only the name is required: Type is
-// "" when it was left out, and the command then finds out which records the
-// name means (see RecordsOfName). Otherwise it is ParseRecordArgs.
-func ParseRecordSelector(cmd *cobra.Command, args []string, maxValues int, formerFlags ...string) (*RecordArgs, error) {
-	return recordShape{maxValues: maxValues, typeOptional: true}.parse(cmd, args, formerFlags)
-}
-
+// the command. With typeOptional only the name is required: Type is "" when
+// it was left out, and the command then finds out which records the name
+// means (see RecordsOfName).
 func (sh recordShape) parse(cmd *cobra.Command, args []string, formerFlags []string) (*RecordArgs, error) {
 	if len(args) == 0 {
 		return nil, nil
@@ -118,14 +106,6 @@ func (sh recordShape) parse(cmd *cobra.Command, args []string, formerFlags []str
 	return rec, nil
 }
 
-// RecordSelectorUsage is the usage text of the positional form of a command
-// that reads its record with ParseRecordSelector, "usage: polyctl dns
-// delete <domain> <name> [<type> [<value>]]". The first argument is named
-// as the usage line of cmd names it (<domain>, <zone>).
-func RecordSelectorUsage(cmd *cobra.Command, maxValues int) string {
-	return recordShape{maxValues: maxValues, typeOptional: true}.usage(cmd)
-}
-
 func (sh recordShape) usage(cmd *cobra.Command) string {
 	first := "<domain>"
 	if words := strings.Fields(cmd.Use); len(words) > 1 {
@@ -151,7 +131,7 @@ func (sh recordShape) usage(cmd *cobra.Command) string {
 // RecordArgsOrInteractive validates the arguments of a record command:
 // the <domain> or <zone> alone (the flags of the former form, or the
 // interactive flow, say what to write), or followed by a positional record
-// as ParseRecordArgs reads it. The interactive flow asks for what is left
+// as RecordInput reads it. The interactive flow asks for what is left
 // out: the domain, and the end of a record that stops after its name or
 // its type (see Runtime.CompleteRecord). The non-interactive flow gets the
 // usage text for both.
@@ -160,12 +140,6 @@ func RecordArgsOrInteractive(rt *Runtime, minValues, maxValues int, formerFlags 
 		sh := recordShape{minValues: minValues, maxValues: maxValues, partial: rt.Interactive()}
 		return sh.argsOrInteractive(rt, formerFlags)(cmd, args)
 	}
-}
-
-// RecordSelectorArgsOrInteractive is RecordArgsOrInteractive for a command
-// that reads its record with ParseRecordSelector.
-func RecordSelectorArgsOrInteractive(rt *Runtime, maxValues int, formerFlags ...string) cobra.PositionalArgs {
-	return recordShape{maxValues: maxValues, typeOptional: true}.argsOrInteractive(rt, formerFlags)
 }
 
 func (sh recordShape) argsOrInteractive(rt *Runtime, formerFlags []string) cobra.PositionalArgs {
@@ -471,8 +445,9 @@ func (f RecordTargetForm) Complete(rt *Runtime, first CompletionFunc, id platfor
 		desc := map[string][]string{}
 		seen := map[string]bool{}
 		out := []string{}
-		for _, r := range cachedRecords(cmd, rt, id, args[0]) {
-			rel := platform.RelativeName(r.Name, args[0])
+		recs, zone := cachedRecords(cmd, rt, id, args[0])
+		for _, r := range recs {
+			rel := platform.RelativeName(r.Name, zone)
 			switch len(args) {
 			case 1:
 				if _, ok := desc[rel]; !ok {
@@ -480,12 +455,12 @@ func (f RecordTargetForm) Complete(rt *Runtime, first CompletionFunc, id platfor
 				}
 				desc[rel] = append(desc[rel], strings.Join(strings.Fields(r.Type+" "+r.Value), " "))
 			case 2:
-				if t := strings.ToUpper(r.Type); platform.NormalizeDomain(r.Name) == platform.FQDN(args[1], args[0]) && !seen[t] {
+				if t := strings.ToUpper(r.Type); platform.NormalizeDomain(r.Name) == platform.FQDN(args[1], zone) && !seen[t] {
 					seen[t] = true
 					out = append(out, t)
 				}
 			case 3:
-				if platform.NormalizeDomain(r.Name) == platform.FQDN(args[1], args[0]) && strings.EqualFold(r.Type, args[2]) && !seen[r.Value] {
+				if platform.NormalizeDomain(r.Name) == platform.FQDN(args[1], zone) && strings.EqualFold(r.Type, args[2]) && !seen[r.Value] {
 					seen[r.Value] = true
 					out = append(out, r.Value)
 				}

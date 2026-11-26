@@ -110,7 +110,7 @@ func TestDNSRecordDeletePicks(t *testing.T) {
 	}
 
 	h.nonInteractive()
-	if err := h.run("dns", "record", "delete", "example-zone"); exitClass(err) != "usage" || !strings.Contains(err.Error(), "a record or --id is required: usage: gcp dns record delete <zone> <name> [<type> [<value>]]") {
+	if err := h.run("dns", "record", "delete", "example-zone"); exitClass(err) != "usage" || !strings.Contains(err.Error(), "a record or --id <record-id> is required: usage: gcp dns record delete <zone> <name> [<type> [<value>]]") {
 		t.Errorf("non-interactive = %v", err)
 	}
 }

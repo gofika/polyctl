@@ -116,15 +116,20 @@ func TestDNSRecordPositionalUsage(t *testing.T) {
 		{[]string{"upsert", "example-zone", "www", "", "203.0.113.10"}, "<type> must not be empty"},
 		{[]string{"upsert", "example-zone", "www", "A", "203.0.113.10", ""}, "<value> must not be empty"},
 		{[]string{"delete"}, "usage: gcp " + del},
-		{[]string{"delete", "example-zone"}, "a record or --id is required: usage: gcp " + del},
+		{[]string{"delete", "example-zone"}, "a record or --id <record-id> is required: usage: gcp " + del},
+		{[]string{"delete", "example-zone", "--value", "1.1.1.1"}, "a record or --id <record-id> is required"},
+		{[]string{"delete", "example-zone", "--type", "A"}, "a record or --id <record-id> is required"},
+		{[]string{"delete", "example-zone", "--id", ""}, "--id must not be empty"},
+		{[]string{"delete", "example-zone", "--id", id, "--priority", "10"}, "--id selects one record value; it cannot be combined with --priority"},
+		{[]string{"delete", "example-zone", "--id", id, "--type", "A"}, "--id selects one record; it cannot be combined with --name, --type or --value"},
 		{[]string{"delete", "example-zone", "www"}, "--yes"},
 		{[]string{"delete", "example-zone", "www", "A", "1.1.1.1", "2.2.2.2"}, del},
 		{[]string{"delete", "example-zone", "--name", "www"}, "--yes"},
 		{[]string{"delete", "example-zone", "www", "A", "--yes", "--name", "www"}, "with --name; use one form: usage: gcp " + del},
 		{[]string{"delete", "example-zone", "www", "A", "--yes", "--type", "A"}, "with --type; use one form"},
 		{[]string{"delete", "example-zone", "www", "A", "--value", "1.1.1.1"}, "with --value; use one form"},
-		{[]string{"delete", "example-zone", "www", "A", "--yes", "--id", id}, "--id selects one record value"},
-		{[]string{"delete", "example-zone", "www", "A", "1.1.1.1", "--id", id}, "--id selects one record value"},
+		{[]string{"delete", "example-zone", "www", "A", "--yes", "--id", id}, "--id selects one record; it cannot be combined with <name> [<type> [<value>]]"},
+		{[]string{"delete", "example-zone", "www", "A", "1.1.1.1", "--id", id}, "--id selects one record; it cannot be combined with <name> [<type> [<value>]]"},
 		{[]string{"delete", "example-zone", "www", "A"}, "--yes"},
 	} {
 		err := h.run(append([]string{"dns", "record"}, c.args...)...)
@@ -196,7 +201,7 @@ func TestDNSRecordWithOnlyTheZoneAsks(t *testing.T) {
 }
 
 // The help shows the positional form and no longer lists the former flags,
-// and the <type> position completes the record types.
+// and the <type> position of upsert completes the record types.
 func TestDNSRecordPositionalHelp(t *testing.T) {
 	h, _ := positionalHarness(t)
 	for verb, use := range map[string]string{"upsert": "upsert <zone> <name> <type> <value>...", "delete": "delete <zone> [<name> [<type> [<value>]]]"} {
@@ -218,12 +223,39 @@ func TestDNSRecordPositionalHelp(t *testing.T) {
 		if f := cmd.Flags().Lookup("priority"); f == nil || f.Hidden {
 			t.Errorf("%s: --priority should be listed", verb)
 		}
+		if verb == "delete" {
+			// delete completes what the zone holds in the inventory.
+			continue
+		}
 		types, dir := cmd.ValidArgsFunction(cmd, []string{"example-zone", "www"}, "")
 		if dir != cobra.ShellCompDirectiveNoFileComp || !strings.Contains(" "+strings.Join(types, " ")+" ", " CNAME ") {
 			t.Errorf("%s: type completion %v, %v", verb, types, dir)
 		}
 		if vals, dir := cmd.ValidArgsFunction(cmd, []string{"example-zone"}, ""); dir != cobra.ShellCompDirectiveNoFileComp || len(vals) != 0 {
 			t.Errorf("%s: name completion %v, %v", verb, vals, dir)
+		}
+	}
+}
+
+// record delete completes what the zone holds in the inventory, with the
+// zone named by its managed zone name or its DNS name: the names, the types
+// of a name and the values of a type.
+func TestDNSRecordDeleteCompletion(t *testing.T) {
+	h, _ := positionalHarness(t)
+	if err := h.run("dns", "record", "list", "example-zone"); err != nil {
+		t.Fatal(err)
+	}
+	cmd, _, err := Command(h.rt).Find([]string{"dns", "record", "delete"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, zone := range []string{"example-zone", "example.com"} {
+		names, dir := cmd.ValidArgsFunction(cmd, []string{zone}, "")
+		if dir != cobra.ShellCompDirectiveNoFileComp || !strings.Contains("\n"+strings.Join(names, "\n"), "\nwww\t") {
+			t.Errorf("%s: names %q, %v", zone, names, dir)
+		}
+		if types, _ := cmd.ValidArgsFunction(cmd, []string{zone, "www"}, ""); len(types) == 0 || strings.Contains(strings.Join(types, " "), "CNAME") {
+			t.Errorf("%s: types of www %q", zone, types)
 		}
 	}
 }

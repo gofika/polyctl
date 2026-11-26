@@ -186,10 +186,10 @@ func TestRoute53RecordUpsertWithOnlyTheZoneAsks(t *testing.T) {
 }
 
 // The help shows the positional form and no longer lists the former flags,
-// and the <type> position completes the record types.
+// and the <type> position of upsert completes the record types.
 func TestRoute53RecordPositionalHelp(t *testing.T) {
 	h, _, _ := positionalHarness(t)
-	for verb, use := range map[string]string{"upsert": "upsert <zone> <name> <type> <value>...", "delete": "delete <zone> <name> [<type>]"} {
+	for verb, use := range map[string]string{"upsert": "upsert <zone> <name> <type> <value>...", "delete": "delete <zone> [<name> [<type>]]"} {
 		cmd, _, err := Command(h.rt).Find([]string{"route53", "record", verb})
 		if err != nil {
 			t.Fatal(err)
@@ -205,6 +205,10 @@ func TestRoute53RecordPositionalHelp(t *testing.T) {
 		if f := cmd.Flags().Lookup("set-identifier"); f == nil || f.Hidden {
 			t.Errorf("%s: --set-identifier should be listed", verb)
 		}
+		if verb == "delete" {
+			// delete completes what the zone holds in the inventory.
+			continue
+		}
 		types, dir := cmd.ValidArgsFunction(cmd, []string{"example.com", "www"}, "")
 		if dir != cobra.ShellCompDirectiveNoFileComp || !strings.Contains(" "+strings.Join(types, " ")+" ", " CNAME ") {
 			t.Errorf("%s: type completion %v, %v", verb, types, dir)
@@ -212,5 +216,29 @@ func TestRoute53RecordPositionalHelp(t *testing.T) {
 		if vals, dir := cmd.ValidArgsFunction(cmd, []string{"example.com"}, ""); dir != cobra.ShellCompDirectiveNoFileComp || len(vals) != 0 {
 			t.Errorf("%s: name completion %v, %v", verb, vals, dir)
 		}
+	}
+}
+
+// record delete completes what the zone holds in the inventory: the names
+// and the types of a name, and nothing after the type (a record set is
+// deleted whole).
+func TestRoute53RecordDeleteCompletion(t *testing.T) {
+	h, _, _ := positionalHarness(t)
+	if err := h.run("route53", "record", "list", "other.org"); err != nil {
+		t.Fatal(err)
+	}
+	cmd, _, err := Command(h.rt).Find([]string{"route53", "record", "delete"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	names, dir := cmd.ValidArgsFunction(cmd, []string{"other.org"}, "")
+	if dir != cobra.ShellCompDirectiveNoFileComp || !strings.Contains("\n"+strings.Join(names, "\n"), "\nwww\t") {
+		t.Errorf("names %q, %v", names, dir)
+	}
+	if types, _ := cmd.ValidArgsFunction(cmd, []string{"other.org", "www"}, ""); len(types) == 0 || strings.Contains(strings.Join(types, " "), "CNAME") {
+		t.Errorf("types of www %q", types)
+	}
+	if vals, _ := cmd.ValidArgsFunction(cmd, []string{"other.org", "www", "A"}, ""); len(vals) != 0 {
+		t.Errorf("after the type: %q", vals)
 	}
 }

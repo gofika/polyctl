@@ -47,7 +47,7 @@ aws whoami                                        # account, ARN, user id
 aws route53 zone list | zone get <zone-id|name>
 aws route53 record list <zone> [--type] [--name]
 aws route53 record upsert <zone> <name> <type> <value>... [--ttl 300] [--priority <n>] [--set-identifier <id>]
-aws route53 record delete <zone> <name> [<type>] [--set-identifier <id>] [--yes]   # deletes the whole record set
+aws route53 record delete <zone> [<name> [<type>]] [--set-identifier <id>] [--yes]   # deletes the whole record set
 aws route53domains list | get <domain> | ns get <domain> | ns set <domain> <nameserver>...
 
 aws ec2 instance list [--state <s>,...] [--type <t>,...] [--name <substring|pattern>] [--region <r>]

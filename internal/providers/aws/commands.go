@@ -493,10 +493,14 @@ inside the zone (www.example.com). <type> is case-insensitive. A value is one
 argument: quote one that contains spaces. A value that starts with "-" goes
 after "--".`
 
+// recordDeleteForm is the form of record delete: the record set by name,
+// or with the former --name and --type (--type alone: the zone apex).
+var recordDeleteForm = app.RecordTargetForm{FormerFlags: []string{"name", "type"}, FormerApex: true, NoValue: true}
+
 func recordDeleteCmd(rt *app.Runtime) *cobra.Command {
-	var typ, name, setID string
+	var setID string
 	cmd := &cobra.Command{
-		Use:   "delete <zone> <name> [<type>]",
+		Use:   "delete <zone> [<name> [<type>]]",
 		Short: "Delete the record set of a name (optionally of one type)",
 		Long: `Delete the record set of <name> and <type>, with every value in it. <name> is
 relative to the zone (www, a.b), @ for the zone apex, or a full name inside
@@ -521,23 +525,23 @@ name alone once it is known to mean one record set). Declining changes
 nothing. A missing set is not found (exit code 4) before the question.
 --dry-run reports what would be deleted and asks nothing.`,
 		Example:           "  polyctl aws route53 record delete example.com _acme-challenge\n  polyctl aws route53 record delete example.com _acme-challenge TXT\n  polyctl aws route53 record delete example.com www A --set-identifier eu --yes",
-		Args:              app.RecordSelectorArgsOrInteractive(rt, 0),
-		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.AWS), platform.AWS),
+		Args:              recordDeleteForm.ArgsOrInteractive(rt),
+		ValidArgsFunction: recordDeleteForm.Complete(rt, app.CompleteDomainArg(rt, platform.AWS), platform.AWS),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The record set is positional (<name> [<type>]) or, in the
-			// former form, given with --name and --type.
-			typeArg, named := "--type", cmd.Flags().Changed("name")
-			if len(args) > 1 {
-				rec, err := app.ParseRecordSelector(cmd, args[1:], 0)
-				if err != nil {
-					return err
-				}
-				name, typ, typeArg, named = rec.Name, rec.Type, "<type>", true
-				args = args[:1]
+			// former form, given with --name and --type. Without either the
+			// record set is chosen from a list (the non-interactive flow was
+			// refused when the arguments were read).
+			target, err := recordDeleteForm.Parse(cmd, args)
+			if err != nil {
+				return err
 			}
-			if typ == "" && !named && !rt.Interactive() {
-				return app.UsageErrf("%s", app.RecordSelectorUsage(cmd, 0))
+			var name, typ string
+			typeArg, named := "--type", false
+			if target != nil {
+				name, typ, typeArg, named = target.Name, target.Type, target.TypeArg, true
 			}
+			args = args[:min(len(args), 1)]
 			// A record set that is named needs --yes where nothing can be
 			// asked: refused before anything is read. A name alone is read
 			// first: what it means (one set, several types, nothing) comes
@@ -550,7 +554,7 @@ nothing. A missing set is not found (exit code 4) before the question.
 			if rt.Flags.Offline {
 				return app.ErrOffline
 			}
-			args, err := rt.DomainArg(cmd.Context(), args, platform.AWS, platform.ResZone, nil)
+			args, err = rt.DomainArg(cmd.Context(), args, platform.AWS, platform.ResZone, nil)
 			if err != nil {
 				return err
 			}
@@ -638,8 +642,8 @@ nothing. A missing set is not found (exit code 4) before the question.
 			return rt.Render(recordResult{Profile: prof.Name, Zone: z, Records: recs}, func() output.Grid { return recordGrid(recs) })
 		},
 	}
-	cmd.Flags().StringVar(&typ, "type", "", "record type")
-	cmd.Flags().StringVar(&name, "name", "", "record name relative to the zone (www, @); default: the zone apex")
+	cmd.Flags().String("type", "", "record type")
+	cmd.Flags().String("name", "", "record name relative to the zone (www, @); default: the zone apex")
 	cmd.Flags().StringVar(&setID, "set-identifier", "", "set identifier of a routing-policy record set (weighted, latency, failover...)")
 	app.HideFormerRecordFlags(cmd)
 	return cmd

@@ -478,7 +478,7 @@ func TestPlatformTreeShapes(t *testing.T) {
 	// id as the exact selector --id. Without a terminal the zone alone is
 	// a usage error, and --id cannot stand beside a record.
 	for _, path := range []string{"cloudflare dns update", "cloudflare dns delete", "namecom dns update", "namecom dns delete",
-		"aliyun dns record update", "aliyun dns record delete"} {
+		"aliyun dns record update", "aliyun dns record delete", "dns delete", "godaddy dns delete", "gcp dns record delete"} {
 		c := find(root, path)
 		if c == nil {
 			t.Errorf("%s is missing", path)
@@ -531,6 +531,17 @@ func TestPlatformTreeShapes(t *testing.T) {
 		}
 		if doc := strings.TrimPrefix(path, "dns "); !strings.Contains(interactive, "`"+path+"`") && !strings.Contains(interactive, "`dns set` / `"+doc+"`") {
 			t.Errorf("docs/interactive.md does not say what %s asks", path)
+		}
+	}
+	// A record set is deleted whole on Route 53: no <value> and no --id,
+	// and the record is as optional as everywhere.
+	if c := find(root, "aws route53 record delete"); c == nil || c.Use != "delete <zone> [<name> [<type>]]" || c.Flags().Lookup("id") != nil {
+		t.Errorf("aws route53 record delete: %+v", c)
+	} else {
+		for n, wantErr := range map[int]bool{0: true, 1: true, 2: false, 3: false, 4: true} {
+			if err := c.Args(c, []string{"example.com", "www", "A", "192.0.2.1"}[:n]); (err != nil) != wantErr || err != nil && ExitCodeFor(err) != ExitUsage {
+				t.Errorf("aws route53 record delete with %d argument(s) = %v", n, err)
+			}
 		}
 	}
 	if c := find(root, "dns ensure"); c == nil || !strings.Contains(c.Long, "one record is asked for") {

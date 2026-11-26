@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"sort"
 	"strings"
@@ -192,7 +193,12 @@ func completionRows(cmd *cobra.Command, rt *Runtime, id platform.ID, q inventory
 	if err != nil {
 		return nil
 	}
-	rows, err := db.List(cmd.Context(), q)
+	ctx := cmd.Context()
+	if ctx == nil {
+		// A command that was not executed (its completion called directly).
+		ctx = context.Background()
+	}
+	rows, err := db.List(ctx, q)
 	if err != nil {
 		return nil
 	}
@@ -215,19 +221,29 @@ func cachedDomains(cmd *cobra.Command, rt *Runtime, id platform.ID) []string {
 }
 
 // cachedRecords are the records of a zone in the local inventory that have
-// an id, with the name the inventory holds.
-func cachedRecords(cmd *cobra.Command, rt *Runtime, id platform.ID, zone string) []platform.Record {
-	var out []platform.Record
-	for _, r := range completionRows(cmd, rt, id, inventory.Query{Type: platform.ResDNSRecord, Domain: zone}) {
+// an id, with the name the inventory holds, and the name of the zone. zone
+// is what the command line names it by: its DNS name, or its id (a Route 53
+// hosted zone id, a Cloud DNS managed zone, with or without its project).
+func cachedRecords(cmd *cobra.Command, rt *Runtime, id platform.ID, zone string) (recs []platform.Record, zoneName string) {
+	rows := completionRows(cmd, rt, id, inventory.Query{Type: platform.ResDNSRecord, Domain: platform.NormalizeDomain(zone)})
+	if len(rows) == 0 {
+		for _, r := range completionRows(cmd, rt, id, inventory.Query{Type: platform.ResDNSRecord}) {
+			if r.ParentID == zone || strings.HasSuffix(r.ParentID, "/"+zone) {
+				rows = append(rows, r)
+			}
+		}
+	}
+	for _, r := range rows {
 		if r.ID == "" {
 			continue
 		}
 		var rec platform.Record
 		_ = json.Unmarshal(r.Data, &rec)
 		rec.ID, rec.Name = r.ID, r.Name
-		out = append(out, rec)
+		recs = append(recs, rec)
+		zoneName = r.Domain
 	}
-	return out
+	return recs, zoneName
 }
 
 // CompletePlatformArgs gives every command of a platform tree that has no
