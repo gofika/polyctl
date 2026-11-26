@@ -733,7 +733,7 @@ func formerName(cmd *cobra.Command, now string) {
 func newAccountEnableCmd(rt *app.Runtime, name string, hidden bool) *cobra.Command {
 	var newDefault string
 	cmd := &cobra.Command{
-		Use:    name + " <account>...",
+		Use:    name + " [<account>...]",
 		Hidden: hidden,
 		Short:  "Choose which accounts of the Cloudflare login are enabled, or enable the ones named",
 		Long: `Manage which accounts of the profile's Cloudflare login are enabled. An

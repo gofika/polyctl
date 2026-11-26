@@ -1599,3 +1599,24 @@ func TestWrittenRecordsCarryZoneID(t *testing.T) {
 		t.Errorf("patch zone_id = %q, want zone1", patched.ZoneID)
 	}
 }
+
+// The usage line of account enable (and add) shows the accounts as
+// optional, since without them it opens the list of enabled accounts;
+// disable (and remove) never opens it and shows them as required.
+func TestAccountUsageLinesShowWhichCommandOpensTheList(t *testing.T) {
+	root := Command(nil)
+	for sub, list := range map[string]bool{"enable": true, "add": true, "disable": false, "remove": false} {
+		c, _, err := root.Find([]string{"account", sub})
+		if err != nil || c.Name() != sub {
+			t.Errorf("account %s: %v", sub, err)
+			continue
+		}
+		want := sub + " <account>..."
+		if list {
+			want = sub + " [<account>...]"
+		}
+		if c.Use != want {
+			t.Errorf("account %s: usage %q, want %q", sub, c.Use, want)
+		}
+	}
+}
