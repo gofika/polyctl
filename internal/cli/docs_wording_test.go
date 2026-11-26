@@ -34,6 +34,7 @@ func TestDocsDescribeEnabledProjectsAndAccounts(t *testing.T) {
 				"the list of `enable` / `disable` are not available to it",
 				"credentials that can list their accounts (exit code 2 otherwise",
 				"`enable` and `disable` open the same list", "polyctl cf account disable   ", "account disable [<account>...]",
+				"the list of `enable` / `disable`",
 			},
 			has: []string{
 				"or the disabled accounts of the login changed", "an account that was enabled again is seen",
@@ -47,6 +48,7 @@ func TestDocsDescribeEnabledProjectsAndAccounts(t *testing.T) {
 			gone: []string{
 				"A disabled API or a missing permission (", "one note per run on stderr names the skipped projects", "acme-dns (Compute Engine API), acme-lab (Cloud DNS API)",
 				"`enable` and `disable` open the same list", "polyctl gcp project disable   ", "disable [<project-id>...]",
+				"the list of `enable` / `disable`", "with `polyctl gcp project disable`.",
 			},
 			has: []string{
 				"Each project is named once per run. The projects one listing skipped share a note",
