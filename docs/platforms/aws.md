@@ -17,7 +17,7 @@ Commands of the `polyctl aws` tree: Route 53, Route 53 Domains, EC2 (instances, 
 
 ## Login and permissions
 
-Log in with `polyctl auth login aws` using IAM Identity Center (`--set method=sso`), access keys (`keys`) or a profile of `~/.aws/config` (`profile`); see [Login flows per platform](../accounts.md#aws). `--set region=` sets the default region of regional services; Route 53 and Route 53 Domains are global.
+Log in with `polyctl auth login aws` using IAM Identity Center (`--set method=sso`), access keys (`keys`) or a profile of `~/.aws/config` (`profile`); see [Login flows per platform](../accounts.md#aws). An IAM Identity Center login lasts as long as its session (8 hours by default, up to 90 days): the [FAQ](../faq.md) says where that is set. `--set region=` sets the default region of regional services; Route 53 and Route 53 Domains are global.
 
 A denied call exits with code 3 and names the IAM action it needed (for example `ec2:RunInstances`, `elasticloadbalancing:CreateLoadBalancer`, `acm:RequestCertificate`, `rds:CreateDBInstance`). Permissions worth knowing in advance:
 

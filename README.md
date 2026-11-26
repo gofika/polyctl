@@ -146,6 +146,7 @@ Status lines go to stderr and results to stdout, so `polyctl dns list example.co
 | [AWS](docs/platforms/aws.md) | AWS commands and IAM permissions |
 | [GCP](docs/platforms/gcp.md) | Google Cloud commands and roles |
 | [Alibaba Cloud](docs/platforms/aliyun.md) | Alibaba Cloud commands and RAM permissions |
+| [FAQ](docs/faq.md) | Why an AWS IAM Identity Center login expires, where its session duration is set, and the logins that do not expire |
 | [Development](docs/development.md) | Project layout, inventory schema, local CI, releasing, roadmap |
 
 ## License
