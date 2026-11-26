@@ -237,12 +237,36 @@ func newDNSRecordCreateCmd(rt *app.Runtime) *cobra.Command {
 	var typ, name, value, line string
 	var ttl, priority int
 	cmd := &cobra.Command{
-		Use:   "create <domain>",
+		Use:   "create <domain> <name> <type> <value>",
 		Short: "Create a record in an alidns domain",
-		Args:  app.ArgsOrInteractive(rt, 1, nil),
+		Long: `Create one record in <domain>.
+
+<name> is relative to the domain (www, a.b), @ for the apex, or a full name
+inside the domain (www.example.com). <type> is case-insensitive. The value is
+one argument: quote one that contains spaces. A value that starts with "-"
+goes after "--". The priority of an MX record goes in --priority.
+
+On a terminal, a missing <domain> is picked from the alidns domains of the
+profile, and with only the domain the type is picked and the value is asked.
+The name is not asked: the record is then at the apex.`,
+		Example: `  polyctl aliyun dns record create example.com www A 203.0.113.10
+  polyctl aliyun dns record create example.com @ MX mail.example.com --priority 10
+  polyctl aliyun dns record create example.com www CNAME target.example.net --line telecom`,
+		Args:              app.RecordArgsOrInteractive(rt, 1, 1),
+		ValidArgsFunction: app.CompleteRecordArgs(app.CompleteDomainArg(rt, platform.Aliyun)),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// The record is positional (<name> <type> <value>) or, in the
+			// former form, given with --name, --type and --value.
+			if len(args) > 1 {
+				rec, err := app.ParseRecordArgs(cmd, args[1:], 1, 1)
+				if err != nil {
+					return err
+				}
+				name, typ, value = rec.Name, rec.Type, rec.Value()
+				args = args[:1]
+			}
 			if (typ == "" || value == "") && !rt.Interactive() {
-				return app.UsageErrf("--type and --value are required")
+				return app.UsageErrf("%s", app.RecordUsage(cmd, 1, 1))
 			}
 			args, err := rt.DomainArg(cmd.Context(), args, platform.Aliyun, platform.ResZone, nil)
 			if err != nil {
@@ -294,6 +318,11 @@ func newDNSRecordCreateCmd(rt *app.Runtime) *cobra.Command {
 	cmd.Flags().IntVar(&ttl, "ttl", 0, "TTL in seconds (0 = alidns default, 600)")
 	cmd.Flags().IntVar(&priority, "priority", 0, "priority for MX records (1-50)")
 	cmd.Flags().StringVar(&line, "line", "", "resolution line (default, telecom, unicom, mobile, oversea, ...)")
+	// --name, --type and --value are the former form of the record; they
+	// keep working and are left out of the help.
+	for _, n := range []string{"name", "type", "value"} {
+		_ = cmd.Flags().MarkHidden(n)
+	}
 	return cmd
 }
 

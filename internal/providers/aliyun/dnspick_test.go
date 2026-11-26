@@ -63,10 +63,10 @@ func TestDNSRecordCreateInteractive(t *testing.T) {
 		t.Errorf("AddDomainRecord = %v", added)
 	}
 
-	// The non-interactive flow is unchanged: a usage error naming the flags.
+	// The non-interactive flow gets the usage of the positional record.
 	h.rt.Picker = nil
 	h.rt.Flags.NonInteractive = true
-	if err := h.run("dns", "record", "create", "example.com"); !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "--type and --value") {
+	if err := h.run("dns", "record", "create", "example.com"); !errors.Is(err, app.ErrUsage) || !strings.Contains(err.Error(), "usage: aliyun dns record create <domain> <name> <type> <value>") {
 		t.Errorf("non-interactive = %v", err)
 	}
 	// cobra refuses the missing argument (the command tree reports it as a
