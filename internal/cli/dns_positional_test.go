@@ -96,6 +96,11 @@ func TestDNSPositionalRecordMatchesFlagForm(t *testing.T) {
 			[]string{"dns", "ensure", "example.com", "-r", "www:A:203.0.113.1:auto:true"},
 			`www.example.com A "203.0.113.1" ttl=300 prio=- proxied=true`,
 		},
+		"ensure with a priority": {
+			[]string{"dns", "ensure", "example.com", "@", "MX", "mail.example.com", "--priority", "10"},
+			[]string{"dns", "ensure", "example.com", "-r", "@:MX:10 mail.example.com"},
+			`example.com MX "mail.example.com" ttl=0 prio=10`,
+		},
 		// "true" and "false" are a name or a value like any other, also
 		// beside --proxied.
 		"set a name true, proxied": {
@@ -198,6 +203,7 @@ func TestDNSPositionalRecordUsage(t *testing.T) {
 		{[]string{"dns", "ensure", "example.com", "-r", "www:A:192.0.2.9", "--priority", "10"}, "--priority applies to a positional record"},
 		{[]string{"dns", "ensure", "example.com", "-r", "www:A:192.0.2.9", "--proxied"}, "--proxied applies to a positional record"},
 		{[]string{"dns", "ensure", "example.com", "www", "A", "192.0.2.9", "--ttl", "soon"}, `--ttl "soon" is not a number of seconds or auto`},
+		{[]string{"dns", "ensure", "example.com", "@", "MX", "10 mail.example.com", "--priority", "20"}, "the priority is given twice (10 in the value, 20 as priority)"},
 		// A stray value of --proxied is named where it cannot be part of
 		// the record.
 		{[]string{"dns", "set", "example.com", "www", "A", "192.0.2.9", "--proxied", "true"}, "--proxied takes no separate value"},
