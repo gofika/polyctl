@@ -682,10 +682,7 @@ Cloud DNS expects; TXT and SPF values are quoted automatically.
 
 // recordArgsHelp is the paragraph of the record commands about their
 // positional record.
-const recordArgsHelp = `<name> is relative to the zone (www, a.b), @ for the zone apex, or a full name
-inside the zone (www.example.com). <type> is case-insensitive. A value is one
-argument: quote one that contains spaces. A value that starts with "-" goes
-after "--".`
+var recordArgsHelp = app.RecordArgsHelp("zone")
 
 // recordDeleteForm is the form of record delete: the record by name or
 // --id, or with the former --name, --type and --value.
@@ -704,11 +701,7 @@ required argument.
 
 ` + recordArgsHelp + `
 
-<type> is needed only to tell record sets apart: a name with one record set
-needs none. A name with record sets of several types is not deleted as a
-whole: on a terminal its record sets are offered to pick one, and the
-non-interactive flow names the types and exits with code 5, also with --yes.
-The SOA and NS sets of the zone apex are never meant by the name alone.
+` + app.RecordSetDeleteHelp + `
 
 On a terminal, a missing <zone> is picked from the managed zones of the
 profile, and with only the zone the record sets of the zone are offered (the

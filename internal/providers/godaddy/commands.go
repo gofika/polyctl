@@ -685,10 +685,7 @@ are kept.
 
 // recordArgsHelp is the paragraph of the record commands about their
 // positional record.
-const recordArgsHelp = `<name> is relative to the domain (www, a.b), @ for the apex, or a full name
-inside the domain (www.example.com). <type> is case-insensitive. A value is
-one argument: quote one that contains spaces. A value that starts with "-" goes
-after "--".`
+var recordArgsHelp = app.RecordArgsHelp("domain")
 
 func newDNSUpsertCmd(rt *app.Runtime) *cobra.Command {
 	var ttl, priority int

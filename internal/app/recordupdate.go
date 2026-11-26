@@ -32,9 +32,11 @@ func (f RecordTargetForm) Help(first, list string) string {
 <type> and <value> narrow the selection and are needed only to tell records
 apart. --id names one record by its id, as ` + "`{list}`" + `
 shows it, and cannot be combined with a positional record.`
+	sets := "records are listed to choose from"
 	if f.NoValue {
 		text = RecordNameHelp(first) + `
 <type> is needed only to tell record sets apart.`
+		sets = "record sets are listed to choose one"
 	}
 	if f.FormerID {
 		text += `
@@ -44,9 +46,9 @@ one, is taken for that id.`
 	}
 	text += `
 
-On a terminal, a missing <{first}> is picked from the {first}s of the
-profile, and with only the {first} its records are listed to choose from.`
-	return strings.NewReplacer("{first}", first, "{list}", list).Replace(text)
+On a terminal, a missing <{first}> is picked from a list, and with only the
+{first} its {sets}.`
+	return strings.NewReplacer("{first}", first, "{list}", list, "{sets}", sets).Replace(text)
 }
 
 // RecordUpdateHelp is the paragraph of an update command about the one
@@ -71,6 +73,15 @@ their ids and a note on how to delete one of them only (<value> or --id), and
 confirmed first (default no; a no deletes nothing, exit code 0); --yes skips
 the question. The non-interactive flow asks nothing: --yes is required to
 delete several records (exit code 2 without it).`
+
+// RecordSetDeleteHelp is the paragraph of a delete command of a platform
+// that keeps the records of a name and type as one record set (Route 53,
+// Cloud DNS) about when it needs the <type>.
+const RecordSetDeleteHelp = `A name with one record set needs no <type>. A name with record sets of
+several types is not deleted as a whole: on a terminal its record sets are
+offered to pick one, and the non-interactive flow names the types and exits
+with code 5, also with --yes. The SOA and NS sets of the zone apex are never
+meant by the name alone.`
 
 // RecordChanges reports whether one of flags, the flags of an update
 // command that change the record, was given. Without any the interactive

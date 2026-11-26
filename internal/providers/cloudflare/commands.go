@@ -513,10 +513,7 @@ func newDNSCreateCmd(rt *app.Runtime) *cobra.Command {
 		Long: `Create one record in <zone>. Records that already have the same name and
 type are left alone.
 
-<name> is relative to the zone (www, a.b), @ for the zone apex, or a full name
-inside the zone (www.example.com). <type> is case-insensitive. The value is one
-argument: quote one that contains spaces. A value that starts with "-" goes
-after "--".
+` + app.RecordArgsHelp("zone") + `
 
 --proxied is a boolean: --proxied switches the proxy on, --proxied=false
 switches it off, and without it Cloudflare's default applies.

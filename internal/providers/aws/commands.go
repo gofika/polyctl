@@ -499,10 +499,7 @@ in the non-interactive flow.
 
 // recordArgsHelp is the paragraph of the record commands about their
 // positional record.
-const recordArgsHelp = `<name> is relative to the zone (www, a.b), @ for the zone apex, or a full name
-inside the zone (www.example.com). <type> is case-insensitive. A value is one
-argument: quote one that contains spaces. A value that starts with "-" goes
-after "--".`
+var recordArgsHelp = app.RecordArgsHelp("zone")
 
 // recordDeleteForm is the form of record delete: the record set by name,
 // or with the former --name and --type (--type alone: the zone apex).
@@ -513,21 +510,18 @@ func recordDeleteCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "delete <zone> [<name> [<type>]]",
 		Short: "Delete the record set of a name (optionally of one type)",
-		Long: `Delete the record set of <name> and <type>, with every value in it. <name> is
-relative to the zone (www, a.b), @ for the zone apex, or a full name inside
-the zone (www.example.com). <type> is case-insensitive.
+		Long: `Delete the record set of <name> and <type>, with every value in it.
 
-<type> is needed only to tell record sets apart: a name with one record set
-needs none. A name with record sets of several types is not deleted as a
-whole: on a terminal its record sets are offered to pick one, and the
-non-interactive flow names the types and exits with code 5, also with --yes.
-The SOA and NS sets of the zone apex are never meant by the name alone.
+` + recordDeleteForm.Help("zone", "") + `
+
+` + app.RecordSetDeleteHelp + `
 
 A routing-policy set (weighted, latency, failover, geolocation...) is
 chosen with --set-identifier; without it, a name and type that hold only
 routing-policy sets are a list to choose from on a terminal, and ambiguous
-(exit code 5, the identifiers listed) in the non-interactive flow. Beside a name alone, --set-identifier says which set is meant: only
-the sets with that identifier count, and only those are offered.
+(exit code 5, the identifiers listed) in the non-interactive flow. Beside a
+name alone, --set-identifier says which set is meant: only the sets with
+that identifier count, and only those are offered.
 
 The values to delete are listed, then one yes/no question is asked (default
 no; --yes skips it). The non-interactive flow asks nothing: --yes is required

@@ -596,10 +596,7 @@ func newDNSCreateCmd(rt *app.Runtime) *cobra.Command {
 		Long: `Create one record of <domain>. Records that already have the same name and
 type are left alone.
 
-<name> is relative to the domain (www, a.b), @ for the apex, or a full name
-inside the domain (www.example.com). <type> is case-insensitive. The value is
-one argument: quote one that contains spaces. A value that starts with "-" goes
-after "--".
+` + app.RecordArgsHelp("domain") + `
 
 ` + app.RecordAskHelp("domain"),
 		Example: `  polyctl namecom dns create example.com www A 203.0.113.10

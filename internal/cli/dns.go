@@ -57,10 +57,7 @@ func dnsNameOf(t *app.Target, name, arg string) (string, error) {
 
 // recordHelp is the paragraph of the record commands about their positional
 // record.
-const recordHelp = `<name> is relative to the zone (www, a.b), @ for the zone apex, or a full name
-inside the zone (www.example.com). <type> is case-insensitive. A value is one
-argument: quote one that contains spaces. A value that starts with "-" goes
-after "--".`
+var recordHelp = app.RecordArgsHelp("zone")
 
 // recordGrid renders records of platform p; Cloudflare gets a PROXIED column.
 func recordGrid(recs []platform.Record, p platform.ID) output.Grid {
@@ -344,25 +341,10 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "delete <domain> [<name> [<type> [<value>]]]",
 		Short: "Delete the DNS records of a name (optionally of one type and value), or all of them with --all",
-		Long: "Delete the records of <name>, or the one record with --id (alone: it cannot\n" +
-			"be combined with a positional record).\n" +
-			"\n" + recordHelp + "\n" +
-			"\n" +
-			"<type> and <value> narrow the selection and are needed only to tell records\n" +
-			"apart. A name whose records all have one type needs no <type>. A name with\n" +
-			"records of several types is not deleted as a whole: the interactive flow\n" +
-			"lists its records to tick (ticking none deletes nothing), and the\n" +
-			"non-interactive flow names the types and exits with code 5, also with --yes;\n" +
-			"give <type> then. <value> selects the records with that value.\n" +
-			"\n" +
-			"A single match is deleted at once. Several matches are listed on stderr with\n" +
-			"their ids and a note on how to delete one of them only (<value> or --id),\n" +
-			"and, in the interactive flow, confirmed first (default no; a no deletes\n" +
-			"nothing, exit code 0); --yes skips the question. In the non-interactive flow\n" +
-			"(no terminal, --non-interactive or POLYCTL_NON_INTERACTIVE=1) nothing is\n" +
-			"asked and stdin is not read: --yes is required to delete several records,\n" +
-			"and without it the command is a usage error (exit code 2) and nothing is\n" +
-			"deleted.\n" +
+		Long: "Delete the records of <name> in the zone serving <domain>, or the one record\n" +
+			"with --id.\n" +
+			"\n" + dnsDeleteForm.Help("zone", "polyctl dns list") + "\n" +
+			"\n" + app.RecordDeleteHelp + "\n" +
 			"\n" +
 			"With --all, every record of the zone is deleted (it cannot be combined with\n" +
 			"a positional record or --id); --type then limits the deletion to the given types\n" +
@@ -657,12 +639,11 @@ oldest when none has the desired value) and deletes the others, after the
 creates and updates. proxied=true on a platform other than Cloudflare reports the record as
 skipped. The zone is always read live: --offline is refused (exit code 6).
 
-On a terminal, without a record, --record and --file one record is asked for,
-in the order zone, name, type and value, and so is the rest of a record that
-stops after its name or its type. The name is chosen from the names the zone
-already has, @ for the apex, or typed in; values are asked until one is left
-empty. With --record or --file nothing is asked. The non-interactive flow asks
-nothing: an incomplete record is a usage error (exit code 2).`,
+` + app.RecordAskHelp("zone") + `
+
+Without a record, --record and --file one record is asked for in that way,
+and values are asked until one is left empty. With --record or --file and no
+positional record nothing is asked.`,
 		Example: `  polyctl dns ensure example.com @ A 192.0.2.10
   polyctl dns ensure example.com www CNAME target.example.net --ttl 300
   polyctl dns ensure example.com @ TXT "v=spf1 -all" "google-site-verification=abc"

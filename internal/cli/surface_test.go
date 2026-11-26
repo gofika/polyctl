@@ -533,6 +533,31 @@ func TestPlatformTreeShapes(t *testing.T) {
 			t.Errorf("docs/interactive.md does not say what %s asks", path)
 		}
 	}
+	// Every record command says the same about <name> and <type>.
+	for first, paths := range map[string][]string{
+		"zone": {"dns set", "dns add", "dns ensure", "dns delete", "cloudflare dns create", "cloudflare dns update", "cloudflare dns delete",
+			"aws route53 record upsert", "aws route53 record delete", "gcp dns record upsert", "gcp dns record delete"},
+		"domain": {"namecom dns create", "namecom dns update", "namecom dns delete", "godaddy dns add", "godaddy dns upsert", "godaddy dns delete",
+			"aliyun dns record create", "aliyun dns record update", "aliyun dns record delete"},
+	} {
+		for _, path := range paths {
+			if c := find(root, path); c == nil || !strings.Contains(c.Long, app.RecordNameHelp(first)) {
+				t.Errorf("%s: the help lacks the shared paragraph about <name> and <type>", path)
+			}
+		}
+	}
+	// The delete commands of the platforms with records, and of those with
+	// record sets, share what they say about <type>.
+	for _, path := range []string{"dns delete", "cloudflare dns delete", "namecom dns delete", "godaddy dns delete", "aliyun dns record delete"} {
+		if c := find(root, path); c == nil || !strings.Contains(c.Long, app.RecordDeleteHelp) {
+			t.Errorf("%s: the help lacks the shared paragraph of a record delete", path)
+		}
+	}
+	for _, path := range []string{"aws route53 record delete", "gcp dns record delete"} {
+		if c := find(root, path); c == nil || !strings.Contains(c.Long, app.RecordSetDeleteHelp) {
+			t.Errorf("%s: the help lacks the shared paragraph of a record set delete", path)
+		}
+	}
 	// A record set is deleted whole on Route 53: no <value> and no --id,
 	// and the record is as optional as everywhere.
 	if c := find(root, "aws route53 record delete"); c == nil || c.Use != "delete <zone> [<name> [<type>]]" || c.Flags().Lookup("id") != nil {
