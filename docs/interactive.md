@@ -95,7 +95,7 @@ The usage error always names what is missing. The table covers accounts, the pla
 
 | Command | Interactive flow asks | Non-interactive flow requires |
 | --- | --- | --- |
-| any command whose name matches several owners or resources | which one | `--profile` / `--platform`, or the id (exit code 5 otherwise) |
+| any command whose name matches several owners or resources | which one | `--profile` / `--platform`, or the id (exit code 5 otherwise). When the candidates are of one login (zones of one name in several Cloudflare accounts of a login, or in several projects of a GCP account) neither flag chooses: use the platform's own command, `polyctl cloudflare ... --account <id or name>` or `polyctl gcp dns ... --project <id>`, or its zone id, as the error says |
 | `dns list` / `set` / `add` / `ensure` / `delete` without `<domain>` | the zone, from the indexed zones | `<domain>` |
 | `dns set` / `add` without `--type` / `--value` | the record type, then the value | `--type` and `--value` |
 | `dns delete <domain>` without `--type`, `--id` or `--all` | the records to delete (multiple choice; SOA and apex NS not offered) | `--type` (with `--name`), `--id` or `--all` |
