@@ -70,8 +70,8 @@ client_secret=- (the secret read from stdin), an OAuth client of your own
 key_file=PATH); method=adc uses Application Default Credentials from "gcloud
 auth application-default login". A re-login keeps the method of the account.
 One account works on every project its credentials see, the ones created
-later included; "polyctl gcp project disable" keeps the ones that are not used
-out of every sync. A login chooses the default project only, the one new
+later included; "polyctl gcp project enable" chooses which ones are enabled,
+and a disabled one is kept out of every sync. A login chooses the default project only, the one new
 resources are created in: on a terminal it is asked when several projects are
 visible, and a re-login keeps the one it had. --set project=ID sets it without
 prompting; change it later with "polyctl gcp project use". --set

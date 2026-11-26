@@ -956,7 +956,7 @@ func TestLoginADC(t *testing.T) {
 	}
 	if out := errBuf.String(); !strings.Contains(out, "Default project (new resources are created there; every project is synced unless disabled)") ||
 		strings.Contains(out, "projects to work on") ||
-		!strings.Contains(out, "2 projects are enabled (everything the credentials see); keep the ones that are not used out of every sync with polyctl gcp project disable") {
+		!strings.Contains(out, "2 projects are enabled (everything the credentials see); choose which ones stay enabled with polyctl gcp project enable") {
 		t.Errorf("project prompt: %s", out)
 	}
 	if res.Label != "me@example.com (default project proj; 2 projects enabled)" {

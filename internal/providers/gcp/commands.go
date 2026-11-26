@@ -27,7 +27,7 @@ func Command(rt *app.Runtime) *cobra.Command {
 		Long: `Google Cloud commands that follow the platform's own model: Cloud DNS managed
 zones hold multi-value record sets, Compute Engine instances live in zones.
 A gcp account works on every project its credentials see, unless one was
-disabled with "polyctl gcp project disable". Lists and lookups cover every
+disabled ("polyctl gcp project enable" chooses which are enabled). Lists and lookups cover every
 enabled project, a create goes to the default project, and --project on the
 dns and compute commands names the project of one call (pass --profile to pick
 another account).`,

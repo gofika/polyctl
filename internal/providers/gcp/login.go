@@ -483,7 +483,7 @@ func optDefault(in platform.LoginInput, pio *prompt.IO) (string, error) {
 	if len(list) == 0 {
 		return def, nil
 	}
-	fmt.Fprintln(pio.Err, "note: --set projects is no longer used: every project the credentials see is enabled; keep projects out with --set disabled_projects=<id>,... or polyctl gcp project disable")
+	fmt.Fprintln(pio.Err, "note: --set projects is no longer used: every project the credentials see is enabled; keep projects out with --set disabled_projects=<id>,... or polyctl gcp project disable <id>...")
 	if def == "" {
 		if prev := strings.TrimSpace(in.Existing[metaProject]); prev != "" && slices.Contains(list, prev) {
 			def = prev
@@ -675,7 +675,7 @@ func verifyDefault(ctx context.Context, pio *prompt.IO, ts oauth2.TokenSource, l
 	}
 	c.cov.disabled = lp.disabled
 	if n := lp.enabled(); lp.listed && n > 1 {
-		fmt.Fprintf(pio.Err, "%d projects are enabled (everything the credentials see); keep the ones that are not used out of every sync with polyctl gcp project disable\n", n)
+		fmt.Fprintf(pio.Err, "%d projects are enabled (everything the credentials see); choose which ones stay enabled with polyctl gcp project enable\n", n)
 	}
 	return c, nil
 }
