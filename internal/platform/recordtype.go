@@ -1056,6 +1056,9 @@ func checkLOC(v string) (string, *int, error) {
 		if n == 0 {
 			return nil, fmt.Errorf("the %s degrees are missing", what)
 		}
+		if parts[0] == maxDeg && (parts[1] != 0 || parts[2] != 0) {
+			return nil, fmt.Errorf("the %s is over %s degrees", what, locFormat(maxDeg))
+		}
 		if i >= len(f) || len(f[i]) != 1 || !strings.Contains(dirs, strings.ToUpper(f[i])) {
 			return nil, fmt.Errorf("the %s does not end in %s", what, strings.Join(strings.Split(dirs, ""), " or "))
 		}
