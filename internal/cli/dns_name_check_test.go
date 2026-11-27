@@ -25,7 +25,8 @@ func gdZone(t *testing.T, recs ...platform.Record) (cfgPath string, gd *fakeClie
 // A name and type that dns ensure refuses together (@ NS, an apex CNAME
 // where the platform refuses one, a GoDaddy SRV name that is not
 // _service._proto) are refused on a terminal as soon as both are known,
-// before the zone is read or a value asked, as in a script.
+// before the zone is read or a value asked, as in a script; so are the ones
+// dns add refuses (all of them but @ NS).
 func TestDNSEnsureNameAndTypeRefusedBeforeAsking(t *testing.T) {
 	_, cfgPath, fc := ensureZone(t, platform.Record{ID: "n1", ZoneID: "z1", Name: "example.com", Type: "NS", Value: "ns1.cf.example"})
 	p := &scriptedPicker{T: t}
@@ -41,6 +42,7 @@ func TestDNSEnsureNameAndTypeRefusedBeforeAsking(t *testing.T) {
 		{[]string{"dns", "ensure", "gd.example", "@", "CNAME"}, "does not take a CNAME at the zone apex"},
 		{[]string{"dns", "ensure", "gd.example", "sip", "SRV"}, "_service._proto"},
 		{[]string{"dns", "add", "gd.example", "sip", "SRV"}, "_service._proto"},
+		{[]string{"dns", "add", "gd.example", "@", "CNAME"}, "does not take a CNAME at the zone apex"},
 		{[]string{"dns", "add", "gd.example", "sip", "SRV", "10 5 5060 sip.example.com"}, "_service._proto"},
 	} {
 		cfgPath, gd := gdZone(t, platform.Record{ID: "a1", ZoneID: "z-gd.example", Name: "gd.example", Type: "A", Value: "192.0.2.1"})
@@ -71,8 +73,8 @@ func TestDNSEnsureNameAndTypeRefusedBeforeAsking(t *testing.T) {
 
 // The type list of a name picked on a terminal leaves out the types the
 // command refuses for it: NS at the apex for dns ensure, CNAME at the apex
-// where the platform refuses one, SRV on GoDaddy at a name that is not
-// _service._proto (the apex among them).
+// where the platform refuses one (dns add too), SRV on GoDaddy at a name that
+// is not _service._proto (the apex among them).
 func TestDNSTypeListLeavesOutTypesRefusedForTheName(t *testing.T) {
 	types := []string{"A", "CNAME", "MX", "NS", "TXT", "SRV"}
 	defer func() { fakeRecordTypes = nil }()
@@ -84,7 +86,8 @@ func TestDNSTypeListLeavesOutTypesRefusedForTheName(t *testing.T) {
 		{[]string{"dns", "ensure", "gd.example"}, "@", "A MX TXT"},
 		{[]string{"dns", "ensure", "gd.example"}, "sip", "A CNAME MX NS TXT"},
 		{[]string{"dns", "ensure", "gd.example"}, "_sip._tcp", "A CNAME MX NS TXT SRV"},
-		{[]string{"dns", "add", "gd.example"}, "@", "A CNAME MX NS TXT"},
+		{[]string{"dns", "add", "gd.example"}, "@", "A MX NS TXT"},
+		{[]string{"dns", "add", "gd.example"}, "sip", "A CNAME MX NS TXT"},
 	} {
 		cfgPath, _ := gdZone(t)
 		fakeRecordTypes = types

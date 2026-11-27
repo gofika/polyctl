@@ -515,18 +515,25 @@ func checkPlatformValue(p ID, typ, v string) error {
 }
 
 // CheckRecordName checks fqdn, the name of a record of type typ in zone, as
-// platform p takes it, before any request: GoDaddy keeps the service and
-// protocol of an SRV record in fields of their own, so its name must be
-// _service._proto[.owner].
+// platform p takes it, before any request: no CNAME at the zone apex where
+// the platform refuses one there (apexCNAME), and on GoDaddy, which keeps
+// the service and protocol of an SRV record in fields of their own, an SRV
+// name of the form _service._proto[.owner].
 func CheckRecordName(p ID, zone, fqdn, typ string) error {
-	if err := checkRecordName(p, zone, fqdn, typ); err != nil {
+	if err := checkRecordName(p, NormalizeDomain(zone), NormalizeDomain(fqdn), strings.ToUpper(strings.TrimSpace(typ)), false); err != nil {
 		return invalid("%v", err)
 	}
 	return nil
 }
 
-func checkRecordName(p ID, zone, fqdn, typ string) error {
-	if p != GoDaddy || !strings.EqualFold(typ, "SRV") {
+// checkRecordName is CheckRecordName with zone and fqdn normalized and typ
+// upper case; skipped says the record is not written (proxySkipped), so the
+// apex does not refuse it.
+func checkRecordName(p ID, zone, fqdn, typ string, skipped bool) error {
+	if fqdn == zone && !skipped && typ == "CNAME" && !apexCNAME(p) {
+		return apexCNAMEError(p)
+	}
+	if p != GoDaddy || typ != "SRV" {
 		return nil
 	}
 	rel := RelativeName(fqdn, zone)
@@ -540,12 +547,11 @@ func checkRecordName(p ID, zone, fqdn, typ string) error {
 // CheckEnsureName checks the name and type of a record dns ensure writes in
 // zone on platform p as NormalizeRecordSpecs does, for a command that knows
 // them before it reads the zone or asks for the value: proxied only on the
-// types it applies to (checkProxied), no NS record, nor a CNAME where the
-// platform refuses one, at the zone apex (checkEnsureApex), and a name the
-// platform takes for the type (CheckRecordName). proxied is the proxied
-// setting asked for, nil when none was: a record asking for proxied=true
-// off Cloudflare is reported as skipped and never written, so the apex does
-// not refuse it.
+// types it applies to (checkProxied), no NS record at the zone apex
+// (checkEnsureApex), and a name the platform takes for the type
+// (CheckRecordName). proxied is the proxied setting asked for, nil when
+// none was: a record asking for proxied=true off Cloudflare is reported as
+// skipped and never written, so the apex does not refuse it.
 func CheckEnsureName(p ID, zone, fqdn, typ string, proxied *bool) error {
 	typ = strings.ToUpper(strings.TrimSpace(typ))
 	if err := checkProxied(typ, proxied); err != nil {
@@ -561,11 +567,11 @@ func CheckEnsureName(p ID, zone, fqdn, typ string, proxied *bool) error {
 // upper case; skipped says the record is not written (proxySkipped).
 func checkEnsureName(p ID, zone, fqdn, typ string, skipped bool) error {
 	if fqdn == zone && !skipped {
-		if err := checkEnsureApex(p, typ); err != nil {
+		if err := checkEnsureApex(typ); err != nil {
 			return err
 		}
 	}
-	return checkRecordName(p, zone, fqdn, typ)
+	return checkRecordName(p, zone, fqdn, typ, skipped)
 }
 
 // checkProxied refuses a proxied setting (nil: none given), true or false,
@@ -591,28 +597,31 @@ func proxySkipped(p ID, typ string, proxied *bool) bool {
 // zone's NS records. An unknown platform ("") is left to decide.
 func apexCNAME(p ID) bool { return p == "" || p == Cloudflare || p == Aliyun }
 
-// checkEnsureApex refuses a record of type typ at the zone apex that dns
-// ensure does not write there on platform p: a CNAME where the platform
-// refuses one (which would only fail after the records it replaces were
-// deleted), and NS: the zone's own nameservers, which dns ensure leaves
-// alone as dns delete does.
-func checkEnsureApex(p ID, typ string) error {
-	switch {
-	case typ == "NS":
+// checkEnsureApex refuses NS at the zone apex, which dns ensure does not
+// write there: the zone's own nameservers, which dns ensure leaves alone as
+// dns delete does.
+func checkEnsureApex(typ string) error {
+	if typ == "NS" {
 		return errors.New("the NS records of the zone apex are the zone's own nameservers, which dns ensure neither counts nor changes")
-	case typ == "CNAME" && !apexCNAME(p):
-		hint := "write A or AAAA records"
-		switch p {
-		case GCP:
-			hint = "write an ALIAS record, or A or AAAA records"
-		case NameCom:
-			hint = "write an ANAME record, or A or AAAA records"
-		case AWS:
-			hint = "write A or AAAA records; a Route 53 alias is an A or AAAA record set with an alias target, set up in the AWS console or CLI"
-		}
-		return fmt.Errorf("%s does not take a CNAME at the zone apex, which holds the zone's NS records: %s", p, hint)
 	}
 	return nil
+}
+
+// apexCNAMEError says that platform p, where apexCNAME is false, does not
+// take a CNAME at the zone apex, and what to write instead: refused before
+// any request, and so, for dns ensure, before the records it would replace
+// are deleted.
+func apexCNAMEError(p ID) error {
+	hint := "write A or AAAA records"
+	switch p {
+	case GCP:
+		hint = "write an ALIAS record, or A or AAAA records"
+	case NameCom:
+		hint = "write an ANAME record, or A or AAAA records"
+	case AWS:
+		hint = "write A or AAAA records; a Route 53 alias is an A or AAAA record set with an alias target, set up in the AWS console or CLI"
+	}
+	return fmt.Errorf("%s does not take a CNAME at the zone apex, which holds the zone's NS records: %s", p, hint)
 }
 
 func checkHost(v string) (string, *int, error) {
