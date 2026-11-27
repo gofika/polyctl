@@ -118,7 +118,7 @@ polyctl domain index
 polyctl domain which example.com
 polyctl dns list example.com
 polyctl dns ensure example.com www A 203.0.113.10
-polyctl dns ensure example.com @ MX "10 mx1.example.com" "20 mx2.example.com"
+polyctl dns ensure example.com mail MX "10 mx1.example.net" "20 mx2.example.net"   # the MX set of a name with no other records
 polyctl dns ensure example.com www CNAME lb.example.net    # replaces the one record of www (asks first; --yes in scripts)
 polyctl dns add example.com @ TXT "google-site-verification=abc"   # one more record beside those of the name
 polyctl dns delete example.com old                         # <type> only when the name has records of several types

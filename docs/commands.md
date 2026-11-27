@@ -114,8 +114,8 @@ Brings records of one zone to the desired state. Safe to run again and again. It
 
 ```sh
 polyctl dns ensure example.com www A 203.0.113.10 --ttl 300 --proxied
-polyctl dns ensure example.com @ MX "10 mx1.example.com" "20 mx2.example.com"
-polyctl dns ensure example.com -r www:A:203.0.113.10:300:true -r '@:MX:10 mail.example.com'
+polyctl dns ensure example.com mail MX "10 mx1.example.net" "20 mx2.example.net"
+polyctl dns ensure example.com -r www:A:203.0.113.10:300:true -r 'mail:MX:10 mx1.example.net'
 polyctl dns ensure example.com -f records.yaml --dry-run
 polyctl dns ensure example.com www CNAME target.example.net --yes   # replaces the A record of www
 ```
@@ -127,9 +127,9 @@ records:
     value: 203.0.113.10
     ttl: 300          # optional; a number or auto
     proxied: true     # optional, Cloudflare only
-  - name: "@"
+  - name: mail
     type: MX
-    value: mail.example.com
+    value: mx1.example.net
     priority: 10      # MX only
 ```
 

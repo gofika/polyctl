@@ -564,7 +564,7 @@ a name, or records of several types, use ` + "`polyctl dns add`" + `.
 One record, or the set of one name and type, is written as arguments:
 
   polyctl dns ensure example.com www A 203.0.113.10
-  polyctl dns ensure example.com @ MX "10 mx1.example.com" "20 mx2.example.com"
+  polyctl dns ensure example.com mail MX "10 mx1.example.net" "20 mx2.example.net"
 
 ` + recordHelp + `
 ` + recordTypesPointer + `
@@ -592,9 +592,9 @@ front of its value ("10 mail.example.com"), an SRV value is
       value: 203.0.113.10
       ttl: 300          # optional
       proxied: true     # optional
-    - name: "@"
+    - name: mail
       type: MX
-      value: mail.example.com
+      value: mx1.example.net
       priority: 10      # MX only
 
 What ensure changes, for each name it is given (records of names it is not
@@ -649,8 +649,8 @@ and values are asked until one is left empty. With --record or --file and no
 positional record nothing is asked.`,
 		Example: `  polyctl dns ensure example.com @ A 192.0.2.10
   polyctl dns ensure example.com www CNAME target.example.net --ttl 300
-  polyctl dns ensure example.com @ TXT "v=spf1 -all" "google-site-verification=abc"
-  polyctl dns ensure example.com -r www:A:203.0.113.10:300 -r '@:MX:10 mail.example.com'
+  polyctl dns ensure example.com _acme-challenge TXT "token-1" "token-2"
+  polyctl dns ensure example.com -r www:A:203.0.113.10:300 -r 'mail:MX:10 mx1.example.net'
   polyctl dns ensure example.com -f records.yaml --dry-run
   polyctl dns ensure example.com www CNAME target.example.net --yes   # replaces the A record of www`,
 		Args:              app.ProxiedRecordArgs(app.RecordArgsOrInteractive(rt, 1, -1), -1),

@@ -210,9 +210,9 @@ type fileRecord struct {
 //	    value: 203.0.113.10
 //	    ttl: 300          # optional; a number or auto
 //	    proxied: true     # optional
-//	  - name: "@"
+//	  - name: mail
 //	    type: MX
-//	    value: mail.example.com
+//	    value: mx1.example.net
 //	    priority: 10      # MX only
 //
 // Unknown fields are errors, so that a typo is not silently dropped.
