@@ -139,8 +139,7 @@ type RecordCheck struct {
 	// New says the record is created: an MX record then needs a priority.
 	New bool
 	// Proxied is the proxied setting given (--proxied), nil when none was:
-	// one, true or false, belongs to a type that can be proxied
-	// (CheckProxied).
+	// true belongs to a type that can be proxied (CheckProxied).
 	Proxied *bool
 }
 
@@ -584,8 +583,8 @@ func checkEnsureName(p ID, zone, fqdn, typ string, skipped bool) error {
 	return checkRecordName(p, zone, fqdn, typ, skipped)
 }
 
-// CheckProxied refuses (exit code 2) a proxied setting (nil: none given),
-// true or false, on a record of type typ that cannot be proxied
+// CheckProxied refuses (exit code 2) proxied=true (nil: none given; false
+// is what any record without the proxy holds) on a record of type typ that cannot be proxied
 // (proxiableTypes): every command that writes a record with one checks it
 // here, before any request.
 func CheckProxied(typ string, proxied *bool) error {
@@ -597,7 +596,9 @@ func CheckProxied(typ string, proxied *bool) error {
 
 // checkProxied is CheckProxied with typ upper case, the error unwrapped.
 func checkProxied(typ string, proxied *bool) error {
-	if proxied != nil && !slices.Contains(proxiableTypes, typ) {
+	// proxied=false on any type is what the platform holds for a record
+	// without the proxy, and is how a proxied record changing type drops it.
+	if proxied != nil && *proxied && !slices.Contains(proxiableTypes, typ) {
 		return fmt.Errorf("proxied applies to A, AAAA and CNAME records only, not %s", typ)
 	}
 	return nil

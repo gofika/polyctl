@@ -256,7 +256,7 @@ func TestDNSUpdateLists(t *testing.T) {
 	}
 }
 
-// --proxied, true or false, on a type that cannot be proxied is refused
+// --proxied (true) on a type that cannot be proxied is refused
 // with exit code 2 before any request where the type is known from the
 // command line, and before any write where it is known once the record is
 // read (--id).
@@ -264,7 +264,7 @@ func TestDNSProxiedRefusedOnATypeThatCannotBeProxied(t *testing.T) {
 	const want = "proxied applies to A, AAAA and CNAME records only, not TXT"
 	for _, args := range [][]string{
 		{"cloudflare", "dns", "create", "example.com", "www", "TXT", "hello", "--proxied"},
-		{"cloudflare", "dns", "create", "example.com", "--name", "www", "--type", "TXT", "--value", "hello", "--proxied=false"},
+		{"cloudflare", "dns", "create", "example.com", "--name", "www", "--type", "TXT", "--value", "hello", "--proxied"},
 		{"cloudflare", "dns", "update", "example.com", "mail", "TXT", "--proxied"},
 		{"cloudflare", "dns", "update", "example.com", "api", "--type", "TXT", "--value", "hello", "--proxied"},
 	} {
@@ -279,5 +279,31 @@ func TestDNSProxiedRefusedOnATypeThatCannotBeProxied(t *testing.T) {
 	code, _, stderr := e.run("cloudflare", "dns", "update", "example.com", "--id", "m2", "--proxied", "--profile", "acme")
 	if code != cli.ExitUsage || !strings.Contains(stderr, want) || len(e.f.writes()) != 0 {
 		t.Errorf("update --id m2 --proxied: exit %d, writes %v, %s", code, e.f.writes(), stderr)
+	}
+}
+
+// A proxied A record updated to a type that cannot be proxied loses the
+// proxy, with --proxied=false or without it: the platform refuses
+// proxied=true on a TXT record.
+func TestDNSUpdateProxiedRecordToUnproxiableType(t *testing.T) {
+	for _, extra := range [][]string{{"--proxied=false"}, nil} {
+		e := newTargetEnv(t)
+		e.f.mu.Lock()
+		for _, r := range e.f.records["zone-ex"] {
+			if r["id"] == "p1" {
+				r["proxied"] = true
+			}
+		}
+		e.f.mu.Unlock()
+		e.f.reset()
+		args := append([]string{"cloudflare", "dns", "update", "example.com", "api", "--type", "TXT", "--value", "hello", "--profile", "acme"}, extra...)
+		code, _, stderr := e.run(args...)
+		if code != 0 {
+			t.Fatalf("%v: exit %d (%s)", extra, code, stderr)
+		}
+		body := e.f.bodies["PUT /zones/zone-ex/dns_records/p1"]
+		if strings.Contains(body, `"proxied":true`) || !strings.Contains(body, `"type":"TXT"`) {
+			t.Errorf("%v: body %s, want a TXT record without the proxy", extra, body)
+		}
 	}
 }

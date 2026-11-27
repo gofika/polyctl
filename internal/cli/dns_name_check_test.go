@@ -176,14 +176,14 @@ func TestDNSNameGivenAloneRefusedBeforeAsking(t *testing.T) {
 	}
 }
 
-// --proxied on a type that cannot be proxied is refused by dns add with
+// --proxied (true) on a type that cannot be proxied is refused by dns add with
 // exit code 2 before any request, as dns ensure refuses it; on a terminal
 // the type list under --proxied leaves those types out, as the one under
 // --priority leaves out the types without a priority.
 func TestDNSAddProxiedRefusedOnATypeThatCannotBeProxied(t *testing.T) {
 	for _, args := range [][]string{
 		{"dns", "add", "example.com", "www", "TXT", "hello", "--proxied"},
-		{"dns", "add", "example.com", "--name", "www", "--type", "TXT", "--value", "hello", "--proxied=false"},
+		{"dns", "add", "example.com", "--name", "www", "--type", "TXT", "--value", "hello", "--proxied"},
 		{"dns", "add", "gd.example", "www", "TXT", "hello", "--proxied"},
 	} {
 		_, cfgPath, fc := ensureZone(t)

@@ -255,6 +255,12 @@ func CheckRecordUpdate(cmd *cobra.Command, p platform.ID, cur platform.Record, r
 	if err := platform.CheckProxied(rec.Type, prox); err != nil {
 		return err
 	}
+	// A proxied record that becomes a type that cannot be proxied (A to
+	// TXT) loses the proxy: the platform refuses proxied=true on that type.
+	if rec.Proxied != nil && *rec.Proxied && platform.CheckProxied(rec.Type, rec.Proxied) != nil {
+		off := false
+		rec.Proxied = &off
+	}
 	typeChanged := !strings.EqualFold(rec.Type, cur.Type)
 	if !typeChanged && rec.Value == cur.Value && prio == nil {
 		return nil
