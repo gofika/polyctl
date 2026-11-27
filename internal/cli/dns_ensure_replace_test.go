@@ -275,4 +275,21 @@ func TestDNSEnsureFailedCreateAfterReplace(t *testing.T) {
 	if rs := fc.records["z1"]; len(rs) != 1 || rs[0].Value != "203.0.113.1" || rs[0].TTL != 300 {
 		t.Errorf("restored = %+v", rs)
 	}
+
+	// A name whose relative form ends in a top-level domain (foo.dev) is
+	// written in full, so the printed command restores it too.
+	_, cfgPath, fc = ensureZone(t, platform.Record{ID: "t9", ZoneID: "z1", Name: "foo.dev.example.com", Type: "TXT", Value: "hello", TTL: 300})
+	fc.failCreate = "foo.dev.example.com"
+	r = runFlow(t, context.Background(), cfgPath, nil, strings.NewReader(""), "dns", "ensure", "example.com", "foo.dev.example.com", "A", "192.0.2.1", "--yes")
+	const restore = "polyctl dns add example.com foo.dev.example.com TXT hello --ttl 300 --platform cloudflare --profile a"
+	if r.code != ExitError || !strings.Contains(r.err.Error(), "restore it with: "+restore) {
+		t.Fatalf("foo.dev: exit %d, %v", r.code, r.err)
+	}
+	fc.failCreate = ""
+	if _, stderr, err := run(t, cfgPath, strings.Fields(restore)[1:]...); err != nil {
+		t.Fatalf("restore foo.dev: %v (%s)", err, stderr)
+	}
+	if rs := fc.records["z1"]; len(rs) != 1 || rs[0].Name != "foo.dev.example.com" || rs[0].Value != "hello" {
+		t.Errorf("restored foo.dev = %+v", rs)
+	}
 }
