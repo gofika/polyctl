@@ -214,6 +214,13 @@ beside other records) is refused. To change an existing record use
 			} else if fqdn != platform.NormalizeDomain(t.Domain) {
 				in.Name = fqdn
 			}
+			// A name and type both known are checked together before the
+			// zone is read; CompleteRecord checks the ones it asks for.
+			if in.Type != "" && (in.Name != "" || !rt.Interactive()) {
+				if err := platform.CheckRecordName(t.Platform, t.Domain, fqdn, in.Type); err != nil {
+					return err
+				}
+			}
 			dns, err := rt.OpenDNS(cmd.Context(), t)
 			if err != nil {
 				return err
@@ -240,9 +247,6 @@ beside other records) is refused. To change an existing record use
 				return err
 			}
 			v := checked[0]
-			if err := platform.CheckRecordName(t.Platform, t.Domain, fqdn, v.Type); err != nil {
-				return err
-			}
 			if err := addConflict(t, existing, fqdn, v.Type); err != nil {
 				return err
 			}
@@ -709,10 +713,28 @@ positional record nothing is asked.`,
 			if err != nil {
 				return err
 			}
-			// A type given is one the platform writes, checked before the
-			// zone is read and its value asked.
+			// A type given is one the platform writes, and a name given
+			// with it one dns ensure writes that type to: checked before the
+			// zone is read and the value asked, as CompleteRecord checks a
+			// name or type it asks for.
 			if err := in.CheckType(t.Platform); err != nil {
 				return err
+			}
+			var prox *bool
+			if cmd.Flags().Changed("proxied") {
+				prox = &proxied
+			}
+			checkName := func(fqdn, typ string) error {
+				return platform.CheckEnsureName(t.Platform, t.Domain, fqdn, typ, prox)
+			}
+			if in.Name != "" && in.Type != "" {
+				fqdn, err := dnsNameOf(t, in.Name, in.NameArg)
+				if err != nil {
+					return err
+				}
+				if err := checkName(fqdn, in.Type); err != nil {
+					return err
+				}
 			}
 			// The zone is read once: for the questions, when there are
 			// any, and for the plan.
@@ -733,7 +755,7 @@ positional record nothing is asked.`,
 				return existing, nil
 			}
 			if ask {
-				if err := rt.CompleteRecord(in, app.RecordPrompt{Platform: t.Platform, Zone: t.Domain, Replaces: true, Existing: zoneRecords}); err != nil {
+				if err := rt.CompleteRecord(in, app.RecordPrompt{Platform: t.Platform, Zone: t.Domain, Replaces: true, Existing: zoneRecords, CheckName: checkName}); err != nil {
 					return err
 				}
 				pos, err := positionalSpecs(cmd, in, ttl, priority, proxied)

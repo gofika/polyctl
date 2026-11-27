@@ -11,8 +11,9 @@ import (
 
 // pickRecordType asks for a record type the target platform can write. def
 // is the type preselected (the one the name already has); "" or a type the
-// platform does not write preselects A.
-func (rt *Runtime) pickRecordType(id platform.ID, def string) (string, error) {
+// platform does not write preselects A. A type refused (refused(type) not
+// nil: the name and type check of the command) is left out.
+func (rt *Runtime) pickRecordType(id platform.ID, def string, refused func(string) error) (string, error) {
 	types := platform.WritableRecordTypes(id)
 	if types == nil {
 		types = platform.KnownRecordTypes
@@ -20,6 +21,9 @@ func (rt *Runtime) pickRecordType(id platform.ID, def string) (string, error) {
 	var opts []prompt.Option
 	pre := "A"
 	for _, t := range types {
+		if refused != nil && refused(t) != nil {
+			continue
+		}
 		opts = append(opts, prompt.Option{Label: t, Value: t})
 		if def != "" && strings.EqualFold(t, def) {
 			pre = t

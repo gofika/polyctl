@@ -315,6 +315,20 @@ type RecordPrompt struct {
 	// it; nil: platform.RecordAddValue, the value with the priority and the
 	// fields a platform keeps apart put back, as the record check takes it.
 	ValueOf func(platform.Record) string
+	// CheckName is the check of the record's full name and type that the
+	// command runs before it writes. It runs as soon as both are known,
+	// before a value is asked, and the types it refuses for the name are
+	// left out of the type list. nil: platform.CheckRecordName on Platform,
+	// the name a platform takes for a type.
+	CheckName func(fqdn, typ string) error
+}
+
+// checkName is the CheckName of p.
+func (p RecordPrompt) checkName(fqdn, typ string) error {
+	if p.CheckName != nil {
+		return p.CheckName(fqdn, typ)
+	}
+	return platform.CheckRecordName(p.Platform, p.Zone, fqdn, typ)
 }
 
 // CompleteRecord asks, in the interactive flow, for what in lacks, in the
@@ -322,8 +336,10 @@ type RecordPrompt struct {
 //
 //   - the name from the names the zone already has, the apex (@), or a
 //     name typed in; it is never taken to be the apex without asking;
-//   - the type from the types the platform can write, the one type the
-//     name already has preselected;
+//   - the type from the types the platform can write and the command
+//     takes for the name (CheckName), the one type the name already has
+//     preselected; a name and type both known are checked before the value
+//     is asked;
 //   - the value as text, checked as it is typed; a command that takes
 //     several values asks for more until one is left empty.
 //
@@ -352,9 +368,13 @@ func (rt *Runtime) CompleteRecord(in *RecordInput, p RecordPrompt) error {
 	fqdn := platform.FQDN(in.Name, p.Zone)
 	if in.Type == "" {
 		has, _ := RecordsOfName(p.Zone, existing, fqdn, "", "")
-		if in.Type, err = rt.pickRecordType(p.Platform, has.Type()); err != nil {
+		if in.Type, err = rt.pickRecordType(p.Platform, has.Type(), func(typ string) error { return p.checkName(fqdn, typ) }); err != nil {
 			return err
 		}
+	}
+	// The name and type are checked together before the value is asked.
+	if err := p.checkName(fqdn, in.Type); err != nil {
+		return err
 	}
 	if in.writable() {
 		return nil
@@ -461,9 +481,10 @@ func RecordAskHelp(first string) string {
 		`On a terminal, what is left out is asked, in the order {first}, name, type
 and value: a record may stop after the {first}, the name or the type. The
 name is chosen from the names the {first} already has, @ for the apex, or
-typed in; the type from the types the platform can write (the one the name
-already has is preselected), and a type given is checked before anything is
-read or asked; the value is checked as it is typed. The
+typed in; the type from the types the platform can write at that name (the
+one the name already has is preselected), and a type given is checked, with
+the name when it is given too, before anything is read or asked; the value
+is checked as it is typed. The
 non-interactive flow asks nothing: an incomplete record is a usage error
 (exit code 2).`)
 }
