@@ -148,15 +148,8 @@ type RecordCheck struct {
 // the value in the normal form the providers take.
 func CheckRecord(c RecordCheck) (RecordValue, error) {
 	typ := strings.ToUpper(strings.TrimSpace(c.Type))
-	if err := checkType(typ); err != nil {
-		return RecordValue{}, invalid("%v", err)
-	}
-	types := c.Types
-	if types == nil && c.Platform != "" {
-		types = WritableRecordTypes(c.Platform)
-	}
-	if types != nil && !slices.Contains(types, typ) {
-		return RecordValue{}, notWritable(c.Platform, typ, types)
+	if err := checkRecordType(c.Platform, c.Types, typ); err != nil {
+		return RecordValue{}, err
 	}
 	v, err := checkValue(typ, c.Value, c.Priority)
 	if err != nil {
@@ -169,6 +162,28 @@ func CheckRecord(c RecordCheck) (RecordValue, error) {
 		return RecordValue{}, invalid(`an MX record needs a priority: write the value as "10 mail.example.com", or give the priority apart`)
 	}
 	return v, nil
+}
+
+// CheckRecordType is the part of CheckRecord that needs only the type, for a
+// type known before its value: typ is known (exit code 2) and one platform p
+// writes (ErrNotSupported, exit code 7; p "": any known type).
+func CheckRecordType(p ID, typ string) error {
+	return checkRecordType(p, nil, strings.ToUpper(strings.TrimSpace(typ)))
+}
+
+// checkRecordType checks typ (upper case) as CheckRecordType does; types
+// are those p writes, nil: those its provider says.
+func checkRecordType(p ID, types []string, typ string) error {
+	if err := checkType(typ); err != nil {
+		return invalid("%v", err)
+	}
+	if types == nil && p != "" {
+		types = WritableRecordTypes(p)
+	}
+	if types != nil && !slices.Contains(types, typ) {
+		return notWritable(p, typ, types)
+	}
+	return nil
 }
 
 // notWritable is the error of a known type that platform p does not write.

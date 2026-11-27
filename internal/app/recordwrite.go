@@ -115,13 +115,31 @@ func (rt *Runtime) RecordInput(cmd *cobra.Command, args []string, form RecordFor
 	if !rt.Interactive() && !in.writable() && (in.Given() || !form.Optional) {
 		return nil, UsageErrf("%s", in.usage)
 	}
-	// A record that is complete is checked now, before anything is read.
+	// A record that is complete is checked now, before anything is read,
+	// and so is the type of one that is not, before its value is asked.
 	if in.writable() {
 		if _, err := in.Check(cmd, ""); err != nil {
 			return nil, err
 		}
+	} else if err := in.CheckType(""); err != nil {
+		return nil, err
 	}
 	return in, nil
+}
+
+// CheckType checks the type given, if any, before its value is asked or
+// the zone read (platform.CheckRecordType): it is known (exit code 2) and
+// one platform p writes (the Platform of the form when p is "", exit code
+// 7). A command that finds the platform from the domain calls it once it
+// knows the platform.
+func (in *RecordInput) CheckType(p platform.ID) error {
+	if in == nil || in.Type == "" {
+		return nil
+	}
+	if p == "" {
+		p = in.form.Platform
+	}
+	return platform.CheckRecordType(p, in.Type)
 }
 
 // Complete reports whether the record has its type and its values: it is
@@ -430,7 +448,8 @@ func RecordAskHelp(first string) string {
 and value: a record may stop after the {first}, the name or the type. The
 name is chosen from the names the {first} already has, @ for the apex, or
 typed in; the type from the types the platform can write (the one the name
-already has is preselected); the value is checked as it is typed. The
+already has is preselected), and a type given is checked before anything is
+read or asked; the value is checked as it is typed. The
 non-interactive flow asks nothing: an incomplete record is a usage error
 (exit code 2).`)
 }

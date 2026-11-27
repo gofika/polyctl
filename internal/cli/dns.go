@@ -199,6 +199,8 @@ beside other records) is refused. To change an existing record use
 				if _, err := in.Check(cmd, t.Platform); err != nil {
 					return err
 				}
+			} else if err := in.CheckType(t.Platform); err != nil {
+				return err
 			}
 			// A <domain> below its zone names the record (the former form
 			// `dns add www.example.com --type A --value ...`). The zone itself
@@ -702,6 +704,11 @@ positional record nothing is asked.`,
 			}
 			t, err := rt.ResolveDomain(ctx, args[0], platform.ResZone)
 			if err != nil {
+				return err
+			}
+			// A type given is one the platform writes, checked before the
+			// zone is read and its value asked.
+			if err := in.CheckType(t.Platform); err != nil {
 				return err
 			}
 			// The zone is read once: for the questions, when there are
