@@ -539,14 +539,19 @@ func checkRecordName(p ID, zone, fqdn, typ string) error {
 
 // CheckEnsureName checks the name and type of a record dns ensure writes in
 // zone on platform p as NormalizeRecordSpecs does, for a command that knows
-// them before it reads the zone or asks for the value: no NS record, nor a
-// CNAME where the platform refuses one, at the zone apex (checkEnsureApex),
-// and a name the platform takes for the type (CheckRecordName). proxied is
-// the proxied setting asked for, nil when none was: a record asking for
-// proxied=true off Cloudflare is reported as skipped and never written, so
-// the apex does not refuse it.
+// them before it reads the zone or asks for the value: proxied only on the
+// types it applies to (checkProxied), no NS record, nor a CNAME where the
+// platform refuses one, at the zone apex (checkEnsureApex), and a name the
+// platform takes for the type (CheckRecordName). proxied is the proxied
+// setting asked for, nil when none was: a record asking for proxied=true
+// off Cloudflare is reported as skipped and never written, so the apex does
+// not refuse it.
 func CheckEnsureName(p ID, zone, fqdn, typ string, proxied *bool) error {
-	if err := checkEnsureName(p, NormalizeDomain(zone), NormalizeDomain(fqdn), strings.ToUpper(strings.TrimSpace(typ)), proxySkipped(p, proxied)); err != nil {
+	typ = strings.ToUpper(strings.TrimSpace(typ))
+	if err := checkProxied(typ, proxied); err != nil {
+		return invalid("%v", err)
+	}
+	if err := checkEnsureName(p, NormalizeDomain(zone), NormalizeDomain(fqdn), typ, proxySkipped(p, typ, proxied)); err != nil {
 		return invalid("%v", err)
 	}
 	return nil
@@ -563,11 +568,21 @@ func checkEnsureName(p ID, zone, fqdn, typ string, skipped bool) error {
 	return checkRecordName(p, zone, fqdn, typ)
 }
 
-// proxySkipped reports whether a record asking for proxied (nil: not
-// given) is skipped on platform p: proxied=true off Cloudflare, which has
-// the only proxy.
-func proxySkipped(p ID, proxied *bool) bool {
-	return proxied != nil && *proxied && p != Cloudflare
+// checkProxied refuses a proxied setting (nil: none given), true or false,
+// on a record of type typ that cannot be proxied (proxiableTypes).
+func checkProxied(typ string, proxied *bool) error {
+	if proxied != nil && !slices.Contains(proxiableTypes, typ) {
+		return fmt.Errorf("proxied applies to A, AAAA and CNAME records only, not %s", typ)
+	}
+	return nil
+}
+
+// proxySkipped reports whether a record of type typ asking for proxied
+// (nil: not given) is skipped on platform p: proxied=true off Cloudflare,
+// which has the only proxy, on a type that can be proxied (a type that
+// cannot is refused, checkProxied).
+func proxySkipped(p ID, typ string, proxied *bool) bool {
+	return proxied != nil && *proxied && p != Cloudflare && slices.Contains(proxiableTypes, typ)
 }
 
 // apexCNAME reports whether platform p takes a CNAME at the zone apex:

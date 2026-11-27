@@ -116,3 +116,33 @@ func errString(err error) string {
 	}
 	return err.Error()
 }
+
+// proxied applies to A, AAAA and CNAME only: dns ensure on a terminal
+// refuses it on another type as soon as the type is known, before the zone
+// is read or a value asked, as a script does, and off Cloudflare too (where
+// proxied=true on a type it applies to is only reported as skipped). The
+// type list under --proxied offers only those types.
+func TestDNSEnsureProxiedTypeRefusedBeforeAsking(t *testing.T) {
+	_, cfgPath, fc := ensureZone(t)
+	p := &scriptedPicker{T: t}
+	r := runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), "dns", "ensure", "example.com", "www", "TXT", "--proxied")
+	if r.code != ExitUsage || !strings.Contains(errString(r.err), "proxied applies to A, AAAA and CNAME records only, not TXT") || len(p.Asked) != 0 || len(fc.calls) != 0 {
+		t.Errorf("cloudflare www TXT --proxied: exit %d, %v, prompts %v, calls %v", r.code, r.err, p.Titles(), fc.calls)
+	}
+
+	cfgPath, gd := gdZone(t)
+	p = &scriptedPicker{T: t}
+	r = runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), "dns", "ensure", "gd.example", "@", "NS", "--proxied")
+	if r.code != ExitUsage || !strings.Contains(errString(r.err), "proxied applies") || len(p.Asked) != 0 || len(gd.calls) != 0 {
+		t.Errorf("godaddy @ NS --proxied: exit %d, %v, prompts %v, calls %v", r.code, r.err, p.Titles(), gd.calls)
+	}
+
+	defer func() { fakeRecordTypes = nil }()
+	cfgPath, _ = gdZone(t)
+	fakeRecordTypes = []string{"A", "CNAME", "MX", "NS", "TXT", "SRV"}
+	pp := prompttest.New(t, "@", "A", "192.0.2.1", "")
+	r = runFlow(t, context.Background(), cfgPath, (*scriptedPicker)(pp), strings.NewReader(""), "dns", "ensure", "gd.example", "--proxied")
+	if got := prompttest.Values(pp.Find("Record type").Options); got != "A CNAME" || r.err != nil {
+		t.Errorf("godaddy @ --proxied: types %q, %v", got, r.err)
+	}
+}

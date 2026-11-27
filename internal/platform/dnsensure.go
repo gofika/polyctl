@@ -156,7 +156,7 @@ func normalizeSpec(zone string, p ID, idx int, s RecordSpec, types []string, war
 	if err := checkPlatformValue(p, d.Type, d.Value); err != nil {
 		return DesiredRecord{}, invalid("%s: %v", d.label(), err)
 	}
-	d.ProxiedUnsupported = proxySkipped(p, d.Proxied)
+	d.ProxiedUnsupported = proxySkipped(p, d.Type, d.Proxied)
 	if d.Proxied != nil && p != Cloudflare {
 		// false is the only setting such a platform has: nothing to do.
 		d.Proxied = nil

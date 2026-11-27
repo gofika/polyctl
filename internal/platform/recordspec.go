@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -166,10 +165,7 @@ func (r RecordSpec) validate() error {
 	if r.TTL != nil && *r.TTL < 0 {
 		return fmt.Errorf("TTL %d is negative", *r.TTL)
 	}
-	if r.Proxied != nil && !slices.Contains(proxiableTypes, r.Type) {
-		return fmt.Errorf("proxied applies to A, AAAA and CNAME records only, not %s", r.Type)
-	}
-	return nil
+	return checkProxied(r.Type, r.Proxied)
 }
 
 // FQDN returns the record's name under zone. "@" is the apex; a name with
