@@ -240,6 +240,9 @@ beside other records) is refused. To change an existing record use
 				return err
 			}
 			v := checked[0]
+			if err := platform.CheckRecordName(t.Platform, t.Domain, fqdn, v.Type); err != nil {
+				return err
+			}
 			if err := addConflict(t, existing, fqdn, v.Type); err != nil {
 				return err
 			}

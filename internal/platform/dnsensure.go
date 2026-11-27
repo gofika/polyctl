@@ -158,7 +158,10 @@ func normalizeSpec(zone string, p ID, idx int, s RecordSpec, types []string, war
 	if d.Value, err = normalizeValue(&d, s.Value, warn); err != nil {
 		return DesiredRecord{}, invalid("%s: %v", d.label(), err)
 	}
-	if err := checkApexTarget(p, d.Type, d.Value); err != nil {
+	if err := checkPlatformValue(p, d.Type, d.Value); err != nil {
+		return DesiredRecord{}, invalid("%s: %v", d.label(), err)
+	}
+	if err := checkRecordName(p, zone, fqdn, d.Type); err != nil {
 		return DesiredRecord{}, invalid("%s: %v", d.label(), err)
 	}
 	if d.Proxied != nil && p != Cloudflare {

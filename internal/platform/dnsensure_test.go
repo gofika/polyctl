@@ -741,3 +741,32 @@ func TestDNSEnsureApexNS(t *testing.T) {
 		t.Errorf("delegation: %v, %v", r.err, m.calls)
 	}
 }
+
+// GoDaddy's limits on SRV records (a port from 1, a name of the form
+// _service._proto[.owner]) are checked before anything is read, so a dry
+// run refuses them as the run would, and no earlier record is written.
+func TestDNSEnsureGoDaddySRVLimits(t *testing.T) {
+	for _, recs := range [][]string{
+		{"new:A:203.0.113.10", "_sip._tcp:SRV:10 5 0 sip.example.com"},
+		{"new:A:203.0.113.10", "sip:SRV:10 5 5060 sip.example.com"},
+		{"_sip:SRV:10 5 5060 sip.example.com"},
+	} {
+		for _, dry := range []bool{true, false} {
+			m := &memDNS{}
+			r := ensure(t, m, GoDaddy, false, dry, recs...)
+			if !errors.Is(r.err, ErrInvalidInput) || m.writes() != 0 || len(r.changes) != 0 {
+				t.Errorf("%v dry=%v: %v, changes %v, calls %v", recs, dry, r.err, dnsActions(r.changes), m.calls)
+			}
+		}
+	}
+	// Elsewhere, and on GoDaddy with a port and a name it takes, they pass.
+	if _, err := NormalizeRecordSpecs("example.com", Cloudflare, specs(t, "sip:SRV:10 5 0 sip.example.com"), nil, nil); err != nil {
+		t.Errorf("Cloudflare: %v", err)
+	}
+	if _, err := NormalizeRecordSpecs("example.com", GoDaddy, specs(t, "_sip._tcp.voice:SRV:10 5 5060 sip.example.com"), nil, nil); err != nil {
+		t.Errorf("GoDaddy: %v", err)
+	}
+	if _, err := CheckRecord(RecordCheck{Platform: GoDaddy, Types: []string{"SRV"}, Type: "SRV", Value: "10 5 0 sip.example.com", New: true}); !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "not 0") {
+		t.Errorf("CheckRecord port 0 = %v", err)
+	}
+}

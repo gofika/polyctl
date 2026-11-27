@@ -155,7 +155,7 @@ func CheckRecord(c RecordCheck) (RecordValue, error) {
 	if err != nil {
 		return RecordValue{}, invalid("%v", err)
 	}
-	if err := checkApexTarget(c.Platform, typ, v.Value); err != nil {
+	if err := checkPlatformValue(c.Platform, typ, v.Value); err != nil {
 		return RecordValue{}, invalid("%v", err)
 	}
 	if c.New && typ == "MX" && v.Priority == nil {
@@ -499,6 +499,42 @@ func checkApexTarget(p ID, typ, v string) error {
 		return nil
 	}
 	return fmt.Errorf("value %q is not valid for type %s on %s: %q for the zone apex is GoDaddy's form; write the zone's name", v, typ, p, apexHost)
+}
+
+// checkPlatformValue refuses a value of type typ, in its normal form, that
+// platform p does not take although it is valid for the type: "@" for the
+// apex off GoDaddy (checkApexTarget), an SRV port of 0 on GoDaddy.
+func checkPlatformValue(p ID, typ, v string) error {
+	if err := checkApexTarget(p, typ, v); err != nil {
+		return err
+	}
+	if f := strings.Fields(v); p == GoDaddy && typ == "SRV" && len(f) == 4 && f[2] == "0" {
+		return fmt.Errorf("value %q is not valid for type SRV on %s: GoDaddy takes an SRV port from 1 to 65535, not 0", v, p)
+	}
+	return nil
+}
+
+// CheckRecordName checks fqdn, the name of a record of type typ in zone, as
+// platform p takes it, before any request: GoDaddy keeps the service and
+// protocol of an SRV record in fields of their own, so its name must be
+// _service._proto[.owner].
+func CheckRecordName(p ID, zone, fqdn, typ string) error {
+	if err := checkRecordName(p, zone, fqdn, typ); err != nil {
+		return invalid("%v", err)
+	}
+	return nil
+}
+
+func checkRecordName(p ID, zone, fqdn, typ string) error {
+	if p != GoDaddy || !strings.EqualFold(typ, "SRV") {
+		return nil
+	}
+	rel := RelativeName(fqdn, zone)
+	l := strings.Split(rel, ".")
+	if len(l) < 2 || len(l[0]) < 2 || len(l[1]) < 2 || l[0][0] != '_' || l[1][0] != '_' {
+		return fmt.Errorf("name %q: an SRV record on GoDaddy needs a name of the form _service._proto[.owner] (e.g. _sip._tcp)", rel)
+	}
+	return nil
 }
 
 // apexCNAME reports whether platform p takes a CNAME at the zone apex:
