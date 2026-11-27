@@ -57,6 +57,12 @@ func dnsNameOf(t *app.Target, name, arg string) (string, error) {
 	return fqdn, nil
 }
 
+// dnsFullName is the RecordPrompt.FullName of the neutral dns commands in
+// the zone of t: a name read as dns ensure reads it (dnsNameOf).
+func dnsFullName(t *app.Target) func(name, arg string) (string, error) {
+	return func(name, arg string) (string, error) { return dnsNameOf(t, name, arg) }
+}
+
 // recordHelp is the paragraph of the record commands about their positional
 // record.
 var recordHelp = app.RecordArgsHelp("zone")
@@ -233,7 +239,7 @@ beside other records) is refused. To change an existing record use
 				return err
 			}
 			asked := in.Name == ""
-			if err := rt.CompleteRecord(in, app.RecordPrompt{Platform: t.Platform, Zone: t.Domain,
+			if err := rt.CompleteRecord(in, app.RecordPrompt{Platform: t.Platform, Zone: t.Domain, FullName: dnsFullName(t),
 				Existing: func() ([]platform.Record, error) { return existing, nil }}); err != nil {
 				return err
 			}
@@ -713,10 +719,10 @@ positional record nothing is asked.`,
 			if err != nil {
 				return err
 			}
-			// A type given is one the platform writes, and a name given
-			// with it one dns ensure writes that type to: checked before the
-			// zone is read and the value asked, as CompleteRecord checks a
-			// name or type it asks for.
+			// A type given is one the platform writes: checked before the
+			// zone is read and the value asked. CompleteRecord then works
+			// out a name given and checks it with the type, before it reads
+			// the zone too.
 			if err := in.CheckType(t.Platform); err != nil {
 				return err
 			}
@@ -726,15 +732,6 @@ positional record nothing is asked.`,
 			}
 			checkName := func(fqdn, typ string) error {
 				return platform.CheckEnsureName(t.Platform, t.Domain, fqdn, typ, prox)
-			}
-			if in.Name != "" && in.Type != "" {
-				fqdn, err := dnsNameOf(t, in.Name, in.NameArg)
-				if err != nil {
-					return err
-				}
-				if err := checkName(fqdn, in.Type); err != nil {
-					return err
-				}
 			}
 			// The zone is read once: for the questions, when there are
 			// any, and for the plan.
@@ -755,7 +752,7 @@ positional record nothing is asked.`,
 				return existing, nil
 			}
 			if ask {
-				if err := rt.CompleteRecord(in, app.RecordPrompt{Platform: t.Platform, Zone: t.Domain, Replaces: true, Existing: zoneRecords, CheckName: checkName}); err != nil {
+				if err := rt.CompleteRecord(in, app.RecordPrompt{Platform: t.Platform, Zone: t.Domain, Replaces: true, Existing: zoneRecords, CheckName: checkName, FullName: dnsFullName(t)}); err != nil {
 					return err
 				}
 				pos, err := positionalSpecs(cmd, in, ttl, priority, proxied)

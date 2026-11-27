@@ -325,6 +325,19 @@ type RecordPrompt struct {
 	// left out of the type list. nil: platform.CheckRecordName on Platform,
 	// the name a platform takes for a type.
 	CheckName func(fqdn, typ string) error
+	// FullName is the full name the command writes a record of name to,
+	// arg saying where name came from (<name>, --name); a name the command
+	// refuses is an error. It runs as soon as the name is known, before
+	// the zone is read. nil: platform.FQDN in Zone.
+	FullName func(name, arg string) (string, error)
+}
+
+// fullName is the FullName of p.
+func (p RecordPrompt) fullName(name, arg string) (string, error) {
+	if p.FullName != nil {
+		return p.FullName(name, arg)
+	}
+	return platform.FQDN(name, p.Zone), nil
 }
 
 // checkName is the CheckName of p.
@@ -347,29 +360,45 @@ func (p RecordPrompt) checkName(fqdn, typ string) error {
 //   - the value as text, checked as it is typed; a command that takes
 //     several values asks for more until one is left empty.
 //
-// A complete record asks nothing and does not read the zone. The
+// A name given is worked out (FullName), and checked with the type when
+// that is given too (CheckName), before anything else: before the zone is
+// read, on a terminal and in a script, for a complete record too. A
+// complete record asks nothing and does not read the zone. The
 // non-interactive flow asks nothing either: RecordInput has refused what
 // cannot be written, and a name that was not given (the former flag form)
 // stays "" for the command to apply its default.
 func (rt *Runtime) CompleteRecord(in *RecordInput, p RecordPrompt) error {
+	var fqdn string
+	var err error
+	given := in.Name != "" && in.Type != ""
+	if in.Name != "" {
+		if fqdn, err = p.fullName(in.Name, in.NameArg); err != nil {
+			return err
+		}
+	}
+	if given {
+		if err := p.checkName(fqdn, in.Type); err != nil {
+			return err
+		}
+	}
 	if !rt.Interactive() || (in.Name != "" && in.writable()) {
 		return nil
 	}
 	var existing []platform.Record
 	if p.Existing != nil {
-		var err error
 		if existing, err = p.Existing(); err != nil {
 			return err
 		}
 	}
-	var err error
 	if in.Name == "" {
 		if in.Name, err = rt.PickRecordName(p.Zone, existing); err != nil {
 			return err
 		}
 		in.NameArg = "<name>"
+		if fqdn, err = p.fullName(in.Name, in.NameArg); err != nil {
+			return err
+		}
 	}
-	fqdn := platform.FQDN(in.Name, p.Zone)
 	if in.Type == "" {
 		has, _ := RecordsOfName(p.Zone, existing, fqdn, "", "")
 		if in.Type, err = rt.pickRecordType(p.Platform, has.Type(), func(typ string) error { return p.checkName(fqdn, typ) }); err != nil {
@@ -377,8 +406,10 @@ func (rt *Runtime) CompleteRecord(in *RecordInput, p RecordPrompt) error {
 		}
 	}
 	// The name and type are checked together before the value is asked.
-	if err := p.checkName(fqdn, in.Type); err != nil {
-		return err
+	if !given {
+		if err := p.checkName(fqdn, in.Type); err != nil {
+			return err
+		}
 	}
 	if in.writable() {
 		return nil

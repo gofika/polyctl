@@ -149,3 +149,18 @@ func TestDNSEnsureProxiedTypeRefusedBeforeAsking(t *testing.T) {
 		t.Errorf("godaddy @ --proxied: types %q, %v", got, r.err)
 	}
 }
+
+// A <name> given alone is worked out as the command writes it before the
+// zone is read: dns ensure on a terminal refuses a relative name ending in
+// a top-level domain (foo.dev) before it reads the zone or asks the type,
+// as dns add does.
+func TestDNSNameGivenAloneRefusedBeforeAsking(t *testing.T) {
+	for _, verb := range []string{"ensure", "add"} {
+		_, cfgPath, fc := ensureZone(t)
+		p := &scriptedPicker{T: t}
+		r := runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), "dns", verb, "example.com", "foo.dev")
+		if r.code != ExitUsage || !strings.Contains(errString(r.err), "<name>: name \"foo.dev\" ends in the top-level domain") || len(p.Asked) != 0 || len(fc.calls) != 0 {
+			t.Errorf("dns %s foo.dev: exit %d, %v, prompts %v, calls %v", verb, r.code, r.err, p.Titles(), fc.calls)
+		}
+	}
+}

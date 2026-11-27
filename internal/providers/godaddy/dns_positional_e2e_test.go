@@ -316,3 +316,36 @@ func TestDNSWritesApexTarget(t *testing.T) {
 		t.Errorf("add @ MX 10 @: exit %d, records %q, %s", code, e.records(), stderr)
 	}
 }
+
+// A name and type given that the platform refuses together (an SRV name
+// that is not _service._proto, a CNAME at the zone apex) are refused before
+// any request: on a terminal before the zone is read for the questions, and
+// in a script.
+func TestDNSNameAndTypeRefusedBeforeAnyRequest(t *testing.T) {
+	e := newDeleteEnv(t)
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"add", "example.com", "www", "SRV"}, "_service._proto"},
+		{[]string{"upsert", "example.com", "www", "SRV"}, "_service._proto"},
+		{[]string{"add", "example.com", "@", "CNAME"}, "does not take a CNAME at the zone apex"},
+		{[]string{"upsert", "example.com", "@", "CNAME"}, "does not take a CNAME at the zone apex"},
+	} {
+		value := map[string]string{"SRV": "10 5 5060 sip.example.com", "CNAME": "target.example.net"}[c.args[3]]
+		for _, p := range []*prompttest.Picker{prompttest.New(t), nil} {
+			args := append([]string{"godaddy", "dns"}, c.args...)
+			if p == nil {
+				args = append(args, value)
+			}
+			e.reset()
+			code, _, stderr := e.run(p, "", args...)
+			if code != cli.ExitUsage || !strings.Contains(stderr, c.want) || e.f.Calls() != 0 {
+				t.Errorf("%v (terminal %v): exit %d, %s, %d requests", args, p != nil, code, stderr, e.f.Calls())
+			}
+			if p != nil {
+				p.Done()
+			}
+		}
+	}
+}
