@@ -483,7 +483,8 @@ func (r *RecordArgs) Select(s RecordSelect) RecordSelect {
 
 // Complete completes the arguments of the command: the first with first
 // (the zones or domains), then the names of the records of the zone in the
-// local inventory (relative to the zone, described by their types and
+// local inventory (as the command reads them back, platform.InputName:
+// relative to the zone where that reads back; described by their types and
 // values), the types the name has there and the values of the name and
 // type. The records are those of the profile of platform id, or of every
 // platform for a command that is not tied to one (id "").
@@ -508,7 +509,7 @@ func (f RecordTargetForm) Complete(rt *Runtime, first CompletionFunc, id platfor
 		out := []string{}
 		recs, zone := cachedRecords(cmd, rt, id, args[0])
 		for _, r := range recs {
-			rel := platform.RelativeName(r.Name, zone)
+			rel := platform.InputName(zone, r.Name)
 			switch len(args) {
 			case 1:
 				if _, ok := desc[rel]; !ok {

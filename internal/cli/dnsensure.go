@@ -110,23 +110,11 @@ func plural(n int, one, many string) string {
 	return many
 }
 
-// restoreName is name as the <name> of a dns add in the zone of t: relative
-// to the zone when dns add reads it back as name, else the full name (a
-// relative name such as foo.dev ends in a top-level domain and is refused).
-func restoreName(t *app.Target, name string) string {
-	fqdn := platform.NormalizeDomain(name)
-	rel := platform.RelativeName(fqdn, t.Domain)
-	if got, err := platform.ZoneName(t.Domain, rel); err != nil || got != fqdn {
-		return fqdn
-	}
-	return rel
-}
-
 // restoreCommand is the command that writes r, a record of the zone of t,
 // again: `polyctl dns add` with its value, TTL and proxy setting, routed to
 // the account it was deleted from.
 func restoreCommand(t *app.Target, r platform.Record) string {
-	args := []string{"polyctl", "dns", "add", t.Domain, restoreName(t, r.Name), strings.ToUpper(r.Type)}
+	args := []string{"polyctl", "dns", "add", t.Domain, platform.InputName(t.Domain, r.Name), strings.ToUpper(r.Type)}
 	value := platform.RecordAddValue(r)
 	var flags []string
 	if r.TTL > 1 || (r.TTL == 1 && t.Platform != platform.Cloudflare) {

@@ -126,3 +126,25 @@ func TestRecordSpecFormatExamplesWritableEverywhere(t *testing.T) {
 		}
 	}
 }
+
+// InputName is the <name> a command reads back as the record name: relative
+// to the zone where that reads back, the full name where the relative name
+// ends in a top-level domain.
+func TestInputName(t *testing.T) {
+	for fqdn, want := range map[string]string{
+		"example.com":            "@",
+		"www.example.com":        "www",
+		"a.b.example.com.":       "a.b",
+		"foo.dev.example.com":    "foo.dev.example.com",
+		"_sip._tcp.example.com":  "_sip._tcp",
+		"mail.co.uk.example.com": "mail.co.uk.example.com",
+		"Foo.Example.com":        "foo",
+	} {
+		if got := InputName("Example.com.", fqdn); got != want {
+			t.Errorf("InputName(%q) = %q, want %q", fqdn, got, want)
+		}
+		if got, err := ZoneName("example.com", InputName("example.com", fqdn)); err != nil || got != NormalizeDomain(fqdn) {
+			t.Errorf("ZoneName(InputName(%q)) = %q, %v", fqdn, got, err)
+		}
+	}
+}

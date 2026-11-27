@@ -176,6 +176,19 @@ func ZoneName(zone, name string) (string, error) {
 	return zoneName(NormalizeDomain(zone), name)
 }
 
+// InputName is fqdn, the name of a record in zone, as the <name> a command
+// reads back as fqdn (ZoneName): relative to the zone ("@" for the apex)
+// when that reads back, else the full name. A relative name such as foo.dev
+// ends in a top-level domain and would be refused.
+func InputName(zone, fqdn string) string {
+	zone, fqdn = NormalizeDomain(zone), NormalizeDomain(fqdn)
+	rel := RelativeName(fqdn, zone)
+	if got, err := zoneName(zone, rel); err != nil || got != fqdn {
+		return fqdn
+	}
+	return rel
+}
+
 // zoneName turns the name of a desired record into a FQDN in zone. "@" is
 // the apex; a name ending with a dot is absolute; a name ending with the
 // zone is taken as it is; any other name is relative to the zone, except

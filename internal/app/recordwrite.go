@@ -425,15 +425,16 @@ func (rt *Runtime) CompleteRecord(in *RecordInput, p RecordPrompt) error {
 
 // PickRecordName asks for the name of a record to write in zone: one of
 // the names the zone already has (described by the types they hold), the
-// apex, or a name typed in. It returns the name relative to the zone, "@"
-// for the apex.
+// apex, or a name typed in. It returns the name as the command reads it
+// (platform.InputName): relative to the zone, "@" for the apex, or the full
+// name where the relative one would end in a top-level domain.
 func (rt *Runtime) PickRecordName(zone string, existing []platform.Record) (string, error) {
 	zone = platform.NormalizeDomain(zone)
 	types := map[string][]string{}
 	seen := map[string]bool{}
 	var names []string
 	for _, r := range existing {
-		rel := platform.RelativeName(r.Name, zone)
+		rel := platform.InputName(zone, r.Name)
 		if _, ok := types[rel]; !ok && rel != "@" {
 			names = append(names, rel)
 		}
