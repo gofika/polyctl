@@ -1065,22 +1065,6 @@ func ensureCreates(recs []Record, d DesiredRecord, n int) bool {
 	return len(recs) == 0
 }
 
-// EnsureCreates is ensureCreates for value, one of the n values of type typ
-// a command gives dns ensure for a name, with priority (nil: none given
-// apart), against recs, the records of that name and type in the zone. A
-// prompt checks a value it asks for as created (platform.RecordCheck.New)
-// when this says so. A value that is not valid is reported as created.
-func EnsureCreates(recs []Record, typ, value string, priority *int, n int) bool {
-	if n <= 1 {
-		return len(recs) == 0
-	}
-	d, err := desiredValue(typ, value, priority)
-	if err != nil {
-		return true
-	}
-	return ensureCreates(recs, d, n)
-}
-
 // EnsureSetError says what dns ensure refuses in values, the set of one
 // name and type typ given with priority (nil: none given apart), against
 // recs, the records of that name and type in the zone; nil when nothing.

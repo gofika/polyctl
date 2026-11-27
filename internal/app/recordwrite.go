@@ -306,7 +306,7 @@ type RecordPrompt struct {
 	// instead of adding one (dns ensure): the value of that record, when
 	// there is exactly one, is the default of the value asked, and each
 	// value is checked as dns ensure writes it in the set the values make
-	// (platform.EnsureCreates, platform.EnsureSetError).
+	// (platform.EnsureSetError).
 	Replaces bool
 	// WholeSet says the command makes the record set of the name and type
 	// equal to the values given (an upsert). The current values are then
@@ -436,18 +436,13 @@ func (rt *Runtime) CompleteRecord(in *RecordInput, p RecordPrompt) error {
 	}
 	// The values are checked as the command checks them: on the platform,
 	// with the --priority given, and as created when no record of the name
-	// and type exists; for a command that replaces the record, when dns
-	// ensure creates the value in a set of n.
+	// and type exists; for a command that replaces the record, each value
+	// of a set again in the set it makes (EnsureSetError), where a value no
+	// record has is created.
 	recs := MatchRecords(existing, fqdn, in.Type, "")
-	check := func(v string, n int) platform.RecordCheck {
-		c := in.check(p.Platform, len(recs) > 0)
-		if p.Replaces && !in.form.Creates {
-			c.New = platform.EnsureCreates(recs, in.Type, v, in.priority, n)
-		}
-		return c
-	}
+	check := in.check(p.Platform, len(recs) > 0)
 	if len(in.Values) == 0 {
-		v, err := rt.AskRecordValue(check("", 1), def)
+		v, err := rt.AskRecordValue(check, def)
 		if err != nil {
 			return err
 		}
@@ -455,8 +450,7 @@ func (rt *Runtime) CompleteRecord(in *RecordInput, p RecordPrompt) error {
 	}
 	for in.form.MaxValues < 0 || len(in.Values) < in.form.MaxValues {
 		v, err := rt.askAnotherRecordValue(in.Type, func(s string) error {
-			n := len(in.Values) + 1
-			if err := recordValueError(check(s, n), s); err != nil {
+			if err := recordValueError(check, s); err != nil {
 				return err
 			}
 			if !p.Replaces || in.form.Creates {
