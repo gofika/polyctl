@@ -105,7 +105,7 @@ func NormalizeRecordSpecs(zone string, p ID, specs []RecordSpec, types []string,
 	seen := map[string]int{}
 	names := map[string][]DesiredRecord{}
 	for _, d := range out {
-		k := d.key() + "\x00" + compareValue(d.Type, d.Value, d.Priority)
+		k := d.key() + "\x00" + valueKey(d)
 		if j, dup := seen[k]; dup {
 			return nil, invalid("record %d repeats record %d (%s %s %s)", d.Index, j, d.Name, d.Type, d.Value)
 		}
@@ -857,12 +857,8 @@ func PlanDNSEnsure(in DNSEnsure) (*Plan, error) {
 			add(d, Step{Resource: d.Resource(), Action: Skipped, Desc: fmt.Sprintf("proxied=true applies to Cloudflare only, %s has no proxy; record not written", in.Platform)})
 			continue
 		}
-		if len(groups[d.key()]) > 1 {
-			// Set semantics: make sure this value exists.
-			if r, ok := findValue(recs, d); ok {
-				add(d, Step{Resource: d.Resource(), Action: Unchanged, ID: r.ID, Desc: recordDisplay(in.Platform, r)})
-				continue
-			}
+		n := len(groups[d.key()])
+		if ensureCreates(recs, d, n) {
 			step, err := in.createStep(d)
 			if err != nil {
 				return nil, err
@@ -870,13 +866,13 @@ func PlanDNSEnsure(in DNSEnsure) (*Plan, error) {
 			add(d, step)
 			continue
 		}
+		if n > 1 {
+			// Set semantics: the value exists.
+			r, _ := findValue(recs, d)
+			add(d, Step{Resource: d.Resource(), Action: Unchanged, ID: r.ID, Desc: recordDisplay(in.Platform, r)})
+			continue
+		}
 		switch len(recs) {
-		case 0:
-			step, err := in.createStep(d)
-			if err != nil {
-				return nil, err
-			}
-			add(d, step)
 		case 1:
 			add(d, in.updateOrKeep(d, recs[0], ""))
 		default:
@@ -1057,6 +1053,87 @@ func sortOldestFirst(recs []Record) {
 	})
 }
 
+// ensureCreates reports whether dns ensure creates d, one of the n desired
+// records of its name and type, where recs are the records of that name and
+// type in the zone: a value of a set (n > 1) that no record has, and the
+// one value of a name without a record of the type. Otherwise a record is
+// kept or updated in place, keeping what d leaves out (an MX priority).
+func ensureCreates(recs []Record, d DesiredRecord, n int) bool {
+	if n > 1 {
+		return findValueIndex(recs, d) < 0
+	}
+	return len(recs) == 0
+}
+
+// EnsureCreates is ensureCreates for value, one of the n values of type typ
+// a command gives dns ensure for a name, with priority (nil: none given
+// apart), against recs, the records of that name and type in the zone. A
+// prompt checks a value it asks for as created (platform.RecordCheck.New)
+// when this says so. A value that is not valid is reported as created.
+func EnsureCreates(recs []Record, typ, value string, priority *int, n int) bool {
+	if n <= 1 {
+		return len(recs) == 0
+	}
+	d, err := desiredValue(typ, value, priority)
+	if err != nil {
+		return true
+	}
+	return ensureCreates(recs, d, n)
+}
+
+// EnsureSetError says what dns ensure refuses in values, the set of one
+// name and type typ given with priority (nil: none given apart), against
+// recs, the records of that name and type in the zone; nil when nothing.
+// A value repeated is refused, as NormalizeRecordSpecs refuses it, and so
+// is a value the set creates (ensureCreates) without what a created record
+// needs, as PlanDNSEnsure refuses it. A value that is not valid itself is
+// left to the value check.
+func EnsureSetError(recs []Record, typ string, values []string, priority *int) error {
+	ds := make([]DesiredRecord, 0, len(values))
+	seen := map[string]int{}
+	for i, v := range values {
+		d, err := desiredValue(typ, v, priority)
+		if err != nil {
+			return nil
+		}
+		if j, dup := seen[valueKey(d)]; dup {
+			return fmt.Errorf("value %q repeats value %q", v, values[j])
+		}
+		seen[valueKey(d)] = i
+		ds = append(ds, d)
+	}
+	for i, d := range ds {
+		if err := d.createError(); err != nil && ensureCreates(recs, d, len(ds)) {
+			return fmt.Errorf("value %q is created, as no %s record of the name has it, and %v", values[i], d.Type, err)
+		}
+	}
+	return nil
+}
+
+// desiredValue is value of type typ as a desired record: its normal form
+// and the priority of an MX value.
+func desiredValue(typ, value string, priority *int) (DesiredRecord, error) {
+	typ = strings.ToUpper(strings.TrimSpace(typ))
+	rv, err := checkValue(typ, value, priority)
+	if err != nil {
+		return DesiredRecord{}, err
+	}
+	return DesiredRecord{Type: typ, Value: rv.Value, Priority: rv.Priority}, nil
+}
+
+// valueKey is what two desired records of one name and type are the same
+// record by.
+func valueKey(d DesiredRecord) string { return compareValue(d.Type, d.Value, d.Priority) }
+
+// createError says what d lacks to be created: an MX record needs a
+// priority. nil when it can be.
+func (d DesiredRecord) createError() error {
+	if d.Type == "MX" && d.Priority == nil {
+		return errors.New(`an MX record needs a priority (write the value as "10 mail.example.com", or give priority in the records file)`)
+	}
+	return nil
+}
+
 // findValue returns the record of recs whose value (and, when given, MX
 // priority) is the desired one.
 func findValue(recs []Record, d DesiredRecord) (Record, bool) {
@@ -1091,8 +1168,8 @@ func (in DNSEnsure) record(d DesiredRecord) Record {
 }
 
 func (in DNSEnsure) createStep(d DesiredRecord) (Step, error) {
-	if d.Type == "MX" && d.Priority == nil {
-		return Step{}, invalid("%s: an MX record needs a priority (write the value as \"10 mail.example.com\", or give priority in the records file)", d.label())
+	if err := d.createError(); err != nil {
+		return Step{}, invalid("%s: %v", d.label(), err)
 	}
 	return Step{
 		Resource: d.Resource(),

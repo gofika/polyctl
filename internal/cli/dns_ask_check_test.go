@@ -86,3 +86,49 @@ func TestDNSRecordValueAskedAgainWhenTheCommandWouldRefuseIt(t *testing.T) {
 		t.Errorf("priority of TXT: exit %d, %v, prompts %v, calls %v", r.code, r.err, p.Titles(), fc.calls)
 	}
 }
+
+// dns ensure on a terminal checks each value of a set as the command will
+// write it: one value against the one MX record of the name updates it and
+// keeps its priority, but a set of several values creates every value the
+// zone lacks, which then needs a priority. A value that would make the set
+// fail is asked again instead of failing after the answers.
+func TestDNSEnsureSetValuesCheckedAsTheSetIsWritten(t *testing.T) {
+	another := "input:Another value of the MX record (empty to finish)"
+	for _, c := range []struct {
+		answers []any
+		asked   int // the questions for another value
+		calls   string
+	}{
+		// mx3 would make mx2 a created record without a priority: refused,
+		// and finishing keeps the update of the one record.
+		{[]any{"mx2.example.com", "mx3.example.com", ""}, 2, "UpdateRecord:m1"},
+		{[]any{"mx2.example.com", "20 mx3.example.com", ""}, 2, "UpdateRecord:m1"},
+		// Every value with its priority: both created.
+		{[]any{"10 mx2.example.com", "mx3.example.com", "20 mx3.example.com", ""}, 3, "CreateRecord:www.example.com:MX,CreateRecord:www.example.com:MX"},
+		// A value the zone has is kept without a priority.
+		{[]any{"mail.example.com", "20 mx3.example.com", ""}, 2, "CreateRecord:www.example.com:MX"},
+	} {
+		_, cfgPath, fc := ensureZone(t, wwwMX)
+		p := &scriptedPicker{T: t, Answers: c.answers}
+		r := runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), "dns", "ensure", "example.com", "www", "MX")
+		n := 0
+		for _, title := range p.Titles() {
+			if title == another {
+				n++
+			}
+		}
+		if r.err != nil || n != c.asked || ensureCalls(fc) != c.calls {
+			t.Errorf("%v: %v, prompts %v, calls %v", c.answers, r.err, p.Titles(), fc.calls)
+		}
+		p.Done()
+	}
+
+	// A value repeated is asked again, as the command refuses a repeat.
+	_, cfgPath, fc := ensureZone(t)
+	p := &scriptedPicker{T: t, Answers: []any{"token-1", "token-1", "token-2", ""}}
+	r := runFlow(t, context.Background(), cfgPath, p, strings.NewReader(""), "dns", "ensure", "example.com", "_acme", "TXT")
+	if r.err != nil || ensureCalls(fc) != "CreateRecord:_acme.example.com:TXT,CreateRecord:_acme.example.com:TXT" || len(p.Titles()) != 4 {
+		t.Errorf("repeated value: %v, prompts %v, calls %v", r.err, p.Titles(), fc.calls)
+	}
+	p.Done()
+}

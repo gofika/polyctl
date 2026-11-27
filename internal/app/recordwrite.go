@@ -2,6 +2,8 @@ package app
 
 import (
 	"errors"
+	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -301,8 +303,10 @@ type RecordPrompt struct {
 	// nil: nothing is known about the zone.
 	Existing func() ([]platform.Record, error)
 	// Replaces says the command changes the record the name and type hold
-	// instead of adding one: the value of that record, when there is
-	// exactly one, is the default of the value asked.
+	// instead of adding one (dns ensure): the value of that record, when
+	// there is exactly one, is the default of the value asked, and each
+	// value is checked as dns ensure writes it in the set the values make
+	// (platform.EnsureCreates, platform.EnsureSetError).
 	Replaces bool
 	// WholeSet says the command makes the record set of the name and type
 	// equal to the values given (an upsert). The current values are then
@@ -401,17 +405,40 @@ func (rt *Runtime) CompleteRecord(in *RecordInput, p RecordPrompt) error {
 	}
 	// The values are checked as the command checks them: on the platform,
 	// with the --priority given, and as created when no record of the name
-	// and type exists.
-	c := in.check(p.Platform, len(MatchRecords(existing, fqdn, in.Type, "")) > 0)
+	// and type exists; for a command that replaces the record, when dns
+	// ensure creates the value in a set of n.
+	recs := MatchRecords(existing, fqdn, in.Type, "")
+	check := func(v string, n int) platform.RecordCheck {
+		c := in.check(p.Platform, len(recs) > 0)
+		if p.Replaces && !in.form.Creates {
+			c.New = platform.EnsureCreates(recs, in.Type, v, in.priority, n)
+		}
+		return c
+	}
 	if len(in.Values) == 0 {
-		v, err := rt.AskRecordValue(c, def)
+		v, err := rt.AskRecordValue(check("", 1), def)
 		if err != nil {
 			return err
 		}
 		in.Values = append(in.Values, v)
 	}
 	for in.form.MaxValues < 0 || len(in.Values) < in.form.MaxValues {
-		v, err := rt.askAnotherRecordValue(c)
+		v, err := rt.askAnotherRecordValue(in.Type, func(s string) error {
+			n := len(in.Values) + 1
+			if err := recordValueError(check(s, n), s); err != nil {
+				return err
+			}
+			if !p.Replaces || in.form.Creates {
+				return nil
+			}
+			// The values given before are checked again in the set this
+			// value makes: a value that would update the one record alone is
+			// created in a set.
+			if err := platform.EnsureSetError(recs, in.Type, append(slices.Clone(in.Values), s), in.priority); err != nil {
+				return fmt.Errorf("%v; leave this empty to finish with the values given so far", err)
+			}
+			return nil
+		})
 		if err != nil {
 			return err
 		}
@@ -463,14 +490,14 @@ func (rt *Runtime) PickRecordName(zone string, existing []platform.Record) (stri
 	})
 }
 
-// askAnotherRecordValue asks for one more value of a record set, checked
-// as AskRecordValue checks it; an empty answer ends the set.
-func (rt *Runtime) askAnotherRecordValue(c platform.RecordCheck) (string, error) {
-	return rt.AskInput("<value>", "Another value of the "+strings.ToUpper(c.Type)+" record (empty to finish)", "", func(s string) error {
+// askAnotherRecordValue asks for one more value of a record set of type
+// typ, checked with check; an empty answer ends the set.
+func (rt *Runtime) askAnotherRecordValue(typ string, check func(string) error) (string, error) {
+	return rt.AskInput("<value>", "Another value of the "+strings.ToUpper(typ)+" record (empty to finish)", "", func(s string) error {
 		if strings.TrimSpace(s) == "" {
 			return nil
 		}
-		return recordValueError(c, s)
+		return check(s)
 	})
 }
 
