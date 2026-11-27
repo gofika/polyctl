@@ -597,7 +597,7 @@ front of its value ("10 mail.example.com"), an SRV value is
 
 What ensure changes, for each name it is given (records of names it is not
 given are never touched; the SOA and NS records of the zone apex are the
-zone's own and never count):
+zone's own: they never count, and a desired @ NS record is exit code 2):
 
   - No record: the record is created.
   - One record of the type: unchanged when it is as desired, else updated in

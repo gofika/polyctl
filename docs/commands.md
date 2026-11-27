@@ -148,7 +148,7 @@ records:
 
 #### What ensure changes
 
-For each name it is given. The SOA and NS records of the zone apex are the zone's own and never count; records of other names are never touched.
+For each name it is given. The SOA and NS records of the zone apex are the zone's own: they never count, and a desired `@ NS` record is refused (exit code 2) before the zone is read. Records of other names are never touched.
 
 | The name holds | dns ensure |
 | --- | --- |

@@ -720,3 +720,24 @@ func TestDNSEnsureApexCNAME(t *testing.T) {
 		}
 	}
 }
+
+// The zone's own NS records at the apex are not dns ensure's: a desired @ NS
+// is a usage error before anything is read, on every platform; NS below the
+// apex (a delegation) is written.
+func TestDNSEnsureApexNS(t *testing.T) {
+	zone := []Record{
+		{ID: "ns1", Name: "example.com", Type: "NS", Value: "ns1.example.net"},
+		{ID: "ns2", Name: "example.com", Type: "NS", Value: "ns2.example.net"},
+	}
+	for _, p := range []ID{Cloudflare, AWS, GCP, GoDaddy, NameCom, Aliyun} {
+		m := &memDNS{recs: append([]Record(nil), zone...)}
+		r := ensure(t, m, p, true, false, "@:NS:ns9.other.net")
+		if !errors.Is(r.err, ErrInvalidInput) || !strings.Contains(r.err.Error(), "zone's own nameservers") || m.writes() != 0 {
+			t.Errorf("%s: %v, calls %v", p, r.err, m.calls)
+		}
+	}
+	m := &memDNS{recs: append([]Record(nil), zone...)}
+	if r := ensure(t, m, Cloudflare, false, false, "sub:NS:ns9.other.net"); r.err != nil || m.calls[0] != "create:sub.example.com:NS:ns9.other.net" {
+		t.Errorf("delegation: %v, %v", r.err, m.calls)
+	}
+}

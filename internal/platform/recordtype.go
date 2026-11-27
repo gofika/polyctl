@@ -475,9 +475,12 @@ func apexCNAME(p ID) bool { return p == "" || p == Cloudflare || p == Aliyun }
 // checkEnsureApex refuses a record of type typ at the zone apex that dns
 // ensure does not write there on platform p: a CNAME where the platform
 // refuses one (which would only fail after the records it replaces were
-// deleted).
+// deleted), and NS: the zone's own nameservers, which dns ensure leaves
+// alone as dns delete does.
 func checkEnsureApex(p ID, typ string) error {
 	switch {
+	case typ == "NS":
+		return errors.New("the NS records of the zone apex are the zone's own nameservers, which dns ensure neither counts nor changes")
 	case typ == "CNAME" && !apexCNAME(p):
 		hint := "write A or AAAA records"
 		switch p {
