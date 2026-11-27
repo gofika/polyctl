@@ -140,11 +140,6 @@ func normalizeSpec(zone string, p ID, idx int, s RecordSpec, types []string, war
 	if types != nil && !slices.Contains(types, d.Type) {
 		return DesiredRecord{}, fmt.Errorf("%w (record %d)", notWritable(p, d.Type, types), idx)
 	}
-	if fqdn == zone {
-		if err := checkEnsureApex(p, d.Type); err != nil {
-			return DesiredRecord{}, invalid("%s: %v", d.label(), err)
-		}
-	}
 	switch {
 	case s.TTLAuto && d.TTL == nil && p == Cloudflare:
 		// "auto" is Cloudflare's automatic TTL, 1 in the API.
@@ -161,15 +156,13 @@ func normalizeSpec(zone string, p ID, idx int, s RecordSpec, types []string, war
 	if err := checkPlatformValue(p, d.Type, d.Value); err != nil {
 		return DesiredRecord{}, invalid("%s: %v", d.label(), err)
 	}
-	if err := checkRecordName(p, zone, fqdn, d.Type); err != nil {
-		return DesiredRecord{}, invalid("%s: %v", d.label(), err)
-	}
+	d.ProxiedUnsupported = proxySkipped(p, d.Proxied)
 	if d.Proxied != nil && p != Cloudflare {
-		if *d.Proxied {
-			d.ProxiedUnsupported = true
-		}
 		// false is the only setting such a platform has: nothing to do.
 		d.Proxied = nil
+	}
+	if err := checkEnsureName(p, zone, fqdn, d.Type, d.ProxiedUnsupported); err != nil {
+		return DesiredRecord{}, invalid("%s: %v", d.label(), err)
 	}
 	if d.Proxied != nil && *d.Proxied && d.TTL != nil && *d.TTL != 1 && *d.TTL != 0 {
 		warn("warning: %s: the TTL of a proxied record is always auto; ttl=%d is ignored", d.label(), *d.TTL)

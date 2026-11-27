@@ -537,6 +537,39 @@ func checkRecordName(p ID, zone, fqdn, typ string) error {
 	return nil
 }
 
+// CheckEnsureName checks the name and type of a record dns ensure writes in
+// zone on platform p as NormalizeRecordSpecs does, for a command that knows
+// them before it reads the zone or asks for the value: no NS record, nor a
+// CNAME where the platform refuses one, at the zone apex (checkEnsureApex),
+// and a name the platform takes for the type (CheckRecordName). proxied is
+// the proxied setting asked for, nil when none was: a record asking for
+// proxied=true off Cloudflare is reported as skipped and never written, so
+// the apex does not refuse it.
+func CheckEnsureName(p ID, zone, fqdn, typ string, proxied *bool) error {
+	if err := checkEnsureName(p, NormalizeDomain(zone), NormalizeDomain(fqdn), strings.ToUpper(strings.TrimSpace(typ)), proxySkipped(p, proxied)); err != nil {
+		return invalid("%v", err)
+	}
+	return nil
+}
+
+// checkEnsureName is CheckEnsureName with zone and fqdn normalized and typ
+// upper case; skipped says the record is not written (proxySkipped).
+func checkEnsureName(p ID, zone, fqdn, typ string, skipped bool) error {
+	if fqdn == zone && !skipped {
+		if err := checkEnsureApex(p, typ); err != nil {
+			return err
+		}
+	}
+	return checkRecordName(p, zone, fqdn, typ)
+}
+
+// proxySkipped reports whether a record asking for proxied (nil: not
+// given) is skipped on platform p: proxied=true off Cloudflare, which has
+// the only proxy.
+func proxySkipped(p ID, proxied *bool) bool {
+	return proxied != nil && *proxied && p != Cloudflare
+}
+
 // apexCNAME reports whether platform p takes a CNAME at the zone apex:
 // Cloudflare flattens one, Alibaba Cloud takes one beside its records there.
 // Route 53, Cloud DNS, GoDaddy and name.com refuse it, as the apex holds the

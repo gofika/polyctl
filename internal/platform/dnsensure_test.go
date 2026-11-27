@@ -721,6 +721,23 @@ func TestDNSEnsureApexCNAME(t *testing.T) {
 	}
 }
 
+// An apex CNAME asking for proxied=true off Cloudflare is only reported as
+// skipped and never written, so the apex refusal does not apply to it: the
+// other records of the input are written.
+func TestDNSEnsureSkippedApexCNAMENotRefused(t *testing.T) {
+	for _, p := range []ID{AWS, GCP, GoDaddy, NameCom} {
+		m := &memDNS{}
+		r := ensure(t, m, p, false, false, "@:CNAME:target.example.net:300:true", "www:A:192.0.2.9")
+		if r.err != nil || dnsActions(r.changes) != "dns-record/@/CNAME=skipped dns-record/www/A=created" || m.writes() != 1 {
+			t.Errorf("%s: %s, %v, calls %v", p, dnsActions(r.changes), r.err, m.calls)
+		}
+	}
+	// proxied=false is no skip: the CNAME is refused.
+	if r := ensure(t, &memDNS{}, AWS, false, false, "@:CNAME:target.example.net:300:false"); !errors.Is(r.err, ErrInvalidInput) {
+		t.Errorf("proxied=false: %v", r.err)
+	}
+}
+
 // The zone's own NS records at the apex are not dns ensure's: a desired @ NS
 // is a usage error before anything is read, on every platform; NS below the
 // apex (a delegation) is written.
