@@ -771,12 +771,16 @@ func checkSVCB(v string) (string, *int, error) {
 				return "", nil, err
 			}
 		case "ipv4hint", "ipv6hint":
+			var canon []string
 			for _, a := range strings.Split(val, ",") {
 				ip, err := netip.ParseAddr(a)
 				if err != nil || (key == "ipv4hint" && !ip.Is4()) || (key == "ipv6hint" && !ip.Is6()) {
 					return "", nil, fmt.Errorf("%q in %s is not an IPv%s address", a, key, map[string]string{"ipv4hint": "4", "ipv6hint": "6"}[key])
 				}
+				canon = append(canon, ip.String())
 			}
+			// Addresses canonical, as everywhere else.
+			val = strings.Join(canon, ",")
 		case "mandatory":
 			for _, k := range strings.Split(val, ",") {
 				if k == "mandatory" || !validSvcKey(k) {

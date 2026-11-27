@@ -770,3 +770,36 @@ func TestDNSEnsureGoDaddySRVLimits(t *testing.T) {
 		t.Errorf("CheckRecord port 0 = %v", err)
 	}
 }
+
+// Values compare in their normal form without losing the case of what is
+// case sensitive (base64 keys, ech, dohpath, a NAPTR regexp), while host
+// names, hex, addresses, parameter keys and NAPTR flags and services
+// compare without case.
+func TestCompareValueKeepsCaseSensitiveFields(t *testing.T) {
+	differ := [][3]string{
+		{"IPSECKEY", "10 1 2 192.0.2.38 AQNRU3mG7TVTO2BkR47usntb102uFJtugbo6BSGvgqt4AQ==", "10 1 2 192.0.2.38 aqnru3mg7tvto2bkr47usntb102ufjtugbo6bsgvgqt4aq=="},
+		{"DNSKEY", "257 3 13 AbCd", "257 3 13 aBcD"},
+		{"CERT", "PKIX 0 0 MIIBszCC", "PKIX 0 0 miibszcc"},
+		{"HTTPS", "1 . alpn=h2 ech=AEX+DQBB", "1 . alpn=h2 ech=aex+dqbb"},
+		{"HTTPS", "1 . dohpath=/Query{?dns}", "1 . dohpath=/query{?dns}"},
+		{"NAPTR", `100 10 "U" "E2U+sip" "!^.*$!sip:Alice@example.com!" .`, `100 10 "U" "E2U+sip" "!^.*$!sip:alice@example.com!" .`},
+	}
+	for _, c := range differ {
+		if compareValue(c[0], c[1], nil) == compareValue(c[0], c[2], nil) {
+			t.Errorf("%s %q and %q compare equal", c[0], c[1], c[2])
+		}
+	}
+	same := [][3]string{
+		{"HTTPS", "1 SVC.Example.NET. ALPN=h2 ipv6hint=2001:DB8::1", `1 svc.example.net alpn="h2" ipv6hint=2001:db8::1`},
+		{"NAPTR", `100 10 "s" "sip+d2u" "" _SIP._udp.Example.com.`, `100 10 "S" "SIP+D2U" "" _sip._udp.example.com`},
+		{"CERT", "PKIX 0 0 MIIBszCC", "1 0 0 MIIBszCC"},
+		{"DS", "12345 13 2 " + strings.Repeat("AB", 32), "12345 13 2 " + strings.Repeat("ab", 32)},
+		{"IPSECKEY", "10 3 2 GW.Example.com. AQNR", "10 3 2 gw.example.com AQNR"},
+		{"SSHFP", "4 2 " + strings.Repeat("CD", 32), "4 2 " + strings.Repeat("cd", 32)},
+	}
+	for _, c := range same {
+		if a, b := compareValue(c[0], c[1], nil), compareValue(c[0], c[2], nil); a != b {
+			t.Errorf("%s: %q != %q", c[0], a, b)
+		}
+	}
+}

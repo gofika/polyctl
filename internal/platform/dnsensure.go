@@ -287,25 +287,25 @@ func compareValue(typ, v string, priority *int) string {
 			return v
 		}
 		return strings.TrimSuffix(strings.ToLower(v), ".")
-	case "HTTPS", "SVCB", "SSHFP", "SMIMEA", "LOC", "IPSECKEY", "OPENPGPKEY":
-		// The types polyctl came to write later compare in their normal
-		// form, so that a platform's rendering (quotes, the trailing dot, the
-		// default fields of LOC) equals the value given.
+	case "HTTPS", "SVCB", "TLSA", "SMIMEA", "SSHFP", "DS", "DNSKEY", "CERT", "LOC", "IPSECKEY", "OPENPGPKEY":
+		// These compare in their normal form, so that a platform's rendering
+		// (quotes, the trailing dot, the default fields of LOC, a CERT type
+		// as a number) equals the value given. It has host names, hex and
+		// parameter keys in lower case and keeps the case of what is case
+		// sensitive: base64 keys and certificates, ech, dohpath, alpn.
 		if rv, err := checkValue(typ, v, nil); err == nil {
-			if typ == "OPENPGPKEY" {
-				return rv.Value
+			return rv.Value
+		}
+	case "NAPTR":
+		// The flags and services are case-insensitive, the regexp is not.
+		if rv, err := checkValue(typ, v, nil); err == nil {
+			if fs, err := zoneFields(rv.Value); err == nil && len(fs) == 6 {
+				return fmt.Sprintf("%s %s %s %s %s %s", fs[0].text, fs[1].text, quoteZone(strings.ToLower(fs[2].text)), quoteZone(strings.ToLower(fs[3].text)), quoteZone(fs[4].text), fs[5].text)
 			}
-			return strings.ToLower(rv.Value)
 		}
-	case "SRV", "NAPTR":
-		f := strings.Fields(strings.ToLower(v))
-		if typ == "SRV" && len(f) == 3 && priority != nil {
-			f = append([]string{strconv.Itoa(*priority)}, f...)
-		}
-		if n := len(f); n > 0 && f[n-1] != "." {
-			f[n-1] = strings.TrimSuffix(f[n-1], ".")
-		}
-		return strings.Join(f, " ")
+		return srvFieldsCompare(typ, v, nil)
+	case "SRV":
+		return srvFieldsCompare(typ, v, priority)
 	case "TXT", "SPF":
 		return JoinTXT(v)
 	case "URI":
@@ -320,6 +320,20 @@ func compareValue(typ, v string, priority *int) string {
 		return strings.Join(strings.Fields(strings.ReplaceAll(v, `"`, "")), " ")
 	}
 	return strings.ToLower(strings.Join(strings.Fields(v), " "))
+}
+
+// srvFieldsCompare is the compare form of an SRV value, or of a NAPTR value
+// polyctl cannot read: its fields lower case, the trailing dot of the last
+// one dropped, and the priority of an SRV value read apart put in front.
+func srvFieldsCompare(typ, v string, priority *int) string {
+	f := strings.Fields(strings.ToLower(v))
+	if typ == "SRV" && len(f) == 3 && priority != nil {
+		f = append([]string{strconv.Itoa(*priority)}, f...)
+	}
+	if n := len(f); n > 0 && f[n-1] != "." {
+		f[n-1] = strings.TrimSuffix(f[n-1], ".")
+	}
+	return strings.Join(f, " ")
 }
 
 // JoinTXT turns a TXT value in zone-file form (one or more quoted strings,
