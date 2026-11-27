@@ -105,3 +105,24 @@ func TestParseRecordFile(t *testing.T) {
 		}
 	}
 }
+
+// TestRecordSpecFormatExamplesWritableEverywhere: the examples a malformed
+// --record error shows are records dns ensure takes on every platform, so
+// copying one is never the next error.
+func TestRecordSpecFormatExamplesWritableEverywhere(t *testing.T) {
+	_, examples, ok := strings.Cut(RecordSpecFormat, "e.g. ")
+	if !ok {
+		t.Fatalf("RecordSpecFormat %q gives no example", RecordSpecFormat)
+	}
+	for _, ex := range strings.Split(examples, " or ") {
+		s, err := ParseRecordSpec(ex)
+		if err != nil {
+			t.Fatalf("example %q: %v", ex, err)
+		}
+		for _, p := range All {
+			if _, err := NormalizeRecordSpecs("example.com", p, []RecordSpec{s}, WritableRecordTypes(p), nil); err != nil {
+				t.Errorf("example %q on %s: %v", ex, p, err)
+			}
+		}
+	}
+}

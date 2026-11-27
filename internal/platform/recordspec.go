@@ -29,7 +29,7 @@ type RecordSpec struct {
 }
 
 // RecordSpecFormat is the inline syntax, for error messages.
-const RecordSpecFormat = "name:type:value[:ttl[:proxied]], e.g. www:A:203.0.113.10:300:true or @:CNAME:example.com"
+const RecordSpecFormat = "name:type:value[:ttl[:proxied]], e.g. www:A:203.0.113.10:300:true or www:CNAME:target.example.net"
 
 // proxiableTypes are the types Cloudflare can proxy.
 var proxiableTypes = []string{"A", "AAAA", "CNAME"}
