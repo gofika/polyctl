@@ -140,6 +140,11 @@ func normalizeSpec(zone string, p ID, idx int, s RecordSpec, types []string, war
 	if types != nil && !slices.Contains(types, d.Type) {
 		return DesiredRecord{}, fmt.Errorf("%w (record %d)", notWritable(p, d.Type, types), idx)
 	}
+	if fqdn == zone {
+		if err := checkEnsureApex(p, d.Type); err != nil {
+			return DesiredRecord{}, invalid("%s: %v", d.label(), err)
+		}
+	}
 	switch {
 	case s.TTLAuto && d.TTL == nil && p == Cloudflare:
 		// "auto" is Cloudflare's automatic TTL, 1 in the API.

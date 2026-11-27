@@ -466,6 +466,33 @@ func checkApexTarget(p ID, typ, v string) error {
 	return fmt.Errorf("value %q is not valid for type %s on %s: %q for the zone apex is GoDaddy's form; write the zone's name", v, typ, p, apexHost)
 }
 
+// apexCNAME reports whether platform p takes a CNAME at the zone apex:
+// Cloudflare flattens one, Alibaba Cloud takes one beside its records there.
+// Route 53, Cloud DNS, GoDaddy and name.com refuse it, as the apex holds the
+// zone's NS records. An unknown platform ("") is left to decide.
+func apexCNAME(p ID) bool { return p == "" || p == Cloudflare || p == Aliyun }
+
+// checkEnsureApex refuses a record of type typ at the zone apex that dns
+// ensure does not write there on platform p: a CNAME where the platform
+// refuses one (which would only fail after the records it replaces were
+// deleted).
+func checkEnsureApex(p ID, typ string) error {
+	switch {
+	case typ == "CNAME" && !apexCNAME(p):
+		hint := "write A or AAAA records"
+		switch p {
+		case GCP:
+			hint = "write an ALIAS record, or A or AAAA records"
+		case NameCom:
+			hint = "write an ANAME record, or A or AAAA records"
+		case AWS:
+			hint = "write A or AAAA records; a Route 53 alias is an A or AAAA record set with an alias target, set up in the AWS console or CLI"
+		}
+		return fmt.Errorf("%s does not take a CNAME at the zone apex, which holds the zone's NS records: %s", p, hint)
+	}
+	return nil
+}
+
 func checkHost(v string) (string, *int, error) {
 	if strings.ContainsAny(v, " \t") {
 		return "", nil, errors.New("it is not one host name")

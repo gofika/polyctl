@@ -150,9 +150,9 @@ func TestDNSEnsureFourCases(t *testing.T) {
 }
 
 func TestDNSEnsureUpdateKeepsID(t *testing.T) {
-	m := &memDNS{recs: []Record{{ID: "rec-2", Name: "example.com", Type: "CNAME", Value: "example.org", TTL: 300}}}
-	r := ensure(t, m, AWS, false, false, "@:CNAME:example.net.")
-	if r.err != nil || dnsActions(r.changes) != "dns-record/@/CNAME=updated" || m.calls[0] != "update:rec-2:example.net" {
+	m := &memDNS{recs: []Record{{ID: "rec-2", Name: "www.example.com", Type: "CNAME", Value: "example.org", TTL: 300}}}
+	r := ensure(t, m, AWS, false, false, "www:CNAME:example.net.")
+	if r.err != nil || dnsActions(r.changes) != "dns-record/www/CNAME=updated" || m.calls[0] != "update:rec-2:example.net" {
 		t.Fatalf("update = %s, %v, %v", dnsActions(r.changes), r.err, m.calls)
 	}
 	c := r.changes[0]
@@ -691,6 +691,32 @@ func TestJoinTXT(t *testing.T) {
 	} {
 		if got := JoinTXT(in); got != want {
 			t.Errorf("JoinTXT(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A CNAME at the zone apex is refused before anything is read or written on
+// a platform that does not take one there; Cloudflare (flattening) and
+// Alibaba Cloud take it.
+func TestDNSEnsureApexCNAME(t *testing.T) {
+	zone := []Record{
+		{ID: "soa", Name: "example.com", Type: "SOA", Value: "ns1.example.net. admin.example.com. 1 7200 3600 86400 300"},
+		{ID: "ns1", Name: "example.com", Type: "NS", Value: "ns1.example.net"},
+		{ID: "a1", Name: "example.com", Type: "A", Value: "192.0.2.1"},
+	}
+	for _, p := range []ID{AWS, GCP, GoDaddy, NameCom} {
+		m := &memDNS{recs: append([]Record(nil), zone...)}
+		r := ensure(t, m, p, false, false, "@:CNAME:target.example.net")
+		if !errors.Is(r.err, ErrInvalidInput) || !strings.Contains(r.err.Error(), "does not take a CNAME at the zone apex") || m.writes() != 0 {
+			t.Errorf("%s: %v, calls %v", p, r.err, m.calls)
+		}
+	}
+	if _, err := NormalizeRecordSpecs("example.com", AWS, specs(t, "www:CNAME:target.example.net"), nil, nil); err != nil {
+		t.Errorf("a CNAME below the apex: %v", err)
+	}
+	for _, p := range []ID{Cloudflare, Aliyun} {
+		if _, err := NormalizeRecordSpecs("example.com", p, specs(t, "@:CNAME:target.example.net"), nil, nil); err != nil {
+			t.Errorf("%s: %v", p, err)
 		}
 	}
 }
