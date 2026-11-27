@@ -21,7 +21,7 @@ func TestDNSCreateEveryType(t *testing.T) {
 		"ANAME": "www ANAME target.example.net 0 -",
 		"MX":    "www MX mail.example.com 0 10",
 		"NS":    "www NS ns1.example.net 0 -",
-		"TXT":   `www TXT "v=spf1 include:_spf.example.net ~all" 0 -`,
+		"TXT":   "www TXT v=spf1 include:_spf.example.net ~all 0 -", // the text, unquoted
 		"SRV":   "www SRV 5 5060 sip.example.com 0 10",
 	}
 	types := platform.WritableRecordTypes(platform.NameCom)

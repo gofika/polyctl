@@ -660,6 +660,11 @@ func TestConversions(t *testing.T) {
 	if err != nil || w.Host != "" || w.Type != "TXT" {
 		t.Errorf("'@' should become empty host: %+v %v", w, err)
 	}
+	// A TXT value given as quoted strings is sent as its text.
+	w, err = fromRecord(platform.Record{Name: "q.example.com", Type: "TXT", Value: `"v=DKIM1; k=rsa; " "p=MIIB"`}, "example.com")
+	if err != nil || w.Answer != "v=DKIM1; k=rsa; p=MIIB" {
+		t.Errorf("quoted TXT: %+v %v", w, err)
+	}
 	w, err = fromRecord(platform.Record{Name: "a.b.example.com.", Type: "SRV", Value: "x", Priority: intp(1)}, "example.com")
 	if err != nil || w.Host != "a.b" || w.Priority == nil {
 		t.Errorf("relative host: %+v %v", w, err)

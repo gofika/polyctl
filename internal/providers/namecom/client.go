@@ -295,6 +295,11 @@ func fromRecord(r platform.Record, domain string) (apiRecordWrite, error) {
 		host = ""
 	}
 	w := apiRecordWrite{Host: host, Type: strings.ToUpper(r.Type), Answer: r.Value, TTL: r.TTL}
+	if w.Type == "TXT" {
+		// The answer is the text itself: a value given as quoted strings is
+		// unquoted and joined, as for Alibaba Cloud.
+		w.Answer = platform.JoinTXT(r.Value)
+	}
 	if r.Priority != nil && hasPriority(w.Type) {
 		p := *r.Priority
 		w.Priority = &p

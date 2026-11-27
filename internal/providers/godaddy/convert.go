@@ -203,6 +203,11 @@ func recordToAPI(zone string, r platform.Record) (apiRecord, error) {
 		Data: r.Value,
 		TTL:  r.TTL,
 	}
+	if typ == "TXT" {
+		// data is the text itself: a value given as quoted strings is
+		// unquoted and joined, as for Alibaba Cloud.
+		out.Data = platform.JoinTXT(r.Value)
+	}
 	if r.Priority != nil {
 		p := *r.Priority
 		out.Priority = &p

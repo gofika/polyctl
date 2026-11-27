@@ -20,7 +20,7 @@ func TestDNSAddEveryType(t *testing.T) {
 		"CNAME": "CNAME www target.example.net 0 -",
 		"MX":    "MX www mail.example.com 0 10",
 		"NS":    "NS www ns1.example.net 0 -",
-		"TXT":   `TXT www "v=spf1 include:_spf.example.net ~all" 0 -`,
+		"TXT":   "TXT www v=spf1 include:_spf.example.net ~all 0 -", // the text, unquoted
 		"SRV":   "SRV www sip.example.com 0 10",
 		"CAA":   `CAA www 0 issue "letsencrypt.org" 0 -`,
 	}

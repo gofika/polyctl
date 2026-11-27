@@ -52,6 +52,11 @@ func TestRecordToAPI(t *testing.T) {
 	if err != nil || r.Name != "@" {
 		t.Errorf("apex: %+v %v", r, err)
 	}
+	// A TXT value given as quoted strings is sent as its text.
+	r, err = recordToAPI(zone, platform.Record{Name: "q.example.com", Type: "TXT", Value: `"v=DKIM1; k=rsa; " "p=MIIB"`})
+	if err != nil || r.Data != "v=DKIM1; k=rsa; p=MIIB" {
+		t.Errorf("quoted TXT: %+v %v", r, err)
+	}
 	r, err = recordToAPI(zone, platform.Record{Name: "example.com.", Type: "MX", Value: "mail.example.com", Priority: intp(20)})
 	if err != nil || r.Name != "@" || r.Priority == nil || *r.Priority != 20 {
 		t.Errorf("MX: %+v %v", r, err)
