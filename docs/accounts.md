@@ -334,7 +334,7 @@ In 0.1.x a profile was one account on one platform; now it is a set of accounts,
 - `--no-browser` is a flag of `auth login` and `auth manage` only.
 - An unknown subcommand (`polyctl dns nosuch`, `polyctl help dns nosuch`) is a usage error (exit 2), not help with exit 0.
 - `dns update` is now `dns ensure <domain> <name> <type> <value>`; `dns update --add` is now `dns add`.
-- `polyctl dns set` was removed, use `polyctl dns ensure <domain> <name> <type> <value>`.
+- `polyctl dns set` was removed, use `polyctl dns ensure <domain> <name> <type> <value>`. `dns set` was keyed on name + type and left records of other types alone; `dns ensure` is the same only on a name without records of other types. On a name with one record of another type, `dns ensure` now replaces it (deletes it, then creates the record: confirmed on a terminal, `--yes` in a script, exit code 2 without it); with several records of other types it stops with exit code 5 in a script, also with `--yes`. To write a record beside records of other types, use `dns add`; to replace them, `dns delete` first. This also applies to 0.5.x `dns ensure -r` / `-f` runs, which created the record beside records of other types.
 - `ns set <domain> --ns a,b` is now `ns set <domain> a b` (all trees).
 - `--proxied true|false` is now `--proxied` / `--proxied=false`.
 - `inventory list --platform` / `--type` take lists.
