@@ -221,7 +221,7 @@ polyctl cf dns delete example.com --id 372e67954025e0ba6aaa6d586b9e0b59
 - Former form (0.5.x): `create` still reads the record from `--name`, `--type` and `--value` (without `--name`, the zone apex; on a terminal the name is asked instead). These flags are no longer listed in the help. A positional record together with one of them is exit code 2.
 - `update` changes the fields given as `--name`, `--type` and `--value`; `--name` is relative to the zone (`www`, `@`) or an FQDN.
 - `--ttl` in seconds; `0` or `1` means automatic.
-- `--proxied` is the orange cloud: `--proxied` on, `--proxied=false` off. Without it, `create` uses Cloudflare's default and `update` keeps the current setting.
+- `--proxied` is the orange cloud: `--proxied` on, `--proxied=false` off. Without it, `create` uses Cloudflare's default and `update` keeps the current setting. Either one on a record whose type is not A, AAAA or CNAME is exit code 2, before any request when the type is on the command line, else before the update is sent.
 - `--priority` is the priority of an MX record (SRV and URI carry theirs in the value); `--comment` sets a comment (`update --comment ""` clears it). The types Cloudflare writes and their value forms: [Record types](../commands.md#record-types).
 
 `dev-mode` and `ssl-mode` without a value show the current state.

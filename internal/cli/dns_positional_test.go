@@ -114,9 +114,9 @@ func TestDNSPositionalRecordMatchesFlagForm(t *testing.T) {
 			`true.example.com A "203.0.113.4" ttl=0 prio=- proxied=true`,
 		},
 		"add a value true, not proxied": {
-			[]string{"dns", "add", "example.com", "flag", "TXT", "true", "--proxied=false"},
-			[]string{"dns", "add", "example.com", "--name", "flag", "--type", "TXT", "--value", "true", "--proxied=false"},
-			`flag.example.com TXT "true" ttl=0 prio=- proxied=false`,
+			[]string{"dns", "add", "example.com", "flag", "CNAME", "true", "--proxied=false"},
+			[]string{"dns", "add", "example.com", "--name", "flag", "--type", "CNAME", "--value", "true", "--proxied=false"},
+			`flag.example.com CNAME "true" ttl=0 prio=- proxied=false`,
 		},
 		"ensure a value false, proxied": {
 			[]string{"dns", "ensure", "example.com", "flag", "CNAME", "false", "--ttl", "auto", "--proxied"},

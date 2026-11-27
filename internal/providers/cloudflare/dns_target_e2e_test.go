@@ -255,3 +255,29 @@ func TestDNSUpdateLists(t *testing.T) {
 		t.Errorf("same value: exit %d, writes %v, %s", code, e.f.writes(), stderr)
 	}
 }
+
+// --proxied, true or false, on a type that cannot be proxied is refused
+// with exit code 2 before any request where the type is known from the
+// command line, and before any write where it is known once the record is
+// read (--id).
+func TestDNSProxiedRefusedOnATypeThatCannotBeProxied(t *testing.T) {
+	const want = "proxied applies to A, AAAA and CNAME records only, not TXT"
+	for _, args := range [][]string{
+		{"cloudflare", "dns", "create", "example.com", "www", "TXT", "hello", "--proxied"},
+		{"cloudflare", "dns", "create", "example.com", "--name", "www", "--type", "TXT", "--value", "hello", "--proxied=false"},
+		{"cloudflare", "dns", "update", "example.com", "mail", "TXT", "--proxied"},
+		{"cloudflare", "dns", "update", "example.com", "api", "--type", "TXT", "--value", "hello", "--proxied"},
+	} {
+		e := newTargetEnv(t)
+		e.f.reset()
+		code, _, stderr := e.run(append(args, "--profile", "acme")...)
+		if code != cli.ExitUsage || !strings.Contains(stderr, want) || e.f.count("") != 0 {
+			t.Errorf("%v: exit %d, %d requests, %s", args, code, e.f.count(""), stderr)
+		}
+	}
+	e := newTargetEnv(t)
+	code, _, stderr := e.run("cloudflare", "dns", "update", "example.com", "--id", "m2", "--proxied", "--profile", "acme")
+	if code != cli.ExitUsage || !strings.Contains(stderr, want) || len(e.f.writes()) != 0 {
+		t.Errorf("update --id m2 --proxied: exit %d, writes %v, %s", code, e.f.writes(), stderr)
+	}
+}

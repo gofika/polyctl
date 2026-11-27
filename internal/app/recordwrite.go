@@ -58,6 +58,8 @@ type RecordInput struct {
 	usage string
 	// priority is the --priority of the command, nil when none was given.
 	priority *int
+	// proxied is the --proxied of the command, nil when none was given.
+	proxied *bool
 }
 
 // Value is the first value, "" when none was given.
@@ -99,7 +101,7 @@ func (in *RecordInput) Usage() string { return in.usage }
 func (rt *Runtime) RecordInput(cmd *cobra.Command, args []string, form RecordForm) (*RecordInput, error) {
 	sh := form.shape()
 	sh.partial = rt.Interactive()
-	in := &RecordInput{NameArg: "--name", form: form, usage: sh.usage(cmd), priority: PriorityFlag(cmd)}
+	in := &RecordInput{NameArg: "--name", form: form, usage: sh.usage(cmd), priority: PriorityFlag(cmd), proxied: ProxiedFlag(cmd)}
 	if len(args) > 1 {
 		rec, err := sh.parse(cmd, args[1:], nil)
 		if err != nil {
@@ -135,7 +137,7 @@ func (rt *Runtime) RecordInput(cmd *cobra.Command, args []string, form RecordFor
 // CheckType checks the type given, if any, before its value is asked or
 // the zone read (platform.CheckRecordType): it is known (exit code 2), one
 // platform p writes (the Platform of the form when p is "", exit code 7),
-// and the --priority given belongs to it. A command that finds the platform
+// and the --proxied and --priority given belong to it. A command that finds the platform
 // from the domain calls it once it knows the platform.
 func (in *RecordInput) CheckType(p platform.ID) error {
 	if in == nil || in.Type == "" {
@@ -145,14 +147,15 @@ func (in *RecordInput) CheckType(p platform.ID) error {
 }
 
 // check is the platform.RecordCheck of the record without its value, on
-// platform p (the Platform of the form when ""), with the --priority given;
+// platform p (the Platform of the form when ""), with the --priority and
+// --proxied given;
 // exists says a record of its name and type exists: one the command writes
 // is then not created unless the form says so.
 func (in *RecordInput) check(p platform.ID, exists bool) platform.RecordCheck {
 	if p == "" {
 		p = in.form.Platform
 	}
-	return platform.RecordCheck{Platform: p, Type: in.Type, Priority: in.priority, New: in.form.Creates || !exists}
+	return platform.RecordCheck{Platform: p, Type: in.Type, Priority: in.priority, Proxied: in.proxied, New: in.form.Creates || !exists}
 }
 
 // Complete reports whether the record has its type and its values: it is
@@ -161,18 +164,19 @@ func (in *RecordInput) Complete() bool { return in != nil && in.writable() }
 
 // Check is the check every command that writes a record runs on it before
 // any request (platform.CheckRecord), one value at a time with the
-// --priority of cmd: the type is known and one platform p writes (the
-// Platform of the form when p is ""; neither: any known type), a priority
-// apart belongs to the type, and each value is valid for it. It returns the
+// --priority and --proxied of cmd: the type is known and one platform p
+// writes (the Platform of the form when p is ""; neither: any known type),
+// a priority apart and a proxied setting belong to the type, and each value
+// is valid for it. It returns the
 // values checked, in the normal form the providers take.
 func (in *RecordInput) Check(cmd *cobra.Command, p platform.ID) ([]platform.RecordValue, error) {
 	if p == "" {
 		p = in.form.Platform
 	}
-	prio := PriorityFlag(cmd)
+	prio, prox := PriorityFlag(cmd), ProxiedFlag(cmd)
 	out := make([]platform.RecordValue, 0, len(in.Values))
 	for _, v := range in.Values {
-		rv, err := platform.CheckRecord(platform.RecordCheck{Platform: p, Type: in.Type, Value: v, Priority: prio, New: in.form.Creates})
+		rv, err := platform.CheckRecord(platform.RecordCheck{Platform: p, Type: in.Type, Value: v, Priority: prio, Proxied: prox, New: in.form.Creates})
 		if err != nil {
 			return nil, err
 		}
@@ -192,6 +196,20 @@ func PriorityFlag(cmd *cobra.Command) *int {
 		return nil
 	}
 	return &n
+}
+
+// ProxiedFlag is the --proxied of cmd, nil when it was not given or cmd
+// has none.
+func ProxiedFlag(cmd *cobra.Command) *bool {
+	f := cmd.Flags().Lookup("proxied")
+	if f == nil || !f.Changed {
+		return nil
+	}
+	b, err := cmd.Flags().GetBool("proxied")
+	if err != nil {
+		return nil
+	}
+	return &b
 }
 
 // CheckRecordChange checks, before anything is read, what the flags of an
@@ -219,7 +237,7 @@ func CheckRecordChange(cmd *cobra.Command, p platform.ID, typ string) error {
 		}
 		value = info.Example
 	}
-	_, err := platform.CheckRecord(platform.RecordCheck{Platform: p, Type: typ, Value: value, Priority: PriorityFlag(cmd)})
+	_, err := platform.CheckRecord(platform.RecordCheck{Platform: p, Type: typ, Value: value, Priority: PriorityFlag(cmd), Proxied: ProxiedFlag(cmd)})
 	return err
 }
 
@@ -231,13 +249,18 @@ func CheckRecordChange(cmd *cobra.Command, p platform.ID, typ string) error {
 // new type has no place for. A record that keeps its type and value is not
 // checked again: its value is the one the platform holds.
 func CheckRecordUpdate(cmd *cobra.Command, p platform.ID, cur platform.Record, rec *platform.Record) error {
-	prio := PriorityFlag(cmd)
+	prio, prox := PriorityFlag(cmd), ProxiedFlag(cmd)
+	// A --proxied given belongs to the type the record has after the
+	// update, whatever else changes.
+	if err := platform.CheckProxied(rec.Type, prox); err != nil {
+		return err
+	}
 	typeChanged := !strings.EqualFold(rec.Type, cur.Type)
 	if !typeChanged && rec.Value == cur.Value && prio == nil {
 		return nil
 	}
 	wasMX := strings.EqualFold(cur.Type, "MX")
-	v, err := platform.CheckRecord(platform.RecordCheck{Platform: p, Type: rec.Type, Value: rec.Value, Priority: prio, New: typeChanged || !wasMX})
+	v, err := platform.CheckRecord(platform.RecordCheck{Platform: p, Type: rec.Type, Value: rec.Value, Priority: prio, Proxied: prox, New: typeChanged || !wasMX})
 	if err != nil {
 		return err
 	}
@@ -411,7 +434,17 @@ func (rt *Runtime) CompleteRecord(in *RecordInput, p RecordPrompt) error {
 	}
 	if in.Type == "" {
 		has, _ := RecordsOfName(p.Zone, existing, fqdn, "", "")
-		if in.Type, err = rt.pickRecordType(p.Platform, has.Type(), func(typ string) error { return p.checkName(fqdn, typ) }); err != nil {
+		// The types offered are the ones the record can have: those the
+		// --priority and --proxied given belong to, and that the command
+		// takes for the name.
+		if in.Type, err = rt.pickRecordType(p.Platform, has.Type(), func(typ string) error {
+			c := in.check(p.Platform, false)
+			c.Type = typ
+			if err := platform.CheckRecordType(c); err != nil {
+				return err
+			}
+			return p.checkName(fqdn, typ)
+		}); err != nil {
 			return err
 		}
 	}

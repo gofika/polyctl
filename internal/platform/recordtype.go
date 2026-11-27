@@ -138,17 +138,24 @@ type RecordCheck struct {
 	Priority *int
 	// New says the record is created: an MX record then needs a priority.
 	New bool
+	// Proxied is the proxied setting given (--proxied), nil when none was:
+	// one, true or false, belongs to a type that can be proxied
+	// (CheckProxied).
+	Proxied *bool
 }
 
 // CheckRecord is the check every command that writes a record runs before
 // any request: the type is known (exit code 2, listing the known types),
 // one the platform writes (ErrNotSupported, exit code 7, naming the types it
-// writes), a separate priority belongs to it, and the value is valid for it
-// (exit code 2, saying what is wrong and showing a valid value). It returns
-// the value in the normal form the providers take.
+// writes), a proxied setting and a separate priority belong to it, and the
+// value is valid for it (exit code 2, saying what is wrong and showing a
+// valid value). It returns the value in the normal form the providers take.
 func CheckRecord(c RecordCheck) (RecordValue, error) {
 	typ := strings.ToUpper(strings.TrimSpace(c.Type))
 	if err := checkRecordType(c.Platform, c.Types, typ); err != nil {
+		return RecordValue{}, err
+	}
+	if err := CheckProxied(typ, c.Proxied); err != nil {
 		return RecordValue{}, err
 	}
 	v, err := checkValue(typ, c.Value, c.Priority)
@@ -167,11 +174,14 @@ func CheckRecord(c RecordCheck) (RecordValue, error) {
 // CheckRecordType is the part of CheckRecord that needs no value, for a
 // type known before its value is asked: the type is known (exit code 2), one
 // the platform writes (ErrNotSupported, exit code 7; Platform "": any known
-// type), and a priority given apart belongs to it (exit code 2). c.Value
-// and c.New are not read.
+// type), and a proxied setting and a priority given apart belong to it
+// (exit code 2). c.Value and c.New are not read.
 func CheckRecordType(c RecordCheck) error {
 	typ := strings.ToUpper(strings.TrimSpace(c.Type))
 	if err := checkRecordType(c.Platform, c.Types, typ); err != nil {
+		return err
+	}
+	if err := CheckProxied(typ, c.Proxied); err != nil {
 		return err
 	}
 	t, _ := lookupRecordType(typ)
@@ -547,15 +557,15 @@ func checkRecordName(p ID, zone, fqdn, typ string, skipped bool) error {
 // CheckEnsureName checks the name and type of a record dns ensure writes in
 // zone on platform p as NormalizeRecordSpecs does, for a command that knows
 // them before it reads the zone or asks for the value: proxied only on the
-// types it applies to (checkProxied), no NS record at the zone apex
+// types it applies to (CheckProxied), no NS record at the zone apex
 // (checkEnsureApex), and a name the platform takes for the type
 // (CheckRecordName). proxied is the proxied setting asked for, nil when
 // none was: a record asking for proxied=true off Cloudflare is reported as
 // skipped and never written, so the apex does not refuse it.
 func CheckEnsureName(p ID, zone, fqdn, typ string, proxied *bool) error {
 	typ = strings.ToUpper(strings.TrimSpace(typ))
-	if err := checkProxied(typ, proxied); err != nil {
-		return invalid("%v", err)
+	if err := CheckProxied(typ, proxied); err != nil {
+		return err
 	}
 	if err := checkEnsureName(p, NormalizeDomain(zone), NormalizeDomain(fqdn), typ, proxySkipped(p, typ, proxied)); err != nil {
 		return invalid("%v", err)
@@ -574,8 +584,18 @@ func checkEnsureName(p ID, zone, fqdn, typ string, skipped bool) error {
 	return checkRecordName(p, zone, fqdn, typ, skipped)
 }
 
-// checkProxied refuses a proxied setting (nil: none given), true or false,
-// on a record of type typ that cannot be proxied (proxiableTypes).
+// CheckProxied refuses (exit code 2) a proxied setting (nil: none given),
+// true or false, on a record of type typ that cannot be proxied
+// (proxiableTypes): every command that writes a record with one checks it
+// here, before any request.
+func CheckProxied(typ string, proxied *bool) error {
+	if err := checkProxied(strings.ToUpper(strings.TrimSpace(typ)), proxied); err != nil {
+		return invalid("%v", err)
+	}
+	return nil
+}
+
+// checkProxied is CheckProxied with typ upper case, the error unwrapped.
 func checkProxied(typ string, proxied *bool) error {
 	if proxied != nil && !slices.Contains(proxiableTypes, typ) {
 		return fmt.Errorf("proxied applies to A, AAAA and CNAME records only, not %s", typ)

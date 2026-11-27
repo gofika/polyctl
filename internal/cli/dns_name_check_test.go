@@ -175,3 +175,48 @@ func TestDNSNameGivenAloneRefusedBeforeAsking(t *testing.T) {
 		}
 	}
 }
+
+// --proxied on a type that cannot be proxied is refused by dns add with
+// exit code 2 before any request, as dns ensure refuses it; on a terminal
+// the type list under --proxied leaves those types out, as the one under
+// --priority leaves out the types without a priority.
+func TestDNSAddProxiedRefusedOnATypeThatCannotBeProxied(t *testing.T) {
+	for _, args := range [][]string{
+		{"dns", "add", "example.com", "www", "TXT", "hello", "--proxied"},
+		{"dns", "add", "example.com", "--name", "www", "--type", "TXT", "--value", "hello", "--proxied=false"},
+		{"dns", "add", "gd.example", "www", "TXT", "hello", "--proxied"},
+	} {
+		_, cfgPath, fc := ensureZone(t)
+		calls := func() []string { return fc.calls }
+		if args[2] == "gd.example" {
+			var gd *fakeClient
+			cfgPath, gd = gdZone(t)
+			calls = func() []string { return gd.calls }
+		}
+		r := runFlow(t, context.Background(), cfgPath, nil, strings.NewReader(""), args...)
+		if r.code != ExitUsage || !strings.Contains(errString(r.err), "proxied applies to A, AAAA and CNAME records only, not TXT") || len(calls()) != 0 {
+			t.Errorf("%v: exit %d, %v, calls %v", args, r.code, r.err, calls())
+		}
+	}
+	types := []string{"A", "AAAA", "CNAME", "MX", "TXT"}
+	defer func() { fakeRecordTypes = nil }()
+	_, cfgPath, fc := ensureZone(t)
+	fakeRecordTypes = types
+	p := prompttest.New(t, "A", "192.0.2.1")
+	r := runFlow(t, context.Background(), cfgPath, (*scriptedPicker)(p), strings.NewReader(""), "dns", "add", "example.com", "www", "--proxied")
+	if a := p.Find("Record type"); a == nil || prompttest.Values(a.Options) != "A AAAA CNAME" {
+		t.Errorf("types under --proxied: %+v", a)
+	}
+	if r.err != nil || fc.count("CreateRecord:www.example.com:A") != 1 {
+		t.Errorf("proxied A: %v, calls %v", r.err, fc.calls)
+	}
+	// So does --priority: only the types it belongs to are offered.
+	p = prompttest.New(t, "MX", "mail.example.com")
+	r = runFlow(t, context.Background(), cfgPath, (*scriptedPicker)(p), strings.NewReader(""), "dns", "add", "example.com", "mx", "--priority", "10")
+	if a := p.Find("Record type"); a == nil || prompttest.Values(a.Options) != "MX" {
+		t.Errorf("types under --priority: %+v", a)
+	}
+	if r.err != nil || fc.count("CreateRecord:mx.example.com:MX") != 1 {
+		t.Errorf("MX with --priority: %v, calls %v", r.err, fc.calls)
+	}
+}
