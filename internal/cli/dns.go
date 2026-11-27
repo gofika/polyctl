@@ -647,7 +647,7 @@ A CNAME at the zone apex is refused (exit code 2) on the platforms that do
 not take one there (Route 53, Cloud DNS, GoDaddy, name.com): write ALIAS or
 ANAME where the platform has it, or A or AAAA records.
 proxied=true on a platform other than Cloudflare reports the record as
-skipped. The zone is always read live: --offline is refused (exit code 6).
+skipped (an apex CNAME among them is not refused). The zone is always read live: --offline is refused (exit code 6).
 
 ` + app.RecordAskHelp("zone") + `
 
