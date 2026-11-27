@@ -176,13 +176,18 @@ func TestRecordTargetFormArgs(t *testing.T) {
 		flags []string
 	}{
 		{[]string{"z"}, nil},
-		{nil, nil},
-		{nil, []string{"id", "r1"}},
 		{[]string{"z"}, []string{"value", "v"}},
 		{[]string{"z"}, []string{"type", "A"}},
 	} {
 		if err := check(script, form, c.args, c.flags...); !errors.Is(err, ErrUsage) || !strings.Contains(err.Error(), need) {
 			t.Errorf("%v %v: %v, want %q", c.args, c.flags, err, need)
+		}
+	}
+	// Without the zone, the zone is what is missing.
+	const needZone = "<zone> is required: usage: polyctl delete <zone> <name> [<type> [<value>]]"
+	for _, flags := range [][]string{nil, {"id", "r1"}, {"all", "true"}} {
+		if err := check(script, form, nil, flags...); !errors.Is(err, ErrUsage) || !strings.Contains(err.Error(), needZone) {
+			t.Errorf("no zone %v: %v, want %q", flags, err, needZone)
 		}
 	}
 	// A command without --id or an Instead flag names neither.

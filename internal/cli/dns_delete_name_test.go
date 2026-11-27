@@ -163,3 +163,23 @@ func TestDNSDeleteByNameOfSeveralTypesOffersTheRecords(t *testing.T) {
 	}
 	p.Done()
 }
+
+// A missing <domain> or <zone> is named as what is missing, also when --id
+// or --all names the records.
+func TestRecordTargetMissingZoneNamed(t *testing.T) {
+	_, cfgPath, fc := ensureZone(t)
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"dns", "delete", "--all", "--yes"}, "<domain> is required: usage: polyctl dns delete <domain> <name>"},
+		{[]string{"dns", "delete", "--id", "abc", "--yes"}, "<domain> is required: usage: polyctl dns delete <domain> <name>"},
+		{[]string{"cloudflare", "dns", "update", "--id", "abc", "--value", "192.0.2.1"}, "<zone> is required: usage: polyctl cloudflare dns update <zone> <name>"},
+		{[]string{"dns", "delete", "example.com", "--yes"}, "a record, --id <record-id> or --all is required"},
+	} {
+		_, _, err := run(t, cfgPath, c.args...)
+		if ExitCodeFor(err) != ExitUsage || !strings.Contains(err.Error(), c.want) || len(fc.calls) != 0 {
+			t.Errorf("%v: exit %d, %v, calls %v", c.args, ExitCodeFor(err), err, fc.calls)
+		}
+	}
+}

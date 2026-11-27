@@ -115,11 +115,17 @@ func (sh recordShape) parse(cmd *cobra.Command, args []string, formerFlags []str
 	return rec, nil
 }
 
-func (sh recordShape) usage(cmd *cobra.Command) string {
-	first := "<domain>"
+// firstArg is the first argument of cmd as its usage line names it:
+// <domain> or <zone>.
+func firstArg(cmd *cobra.Command) string {
 	if words := strings.Fields(cmd.Use); len(words) > 1 {
-		first = strings.Trim(words[1], "[]")
+		return strings.Trim(words[1], "[]")
 	}
+	return "<domain>"
+}
+
+func (sh recordShape) usage(cmd *cobra.Command) string {
+	first := firstArg(cmd)
 	value := "<value>"
 	if sh.maxValues < 0 || sh.maxValues > 1 {
 		value += "..."
@@ -343,6 +349,10 @@ func (f RecordTargetForm) ArgsOrInteractive(rt *Runtime) cobra.PositionalArgs {
 		// is reported rather than the missing argument it leads to.
 		if err := CheckNonInteractiveEnv(); err != nil {
 			return UsageErrf("%v", err)
+		}
+		if len(args) == 0 {
+			// The zone is what is missing, whatever names the record.
+			return UsageErrf("%s is required: %s", firstArg(cmd), f.Usage(cmd))
 		}
 		need := []string{"a record"}
 		if cmd.Flags().Lookup("id") != nil {
