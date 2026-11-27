@@ -62,6 +62,17 @@ func TestDNSEnsureNameAndTypeRefusedBeforeAsking(t *testing.T) {
 		}
 	}
 
+	// The former form of dns add without --name, or with an empty one, on
+	// the zone writes to the apex: refused there before any request.
+	for _, name := range [][]string{nil, {"--name", ""}} {
+		cfgPath, gd := gdZone(t)
+		args := append(append([]string{"dns", "add", "gd.example"}, name...), "--type", "CNAME", "--value", "target.example.net")
+		r := runFlow(t, context.Background(), cfgPath, nil, strings.NewReader(""), args...)
+		if r.code != ExitUsage || !strings.Contains(errString(r.err), "does not take a CNAME at the zone apex") || len(gd.calls) != 0 {
+			t.Errorf("%v: exit %d, %v, calls %v", args, r.code, r.err, gd.calls)
+		}
+	}
+
 	// An apex CNAME asking for proxied=true off Cloudflare is only reported
 	// as skipped: it is not refused.
 	cfgPath, gd := gdZone(t)

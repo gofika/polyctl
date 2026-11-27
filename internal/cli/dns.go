@@ -220,27 +220,33 @@ beside other records) is refused. To change an existing record use
 			} else if fqdn != platform.NormalizeDomain(t.Domain) {
 				in.Name = fqdn
 			}
-			// A name and type both known are checked together before the
-			// zone is read; CompleteRecord checks the ones it asks for.
-			if in.Type != "" && (in.Name != "" || !rt.Interactive()) {
-				if err := platform.CheckRecordName(t.Platform, t.Domain, fqdn, in.Type); err != nil {
-					return err
+			// The zone is read once: before anything is asked, and in any
+			// case before anything is written, so a zone that cannot be read
+			// fails the command (and its --dry-run) before the write.
+			var dns platform.DNSService
+			var existing []platform.Record
+			read := false
+			zoneRecords := func() ([]platform.Record, error) {
+				if read {
+					return existing, nil
 				}
+				if dns, err = rt.OpenDNS(cmd.Context(), t); err != nil {
+					return nil, err
+				}
+				if existing, err = dns.ListRecords(cmd.Context(), t.ResourceID); err != nil {
+					return nil, err
+				}
+				read = true
+				return existing, nil
 			}
-			dns, err := rt.OpenDNS(cmd.Context(), t)
-			if err != nil {
-				return err
-			}
-			// The zone is read before anything is asked or written, so a zone
-			// that cannot be read fails the command (and its --dry-run)
-			// before the write.
-			existing, err := dns.ListRecords(cmd.Context(), t.ResourceID)
-			if err != nil {
-				return err
-			}
+			// CompleteRecord checks a name and type both known together
+			// before it reads the zone (the apex for the former form without
+			// --name), and the ones it asks for as they are given.
 			asked := in.Name == ""
-			if err := rt.CompleteRecord(in, app.RecordPrompt{Platform: t.Platform, Zone: t.Domain, FullName: dnsFullName(t),
-				Existing: func() ([]platform.Record, error) { return existing, nil }}); err != nil {
+			if err := rt.CompleteRecord(in, app.RecordPrompt{Platform: t.Platform, Zone: t.Domain, FullName: dnsFullName(t), Existing: zoneRecords}); err != nil {
+				return err
+			}
+			if _, err := zoneRecords(); err != nil {
 				return err
 			}
 			if asked && in.Name != "" {

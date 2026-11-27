@@ -348,4 +348,16 @@ func TestDNSNameAndTypeRefusedBeforeAnyRequest(t *testing.T) {
 			}
 		}
 	}
+	// The former form without --name, or with an empty one, writes to the
+	// apex: an apex CNAME is refused there too, before any request.
+	for _, cmd := range []string{"add", "upsert"} {
+		for _, name := range [][]string{nil, {"--name", ""}} {
+			args := append(append([]string{"godaddy", "dns", cmd, "example.com"}, name...), "--type", "CNAME", "--value", "target.example.net")
+			e.reset()
+			code, _, stderr := e.run(nil, "", args...)
+			if code != cli.ExitUsage || !strings.Contains(stderr, "does not take a CNAME at the zone apex") || e.f.Calls() != 0 {
+				t.Errorf("%v: exit %d, %s, %d requests", args, code, stderr, e.f.Calls())
+			}
+		}
+	}
 }

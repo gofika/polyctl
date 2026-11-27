@@ -43,7 +43,8 @@ type RecordInput struct {
 	// Name is as typed: relative to the zone, "@" for the apex, or a full
 	// name inside the zone. "" when no name was given: the interactive
 	// flow asks for it, and in the non-interactive flow (the former flag
-	// form without --name) the command applies the default it always had.
+	// form without --name) the command applies the default it always had,
+	// the zone apex (dns add puts a <domain> below its zone here).
 	Name string
 	// Type is upper-cased, "" when it was not given.
 	Type string
@@ -366,13 +367,22 @@ func (p RecordPrompt) checkName(fqdn, typ string) error {
 // complete record asks nothing and does not read the zone. The
 // non-interactive flow asks nothing either: RecordInput has refused what
 // cannot be written, and a name that was not given (the former flag form)
-// stays "" for the command to apply its default.
+// stays "" for the command to apply its default, the zone apex, which is
+// what the name is checked as.
 func (rt *Runtime) CompleteRecord(in *RecordInput, p RecordPrompt) error {
 	var fqdn string
 	var err error
-	given := in.Name != "" && in.Type != ""
-	if in.Name != "" {
-		if fqdn, err = p.fullName(in.Name, in.NameArg); err != nil {
+	// The non-interactive flow writes a record whose name was not given
+	// (the former form without --name, or with an empty one) to the zone
+	// apex, the default of every command that writes one: it is checked
+	// as that.
+	name := in.Name
+	if name == "" && !rt.Interactive() {
+		name = "@"
+	}
+	given := name != "" && in.Type != ""
+	if name != "" {
+		if fqdn, err = p.fullName(name, in.NameArg); err != nil {
 			return err
 		}
 	}
