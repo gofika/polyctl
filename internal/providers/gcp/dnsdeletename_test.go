@@ -123,3 +123,16 @@ func TestDNSRecordDeleteByNameReadsTheZoneLive(t *testing.T) {
 		t.Errorf("a name added after the cache = %v, sets %s", err, setsOf(g, "example-zone"))
 	}
 }
+
+// An empty --name ("$NAME" unset) names no record set, as leaving --name
+// out does: a usage error in a script, never the apex.
+func TestDNSRecordDeleteEmptyNameIsNoName(t *testing.T) {
+	h, g := positionalHarness(t)
+	before := setsOf(g, "example-zone")
+	if err := h.run("dns", "record", "delete", "example-zone", "--name", "", "--type", "TXT", "--yes"); exitClass(err) != "usage" || !strings.Contains(err.Error(), "a record or --id <record-id> is required") {
+		t.Errorf("empty --name = %v", err)
+	}
+	if after := setsOf(g, "example-zone"); after != before {
+		t.Fatalf("wrote: %s", after)
+	}
+}

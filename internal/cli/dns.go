@@ -368,9 +368,9 @@ func newDNSDeleteCmd(rt *app.Runtime) *cobra.Command {
 				nameArg := "<name>"
 				if target.TypeArg == "--type" {
 					nameArg = "--name"
-					if !cmd.Flags().Changed("name") {
-						// The former --type without --name: the records of
-						// <domain> itself.
+					if strings.TrimSpace(name) == "" {
+						// The former form without --name, or with an empty
+						// one: the records of <domain> itself.
 						target.Name = platform.NormalizeDomain(args[0])
 					}
 				}

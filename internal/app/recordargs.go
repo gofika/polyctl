@@ -436,7 +436,11 @@ func (f RecordTargetForm) Parse(cmd *cobra.Command, args []string) (*RecordArgs,
 		}
 		switch name {
 		case "name":
-			if rec.Name = v; v == "" {
+			// An empty --name ("$NAME" unset) is what leaving it out is:
+			// the apex for a form whose former --name defaulted to it, and
+			// else no name (the records are listed, or the command applies
+			// its own default).
+			if rec.Name = v; v == "" && f.FormerApex {
 				rec.Name = "@"
 			}
 		case "type":

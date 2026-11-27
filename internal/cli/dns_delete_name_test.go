@@ -183,3 +183,19 @@ func TestRecordTargetMissingZoneNamed(t *testing.T) {
 		}
 	}
 }
+
+// An empty former --name ("$NAME" unset) is what leaving it out is: the
+// records of <domain> itself, never the zone apex.
+func TestDNSDeleteEmptyFormerNameIsTheDomain(t *testing.T) {
+	recs := []platform.Record{
+		{ID: "acme", ZoneID: "z1", Name: "_acme-challenge.www.example.com", Type: "TXT", Value: "tok", TTL: 300},
+		{ID: "spf", ZoneID: "z1", Name: "example.com", Type: "TXT", Value: "v=spf1 -all", TTL: 300},
+	}
+	for _, extra := range [][]string{{"--type", "TXT", "--yes"}, nil} {
+		_, cfgPath, fc := ensureZone(t, recs...)
+		args := append([]string{"dns", "delete", "_acme-challenge.www.example.com", "--name", ""}, extra...)
+		if code, _, stderr := mainRun(cfgPath, args...); code != ExitOK || ensureCalls(fc) != "DeleteRecord:acme" {
+			t.Errorf("%v: exit %d, calls %v (%s)", args, code, fc.calls, stderr)
+		}
+	}
+}
