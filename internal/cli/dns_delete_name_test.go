@@ -184,17 +184,23 @@ func TestRecordTargetMissingZoneNamed(t *testing.T) {
 	}
 }
 
-// An empty former --name ("$NAME" unset) is what leaving it out is: the
-// records of <domain> itself, never the zone apex.
+// An empty former --name ("$NAME" unset) is what leaving it out is: with
+// --type, the records of <domain> itself, never the zone apex; without it,
+// no record at all, which a script cannot run with.
 func TestDNSDeleteEmptyFormerNameIsTheDomain(t *testing.T) {
 	recs := []platform.Record{
 		{ID: "acme", ZoneID: "z1", Name: "_acme-challenge.www.example.com", Type: "TXT", Value: "tok", TTL: 300},
 		{ID: "spf", ZoneID: "z1", Name: "example.com", Type: "TXT", Value: "v=spf1 -all", TTL: 300},
 	}
-	for _, extra := range [][]string{{"--type", "TXT", "--yes"}, nil} {
+	for _, name := range [][]string{{"--name", ""}, nil} {
 		_, cfgPath, fc := ensureZone(t, recs...)
-		args := append([]string{"dns", "delete", "_acme-challenge.www.example.com", "--name", ""}, extra...)
+		args := append(append([]string{"dns", "delete", "_acme-challenge.www.example.com"}, name...), "--type", "TXT", "--yes")
 		if code, _, stderr := mainRun(cfgPath, args...); code != ExitOK || ensureCalls(fc) != "DeleteRecord:acme" {
+			t.Errorf("%v: exit %d, calls %v (%s)", args, code, fc.calls, stderr)
+		}
+		args = append(append([]string{"dns", "delete", "_acme-challenge.www.example.com"}, name...), "--yes")
+		fc.calls = nil
+		if code, _, stderr := mainRun(cfgPath, args...); code != ExitUsage || len(fc.calls) != 0 || !strings.Contains(stderr, "a record, --id <record-id> or --all is required") {
 			t.Errorf("%v: exit %d, calls %v (%s)", args, code, fc.calls, stderr)
 		}
 	}
