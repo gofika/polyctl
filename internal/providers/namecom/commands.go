@@ -718,7 +718,7 @@ Only the fields given with flags are changed; the positional <type> and
 			cur := chosen.Records[0]
 			rec := cur
 			if !changes {
-				if rec.Value, err = rt.AskNewRecordValue(cur); err != nil {
+				if rec.Value, err = rt.AskNewRecordValue(platform.NameCom, cur); err != nil {
 					return err
 				}
 			}

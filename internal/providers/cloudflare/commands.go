@@ -648,7 +648,7 @@ switches it off, and without it the record keeps its current setting.`,
 			}
 			cur := &chosen.Records[0]
 			if !changes {
-				if value, err = rt.AskNewRecordValue(*cur); err != nil {
+				if value, err = rt.AskNewRecordValue(platform.Cloudflare, *cur); err != nil {
 					return err
 				}
 			}

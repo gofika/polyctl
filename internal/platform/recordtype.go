@@ -164,11 +164,21 @@ func CheckRecord(c RecordCheck) (RecordValue, error) {
 	return v, nil
 }
 
-// CheckRecordType is the part of CheckRecord that needs only the type, for a
-// type known before its value: typ is known (exit code 2) and one platform p
-// writes (ErrNotSupported, exit code 7; p "": any known type).
-func CheckRecordType(p ID, typ string) error {
-	return checkRecordType(p, nil, strings.ToUpper(strings.TrimSpace(typ)))
+// CheckRecordType is the part of CheckRecord that needs no value, for a
+// type known before its value is asked: the type is known (exit code 2), one
+// the platform writes (ErrNotSupported, exit code 7; Platform "": any known
+// type), and a priority given apart belongs to it (exit code 2). c.Value
+// and c.New are not read.
+func CheckRecordType(c RecordCheck) error {
+	typ := strings.ToUpper(strings.TrimSpace(c.Type))
+	if err := checkRecordType(c.Platform, c.Types, typ); err != nil {
+		return err
+	}
+	t, _ := lookupRecordType(typ)
+	if err := checkPriority(t, c.Priority); err != nil {
+		return invalid("%v", err)
+	}
+	return nil
 }
 
 // checkRecordType checks typ (upper case) as CheckRecordType does; types
@@ -232,16 +242,8 @@ func checkValue(typ, v string, priority *int) (RecordValue, error) {
 	if !ok {
 		return RecordValue{}, checkType(typ)
 	}
-	if priority != nil {
-		switch t.Priority {
-		case "value":
-			return RecordValue{}, fmt.Errorf("a separate priority does not apply to %s records: the priority is %s, %s (e.g. %s)", typ, t.priorityNote, t.Form, t.Example)
-		case "":
-			return RecordValue{}, fmt.Errorf("a priority applies to MX records only, not to %s records", typ)
-		}
-		if *priority < 0 || *priority > 65535 {
-			return RecordValue{}, fmt.Errorf("priority %d is not between 0 and 65535", *priority)
-		}
+	if err := checkPriority(t, priority); err != nil {
+		return RecordValue{}, err
 	}
 	v = strings.TrimSpace(v)
 	if v == "" {
@@ -258,6 +260,24 @@ func checkValue(typ, v string, priority *int) (RecordValue, error) {
 		prio = priority
 	}
 	return RecordValue{Type: typ, Value: norm, Priority: prio}, nil
+}
+
+// checkPriority checks a priority given apart (nil: none) for a record of
+// the known type t.
+func checkPriority(t recordType, priority *int) error {
+	if priority == nil {
+		return nil
+	}
+	switch t.Priority {
+	case "value":
+		return fmt.Errorf("a separate priority does not apply to %s records: the priority is %s, %s (e.g. %s)", t.Type, t.priorityNote, t.Form, t.Example)
+	case "":
+		return fmt.Errorf("a priority applies to MX records only, not to %s records", t.Type)
+	}
+	if *priority < 0 || *priority > 65535 {
+		return fmt.Errorf("priority %d is not between 0 and 65535", *priority)
+	}
+	return nil
 }
 
 // RecordFields returns the fields of a value of type typ in its normal

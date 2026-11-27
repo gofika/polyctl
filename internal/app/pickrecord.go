@@ -28,23 +28,30 @@ func (rt *Runtime) pickRecordType(id platform.ID, def string) (string, error) {
 	return rt.Choose(Choice{Title: "Record type", Options: opts, Default: pre, Arg: "<type>", Required: true, What: "record type"})
 }
 
-// AskRecordValue asks for the value of a record of type typ, checked as it
-// is typed (an IPv4 address for A, IPv6 for AAAA, a host name for CNAME,
-// ...); def is the current value of the record, if any.
-func (rt *Runtime) AskRecordValue(typ, def string) (string, error) {
-	return rt.AskInput("<value>", "Value of the "+typ+" record", def, func(s string) error {
+// AskRecordValue asks for the value of the record c (its Value aside),
+// checked as it is typed with the check the command runs before it writes
+// (platform.CheckRecord: the platform, the priority given apart, whether
+// the record is created), so a value the command would refuse is asked
+// again; def is the current value of the record, if any. A type or a
+// priority no value can make valid is the error at once.
+func (rt *Runtime) AskRecordValue(c platform.RecordCheck, def string) (string, error) {
+	if err := platform.CheckRecordType(c); err != nil {
+		return "", err
+	}
+	return rt.AskInput("<value>", "Value of the "+strings.ToUpper(c.Type)+" record", def, func(s string) error {
 		if strings.TrimSpace(s) == "" {
 			return fmt.Errorf("a value is required")
 		}
-		return recordValueError(typ, s)
+		return recordValueError(c, s)
 	})
 }
 
-// recordValueError says what is wrong with s as a value of a record of
-// type typ; nil when it is one.
-func recordValueError(typ, s string) error {
-	if err := (platform.RecordSpec{Name: "@", Type: typ, Value: s}).Validate(); err != nil {
-		return errors.New(strings.TrimPrefix(err.Error(), platform.ErrInvalidInput.Error()+": record @: "))
+// recordValueError says what is wrong with s as the value of the record c;
+// nil when it is one.
+func recordValueError(c platform.RecordCheck, s string) error {
+	c.Value = s
+	if _, err := platform.CheckRecord(c); err != nil {
+		return errors.New(strings.TrimPrefix(err.Error(), platform.ErrInvalidInput.Error()+": "))
 	}
 	return nil
 }

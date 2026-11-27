@@ -53,6 +53,8 @@ type RecordInput struct {
 
 	form  RecordForm
 	usage string
+	// priority is the --priority of the command, nil when none was given.
+	priority *int
 }
 
 // Value is the first value, "" when none was given.
@@ -94,7 +96,7 @@ func (in *RecordInput) Usage() string { return in.usage }
 func (rt *Runtime) RecordInput(cmd *cobra.Command, args []string, form RecordForm) (*RecordInput, error) {
 	sh := form.shape()
 	sh.partial = rt.Interactive()
-	in := &RecordInput{NameArg: "--name", form: form, usage: sh.usage(cmd)}
+	in := &RecordInput{NameArg: "--name", form: form, usage: sh.usage(cmd), priority: PriorityFlag(cmd)}
 	if len(args) > 1 {
 		rec, err := sh.parse(cmd, args[1:], nil)
 		if err != nil {
@@ -128,18 +130,26 @@ func (rt *Runtime) RecordInput(cmd *cobra.Command, args []string, form RecordFor
 }
 
 // CheckType checks the type given, if any, before its value is asked or
-// the zone read (platform.CheckRecordType): it is known (exit code 2) and
-// one platform p writes (the Platform of the form when p is "", exit code
-// 7). A command that finds the platform from the domain calls it once it
-// knows the platform.
+// the zone read (platform.CheckRecordType): it is known (exit code 2), one
+// platform p writes (the Platform of the form when p is "", exit code 7),
+// and the --priority given belongs to it. A command that finds the platform
+// from the domain calls it once it knows the platform.
 func (in *RecordInput) CheckType(p platform.ID) error {
 	if in == nil || in.Type == "" {
 		return nil
 	}
+	return platform.CheckRecordType(in.check(p, false))
+}
+
+// check is the platform.RecordCheck of the record without its value, on
+// platform p (the Platform of the form when ""), with the --priority given;
+// exists says a record of its name and type exists: one the command writes
+// is then not created unless the form says so.
+func (in *RecordInput) check(p platform.ID, exists bool) platform.RecordCheck {
 	if p == "" {
 		p = in.form.Platform
 	}
-	return platform.CheckRecordType(p, in.Type)
+	return platform.RecordCheck{Platform: p, Type: in.Type, Priority: in.priority, New: in.form.Creates || !exists}
 }
 
 // Complete reports whether the record has its type and its values: it is
@@ -369,15 +379,19 @@ func (rt *Runtime) CompleteRecord(in *RecordInput, p RecordPrompt) error {
 			rt.Infof("%s %s is now: %s (the set becomes what you enter)", fqdn, in.Type, strings.Join(cur, ", "))
 		}
 	}
+	// The values are checked as the command checks them: on the platform,
+	// with the --priority given, and as created when no record of the name
+	// and type exists.
+	c := in.check(p.Platform, len(MatchRecords(existing, fqdn, in.Type, "")) > 0)
 	if len(in.Values) == 0 {
-		v, err := rt.AskRecordValue(in.Type, def)
+		v, err := rt.AskRecordValue(c, def)
 		if err != nil {
 			return err
 		}
 		in.Values = append(in.Values, v)
 	}
 	for in.form.MaxValues < 0 || len(in.Values) < in.form.MaxValues {
-		v, err := rt.askAnotherRecordValue(in.Type)
+		v, err := rt.askAnotherRecordValue(c)
 		if err != nil {
 			return err
 		}
@@ -428,14 +442,14 @@ func (rt *Runtime) PickRecordName(zone string, existing []platform.Record) (stri
 	})
 }
 
-// askAnotherRecordValue asks for one more value of a record set of type
-// typ; an empty answer ends the set.
-func (rt *Runtime) askAnotherRecordValue(typ string) (string, error) {
-	return rt.AskInput("<value>", "Another value of the "+typ+" record (empty to finish)", "", func(s string) error {
+// askAnotherRecordValue asks for one more value of a record set, checked
+// as AskRecordValue checks it; an empty answer ends the set.
+func (rt *Runtime) askAnotherRecordValue(c platform.RecordCheck) (string, error) {
+	return rt.AskInput("<value>", "Another value of the "+strings.ToUpper(c.Type)+" record (empty to finish)", "", func(s string) error {
 		if strings.TrimSpace(s) == "" {
 			return nil
 		}
-		return recordValueError(typ, s)
+		return recordValueError(c, s)
 	})
 }
 

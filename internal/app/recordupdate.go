@@ -100,15 +100,16 @@ func (rt *Runtime) RecordChanges(cmd *cobra.Command, flags ...string) (bool, err
 	return false, nil
 }
 
-// AskNewRecordValue asks for the new value of cur, the record an update
-// command was given no change for; its value is the default, in the form
-// the record check takes (platform.RecordAddValue: an MX priority and the
-// SRV fields a platform keeps apart put back). The same value again, as dns
-// ensure compares values (platform.RecordValueMatches), is "nothing to do"
-// (exit code 0).
-func (rt *Runtime) AskNewRecordValue(cur platform.Record) (string, error) {
+// AskNewRecordValue asks for the new value of cur, the record on platform
+// p an update command was given no change for, checked as CheckRecordUpdate
+// checks it; its value is the default, in the form the record check takes
+// (platform.RecordAddValue: an MX priority and the SRV fields a platform
+// keeps apart put back). The same value again, as dns ensure compares
+// values (platform.RecordValueMatches), is "nothing to do" (exit code 0).
+func (rt *Runtime) AskNewRecordValue(p platform.ID, cur platform.Record) (string, error) {
 	def := platform.RecordAddValue(cur)
-	value, err := rt.AskRecordValue(strings.ToUpper(cur.Type), def)
+	// The record keeps its type: an MX record keeps its priority.
+	value, err := rt.AskRecordValue(platform.RecordCheck{Platform: p, Type: cur.Type, New: !strings.EqualFold(cur.Type, "MX")}, def)
 	if err != nil {
 		return "", err
 	}

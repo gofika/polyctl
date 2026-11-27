@@ -396,7 +396,7 @@ nothing else; --line is the line the record is moved to.
 			}
 			cur := chosen.Records[0]
 			if !changes {
-				if value, err = rt.AskNewRecordValue(cur); err != nil {
+				if value, err = rt.AskNewRecordValue(platform.Aliyun, cur); err != nil {
 					return err
 				}
 			}
